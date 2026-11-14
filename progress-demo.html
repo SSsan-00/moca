@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#edf1f6">
+  <title>移行ハーネス | 進捗画面デモ</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #566276;
+      --soft: #77849a;
+      --line: #dbe3ed;
+      --line-soft: #edf0f4;
+      --paper: #f9fafc;
+      --canvas: #edf1f6;
+      --surface-soft: #f4f6f9;
+      --surface-hover: #eef2f7;
+      --surface-muted: #e5e9ef;
+      --blue: #2459a6;
+      --blue-soft: #eaf2ff;
+      --blue-hover: #1c4b90;
+      --blue-ink: #fff;
+      --border-hover: #aebed2;
+      --green: #176b4b;
+      --green-soft: #e8f6ef;
+      --green-ink: #fff;
+      --amber: #815300;
+      --amber-soft: #fff4d9;
+      --amber-line: #f0dfb2;
+      --amber-ink: #665222;
+      --meter-track: #e9eef5;
+      --wipe-animation: none;
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --ease: cubic-bezier(.2, .7, .2, 1);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --ink: #e7edf6;
+      --muted: #aab7ca;
+      --soft: #7f8ea4;
+      --line: #2d3a4d;
+      --line-soft: #202c3d;
+      --paper: #111b29;
+      --canvas: #0b121d;
+      --surface-soft: #141f2e;
+      --surface-hover: #1a2a3e;
+      --surface-muted: #202b3a;
+      --blue: #8db8ff;
+      --blue-soft: #1b2e48;
+      --blue-hover: #76a8f2;
+      --blue-ink: #0b1b31;
+      --border-hover: #526782;
+      --green: #87d3b2;
+      --green-soft: #173329;
+      --green-ink: #0b261c;
+      --amber: #e5bd69;
+      --amber-soft: #352b18;
+      --amber-line: #59451f;
+      --amber-ink: #d8c28f;
+      --meter-track: #273548;
+    }
+    html { height: 100%; view-transition-name: root; }
+    * { box-sizing: border-box; }
+    body { height: 100vh; overflow: hidden; margin: 0; background: radial-gradient(ellipse at 12% 0, #d6e0ef66, transparent 34rem), var(--canvas); color: var(--ink); font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; transition: background-color 220ms ease, color 220ms ease; }
+    @supports (height: 100dvh) { body { height: 100dvh; } }
+    :root[data-theme="dark"] body { background: radial-gradient(ellipse at 12% 0, #18325166, transparent 36rem), var(--canvas); }
+    button { font: inherit; }
+    a { color: var(--blue); }
+    .shell { display: grid; width: min(1240px, calc(100% - 40px)); height: 100%; grid-template-rows: 36px auto minmax(0, 1fr); gap: 16px; margin: 0 auto; padding: 20px 0; }
+    .topline { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 0; }
+    .top-actions { display: flex; align-items: center; gap: 18px; }
+    .brand { color: var(--ink); font-size: 16px; font-weight: 760; letter-spacing: -.04em; text-decoration: none; }
+    .brand:hover { color: var(--blue); }
+    .top-links { display: flex; gap: 18px; font-size: 13px; }
+    .top-links a { text-decoration: none; }
+    .theme-toggle { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); color: var(--ink); cursor: pointer; transition: background 160ms ease, border-color 160ms ease, transform 120ms ease; }
+    .theme-toggle:hover { border-color: var(--blue); background: var(--blue-soft); }
+    .theme-toggle:active { transform: scale(.94); }
+    .theme-toggle:focus-visible { outline: 3px solid #7da5df; outline-offset: 2px; }
+    .theme-toggle svg { width: 17px; height: 17px; }
+    .demo-badge, .state { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .demo-badge { background: var(--amber-soft); color: var(--amber); }
+    .demo-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #c78912; }
+    .runbar { display: flex; align-items: center; gap: 14px; min-height: 66px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+    .run-meta { min-width: 0; flex: 1; }
+    .run-titleline { display: flex; align-items: center; gap: 9px; }
+    .run-name { min-width: 0; margin: 0; overflow: hidden; font-size: 13px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
+    .run-titleline .demo-badge { flex: 0 0 auto; padding: 3px 8px; font-size: 10px; }
+    .run-detail { margin-top: 2px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .elapsed { display: flex; width: 108px; height: 38px; flex: 0 0 108px; flex-direction: column; justify-content: center; gap: 1px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; }
+    .elapsed span { color: var(--muted); font-size: 10px; line-height: 1; }
+    .elapsed strong { color: var(--ink); font: 650 12px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+    .state { width: 154px; height: 38px; flex: 0 0 154px; justify-content: flex-start; overflow: hidden; padding-block: 0; background: var(--blue-soft); color: var(--blue); }
+    .state[data-state="complete"] { background: var(--green-soft); color: var(--green); }
+    .state[data-state="paused"] { background: var(--surface-muted); color: var(--muted); }
+    .state-orb { width: 9px; height: 9px; border-radius: 50%; background: currentColor; transform-origin: center bottom; }
+    .is-running .state-orb { animation: squash-bounce 1.175s ease-in-out infinite; }
+    .controls { display: flex; gap: 7px; }
+    #toggle { width: 128px; }
+    #restart { width: 84px; }
+    .button { display: inline-flex; height: 38px; min-height: 38px; align-items: center; justify-content: center; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); cursor: pointer; white-space: nowrap; transition: background 140ms ease, border-color 140ms ease, transform 100ms ease; }
+    .button:hover { border-color: var(--border-hover); background: var(--surface-hover); }
+    .button:active { transform: scale(.98); }
+    .button:focus-visible { outline: 3px solid #7da5df; outline-offset: 2px; }
+    .button.primary { border-color: var(--blue); background: var(--blue); color: var(--blue-ink); }
+    .button.primary:hover { background: var(--blue-hover); }
+    .button:disabled { cursor: default; opacity: .55; }
+    .layout { display: grid; min-height: 0; grid-template-columns: minmax(0, 1.14fr) minmax(340px, .86fr); gap: 16px; align-items: stretch; }
+    .layout > .panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
+    .panel { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+    .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 18px 13px; border-bottom: 1px solid var(--line); }
+    .panel-head h2 { margin: 0; font-size: 14px; }
+    .panel-head small { color: var(--muted); font-size: 11px; }
+    #step-count { width: 6.5em; text-align: right; }
+    .flow { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; justify-content: space-between; overflow-y: auto; padding: 9px 18px 15px; }
+    .flow::before { position: absolute; top: 23px; bottom: 29px; left: 32px; width: 1px; background: var(--line); content: ""; }
+    .step { position: relative; display: grid; flex: 0 0 59px; grid-template-columns: 30px minmax(0, 1fr) 7.5em; align-items: center; gap: 12px; opacity: .62; transition: opacity 220ms ease; }
+    .step.is-done, .step.is-active { opacity: 1; }
+    .node { position: relative; z-index: 1; display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--paper); color: var(--muted); font: 700 11px var(--mono); }
+    .is-done .node { border-color: var(--green); background: var(--green); color: var(--green-ink); }
+    .is-active .node { border: 2px solid var(--blue); background: var(--blue); color: var(--blue-ink); box-shadow: 0 0 0 4px var(--blue-soft); }
+    .flow:not(.is-paused) .step.is-active .node { animation: processing-blink 2.4s ease-in-out infinite; }
+    .step-copy { min-width: 0; padding-top: 1px; }
+    .step-title { margin: 0; font-size: 13px; font-weight: 730; }
+    .step-meta { display: flex; width: 7.5em; flex-direction: column; align-items: flex-end; gap: 2px; color: var(--soft); text-align: right; white-space: nowrap; }
+    .step-status { font-size: 11px; line-height: 1.15; }
+    .step-elapsed { font: 10px/1.15 var(--mono); font-variant-numeric: tabular-nums; }
+    .step.is-active .step-status { color: var(--blue); font-weight: 750; }
+    .step.is-active .step-status::before { content: "● "; font-size: 9px; }
+    .work-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 0 18px 16px; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--line); }
+    .metric { padding: 11px 12px; background: var(--surface-soft); }
+    .metric-label { color: var(--muted); font-size: 11px; }
+    .metric-value { margin-top: 3px; font: 700 17px var(--mono); }
+    .metric-value span { color: var(--muted); font: 11px system-ui, sans-serif; }
+    .side { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; }
+    .side > .panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
+    .activity { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 18px 14px; }
+    .event { display: grid; grid-template-columns: 62px 9px 1fr; gap: 9px; min-height: 56px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); animation: arrive 240ms var(--ease) both; }
+    .event:last-child { border-bottom: 0; }
+    .event time { color: var(--soft); font: 11px var(--mono); }
+    .event-pin { position: relative; display: flex; justify-content: center; }
+    .event-pin::before { content: ""; width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: #9aa7b8; }
+    .event.ok .event-pin::before { background: var(--green); }
+    .event.live .event-pin::before { background: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+    .event-text { color: var(--muted); font-size: 12px; }
+    .event-text strong { color: var(--ink); font-weight: 680; }
+    .capsule { padding: 14px 18px 17px; }
+    .capsule-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .capsule-title { display: grid; gap: 2px; }
+    .capsule-title h2 { margin: 0; font-size: 13px; }
+    .capsule-title span { color: var(--muted); font-size: 10px; }
+    .capsule-top span { color: var(--muted); font-size: 11px; }
+    .meter { height: 7px; margin: 12px 0 8px; overflow: hidden; border-radius: 6px; background: var(--meter-track); }
+    .meter-fill { width: 67%; height: 100%; border-radius: inherit; background: var(--blue); transition: width 700ms var(--ease); }
+    .meter-label { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11px; }
+    .meter-label strong { color: var(--ink); font-family: var(--mono); font-weight: 650; }
+    .ledger { overflow: hidden; }
+    .ledger .panel-head { display: grid; grid-template-columns: 1fr; gap: 8px; border-bottom: 0; }
+    .ledger-controls { display: flex; min-width: 0; justify-content: flex-start; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+    .ledger-controls::-webkit-scrollbar { display: none; }
+    .filter-button { height: 27px; flex: 0 0 auto; padding: 0 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
+    .filter-button:hover { background: var(--surface-hover); color: var(--ink); }
+    .filter-button[aria-pressed="true"] { border-color: var(--line); background: var(--blue-soft); color: var(--blue); font-weight: 700; }
+    .filter-button[data-filter="all"] { position: sticky; left: 0; z-index: 1; background: var(--paper); }
+    .filter-button[data-filter="all"][aria-pressed="true"] { background: var(--blue-soft); }
+    .filter-button:focus-visible { outline: 2px solid #7da5df; outline-offset: 1px; }
+    .ledger-list { min-height: 0; flex: 1; margin: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 0 18px 10px; list-style: none; }
+    .ledger-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 42px; border-top: 1px solid var(--line-soft); }
+    .ledger-list > [hidden] { display: none !important; }
+    .ledger-name { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .ledger-state { width: 7em; flex: 0 0 7em; color: var(--muted); font-size: 11px; text-align: right; }
+    .ledger-state.done { color: var(--green); }
+    .ledger-state.current { color: var(--blue); font-weight: 700; }
+    .ledger-empty { padding: 16px 0; color: var(--muted); font-size: 12px; text-align: center; }
+    @keyframes squash-bounce {
+      0%, 100% { transform: translateY(0) scale(1, 1); }
+      10% { transform: translateY(1px) scale(1.55, .42); }
+      38% { transform: translateY(-4px) scale(.72, 1.42); }
+      64% { transform: translateY(-1px) scale(.9, 1.14); }
+      82% { transform: translateY(1px) scale(1.5, .45); }
+    }
+    @keyframes processing-blink {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 4px var(--blue-soft); }
+      50% { opacity: .18; box-shadow: 0 0 0 8px var(--blue-soft); }
+    }
+    @keyframes arrive { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes reveal-circle { from { clip-path: circle(0 at var(--wipe-x) var(--wipe-y)); } to { clip-path: circle(var(--wipe-radius) at var(--wipe-x) var(--wipe-y)); } }
+    @keyframes reveal-star { from { clip-path: polygon(var(--star-from)); } to { clip-path: polygon(var(--star-to)); } }
+    ::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+    :root[data-wipe="circle"] { --wipe-animation: reveal-circle; }
+    :root[data-wipe="star"] { --wipe-animation: reveal-star; }
+    ::view-transition-new(root) { z-index: 2; filter: drop-shadow(0 0 3px #fff); animation: var(--wipe-animation) 1.15s cubic-bezier(.65,0,.35,1) both; }
+    @media (max-width: 820px) {
+      .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+      .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
+      .side .panel:nth-child(2) { grid-column: 1; grid-row: 2; }
+      .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
+    }
+    @media (max-width: 560px) {
+      body { height: 100vh; overflow: hidden; }
+      @supports (height: 100dvh) { body { height: 100dvh; } }
+      .shell { display: grid; width: calc(100% - 22px); height: 100%; min-height: 0; grid-template-rows: 36px auto minmax(0, 1fr); gap: 10px; padding: 10px 0; }
+      .topline { margin-bottom: 0; }
+      .top-links { gap: 11px; font-size: 12px; }
+      .runbar { flex-wrap: wrap; gap: 10px; margin-bottom: 0; padding: 10px; }
+      .run-meta { flex-basis: 100%; }
+      .elapsed { width: 92px; height: 34px; flex-basis: 92px; padding-inline: 7px; }
+      .state { width: 114px; height: 34px; flex-basis: 114px; margin-left: 0; }
+      .controls { margin-left: auto; }
+      .button { padding-inline: 9px; font-size: 12px; }
+      #toggle { width: 106px; }
+      #restart { width: 68px; }
+      .panel-head { padding-inline: 14px; }
+      .flow { padding-inline: 14px; }
+      .flow::before { left: 28.5px; }
+      .work-summary { margin-inline: 14px; }
+      .metric { padding: 9px 8px; }
+      .metric-value { font-size: 15px; }
+      .layout { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+      .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
+      .side .panel:nth-child(2) { grid-column: 1; grid-row: 2; overflow-y: auto; }
+      .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
+      .ledger .panel-head { gap: 8px; }
+      .ledger-controls { justify-content: flex-start; }
+      .activity { min-height: 0; padding-inline: 14px; }
+      .capsule { padding-inline: 14px; }
+      .ledger-list { padding-inline: 14px; }
+      .step { grid-template-columns: 30px minmax(0, 1fr) 7.5em; }
+      .step-meta { padding-top: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+<main class="shell">
+  <nav class="topline" aria-label="ページ">
+    <a class="brand" href="./migration-harness-spec.html">Migration Harness</a>
+    <div class="top-actions">
+      <div class="top-links"><a href="./migration-harness-spec.html">仕様</a><a href="./README.md">README</a></div>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="ダークテーマに切り替え" title="テーマを切り替え">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
+      </button>
+    </div>
+  </nav>
+  <section class="runbar" aria-label="実行情報">
+    <div class="run-meta"><div class="run-titleline"><h1 class="run-name">注文履歴ページの移行</h1><span class="demo-badge">模擬進捗</span></div><div class="run-detail">run-2026-11-14-001 · worktree: migration/order-history</div></div>
+    <time class="elapsed" id="elapsed" datetime="PT0S" aria-label="実行経過時間"><span>経過時間</span><strong id="elapsed-value">00:00:00</strong></time>
+    <span class="state is-running" id="run-state" data-state="running" aria-live="polite"><span class="state-orb" aria-hidden="true"></span><span id="state-label">Junieが実行中</span></span>
+    <div class="controls" aria-label="デモ操作">
+      <button class="button" id="toggle" type="button">一時停止</button>
+      <button class="button" id="restart" type="button">最初から</button>
+    </div>
+  </section>
+
+  <div class="layout">
+    <section class="panel" aria-labelledby="flow-title">
+      <div class="panel-head"><h2 id="flow-title">実行フロー</h2><small id="step-count">工程 4 / 7</small></div>
+      <div class="flow" id="flow" aria-live="polite">
+        <article class="step is-done" data-step="0"><div class="node" aria-hidden="true">✓</div><div class="step-copy"><h3 class="step-title">対象と入力を確認</h3></div><div class="step-meta"><span class="step-status">完了</span><time class="step-elapsed" datetime="PT3.2S">00:00:03</time></div></article>
+        <article class="step is-done" data-step="1"><div class="node" aria-hidden="true">✓</div><div class="step-copy"><h3 class="step-title">必要な範囲を準備</h3></div><div class="step-meta"><span class="step-status">完了</span><time class="step-elapsed" datetime="PT5.8S">00:00:05</time></div></article>
+        <article class="step is-done" data-step="2"><div class="node" aria-hidden="true">✓</div><div class="step-copy"><h3 class="step-title">worktreeを作成</h3></div><div class="step-meta"><span class="step-status">完了</span><time class="step-elapsed" datetime="PT2.5S">00:00:02</time></div></article>
+        <article class="step is-active" data-step="3"><div class="node" aria-hidden="true">4</div><div class="step-copy"><h3 class="step-title">Junieが移行</h3></div><div class="step-meta"><span class="step-status">処理中</span><time class="step-elapsed" datetime="PT0S">00:00:00</time></div></article>
+        <article class="step" data-step="4"><div class="node" aria-hidden="true">5</div><div class="step-copy"><h3 class="step-title">ビルド・テスト</h3></div><div class="step-meta"><span class="step-status">待機中</span><time class="step-elapsed">--:--:--</time></div></article>
+        <article class="step" data-step="5"><div class="node" aria-hidden="true">6</div><div class="step-copy"><h3 class="step-title">独自チェッカー</h3></div><div class="step-meta"><span class="step-status">待機中</span><time class="step-elapsed">--:--:--</time></div></article>
+        <article class="step" data-step="6"><div class="node" aria-hidden="true">7</div><div class="step-copy"><h3 class="step-title">差分レビュー</h3></div><div class="step-meta"><span class="step-status">待機中</span><time class="step-elapsed">--:--:--</time></div></article>
+      </div>
+      <div class="work-summary" aria-label="対象範囲の状況">
+        <div class="metric"><div class="metric-label">対象単位</div><div class="metric-value">12 <span>件</span></div></div>
+        <div class="metric"><div class="metric-label">確認済み</div><div class="metric-value" id="checked-count">4 <span>/ 12</span></div></div>
+        <div class="metric"><div class="metric-label">判断待ち</div><div class="metric-value" id="pending-count">1 <span>件</span></div></div>
+      </div>
+    </section>
+
+    <div class="side">
+      <section class="panel" aria-labelledby="activity-title">
+        <div class="panel-head"><h2 id="activity-title">実行ログ</h2></div>
+        <div class="activity" id="activity" role="log" aria-live="polite" aria-relevant="additions">
+          <div class="event ok"><time>10:42:03</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>worktreeを準備</strong><br>migration/order-history</div></div>
+          <div class="event ok"><time>10:42:08</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>入力範囲を確定</strong><br>PHP 3範囲、参考C# 2ファイル</div></div>
+          <div class="event live"><time>10:42:11</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>Junieを起動</strong><br>Razor PageとPageModelを移行中</div></div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="capsule-title">
+        <div class="capsule">
+          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">今回のJunie入力</h2><span id="capsule-call">呼び出し 1/3 · OrderHistoryPage</span></div><span>上限 100,000文字</span></div>
+          <div class="meter" id="capsule-meter" role="progressbar" aria-label="今回のJunie入力の文字数" aria-valuemin="0" aria-valuemax="100000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
+          <div class="meter-label"><span><strong id="char-count">67,240</strong> 文字</span><span id="capsule-percent">上限の67%</span></div>
+        </div>
+      </section>
+
+      <section class="panel ledger" aria-labelledby="ledger-title">
+        <div class="panel-head"><h2 id="ledger-title">移行項目</h2><div class="ledger-controls" role="group" aria-label="状態で絞り込み">
+          <button class="filter-button" type="button" data-filter="all" aria-pressed="true">すべて</button>
+          <button class="filter-button" type="button" data-filter="pending" aria-pressed="false">未処理</button>
+          <button class="filter-button" type="button" data-filter="running" aria-pressed="false">移行中</button>
+          <button class="filter-button" type="button" data-filter="done" aria-pressed="false">確認済み</button>
+          <button class="filter-button" type="button" data-filter="judgment" aria-pressed="false">判断待ち</button>
+          <button class="filter-button" type="button" data-filter="review" aria-pressed="false">レビュー待ち</button>
+        </div></div>
+        <ul class="ledger-list" id="ledger-list">
+          <li class="ledger-row" data-status="running"><span class="ledger-name">OrderHistoryPage</span><span class="ledger-state current" data-current="true">移行中</span></li>
+          <li class="ledger-row" data-status="done"><span class="ledger-name">SearchOrder</span><span class="ledger-state done">確認済み</span></li>
+          <li class="ledger-row" data-status="done"><span class="ledger-name">FormatDate</span><span class="ledger-state done">確認済み</span></li>
+          <li class="ledger-row" data-status="judgment"><span class="ledger-name">LegacyStatusMap</span><span class="ledger-state">判断待ち</span></li>
+          <li class="ledger-row" data-status="done"><span class="ledger-name">LoadOrderLines</span><span class="ledger-state done">確認済み</span></li>
+          <li class="ledger-row" data-status="pending"><span class="ledger-name">FindCustomer</span><span class="ledger-state">未処理</span></li>
+          <li class="ledger-row" data-status="done"><span class="ledger-name">FormatCurrency</span><span class="ledger-state done">確認済み</span></li>
+          <li class="ledger-row" data-status="pending"><span class="ledger-name">MapPaymentStatus</span><span class="ledger-state">未処理</span></li>
+          <li class="ledger-row" data-status="pending"><span class="ledger-name">BuildSearchQuery</span><span class="ledger-state">未処理</span></li>
+          <li class="ledger-row" data-status="done"><span class="ledger-name">FilterArchived</span><span class="ledger-state done">確認済み</span></li>
+          <li class="ledger-row" data-status="pending"><span class="ledger-name">NormalizeDate</span><span class="ledger-state">未処理</span></li>
+          <li class="ledger-row" data-status="pending"><span class="ledger-name">RenderPager</span><span class="ledger-state">未処理</span></li>
+          <li class="ledger-row ledger-empty" id="ledger-empty" hidden>該当する移行項目はありません</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+</main>
+<script>
+  const steps = [...document.querySelectorAll(".step")];
+  const activity = document.querySelector("#activity");
+  const flow = document.querySelector("#flow");
+  const state = document.querySelector("#run-state");
+  const stateLabel = document.querySelector("#state-label");
+  const toggle = document.querySelector("#toggle");
+  const themeToggle = document.querySelector("#theme-toggle");
+  const stepCount = document.querySelector("#step-count");
+  const elapsed = document.querySelector("#elapsed");
+  const elapsedValue = document.querySelector("#elapsed-value");
+  const capsuleCall = document.querySelector("#capsule-call");
+  const capsuleMeter = document.querySelector("#capsule-meter");
+  const capsuleFill = document.querySelector("#meter-fill");
+  const capsuleCharCount = document.querySelector("#char-count");
+  const capsulePercent = document.querySelector("#capsule-percent");
+  const capsuleCalls = [
+    { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12" },
+    { unit: "SearchOrder", chars: 43880, time: "10:42:15" },
+    { unit: "FormatDate", chars: 91530, time: "10:42:18" }
+  ];
+  const ledgerRows = [...document.querySelectorAll(".ledger-row[data-status]")];
+  const filterButtons = [...document.querySelectorAll(".filter-button")];
+  const durations = [1700, 2100, 1700, 8200, 3200, 4100, 2800];
+  const events = [
+    ["10:42:21", "Junieが移行を完了", "Razor PageとPageModelを生成"],
+    ["10:42:34", "ビルドとテストが完了", "エラー 0件、警告 2件"],
+    ["10:42:44", "チェッカー指摘を記録", "警告 1件を人の確認待ちに保存"],
+    ["10:42:49", "レビュー資料を準備", "差分とアンカーJSON案を保存"]
+  ];
+  const stepElapsed = [3200, 5800, 2500, 0, 0, 0, 0];
+  let current = 3;
+  let timer;
+  let capsuleTimer;
+  let capsuleCallIndex = 0;
+  let ledgerFilter = "all";
+  let elapsedTimer;
+  let elapsedTotal = 0;
+  let elapsedStarted = 0;
+  let stepStartedAt = performance.now();
+  let playing = true;
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function updateStep(index) {
+    const now = performance.now();
+    if (index !== current) {
+      if (stepStartedAt && current < steps.length) stepElapsed[current] += now - stepStartedAt;
+      current = index;
+      stepStartedAt = playing && index < steps.length ? now : 0;
+    }
+    steps.forEach((step, i) => {
+      const done = i < index || index === steps.length;
+      const active = i === index && index < steps.length;
+      step.classList.toggle("is-done", done);
+      step.classList.toggle("is-active", active);
+      step.querySelector(".node").textContent = done ? "✓" : String(i + 1);
+      step.querySelector(".step-status").textContent = done ? "完了" : active ? "処理中" : "待機中";
+    });
+    stepCount.textContent = index === steps.length ? "全工程完了" : `工程 ${index + 1} / ${steps.length}`;
+    if (index < steps.length) {
+      state.dataset.state = "running";
+      state.classList.add("is-running");
+      stateLabel.textContent = steps[index].querySelector(".step-title").textContent + "中";
+      if (index === 3) startCapsuleCalls();
+      else stopCapsuleCalls();
+    } else {
+      clearInterval(timer);
+      timer = undefined;
+      stopCapsuleCalls();
+      playing = false;
+      stopElapsed();
+      state.dataset.state = "complete";
+      state.classList.remove("is-running");
+      stateLabel.textContent = "レビュー待ち";
+      toggle.textContent = "もう一度再生";
+    }
+    const checked = Math.min(4 + Math.max(0, index - 3) * 2, 10);
+    document.querySelector("#checked-count").innerHTML = `${checked} <span>/ 12</span>`;
+    document.querySelector("#pending-count").innerHTML = `${index >= 5 ? 2 : 1} <span>件</span>`;
+    renderStepElapsed();
+    const activeItem = document.querySelector(".ledger-row .ledger-state[data-current]");
+    if (activeItem) {
+      activeItem.className = `ledger-state${index >= steps.length ? " done" : index >= 3 ? " current" : ""}`;
+      if (index >= steps.length) { activeItem.textContent = "レビュー待ち"; activeItem.parentElement.dataset.status = "review"; }
+      else if (index >= 3) { activeItem.textContent = "移行中"; activeItem.parentElement.dataset.status = "running"; }
+      else { activeItem.textContent = "未処理"; activeItem.parentElement.dataset.status = "pending"; activeItem.dataset.current = "true"; }
+    }
+    applyLedgerFilter();
+    if (index > 3 && events[index - 4]) addEvent(...events[index - 4]);
+  }
+
+  function addEvent(time, title, detail) {
+    const row = document.createElement("div");
+    row.className = "event live";
+    row.innerHTML = `<time>${time}</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>${title}</strong><br>${detail}</div>`;
+    activity.append(row);
+    activity.scrollTop = activity.scrollHeight;
+  }
+
+  function updateCapsuleCall(index) {
+    const call = capsuleCalls[index];
+    const percent = Math.round(call.chars / 100000 * 100);
+    capsuleCallIndex = index;
+    capsuleCall.textContent = `呼び出し ${index + 1}/${capsuleCalls.length} · ${call.unit}`;
+    capsuleCharCount.textContent = call.chars.toLocaleString("en-US");
+    capsulePercent.textContent = `上限の${percent}%`;
+    capsuleFill.style.width = `${percent}%`;
+    capsuleMeter.setAttribute("aria-valuenow", String(call.chars));
+    addEvent(call.time, "Junie入力を確定", `${call.unit} · ${call.chars.toLocaleString("en-US")}文字`);
+  }
+
+  function startCapsuleCalls() {
+    if (capsuleTimer) return;
+    if (capsuleCallIndex < 0) updateCapsuleCall(0);
+    capsuleTimer = setInterval(() => {
+      if (capsuleCallIndex + 1 >= capsuleCalls.length) return stopCapsuleCalls();
+      updateCapsuleCall(capsuleCallIndex + 1);
+    }, 2600);
+  }
+
+  function stopCapsuleCalls() {
+    clearInterval(capsuleTimer);
+    capsuleTimer = undefined;
+  }
+
+  function resetCapsuleCalls() {
+    stopCapsuleCalls();
+    capsuleCallIndex = -1;
+    capsuleCall.textContent = "未開始";
+    capsuleCharCount.textContent = "—";
+    capsulePercent.textContent = "—";
+    capsuleFill.style.width = "0%";
+    capsuleMeter.setAttribute("aria-valuenow", "0");
+  }
+
+  function applyLedgerFilter() {
+    let visibleCount = 0;
+    ledgerRows.forEach(row => {
+      row.hidden = ledgerFilter !== "all" && row.dataset.status !== ledgerFilter;
+      if (!row.hidden) visibleCount++;
+    });
+    document.querySelector("#ledger-empty").hidden = visibleCount > 0;
+  }
+
+  function stop() {
+    clearTimeout(timer);
+    timer = undefined;
+    pauseStepTimer();
+    playing = false;
+    stopCapsuleCalls();
+    flow.classList.add("is-paused");
+    stopElapsed();
+    toggle.textContent = "デモを再生";
+    state.dataset.state = "paused";
+    state.classList.remove("is-running");
+    stateLabel.textContent = "一時停止中";
+  }
+
+  function play() {
+    if (current >= steps.length) reset();
+    playing = true;
+    if (current < steps.length && !stepStartedAt) stepStartedAt = performance.now();
+    if (current === 3) startCapsuleCalls();
+    flow.classList.remove("is-paused");
+    startElapsed();
+    toggle.textContent = "一時停止";
+    state.dataset.state = "running";
+    state.classList.add("is-running");
+    scheduleNext();
+  }
+
+  function scheduleNext() {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      updateStep(current + 1);
+      if (playing && current < steps.length) scheduleNext();
+    }, durations[current] || 2300);
+  }
+
+  function reset() {
+    clearTimeout(timer);
+    timer = undefined;
+    clearInterval(elapsedTimer);
+    elapsedTimer = undefined;
+    elapsedTotal = 0;
+    elapsedStarted = 0;
+    resetCapsuleCalls();
+    stepElapsed.fill(0);
+    current = 0;
+    stepStartedAt = 0;
+    updateElapsed();
+    activity.innerHTML = `<div class="event ok"><time>10:42:03</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>worktreeを準備</strong><br>migration/order-history</div></div><div class="event ok"><time>10:42:08</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>入力範囲を確定</strong><br>PHP 3範囲、参考C# 2ファイル</div></div><div class="event live"><time>10:42:11</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>Junieを起動</strong><br>Razor PageとPageModelを移行中</div></div>`;
+    playing = false;
+    updateStep(0);
+    flow.classList.add("is-paused");
+    state.dataset.state = "paused";
+    state.classList.remove("is-running");
+    stateLabel.textContent = "再生待ち";
+    toggle.textContent = "デモを再生";
+  }
+
+  function updateElapsed() {
+    const seconds = Math.floor((elapsedTotal + (elapsedStarted ? performance.now() - elapsedStarted : 0)) / 1000);
+    elapsedValue.textContent = formatDuration(seconds * 1000);
+    elapsed.dateTime = `PT${seconds}S`;
+    renderStepElapsed();
+  }
+
+  function formatDuration(milliseconds) {
+    const seconds = Math.floor(milliseconds / 1000);
+    const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
+    const minutes = String(Math.floor(seconds % 3600 / 60)).padStart(2, "0");
+    const remainder = String(seconds % 60).padStart(2, "0");
+    return `${hours}:${minutes}:${remainder}`;
+  }
+
+  function renderStepElapsed() {
+    const now = performance.now();
+    steps.forEach((step, index) => {
+      const time = step.querySelector(".step-elapsed");
+      if (index > current) {
+        time.textContent = "--:--:--";
+        time.removeAttribute("datetime");
+        return;
+      }
+      const milliseconds = stepElapsed[index] + (index === current && stepStartedAt ? now - stepStartedAt : 0);
+      time.textContent = formatDuration(milliseconds);
+      time.dateTime = `PT${Math.floor(milliseconds / 1000)}S`;
+    });
+  }
+
+  function pauseStepTimer() {
+    if (!stepStartedAt || current >= steps.length) return;
+    stepElapsed[current] += performance.now() - stepStartedAt;
+    stepStartedAt = 0;
+    renderStepElapsed();
+  }
+
+  function startElapsed() {
+    if (elapsedStarted) return;
+    elapsedStarted = performance.now();
+    updateElapsed();
+    elapsedTimer = setInterval(updateElapsed, 1000);
+  }
+
+  function stopElapsed() {
+    if (!elapsedStarted) return;
+    elapsedTotal += performance.now() - elapsedStarted;
+    elapsedStarted = 0;
+    clearInterval(elapsedTimer);
+    elapsedTimer = undefined;
+    updateElapsed();
+  }
+
+  toggle.addEventListener("click", () => playing ? stop() : play());
+  document.querySelector("#restart").addEventListener("click", reset);
+  filterButtons.forEach(button => button.addEventListener("click", () => {
+    ledgerFilter = button.dataset.filter === ledgerFilter && ledgerFilter !== "all" ? "all" : button.dataset.filter;
+    filterButtons.forEach(item => item.setAttribute("aria-pressed", String(item.dataset.filter === ledgerFilter)));
+    applyLedgerFilter();
+  }));
+  themeToggle.addEventListener("click", () => {
+    const root = document.documentElement;
+    const next = root.dataset.theme === "dark" ? "light" : "dark";
+    const switchTheme = () => {
+      root.dataset.theme = next;
+      document.querySelector('meta[name="theme-color"]').content = next === "dark" ? "#0b121d" : "#edf1f6";
+      themeToggle.setAttribute("aria-label", `${next === "dark" ? "ライト" : "ダーク"}テーマに切り替え`);
+      themeToggle.innerHTML = next === "dark"
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 15.3A8.7 8.7 0 0 1 8.7 3.4 8.7 8.7 0 1 0 20.6 15.3Z"/></svg>';
+    };
+    if (reducedMotion || !document.startViewTransition) {
+      switchTheme();
+      return;
+    }
+    const rect = themeToggle.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const reach = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) * 1.3;
+    root.style.setProperty("--wipe-x", `${x}px`);
+    root.style.setProperty("--wipe-y", `${y}px`);
+    root.style.setProperty("--wipe-radius", `${reach}px`);
+    const starFrom = Array(10).fill(`${x}px ${y}px`).join(",");
+    const starTo = Array.from({length: 10}, (_, i) => {
+      const angle = -Math.PI / 2 + i * Math.PI / 5;
+      const radius = reach * (i % 2 ? .58 : 1.28);
+      return `${x + Math.cos(angle) * radius}px ${y + Math.sin(angle) * radius}px`;
+    }).join(",");
+    root.style.setProperty("--star-from", starFrom);
+    root.style.setProperty("--star-to", starTo);
+    root.dataset.wipe = next === "dark" ? "circle" : "star";
+    themeToggle.disabled = true;
+    const transition = document.startViewTransition(switchTheme);
+    transition.finished.finally(() => {
+      themeToggle.disabled = false;
+      delete root.dataset.wipe;
+    });
+  });
+  if (reducedMotion) stop();
+  else {
+    updateStep(current);
+    startElapsed();
+    scheduleNext();
+  }
+</script>
+</body>
+</html>

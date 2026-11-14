@@ -62,6 +62,7 @@ php-to-csharp-harness run --config harness.local.toml --unit example-page
 ## 仕様と参考資料
 
 - [仕様・実装状況HTML](migration-harness-spec.html)
+- [進捗画面デモ（模擬データ）](progress-demo.html)
 - GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
 
 以下は設計・実装の参考資料です。いずれもこのハーネスの実行時依存として導入せず、必要な考え方を参考にします。
