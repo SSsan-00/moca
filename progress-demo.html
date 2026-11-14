@@ -95,6 +95,7 @@
     .state { width: 154px; height: 38px; flex: 0 0 154px; justify-content: flex-start; overflow: hidden; padding-block: 0; background: var(--blue-soft); color: var(--blue); }
     .state[data-state="complete"] { background: var(--green-soft); color: var(--green); }
     .state[data-state="paused"] { background: var(--surface-muted); color: var(--muted); }
+    .state[data-state="waiting"] { background: var(--amber-soft); color: var(--amber); }
     .state-orb { width: 9px; height: 9px; border-radius: 50%; background: currentColor; transform-origin: center bottom; }
     .is-running .state-orb { animation: squash-bounce 1.175s ease-in-out infinite; }
     .controls { display: flex; gap: 7px; }
@@ -174,6 +175,55 @@
     .ledger-state.done { color: var(--green); }
     .ledger-state.current { color: var(--blue); font-weight: 700; }
     .ledger-empty { padding: 16px 0; color: var(--muted); font-size: 12px; text-align: center; }
+    .ledger-review-trigger { padding: 0; border: 0; background: none; cursor: pointer; text-align: left; }
+    .ledger-review-trigger:hover { color: var(--blue); text-decoration: underline; }
+    .ledger-review-trigger:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 2px; }
+    .review-dialog { width: min(620px, calc(100vw - 32px)); max-width: none; max-height: min(86dvh, 760px); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); color: var(--ink); box-shadow: 0 24px 72px #080f1c40; transform-origin: center; }
+    .review-dialog[open] { animation: review-dialog-in 320ms cubic-bezier(.22, 1, .36, 1) both; }
+    .review-dialog::backdrop { background: #12141c6b; backdrop-filter: blur(2px); animation: review-backdrop-in 320ms cubic-bezier(.22, 1, .36, 1) both; }
+    .review-dialog.is-closing { animation: review-dialog-out 220ms cubic-bezier(.4, 0, 1, 1) both; }
+    .review-dialog.is-closing::backdrop { animation: review-backdrop-out 220ms cubic-bezier(.4, 0, 1, 1) both; }
+    .review-dialog-inner { padding: 22px; }
+    .review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    .review-eyebrow { margin: 0 0 5px; color: var(--blue); font: 700 10px/1.3 var(--mono); letter-spacing: .1em; }
+    .review-heading h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
+    .review-close { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--muted); cursor: pointer; font-size: 21px; line-height: 1; }
+    .review-close:hover { border-color: var(--border-hover); background: var(--surface-hover); color: var(--ink); }
+    .review-close:focus-visible, .review-action:focus-visible { outline: 3px solid #7da5df; outline-offset: 2px; }
+    .review-intro { margin: 12px 0 16px; color: var(--muted); font-size: 13px; }
+    .review-finding { padding: 15px; border: 1px solid var(--amber-line); border-radius: 11px; background: var(--amber-soft); }
+    .review-finding-top { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+    .review-rule-id, .review-severity { display: inline-flex; align-items: center; min-height: 23px; padding: 0 8px; border-radius: 6px; font-size: 10px; font-weight: 750; }
+    .review-rule-id { background: var(--paper); color: var(--ink); font-family: var(--mono); }
+    .review-severity { background: #d58b1b20; color: var(--amber); }
+    .review-finding h3 { margin: 10px 0 5px; font-size: 14px; }
+    .review-finding > p { margin: 0; color: var(--amber-ink); font-size: 12px; }
+    .review-location { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 14px 0 10px; }
+    .review-location div { min-width: 0; padding: 9px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); }
+    .review-location small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
+    .review-location code { display: block; overflow-wrap: anywhere; color: var(--ink); font: 11px/1.45 var(--mono); }
+    .review-code { margin: 0; padding: 11px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); font: 12px/1.65 var(--mono); }
+    .review-caveat { margin-top: 9px !important; font-size: 11px !important; }
+    .review-context { margin-top: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+    .review-context summary { padding: 10px 12px; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 700; }
+    .review-context p { margin: 0; padding: 0 12px 12px; color: var(--muted); font-size: 12px; }
+    .review-note-label { display: block; margin: 14px 0 6px; color: var(--ink); font-size: 12px; font-weight: 700; }
+    .review-note { width: 100%; min-height: 66px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; }
+    .review-note:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
+    .review-note::placeholder { color: var(--soft); }
+    .review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    .review-action { min-height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); cursor: pointer; font: inherit; font-size: 12px; font-weight: 680; }
+    .review-action:hover { border-color: var(--border-hover); background: var(--surface-hover); }
+    .review-action.primary { border-color: var(--blue); background: var(--blue); color: var(--blue-ink); }
+    .review-action.primary:hover { background: var(--blue-hover); }
+    .review-action.viewer { border-color: var(--blue); color: var(--blue); }
+    .review-action.viewer:hover { background: var(--surface-hover); }
+    .review-action.quiet { margin-right: auto; border-color: transparent; color: var(--muted); }
+    .review-action.quiet:hover { border-color: var(--line); color: var(--ink); }
+    @keyframes review-dialog-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
+    @keyframes review-dialog-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
+    @keyframes review-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes review-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
     @keyframes squash-bounce {
       0%, 100% { transform: translateY(0) scale(1, 1); }
       10% { transform: translateY(1px) scale(1.55, .42); }
@@ -231,6 +281,13 @@
       .ledger-list { padding-inline: 14px; }
       .step { grid-template-columns: 30px minmax(0, 1fr) 7.5em; }
       .step-meta { padding-top: 0; }
+      .review-dialog { width: calc(100vw - 20px); max-height: 92dvh; border-radius: 13px; }
+      .review-dialog-inner { padding: 17px; }
+      .review-heading h2 { font-size: 17px; }
+      .review-location { grid-template-columns: 1fr; }
+      .review-actions { display: grid; grid-template-columns: 1fr 1fr; }
+      .review-action.primary { grid-column: 1 / -1; grid-row: 1; }
+      .review-action.quiet { margin: 0; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -308,7 +365,7 @@
           <li class="ledger-row" data-status="running"><span class="ledger-name">OrderHistoryPage</span><span class="ledger-state current" data-current="true">移行中</span></li>
           <li class="ledger-row" data-status="done"><span class="ledger-name">SearchOrder</span><span class="ledger-state done">確認済み</span></li>
           <li class="ledger-row" data-status="done"><span class="ledger-name">FormatDate</span><span class="ledger-state done">確認済み</span></li>
-          <li class="ledger-row" data-status="judgment"><span class="ledger-name">LegacyStatusMap</span><span class="ledger-state">判断待ち</span></li>
+          <li class="ledger-row" data-status="judgment"><button class="ledger-name ledger-review-trigger" type="button" data-review-open aria-haspopup="dialog">LegacyStatusMap</button><span class="ledger-state">判断待ち</span></li>
           <li class="ledger-row" data-status="done"><span class="ledger-name">LoadOrderLines</span><span class="ledger-state done">確認済み</span></li>
           <li class="ledger-row" data-status="pending"><span class="ledger-name">FindCustomer</span><span class="ledger-state">未処理</span></li>
           <li class="ledger-row" data-status="done"><span class="ledger-name">FormatCurrency</span><span class="ledger-state done">確認済み</span></li>
@@ -322,6 +379,42 @@
       </section>
     </div>
   </div>
+  <dialog class="review-dialog" id="review-dialog" aria-labelledby="review-title">
+    <div class="review-dialog-inner">
+      <header class="review-heading">
+        <div>
+          <p class="review-eyebrow">HUMAN REVIEW / CHECKER WARNING</p>
+          <h2 id="review-title" tabindex="-1">チェッカーの指摘を確認</h2>
+        </div>
+        <button class="review-close" id="review-close" type="button" aria-label="閉じる">×</button>
+      </header>
+      <p class="review-intro">指摘内容と移行先を確認し、対応を選んでください。判断するまで、この移行項目の処理は一時停止します。</p>
+      <section class="review-finding" aria-label="チェッカーの指摘内容">
+        <div class="review-finding-top"><span class="review-rule-id">RULE RZ-017</span><span class="review-severity">警告 · 判断待ち</span></div>
+        <h3>共通化対象の状態変換がページ内に残っている可能性</h3>
+        <p>ページ固有でない変換処理は、共通の .cs 関数へ切り出すルールです。チェッカーはページ内での実装を検出しました。</p>
+        <div class="review-location">
+          <div><small>移行元</small><code>php/orders.php · get_status_label()</code></div>
+          <div><small>移行先候補</small><code>Pages/Orders/Index.cshtml.cs + Index.cshtml</code></div>
+        </div>
+        <pre class="review-code"><code>ViewData["StatusText"] = OrderStatusMap.ToLabel(row.Status);</code></pre>
+        <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
+      </section>
+      <details class="review-context">
+        <summary>この指摘を判断する材料</summary>
+        <p><strong>適用ルール:</strong> 複数ページで使う状態変換は共通関数にまとめる。<br><strong>確認点:</strong> <code>OrderStatusMap.ToLabel</code>の実装が共通 .cs にあり、変換処理が重複していないか確認する。</p>
+      </details>
+      <label class="review-note-label" for="review-note">判断メモ（任意）</label>
+      <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
+      <p class="review-caveat" id="viewer-status" aria-live="polite" hidden></p>
+      <div class="review-actions">
+        <button class="review-action quiet" id="review-later" type="button">あとで確認</button>
+        <button class="review-action viewer" id="open-diff-viewer" type="button">比較ツールを開く</button>
+        <button class="review-action" id="review-accept" type="button">問題なしとして記録</button>
+        <button class="review-action primary" id="review-fix" type="button">Junieに修正を依頼</button>
+      </div>
+    </div>
+  </dialog>
 </main>
 <script>
   const steps = [...document.querySelectorAll(".step")];
@@ -339,6 +432,11 @@
   const capsuleFill = document.querySelector("#meter-fill");
   const capsuleCharCount = document.querySelector("#char-count");
   const capsulePercent = document.querySelector("#capsule-percent");
+  const reviewDialog = document.querySelector("#review-dialog");
+  const reviewHeading = document.querySelector("#review-title");
+  const viewerStatus = document.querySelector("#viewer-status");
+  const reviewNote = document.querySelector("#review-note");
+  const reviewRow = document.querySelector('.ledger-row[data-status="judgment"]');
   const capsuleCalls = [
     { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12" },
     { unit: "SearchOrder", chars: 43880, time: "10:42:15" },
@@ -364,6 +462,8 @@
   let elapsedStarted = 0;
   let stepStartedAt = performance.now();
   let playing = true;
+  let humanReviewHandled = false;
+  let correctionRequested = false;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function updateStep(index) {
@@ -401,7 +501,8 @@
     }
     const checked = Math.min(4 + Math.max(0, index - 3) * 2, 10);
     document.querySelector("#checked-count").innerHTML = `${checked} <span>/ 12</span>`;
-    document.querySelector("#pending-count").innerHTML = `${index >= 5 ? 2 : 1} <span>件</span>`;
+    const pendingJudgments = document.querySelectorAll('.ledger-row[data-status="judgment"]').length;
+    document.querySelector("#pending-count").innerHTML = `${pendingJudgments} <span>件</span>`;
     renderStepElapsed();
     const activeItem = document.querySelector(".ledger-row .ledger-state[data-current]");
     if (activeItem) {
@@ -412,12 +513,187 @@
     }
     applyLedgerFilter();
     if (index > 3 && events[index - 4]) addEvent(...events[index - 4]);
+    if (index === 6 && correctionRequested) {
+      setReviewRow("done", "確認済み", false);
+      applyLedgerFilter();
+      updateReviewCount();
+      logHumanAction("修正後のチェッカー確認が完了", "RZ-017 · 指摘が解消");
+      correctionRequested = false;
+    }
+    if (index === 6 && !humanReviewHandled) requestHumanReview();
+  }
+
+  function openReviewDialog() {
+    if (reviewDialog.open) return;
+    reviewDialog.showModal();
+    reviewHeading.focus();
+  }
+
+  function closeReviewDialog() {
+    if (!reviewDialog.open || reviewDialog.classList.contains("is-closing")) return;
+    reviewDialog.classList.add("is-closing");
+    setTimeout(() => {
+      reviewDialog.classList.remove("is-closing");
+      if (reviewDialog.open) reviewDialog.close();
+    }, 220);
+  }
+
+  function createReviewWorkspace() {
+    const php = `function get_status_label($status) {
+    return $statusLabels[$status] ?? 'Unknown';
+}`;
+    const pageModel = `public void OnGet() {
+    ViewData["StatusText"] = OrderStatusMap.ToLabel(row.Status);
+}`;
+    const razorPage = `<span>@ViewData["StatusText"]</span>`;
+    const lines = text => text.split("\n").length;
+    const rightText = `${pageModel}\n${razorPage}`;
+    return {
+      kind: "diff-viewer-workspace",
+      version: 1,
+      workspace: {
+        name: "LegacyStatusMap",
+        leftText: php,
+        rightText,
+        leftSegments: [{ startLine: 1, lineCount: lines(php), fileIndex: 1, fileName: "php/orders.php", endsWithNewline: false }],
+        rightSegments: [
+          { startLine: 1, lineCount: lines(pageModel), fileIndex: 1, fileName: "Pages/Orders/Index.cshtml.cs", endsWithNewline: false },
+          { startLine: lines(pageModel) + 1, lineCount: lines(razorPage), fileIndex: 2, fileName: "Pages/Orders/Index.cshtml", endsWithNewline: false },
+        ],
+        leftActiveFile: "php/orders.php",
+        rightActiveFile: "Pages/Orders/Index.cshtml.cs",
+        leftCursor: null, rightCursor: null, leftScrollTop: null, rightScrollTop: null,
+        anchors: {
+          manualAnchors: [], staleManualAnchors: [], autoAnchor: null,
+          suppressedAutoAnchorKey: null, pendingLeftLineNo: null,
+          pendingRightLineNo: null, selectedAnchorKey: null,
+        },
+      },
+    };
+  }
+
+  function saveReviewWorkspace() {
+    const blob = new Blob([JSON.stringify(createReviewWorkspace(), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "LegacyStatusMap.workspace.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
+  function openDiffViewer() {
+    viewerStatus.hidden = false;
+    saveReviewWorkspace();
+    const viewerUrl = new URL("tools/dist/index.min.html", location.href);
+    if (!window.open(viewerUrl.href, "_blank")) {
+      viewerStatus.textContent = "デモ用workspace JSONを保存しました。ポップアップを許可し、tools/dist/index.min.html を開いてください。";
+      return;
+    }
+    viewerStatus.textContent = "デモ用workspace JSONを保存しました。Viewerの「インポート」から読み込んでください。";
+  }
+
+  function requestHumanReview() {
+    clearTimeout(timer);
+    timer = undefined;
+    pauseStepTimer();
+    playing = false;
+    stopCapsuleCalls();
+    flow.classList.add("is-paused");
+    stopElapsed();
+    state.dataset.state = "waiting";
+    state.classList.remove("is-running");
+    stateLabel.textContent = "人の確認待ち";
+    toggle.textContent = "判断が必要です";
+    toggle.disabled = true;
+    openReviewDialog();
+  }
+
+  function updateReviewCount() {
+    const count = document.querySelectorAll('.ledger-row[data-status="judgment"]').length;
+    document.querySelector("#pending-count").innerHTML = `${count} <span>件</span>`;
+  }
+
+  function setReviewRow(status, label, canOpen) {
+    reviewRow.dataset.status = status;
+    const name = document.createElement(canOpen ? "button" : "span");
+    name.className = `ledger-name${canOpen ? " ledger-review-trigger" : ""}`;
+    name.textContent = "LegacyStatusMap";
+    if (canOpen) {
+      name.type = "button";
+      name.dataset.reviewOpen = "";
+      name.setAttribute("aria-haspopup", "dialog");
+    }
+    reviewRow.querySelector(".ledger-name").replaceWith(name);
+    const statusNode = reviewRow.querySelector(".ledger-state");
+    statusNode.className = `ledger-state${status === "done" ? " done" : status === "running" ? " current" : ""}`;
+    statusNode.textContent = label;
+  }
+
+  function logHumanAction(title, detail) {
+    const now = new Date();
+    const timestamp = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+    addEvent(timestamp, title, detail);
+  }
+
+  function resumeForCorrection() {
+    humanReviewHandled = true;
+    correctionRequested = true;
+    setReviewRow("running", "修正中", false);
+    applyLedgerFilter();
+    updateReviewCount();
+    closeReviewDialog();
+    logHumanAction("Junieに修正を依頼", "RZ-017 · 対象項目に戻して再確認");
+    toggle.disabled = false;
+    current = 3;
+    stepStartedAt = 0;
+    updateStep(current);
+    playing = true;
+    stepStartedAt = performance.now();
+    flow.classList.remove("is-paused");
+    startElapsed();
+    toggle.textContent = "一時停止";
+    state.dataset.state = "running";
+    state.classList.add("is-running");
+    stateLabel.textContent = "Junieが修正中";
+    scheduleNext();
+  }
+
+  function acceptReview() {
+    humanReviewHandled = true;
+    setReviewRow("done", "問題なし", false);
+    applyLedgerFilter();
+    updateReviewCount();
+    closeReviewDialog();
+    logHumanAction("人が指摘を確認", reviewNote.value.trim() || "問題なしとして記録");
+    toggle.disabled = false;
+    playing = false;
+    updateStep(steps.length);
+  }
+
+  function resetReview() {
+    humanReviewHandled = false;
+    correctionRequested = false;
+    setReviewRow("judgment", "判断待ち", true);
+    reviewNote.value = "";
+    updateReviewCount();
+    applyLedgerFilter();
   }
 
   function addEvent(time, title, detail) {
     const row = document.createElement("div");
     row.className = "event live";
-    row.innerHTML = `<time>${time}</time><span class="event-pin" aria-hidden="true"></span><div class="event-text"><strong>${title}</strong><br>${detail}</div>`;
+    const timestamp = document.createElement("time");
+    timestamp.textContent = time;
+    const pin = document.createElement("span");
+    pin.className = "event-pin";
+    pin.setAttribute("aria-hidden", "true");
+    const text = document.createElement("div");
+    text.className = "event-text";
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    text.append(heading, document.createElement("br"), document.createTextNode(detail));
+    row.append(timestamp, pin, text);
     activity.append(row);
     activity.scrollTop = activity.scrollHeight;
   }
@@ -509,6 +785,8 @@
     elapsedTimer = undefined;
     elapsedTotal = 0;
     elapsedStarted = 0;
+    toggle.disabled = false;
+    resetReview();
     resetCapsuleCalls();
     stepElapsed.fill(0);
     current = 0;
@@ -579,6 +857,21 @@
 
   toggle.addEventListener("click", () => playing ? stop() : play());
   document.querySelector("#restart").addEventListener("click", reset);
+  document.querySelector("#ledger-list").addEventListener("click", event => {
+    if (event.target.closest("[data-review-open]")) requestHumanReview();
+  });
+  document.querySelector("#review-close").addEventListener("click", closeReviewDialog);
+  document.querySelector("#review-later").addEventListener("click", closeReviewDialog);
+  document.querySelector("#review-accept").addEventListener("click", acceptReview);
+  document.querySelector("#review-fix").addEventListener("click", resumeForCorrection);
+  document.querySelector("#open-diff-viewer").addEventListener("click", openDiffViewer);
+  reviewDialog.addEventListener("cancel", event => {
+    event.preventDefault();
+    closeReviewDialog();
+  });
+  reviewDialog.addEventListener("click", event => {
+    if (event.target === reviewDialog) closeReviewDialog();
+  });
   filterButtons.forEach(button => button.addEventListener("click", () => {
     ledgerFilter = button.dataset.filter === ledgerFilter && ledgerFilter !== "all" ? "all" : button.dataset.filter;
     filterButtons.forEach(item => item.setAttribute("aria-pressed", String(item.dataset.filter === ledgerFilter)));
