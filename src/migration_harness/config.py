@@ -49,7 +49,7 @@ def load_config(path: Path) -> dict[str, Any]:
     if worktree_root == run_root or worktree_root.is_relative_to(run_root) or run_root.is_relative_to(worktree_root):
         raise ValueError("worktree_root and run_root must be separate directories")
 
-    max_context_chars = project.get("max_context_chars", 30000)
+    max_context_chars = project.get("max_context_chars", 100000)
     if not isinstance(max_context_chars, int) or max_context_chars < 1000:
         raise ValueError("[project].max_context_chars must be an integer of at least 1000")
 

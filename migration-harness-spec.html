@@ -144,10 +144,67 @@ flowchart TB
       <h3>参照範囲の制限</h3>
       <p>ハーネスは指定した資料だけをコンテキストにまとめ、Junie用フォルダには対象ファイルとコンテキストだけを置きます。これはハーネス上の範囲指定であり、別の絶対パスへのアクセスをOSレベルで遮断するものではありません。</p>
     </div>
+    <div class="callout">
+      <h3>現在の文字数上限</h3>
+      <p><code>max_context_chars</code>の既定値は100,000文字です。現在はコンテキストカプセルだけを計上し、超過すると切り捨てずにエラー停止します。Junie用フォルダに置く対象ファイル全体や、会話履歴・ツール出力は計上しません。</p>
+    </div>
   </section>
 
   <section>
-    <h2>2. 今後追加する設計（未実装）</h2>
+    <h2>2. 大規模ソースの情報欠落を防ぐ（設計案）</h2>
+    <p class="diagram-note">一度に渡す量を抑えながら、原文を保持し、全範囲が処理・確認されたことを追跡します。</p>
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart TB
+    A[元ソース・移行資料を保持] --> B[論理項目ごとに台帳化]
+    B --> C[未処理項目をキューから選ぶ]
+    C --> D[該当する原文・依存先・ルールを取得]
+    D --> E{今回分が設定上限以内? 既定100,000文字}
+    E -- いいえ --> F[論理境界で分割しキューへ戻す]
+    F --> C
+    E -- はい --> G[Junieに今回分を渡す]
+    G --> H[移行先候補と根拠を記録]
+    H --> I{未処理・未確認項目が残る?}
+    I -- はい --> C
+    I -- いいえ --> J[全項目の対応・対象外理由を照合]
+    J --> K[ビルド・チェッカー・人のレビュー]
+    D -.依存先が不明・分割できない.-> L[人の確認待ち]
+
+    classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
+    classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
+    classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
+    classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
+    class A,B,C,D,F,G,H,J,K action
+    class E,I decision
+    class L pending
+      </pre>
+    </div>
+    <div class="grid">
+      <article class="card">
+        <h3>台帳の単位（案）</h3>
+        <p>PHPの関数・メソッド・ページ処理など、意味のまとまりを1項目にします。構造を判定できない場合は、設定したファイルと行範囲を使います。行番号だけに頼らず、ファイル・シンボル名・該当範囲を併記します。</p>
+      </article>
+      <article class="card">
+        <h3>状態（案）</h3>
+        <p>未処理、移行候補あり、確認済み、対象外（理由付き）、人の判断待ちを区別します。未処理や判断待ちが残る項目は完了扱いにしません。</p>
+      </article>
+      <article class="card">
+        <h3>依存情報の取得</h3>
+        <p>呼び出し先、include、共通関数、既存C#例、該当ルールを関係情報から探し、必要な原文を追加で渡します。要約は索引として使い、原文の代わりにはしません。</p>
+      </article>
+      <article class="card">
+        <h3>移行先との対応</h3>
+        <p>各入力項目に対して、移行先ファイル・シンボル・範囲と対応の根拠を記録します。チェッカーなどで行番号がずれた場合も、シンボルや内容を合わせて追跡します。</p>
+      </article>
+    </div>
+    <div class="callout amber">
+      <h3>現在はまだ未実装</h3>
+      <p>現在の実装は、コンテキストカプセルが100,000文字を超えるとエラー停止します。自動分割、依存先の追加取得、台帳、網羅性確認は今後の実装です。また、対象ファイル全体のサイズは現在の上限に含まれません。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 今後追加する自動継続・修正ループ（未実装）</h2>
     <p class="diagram-note">以下は目標フローです。現在のハーネスは自動継続、ビルド、チェッカー、修正ループを実行しません。</p>
     <div class="diagram-pair">
       <article class="diagram-card">
@@ -210,7 +267,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>3. 今後追加するアンカーJSONレビュー（未実装）</h2>
+    <h2>4. 今後追加するアンカーJSONレビュー（未実装）</h2>
     <div class="steps">
       <article class="step">
         <h3>既存JSONから対応情報を読む</h3>
@@ -239,9 +296,9 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> 対象範囲を絞ったコンテキスト作成、worktree準備、Junieの1回実行。<br><strong>目標:</strong> 中断からの継続、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
+  <div class="summary"><strong>現在:</strong> 対象範囲を絞ったコンテキスト作成、worktree準備、Junieの1回実行。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、中断からの継続、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
 
-  <footer>実装状況はこのPoCの現状です。移行ルール、再開上限、チェッカー連携、アンカーJSONの互換性は今後の実装で確定します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
+  <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';

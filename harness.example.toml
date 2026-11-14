@@ -4,7 +4,7 @@ root = "C:/path/to/application-repository"
 base_ref = "main"
 worktree_root = "C:/path/to/local-migration-worktrees"
 run_root = "C:/path/to/local-migration-runs"
-max_context_chars = 30000
+max_context_chars = 100000
 # 上限は文字数で指定する。トークン数の厳密な制限ではない。
 
 [junie]
