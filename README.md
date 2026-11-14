@@ -1,56 +1,66 @@
-# PHP → C# Migration Harness（仕様検討中）
+# PHP → C# Migration Harness
 
-PHPからC#への段階的な移行を支援するハーネスの仕様案です。現在は仕様検討段階で、実行可能なハーネスはまだ含まれていません。
+PythonとLangGraphで、PHPからASP.NET Core Razor Pages（現状.NET 9）への移行を支援するローカル実行用ハーネスです。コード移行はJunieに依頼し、ハーネスが対象範囲、作業場所、実行記録を管理します。
 
-## 仕様ページ
+## 現在の実装
 
-GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
+- 移行単位ごとに、入力ファイルと行範囲をTOMLで明示する
+- 指定行だけを行番号付きコンテキストにまとめ、文字数上限を確認する
+- アプリ用のGit worktreeを、指定した基準リビジョンから作成する
+- `run`では、対象ファイルとコンテキストだけを置いた作業フォルダからJunie CLIを1回起動する
+- Junie終了後、設定した対象ファイルをworktreeへ反映し、実行記録を保存する
 
-- [仕様HTML](migration-harness-spec.html)
+ビルド、テスト、独自チェッカー、修正ループ、Diff Viewer用アンカーJSONは未実装です。SQLiteチェックポイントは現在、準備グラフの状態を保存しますが、ハーネスから処理を再開する機能はありません。
 
-## 想定している構成
+Junieへ渡す情報と作業フォルダはハーネスで絞りますが、別の絶対パスへのアクセスをOSレベルで遮断するものではありません。Junieを使うと、選択したコンテキストがJunieのサービスへ送られます。生成後は`run.json`とworktreeの差分を人が確認してください。
 
-- Python + LangGraphで移行作業を管理
-- dotUltimateに含まれるJunieでコードを編集
-- 移行先は既存のASP.NET Core Razor Pages（現状.NET 9）
-- 共通関数などはC#の`.cs`ファイルに配置
-- アプリ用Git worktreeと、対象範囲だけを渡す一時作業フォルダを使用
-- ビルド・テスト成功後に独自チェッカーを実行
-- Diff Viewerを読み取り専用の参照に使い、アンカーJSONで人のレビューを補助
-- Viewerからソースコードは変更せず、レビュー済みアンカーJSONと判断記録だけを出力
+## セットアップ（Windows）
 
-## 入力する移行材料
+Python 3.11以上、Git、ログイン済みのJunie CLIが必要です。作業フォルダでPowerShellを開き、リポジトリをcloneして仮想環境を作成します。
 
-利用者のプロジェクトにある次の材料を使う想定です。
+```powershell
+git clone https://github.com/SSsan-00/php-to-csharp-migration-harness.git
+Set-Location php-to-csharp-migration-harness
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+Copy-Item harness.example.toml harness.local.toml
+```
 
-- 移行元のPHP
-- コメントだけを加えた注釈版PHP
-- 別の移行ツールが生成した仮C#
-- 利用者が管理する移行ルール、スクリプト、プロジェクト設定
-- Diff ViewerのワークスペースJSON
+`pip install -e .`はハーネスのコマンドを仮想環境に登録し、LangGraphなどのPython依存パッケージをインストールします。`-e`はソースをclone先に置いたまま使う開発向け設定で、ハーネスを改造すると次回実行から変更が反映されます。Python、Git、Junie CLI自体はこのコマンドではインストールされません。
 
-リポジトリ全体や巨大なファイルをAIに渡さず、対象箇所と関連資料を必要な範囲に絞る方針です。利用者固有のルールやソースコードは、この公開リポジトリには含めません。
+`harness.local.toml`を編集して、アプリのGitリポジトリ、基準リビジョン、worktree保存先、実行データ保存先、移行単位と入力範囲を指定します。worktreeと実行データはアプリリポジトリおよびこのハーネスリポジトリの外に置いてください。設定例のパスと行範囲はプレースホルダーです。
 
-## 表示について
+入力には、移行元PHP、コメントだけを追加した注釈版PHP、仮C#、移行ルールの該当箇所、必要な既存C#例などを指定できます。各入力はファイルと開始・終了行を明示します。`max_context_chars`は文字数の上限であり、トークン数の厳密な上限ではありません。
 
-GitHub PagesのトップURLから仕様HTMLを表示できます。ページはスマートフォンにも対応しています。図の描画にMermaid CDNを使うため、表示時はインターネット接続が必要です。
+## 実行
 
-## 参考プロジェクト
+指定内容の検証、コンテキスト作成、worktree作成だけを行う場合:
 
-以下は設計の参考です。このリポジトリの実行時依存にはしません。
+```powershell
+php-to-csharp-harness prepare --config harness.local.toml --unit example-page
+```
 
-- [takt](https://github.com/nrslib/takt)
-- [Codex](https://github.com/openai/codex)
-- [diff-viewer](https://github.com/SSsan-00/diff-viewer)
+Junieを起動して対象ファイルを移行する場合:
 
-## 状態
+```powershell
+php-to-csharp-harness run --config harness.local.toml --unit example-page
+```
 
-仕様検討中です。Junieの再開回数、移行単位、ビルド・テスト範囲、アンカーJSONのバージョン互換性はPoCで確定します。
+`run`には対話ターミナルと`PATH`上のJunie CLIが必要です。Junie用作業フォルダには、設定した対象ファイルとコンテキストだけを配置します。Junie終了後、対象ファイルをworktreeへ戻します。ビルドやチェッカーは起動しません。
 
-## ライセンスと利用方法
+`[junie].max_steps`は任意の正の整数です。未設定の場合は`--max-steps`をJunieに渡しません。これは手順数の上限で、トークン数や料金の上限ではありません。ハーネスによる自動継続・セッション再開は未実装です。
 
-このリポジトリの内容には[MIT License](LICENSE)を適用します。個人・社内利用、商用利用、改変、他のツールへの組み込みができます。社内で改変して使う場合、その変更を公開する必要はありません。
+実行データとコンテキストには利用者のソースが含まれる場合があります。ローカルで適切に管理してください。設定範囲の指定は、JunieのOSレベルのファイルアクセス制御ではありません。
 
-社内利用でも、リポジトリやソフトウェアをコピーして配布する場合は、配布先が社内だけであっても著作権表示とMITライセンス本文をコピーに含めてください。改変内容を公開する義務はありません。ソフトウェアは現状のまま提供され、保証はありません。
+## 仕様と参考資料
 
-このライセンスはこのリポジトリ内の内容に適用されます。利用者が用意するPHP/C#ソース、移行ルール、社内スクリプトなどは含みません。
+- [仕様・実装状況HTML](migration-harness-spec.html)
+- GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
+- 設計参考（実行時依存ではありません）: [takt](https://github.com/nrslib/takt)、[Codex](https://github.com/openai/codex)、[diff-viewer](https://github.com/SSsan-00/diff-viewer)
+
+## ライセンス
+
+このリポジトリの内容には[MIT License](LICENSE)を適用します。社内で使う場合、変更内容を公開する義務はありません。ソフトウェアを複製して社内配布する場合は、コピーに著作権表示とMITライセンス本文を含めてください。
+
+MITライセンスは利用者が用意するPHP/C#ソース、移行ルール、社内スクリプトには適用されません。
