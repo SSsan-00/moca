@@ -16,7 +16,8 @@ GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
 - 共通関数などはC#の`.cs`ファイルに配置
 - アプリ用Git worktreeと、対象範囲だけを渡す一時作業フォルダを使用
 - ビルド・テスト成功後に独自チェッカーを実行
-- Diff ViewerとアンカーJSONを使い、人が移行差分をレビュー
+- Diff Viewerを読み取り専用の参照に使い、アンカーJSONで人のレビューを補助
+- Viewerからソースコードは変更せず、レビュー済みアンカーJSONと判断記録だけを出力
 
 ## 入力する移行材料
 

@@ -221,16 +221,20 @@ flowchart TB
       </article>
       <article class="step">
         <h3>Diff Viewerで人が確認する</h3>
-        <p>まとまった移行分を左右に表示し、アンカーを必要に応じて修正します。コード修正が必要なら修正ループへ戻し、再検証後に再レビューします。</p>
+        <p>ソースは読み取り専用で参照し、アンカーだけを調整します。ソースコードの修正が必要ならViewerを離れ、ハーネスの修正・検証フローへ戻します。</p>
       </article>
+    </div>
+    <div class="callout amber">
+      <h3>Viewerではソースを変更しない</h3>
+      <p>Diff Viewerはソース参照とレビュー補助に限定します。保存なしで開き、エディタ本文は編集・保存しません。変更してよいのはアンカー設定だけです。出力はレビュー済みアンカーJSONとレビュー判定・理由に限ります。</p>
     </div>
     <div class="callout green">
       <h3>レビュー後に保存するもの</h3>
-      <p>レビュー済みアンカーJSON、対象ファイルと差分、ビルド・テスト結果、チェッカー出力、人が許容した指摘と理由を移行単位ごとに保存します。最終採用前に人がまとまった差分を承認します。</p>
+      <p>レビュー済みアンカーJSON、ファイル対応情報、ビルド・テスト結果、チェッカー出力、人が許容した指摘と理由を移行単位ごとに保存します。ソースの差分はアプリ用worktreeから参照し、Viewerから書き戻しません。</p>
     </div>
   </section>
 
-  <div class="summary"><strong>設計の要点:</strong> 対象を絞る。Junieと修正ループに上限を設ける。ビルド成功後にチェッカーを実行する。アンカーで差分を見やすくし、人がまとめて確認する。</div>
+  <div class="summary"><strong>設計の要点:</strong> 対象を絞る。Junieと修正ループに上限を設ける。ビルド成功後にチェッカーを実行する。Viewerではソースを変更せず、アンカーで差分を見やすくして人が確認する。</div>
 
   <footer>仕様案 — Junieの再開回数、移行単位、ビルド・テスト範囲、アンカーJSONのバージョン互換性はPoCで確定します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>
