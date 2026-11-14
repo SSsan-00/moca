@@ -18,6 +18,9 @@ target = "Pages/Example.cshtml"
 [[units.inputs]]
 role = "annotated_php"
 path = "php/example.php"
+# autoはUTF-8 BOMを優先し、BOMなしはUTF-8/EUC-JPを厳密に判定する。
+# どちらとも判定できない入力は自動選択せず、"euc-jp"、"utf-8"、"utf-8-sig"を指定する。
+# encoding = "auto"
 start_line = 1
 end_line = 120
 

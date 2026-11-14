@@ -86,15 +86,24 @@ def load_config(path: Path) -> dict[str, Any]:
         for item in inputs:
             item_path = item.get("path")
             role = item.get("role")
+            encoding = item.get("encoding", "auto")
             start = item.get("start_line")
             end = item.get("end_line")
             if not isinstance(item_path, str) or Path(item_path).is_absolute() or ".." in Path(item_path).parts:
                 raise ValueError(f"unit {unit['id']}: input path must be repository-relative")
             if not isinstance(role, str) or not role.strip():
                 raise ValueError(f"unit {unit['id']}: each input needs a role")
+            if not isinstance(encoding, str) or encoding not in {"auto", "utf-8", "utf-8-sig", "euc-jp"}:
+                raise ValueError(f"unit {unit['id']}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
             if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
                 raise ValueError(f"unit {unit['id']}: input line ranges must be positive and ordered")
-            normalized_inputs.append({"role": role, "path": item_path, "start_line": start, "end_line": end})
+            normalized_inputs.append({
+                "role": role,
+                "path": item_path,
+                "encoding": encoding,
+                "start_line": start,
+                "end_line": end,
+            })
 
         normalized_units.append({"id": unit["id"], "target": target, "inputs": normalized_inputs})
 

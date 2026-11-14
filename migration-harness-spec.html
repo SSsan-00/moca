@@ -78,7 +78,7 @@
   <header>
     <div class="eyebrow">IMPLEMENTATION STATUS / DESIGN</div>
     <h1>PHP → C# 移行ハーネス</h1>
-    <p class="lead">Windows上でローカル実行するPython + LangGraphのハーネス。現在は移行対象の準備とJunieによる1回の移行を実装しています。ビルド、チェッカー、修正ループ、アンカーJSONレビューは今後の設計です。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
+    <p class="lead">Windows上でローカル実行するPython + LangGraphのハーネス。現在は移行対象の準備と、文字数上限に合わせたコンテキストの分割・Junieへの順次入力を実装しています。ビルド、チェッカー、修正ループ、アンカーJSONレビューは今後の設計です。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
   </header>
 
   <section>
@@ -87,7 +87,7 @@
       <article class="card">
         <h3>構成と移行先</h3>
         <p><span class="tag">Python</span><span class="tag">LangGraph</span><span class="tag">Junie</span><span class="tag">.NET 9</span></p>
-        <p>現在、LangGraphが設定検証・コンテキスト作成・worktree作成を管理し、その後PythonからJunie CLIを1回起動します。JunieはdotUltimateなどで利用するエージェントです。移行先は既存のASP.NET Core Razor Pages（現状.NET 9）で、共通関数などは.csに配置します。</p>
+        <p>現在、LangGraphが設定検証・コンテキスト作成・worktree作成を管理し、その後PythonからJunie CLIをカプセルごとに順次起動します。JunieはdotUltimateなどで利用するエージェントです。移行先は既存のASP.NET Core Razor Pages（現状.NET 9）で、共通関数などは.csに配置します。</p>
       </article>
       <article class="card">
         <h3>移行材料</h3>
@@ -111,20 +111,22 @@
 
   <section>
     <h2>1. 現在の実装フロー</h2>
-    <p class="diagram-note">実装済みの範囲です。prepareはworktree作成まで、runはJunieの1回実行と対象ファイルの反映まで行います。</p>
+    <p class="diagram-note">実装済みの範囲です。prepareはworktreeとコンテキストカプセルを作成し、runはカプセルごとにJunieを起動して対象ファイルへ反映します。</p>
     <div class="diagram">
       <pre class="mermaid">
 flowchart TB
     A([開始]) --> B[TOMLで移行単位と入力範囲を指定]
     B --> C[設定・入力ファイルを検証]
-    C --> D[指定行からコンテキストを作成し文字数上限を確認]
+    C --> D[指定行を上限以内のカプセルに分割]
     D --> E[基準リビジョンからアプリ用worktreeを作成]
     E --> F{実行コマンド}
-    F -- prepare --> G[準備完了。worktreeとコンテキストを出力]
-    F -- run --> H[対象ファイルとコンテキストだけをJunie用フォルダへ配置]
-    H --> I[Junie CLIを対話起動して1回移行]
-    I --> J[設定対象ファイルをworktreeへ反映し実行記録を保存]
-    J --> K[人がrun.jsonとworktreeの差分を確認]
+    F -- prepare --> G[準備完了。worktree・カプセル・manifestを出力]
+    F -- run --> H[対象ファイルと次のカプセルをJunie用フォルダへ配置]
+    H --> I[Junie CLIを対話起動して今回分を移行]
+    I --> J[対象ファイルをworktreeへ反映し実行記録を保存]
+    J --> K{未処理カプセルがある?}
+    K -- はい --> H
+    K -- いいえ --> L[人がrun.jsonとworktreeの差分を確認]
 
     classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
@@ -132,8 +134,8 @@ flowchart TB
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
     class A start
     class B,C,D,E,H,I,J action
-    class F decision
-    class G,K pending
+    class F,K decision
+    class G,L pending
       </pre>
     </div>
     <div class="callout">
@@ -146,7 +148,45 @@ flowchart TB
     </div>
     <div class="callout">
       <h3>現在の文字数上限</h3>
-      <p><code>max_context_chars</code>の既定値は100,000文字です。現在はコンテキストカプセルだけを計上し、超過すると切り捨てずにエラー停止します。Junie用フォルダに置く対象ファイル全体や、会話履歴・ツール出力は計上しません。</p>
+      <p><code>max_context_chars</code>の既定値は100,000文字です。1回分のコンテキストが上限を超える場合、原文を切り捨てず、現在は行境界で複数カプセルに分割して順にJunieへ渡します。関数や制御構文の境界を判定する機能は未実装です。極端に長い1行は文字位置を記録して分割し、隣接断片の前後512文字（上限の小さい設定では5%）を読み取り用に重ねます。AIにはfocus範囲のみを移行し、重なり範囲は文脈参照に限るよう指示します。文字コード・文字数・元の行範囲・focus範囲・重なり範囲は<code>capsule/manifest.json</code>に記録します。入力はUTF-8 BOMを優先し、BOMなしはUTF-8とEUC-JPを厳密に判定します。両方で異なる文字列になる曖昧な入力や、どちらでも読めない入力は自動選択せず、設定で文字コードを指定します。対象ファイル全体や会話履歴・ツール出力は計上しません。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>進捗画面の通信方式（設計方針・未実装）</h2>
+    <p class="diagram-note">追加インストールを増やさず、ローカルのブラウザーで実行状況を確認します。</p>
+    <div class="diagram">
+      <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant H as Pythonハーネス
+    participant S as localhostサーバー（標準ライブラリ）
+    participant B as ブラウザー画面
+    H->>S: 進捗イベントを保存
+    B->>S: GET /events（SSE接続）
+    S-->>B: 状態・ログをイベント配信
+    B->>S: POST /control（一時停止など）
+    S->>H: 操作要求を通知
+    Note over H,S: 受信IDの続きから再送
+      </pre>
+    </div>
+    <div class="grid">
+      <article class="card">
+        <h3>進捗の配信</h3>
+        <p>Python標準ライブラリのHTTPサーバーを127.0.0.1で起動し、ブラウザーの標準EventSource APIへSSEで状態とログを送ります。SSEは一方向の配信に使い、WebSocketは使いません。</p>
+      </article>
+      <article class="card">
+        <h3>画面からの操作</h3>
+        <p>一時停止・再開などの頻度が低い操作はHTTP POSTで送ります。WebSocket用ライブラリなど、追加のPythonパッケージは導入しません。</p>
+      </article>
+      <article class="card">
+        <h3>再接続と履歴</h3>
+        <p>イベントは画面に送る前に実行記録へ保存し、連番IDを付けます。接続が切れても、再接続時に最後に受信したID以降を再送できるようにします。</p>
+      </article>
+      <article class="card">
+        <h3>公開デモとの違い</h3>
+        <p>公開中の進捗画面は模擬データを表示するHTMLです。実際のハーネス、Junie、ビルド、チェッカーとの接続は今後の実装です。</p>
+      </article>
     </div>
   </section>
 
@@ -198,14 +238,14 @@ flowchart TB
       </article>
     </div>
     <div class="callout amber">
-      <h3>現行PoCの暫定制限（目標動作ではない）</h3>
-      <p>現行PoCは上限超過で処理を停止しますが、自動分割が未実装のための制限です。完成設計では上限超過をエラー終了にせず、原文を保持したまま論理単位に分割して自動継続します。分割できない項目や不明な依存関係は、人の判断待ちとして記録します。台帳・網羅性確認も今後の実装です。対象ファイル全体のサイズは現在の上限に含まれません。</p>
+      <h3>現在実装した上限超過対応</h3>
+      <p>指定範囲を行境界で分割し、複数カプセルを順番にJunieへ渡します。関数・制御構文の境界を安全に判定できる機能は未実装のため、現在は行単位です。極端に長い1行は文字位置で分割し、前後の重なりを付けます。各断片のfocus範囲と参照用の重なり範囲はmanifestに残します。依存情報の追加取得、台帳・網羅性確認は今後の設計です。対象ファイル全体のサイズは現在の上限に含まれません。</p>
     </div>
   </section>
 
   <section>
     <h2>3. 今後追加する自動継続・修正ループ（未実装）</h2>
-    <p class="diagram-note">以下は目標フローです。現在のハーネスは自動継続、ビルド、チェッカー、修正ループを実行しません。</p>
+    <p class="diagram-note">以下は目標フローです。現在は入力カプセルを順にJunieへ渡しますが、Junieが手順数上限で止まった後の同一セッション再開、ビルド、チェッカー、修正ループは未実装です。</p>
     <div class="diagram-pair">
       <article class="diagram-card">
         <h3>Junieの停止と再開</h3>
@@ -296,7 +336,7 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> 対象範囲を絞ったコンテキスト作成、worktree準備、Junieの1回実行。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、中断からの継続、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
+  <div class="summary"><strong>現在:</strong> 対象範囲を絞ったコンテキスト分割、worktree準備、Junieの順次実行。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、中断からの継続、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>
