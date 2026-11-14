@@ -1,0 +1,51 @@
+# PHP → C# Migration Harness（仕様検討中）
+
+PHPからC#への段階的な移行を支援するハーネスの仕様案です。現在は仕様検討段階で、実行可能なハーネスはまだ含まれていません。
+
+## 仕様ページ
+
+GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
+
+- [仕様HTML](migration-harness-spec.html)
+
+## 想定している構成
+
+- Python + LangGraphで移行作業を管理
+- dotUltimateに含まれるJunieでコードを編集
+- 移行先は既存のASP.NET Core Razor Pages（現状.NET 9）
+- 共通関数などはC#の`.cs`ファイルに配置
+- アプリ用Git worktreeと、対象範囲だけを渡す一時作業フォルダを使用
+- ビルド・テスト成功後に独自チェッカーを実行
+- Diff ViewerとアンカーJSONを使い、人が移行差分をレビュー
+
+## 入力する移行材料
+
+利用者のプロジェクトにある次の材料を使う想定です。
+
+- 移行元のPHP
+- コメントだけを加えた注釈版PHP
+- 別の移行ツールが生成した仮C#
+- 利用者が管理する移行ルール、スクリプト、プロジェクト設定
+- Diff ViewerのワークスペースJSON
+
+リポジトリ全体や巨大なファイルをAIに渡さず、対象箇所と関連資料を必要な範囲に絞る方針です。利用者固有のルールやソースコードは、この公開リポジトリには含めません。
+
+## 表示について
+
+GitHub PagesのトップURLから仕様HTMLを表示できます。ページはスマートフォンにも対応しています。図の描画にMermaid CDNを使うため、表示時はインターネット接続が必要です。
+
+## 参考プロジェクト
+
+以下は設計の参考です。このリポジトリの実行時依存にはしません。
+
+- [takt](https://github.com/nrslib/takt)
+- [Codex](https://github.com/openai/codex)
+- [diff-viewer](https://github.com/SSsan-00/diff-viewer)
+
+## 状態
+
+仕様検討中です。Junieの再開回数、移行単位、ビルド・テスト範囲、アンカーJSONのバージョン互換性はPoCで確定します。
+
+## ライセンス
+
+未設定です。再利用条件は今後決定します。

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PHP → C# 移行ハーネス | 仕様案</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #566276;
+      --line: #dbe3ed;
+      --paper: #fff;
+      --canvas: #f4f7fb;
+      --blue: #2459a6;
+      --blue-soft: #eaf2ff;
+      --green: #176b4b;
+      --green-soft: #e8f6ef;
+      --amber: #815300;
+      --amber-soft: #fff4d9;
+      --red: #9d3131;
+      --red-soft: #fff0ef;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); font: 16px/1.68 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { width: min(1080px, calc(100% - 32px)); margin: 36px auto 60px; }
+    header { padding: 8px 0 20px; }
+    .eyebrow { color: var(--blue); font-size: .8rem; font-weight: 750; letter-spacing: .09em; }
+    h1 { margin: 5px 0 9px; font-size: clamp(1.8rem, 4vw, 2.55rem); line-height: 1.25; }
+    h2 { margin: 0 0 14px; font-size: 1.25rem; }
+    h3 { margin: 0 0 5px; font-size: 1rem; }
+    p { margin: 0; }
+    .lead { max-width: 830px; color: var(--muted); }
+    section { margin-top: 18px; padding: 22px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); box-shadow: 0 4px 16px #2334520a; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .card { padding: 15px; border: 1px solid var(--line); border-radius: 11px; }
+    .card p, .card li { color: var(--muted); }
+    .card ul { margin: 6px 0 0; padding-left: 1.15rem; }
+    .tag { display: inline-block; margin: 2px 4px 6px 0; padding: 2px 8px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-size: .82rem; font-weight: 650; }
+    .diagram-note { margin: -5px 0 13px; color: var(--muted); font-size: .92rem; }
+    .diagram { overflow-x: auto; padding: 8px 4px; }
+    .mermaid { width: 100%; min-width: 0; text-align: center; }
+    .mermaid svg { max-width: 100%; height: auto; }
+    .diagram-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .diagram-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #fbfcfe; }
+    .diagram-card h3 { margin-bottom: 2px; }
+    .diagram-card > p { margin-bottom: 7px; color: var(--muted); font-size: .9rem; }
+    .diagram-card .mermaid { min-width: 0; }
+    .steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; counter-reset: step; }
+    .step { position: relative; min-height: 110px; padding: 14px 15px 14px 54px; border: 1px solid var(--line); border-radius: 11px; }
+    .step::before { counter-increment: step; content: counter(step); position: absolute; top: 13px; left: 14px; display: grid; width: 27px; height: 27px; place-items: center; border-radius: 50%; background: var(--blue-soft); color: var(--blue); font-weight: 750; }
+    .step p { color: var(--muted); }
+    .callout { margin-top: 12px; padding: 13px 15px; border-left: 4px solid var(--blue); border-radius: 0 9px 9px 0; background: #f5f8ff; }
+    .callout p { color: var(--muted); }
+    .callout.amber { border-color: #d99716; background: var(--amber-soft); }
+    .callout.green { border-color: var(--green); background: var(--green-soft); }
+    .summary { margin-top: 18px; padding: 18px 20px; border: 1px solid #c9d8ef; border-radius: 13px; background: var(--blue-soft); }
+    footer { padding: 18px 3px 0; color: var(--muted); font-size: .84rem; }
+    a { color: var(--blue); }
+    @media (max-width: 760px) {
+      main { width: calc(100% - 20px); margin-top: 22px; }
+      section { padding: 17px; }
+      .grid, .diagram-pair, .steps { grid-template-columns: 1fr; }
+      .diagram { padding: 6px 0; }
+      .diagram-card { padding: 12px; }
+      .diagram { padding: 6px 0; }
+      .diagram-card { padding: 12px; }
+    }
+    @media print {
+      body { background: white; }
+      main { width: 100%; margin: 0; }
+      section, .diagram-card, .step { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">SPECIFICATION DRAFT</div>
+    <h1>PHP → C# 移行ハーネス</h1>
+    <p class="lead">移行対象を小さく区切り、既存の移行材料とルールを使ってAIが変換します。ビルド、独自チェッカー、アンカー付き差分レビューを通し、判断が必要な箇所は人へ引き継ぎます。</p>
+  </header>
+
+  <section>
+    <h2>前提</h2>
+    <div class="grid">
+      <article class="card">
+        <h3>構成と移行先</h3>
+        <p><span class="tag">Python</span><span class="tag">LangGraph</span><span class="tag">Junie</span><span class="tag">.NET 9</span></p>
+        <p>PythonとLangGraphが進行を管理し、dotUltimateに含まれるJunieが編集します。移行先は既存のASP.NET Core Razor Pagesです。共通関数などは.csに配置します。</p>
+      </article>
+      <article class="card">
+        <h3>移行材料</h3>
+        <ul>
+          <li>元のPHPと、コメントだけを追加した注釈版PHP</li>
+          <li>別ツールが生成した仮C#</li>
+          <li>独自移行ルールの該当箇所と必要最小限の既存C#例</li>
+          <li>差分レビューに使うDiff ViewerワークスペースJSON</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3>大規模コードへの対応</h3>
+        <p>数百万行のリポジトリや数万行のファイルを丸ごとAIへ渡しません。アプリ用worktreeを1つ作り、Junieには対象箇所と必要な参照だけを入れた一時作業フォルダを渡します。</p>
+      </article>
+      <article class="card">
+        <h3>公開する範囲</h3>
+        <p>公開するのは汎用ハーネスと設定例です。独自ルールMarkdown、利用者固有のスクリプト、アプリのソースや設定は利用者側で用意します。</p>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>1. 1つの移行単位を処理する</h2>
+    <p class="diagram-note">開始は最上段です。この図は標準ルートだけを示し、修正ループは次の図に分けています。</p>
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart TB
+    A([開始]) --> B[移行対象を1単位選ぶ]
+    B --> C[対象PHP・仮C#・該当ルール・参照例を絞る]
+    C --> D[Junieが移行。一時作業フォルダ内で編集]
+    D --> E{Junieが完了?}
+    E -- はい --> F[許可した差分をworktreeへ反映]
+    E -- いいえ --> G[状態を保存し、人の確認待ちへ]
+    F --> H[ビルド・テスト]
+    H --> I[成功後に独自チェッカー]
+    I --> J[workspace JSONを使ってアンカー案を作成]
+    J --> K[検証結果と差分をレビュー待ちへ]
+
+    classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
+    classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
+    classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
+    classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
+    class A start
+    class B,C,D,F,H,I,J,K action
+    class E decision
+    class G pending
+      </pre>
+    </div>
+    <div class="callout">
+      <h3>図の読み方</h3>
+      <p>ビルド失敗やチェッカー指摘があれば、自動修正の図へ進みます。修正後は必ずビルド・テストからやり直します。Junieが再開上限やクォータに達した単位は状態を保存し、依存しない単位の処理は続けます。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. 自動処理の上限と修正ループ</h2>
+    <div class="diagram-pair">
+      <article class="diagram-card">
+        <h3>Junieの停止と再開</h3>
+        <p>1回の実行と再開回数に上限を設けます。</p>
+        <div class="diagram">
+          <pre class="mermaid">
+flowchart TB
+    A[Junieを上限付きで実行] --> B{完了?}
+    B -- はい --> C[移行フローへ戻る]
+    B -- いいえ --> D[状態とセッションを保存]
+    D --> E{再開回数・クォータに余裕?}
+    E -- はい --> F[同じセッションを再開]
+    F --> B
+    E -- いいえ --> G[人の確認待ちにする]
+
+    classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
+    classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
+    classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
+    class A,C,D,F action
+    class B,E decision
+    class G pending
+          </pre>
+        </div>
+      </article>
+      <article class="diagram-card">
+        <h3>ビルドとチェッカーの修正</h3>
+        <p>各修正ループは最大2回を初期案とします。</p>
+        <div class="diagram">
+          <pre class="mermaid">
+flowchart TB
+    A[ビルド・テスト] --> B{成功?}
+    B -- いいえ --> C{修正回数に余裕?}
+    C -- はい --> D[Junieが修正]
+    D --> A
+    C -- いいえ --> G[人の確認待ち]
+    B -- はい --> E[独自チェッカー]
+    E --> F{指摘あり?}
+    F -- いいえ --> H[レビュー準備完了]
+    F -- はい --> I{修正回数に余裕?}
+    I -- はい --> D
+    I -- いいえ --> G
+
+    classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
+    classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
+    classDef ready fill:#e8f6ef,stroke:#176b4b,color:#123c2c
+    classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
+    class A,D,E action
+    class B,F,C,I decision
+    class H ready
+    class G pending
+          </pre>
+        </div>
+      </article>
+    </div>
+    <div class="callout amber">
+      <h3>チェッカーの偽陽性</h3>
+      <p>チェッカーのテキスト出力を保存します。ルールIDとファイル名を主な手掛かりにし、ずれる可能性がある行番号だけで指摘を特定しません。人が許容した指摘は理由とともに記録します。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. アンカーJSONを使ってレビューする</h2>
+    <div class="steps">
+      <article class="step">
+        <h3>既存JSONから対応情報を読む</h3>
+        <p>ハーネスがファイル順、ファイル名、segments、既存アンカーを読み取ります。ワークスペースJSON全体はAIに渡しません。</p>
+      </article>
+      <article class="step">
+        <h3>AIがアンカー案を作る</h3>
+        <p>対象コードと必要な周辺行だけを使い、根拠がある対応行を提案します。曖昧な行は無理に結びません。</p>
+      </article>
+      <article class="step">
+        <h3>JSONを検査する</h3>
+        <p>Diff Viewerのエクスポート形式に合わせ、ファイル対応、行番号範囲、行の順序を確認してから読み込みます。候補の根拠は別の実行記録に保存します。</p>
+      </article>
+      <article class="step">
+        <h3>Diff Viewerで人が確認する</h3>
+        <p>まとまった移行分を左右に表示し、アンカーを必要に応じて修正します。コード修正が必要なら修正ループへ戻し、再検証後に再レビューします。</p>
+      </article>
+    </div>
+    <div class="callout green">
+      <h3>レビュー後に保存するもの</h3>
+      <p>レビュー済みアンカーJSON、対象ファイルと差分、ビルド・テスト結果、チェッカー出力、人が許容した指摘と理由を移行単位ごとに保存します。最終採用前に人がまとまった差分を承認します。</p>
+    </div>
+  </section>
+
+  <div class="summary"><strong>設計の要点:</strong> 対象を絞る。Junieと修正ループに上限を設ける。ビルド成功後にチェッカーを実行する。アンカーで差分を見やすくし、人がまとめて確認する。</div>
+
+  <footer>仕様案 — Junieの再開回数、移行単位、ビルド・テスト範囲、アンカーJSONのバージョン互換性はPoCで確定します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
+</main>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, securityLevel: 'strict', theme: 'base', flowchart: { curve: 'basis', htmlLabels: true, nodeSpacing: 34, rankSpacing: 38 } });
+</script>
+</body>
+</html>
