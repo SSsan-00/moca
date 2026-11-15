@@ -1,8 +1,8 @@
 [project]
 # アプリはこのハーネスの外に置く。worktreeとRunの保存先は、アプリとも分ける。
 root = "C:/path/to/application-repository"
-# worktreeはこのGitリビジョンから作る。
-base_ref = "main"
+# worktreeは既定で現在のHEADから作る。別のGitリビジョンを使う場合だけ指定する。
+# base_ref = "main"
 worktree_root = "C:/path/to/local-migration-worktrees"
 run_root = "C:/path/to/local-migration-runs"
 # 上限は文字数で指定する。トークン数の厳密な制限ではない。
@@ -29,26 +29,15 @@ max_context_chars = 100000
 # anchor_reference = "previous.workspace.json"
 
 [[units]]
-id = "example-page"
-# 両方をJunieの編集対象にする場合は、targetの代わりにtargetsを使う。
-# targets = ["Pages/Example.cshtml.cs", "Pages/Example.cshtml"]
-target = "Pages/Example.cshtml"
+id = "メニュー"
+source = "php/menu.php"
+targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
+# 移行先が1ファイルの場合は、targetsの代わりに target = "Pages/Menu.cshtml.cs" を使う。
+# 文字コードの自動判定が曖昧なときは source_encoding = "euc-jp" などを指定する。
 
-[[units.inputs]]
-role = "annotated_php"
-path = "php/example.php"
-# autoはUTF-8 BOMを優先し、BOMなしはUTF-8/EUC-JPを厳密に判定する。
-# どちらとも判定できない入力は自動選択せず、"euc-jp"、"utf-8"、"utf-8-sig"を指定する。
-# encoding = "auto"
-# 行番号は1始まりで、終了行を範囲に含める。symbolは台帳で識別したい場合に設定する。
-# symbol = "example_page"
-start_line = 1
-end_line = 120
-
-[[units.inputs]]
-role = "provisional_csharp"
-path = "Pages/Example.cshtml"
-start_line = 1
-end_line = 140
-
-# migration_rulesとshared = trueの資料は毎回同梱し、カプセルの予算を先に確保する。
+# 参照資料が必要な場合は [[units.inputs]] を追加できる。行番号は1始まりで終了行も含む。
+# [[units.inputs]]
+# role = "migration_rules"
+# path = "docs/migration-rules.md"
+# start_line = 1
+# end_line = 10

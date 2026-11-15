@@ -118,6 +118,55 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
     build = ("dotnet", 0, b"rebuilt edited target\n")
     diagnostic = b"MIG101 Example.cs:1 warning: use SharedUtility\n"
 
+    def test_migration_requires_current_verification_and_all_range_decisions(self):
+        def completion():
+            return workflow.migration_ledger(self.config, self.run_id)["completion"]
+
+        secondary = self.worktree / "View.cshtml"
+        secondary.write_text("<p>View</p>", encoding="utf-8")
+        targets = [self.target.name, secondary.name]
+        self.config["units"][0]["targets"] = targets
+        self.save_record({**self.record(), "targets": targets})
+        path = self.run_path / "capsule" / "manifest.json"
+        manifest = json.loads(path.read_bytes())
+        ranges = manifest["parts"][0]["sources"]
+        for number in (2, 3):
+            ranges.append({**ranges[0], "start_line": number, "end_line": number})
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        check_passed = ("fixture-checker", 0, b"clean\n")
+        self.resume(self.build, check_passed)
+        self.assertEqual(completion(), {"complete": False, "verification_passed": True, "reviewed": 0, "total": 3})
+
+        def confirm(range_id, target):
+            workflow.review_migration_ranges(
+                self.config, self.run_id, [range_id], "confirmed", "Checked source and destination",
+                confirmed_targets=[target.name],
+            )
+
+        confirm("1:1", self.target)
+        confirm("1:2", secondary)
+        self.assertFalse(completion()["complete"])
+        workflow.review_migration_ranges(self.config, self.run_id, ["1:3"], "excluded", "Unused legacy code")
+        self.assertTrue(completion()["complete"])
+
+        self.target.write_text("class Edited {}", encoding="utf-8")
+        ledger = workflow.migration_ledger(self.config, self.run_id)
+        self.assertEqual(
+            [source["review"]["state"] for source in ledger["capsules"][0]["sources"]],
+            ["stale", "confirmed", "excluded"],
+        )
+        self.assertFalse(ledger["completion"]["complete"])
+        confirm("1:1", self.target)
+        self.assertFalse(completion()["verification_passed"])
+        self.resume(self.build, ("fixture-checker", 1, self.diagnostic))
+        self.assertFalse(completion()["complete"])
+        self.resume(("dotnet", 1, b"build error\n"))
+        self.assertFalse(completion()["complete"])
+        self.resume(self.build, check_passed)
+        self.assertTrue(completion()["complete"])
+        self.config["checker_command"] = ["different-checker"]
+        self.assertFalse(completion()["complete"])
+
     # 承認や修正履歴がない手編集でも、再ビルドが先に走ることを検証する。
     def test_manual_edit_rebuilds_before_rechecking_without_history_or_approvals(self):
         self.target.write_text("class ManuallyEdited {}\n", encoding="utf-8")
@@ -262,7 +311,7 @@ class SavedDashboardTests(SavedRunFixture):
     """保存済みRunの画面取得と、明示した操作だけが起動することを検証する。"""
 
     @staticmethod
-    def get_ready_event(url):
+    def get_ready_event(url, *, after=0):
         """SSEから操作可能になった時点の連番と状態を取得する。"""
         with urlopen(url + "events", timeout=3) as response:
             for line in response:
@@ -270,7 +319,7 @@ class SavedDashboardTests(SavedRunFixture):
                     revision = int(line.split(b": ", 1)[1])
                 elif line.startswith(b"data: "):
                     state = json.loads(line.split(b": ", 1)[1])
-                    if state.get("ready"):
+                    if state.get("ready") and revision > after:
                         return revision, state
         raise AssertionError("no ready dashboard event")
 
@@ -328,26 +377,26 @@ class SavedDashboardTests(SavedRunFixture):
                     self.assertEqual(state["status"], status)
                     self.assertEqual(state["build_exit_code"], 0)
                     self.assertEqual(state.get("checker_exit_code"), checker_exit)
-                    self.assertFalse(state["resumable"])
+                    self.assertTrue(state["resumable"])
                     with urlopen(url, timeout=3) as response:
                         response.readline()
                         root_tag = response.readline()
                     self.assertIn(b"data-saved", root_tag)
                     self.assertIn(b"data-anchor-reference", root_tag)
                     with urlopen(url + "migration-ledger", timeout=3) as response:
-                        self.assertEqual(json.load(response)["capsules"][0]["sources"][0]["path"], "example.php")
+                        ledger = json.load(response)
+                        self.assertEqual(ledger["capsules"][0]["sources"][0]["path"], "example.php")
+                        self.assertFalse(ledger["completion"]["complete"])
                     with self.post(url, "comparison", {}) as response:
                         snapshot_id = json.load(response)["id"]
                     with urlopen(f"{url}review/{snapshot_id}.json", timeout=3) as response:
                         self.assertIn("class Original", json.load(response)["workspace"]["rightText"])
-                    for action in (
-                        {"action": "resume"},
-                        {"action": "accept", "finding_id": "123456789abc", "reason": "Done"},
-                    ):
-                        with self.assertRaises(HTTPError) as rejected:
-                            self.post(url, "control", {**action, "revision": revision})
-                        with rejected.exception as response:
-                            self.assertEqual(response.code, 409)
+                    with self.assertRaises(HTTPError) as rejected:
+                        self.post(url, "control", {
+                            "action": "accept", "finding_id": "123456789abc", "reason": "Done", "revision": revision,
+                        })
+                    with rejected.exception as response:
+                        self.assertEqual(response.code, 409)
 
                 with (
                     patch.object(workflow.subprocess, "run") as commands,
@@ -362,6 +411,51 @@ class SavedDashboardTests(SavedRunFixture):
                 anchors.assert_not_called()
                 self.assertEqual(result["status"], status)
                 self.assertEqual(self.record_path.read_bytes(), before)
+
+    def test_dashboard_validates_settings_before_saving_and_detects_external_edits(self):
+        project = Path(self.config["project_root"])
+        (project / ".git").mkdir()
+        config_path = project.parent / "settings.toml"
+        self.config["config_path"] = str(config_path)
+        valid = '[project]\nroot = "project"\nworktree_root = "trees"\nrun_root = "runs"\n'
+        valid += '\n[[units]]\nid = "メニュー"\nsource = "example.php"\ntarget = "Example.cs"\n'
+
+        def inspect(url):
+            revision, _ = self.get_ready_event(url)
+            with urlopen(url + "settings", timeout=3) as response:
+                settings = json.load(response)
+            self.assertEqual(settings["version"], "missing")
+            request = {"revision": revision, "version": settings["version"]}
+            with self.assertRaises(HTTPError) as invalid:
+                self.post(url, "settings", {**request, "content": 'project = "invalid"'})
+            self.assertEqual(invalid.exception.code, 409)
+            invalid.exception.close()
+            self.assertFalse(config_path.exists())
+            with self.post(url, "settings", {**request, "content": valid}) as response:
+                saved = json.load(response)
+            revision, _ = self.get_ready_event(url, after=revision)
+            source = valid.replace('target = "Example.cs"', 'target = "Example.cs" # Keep target note')
+            source += '\n[checker]\n# Keep this checker\ncommand = ["fixture-checker"]\n'
+            with self.post(url, "settings", {
+                "mode": "preview", "content": source,
+                "changes": {"units": {"0": {"id": "注文確認", "targets": ["Example.cs", "Example.cshtml"]}}},
+            }) as response:
+                draft = json.load(response)
+            self.assertEqual(draft["form"]["units"][0]["id"], "注文確認")
+            self.assertIn('# Keep this checker\ncommand = ["fixture-checker"]', draft["content"])
+            self.assertIn('targets = ["Example.cs", "Example.cshtml"] # Keep target note', draft["content"])
+            self.assertEqual(config_path.read_text(encoding="utf-8"), valid)
+            with urlopen(url + "workspace", timeout=3) as response:
+                self.assertEqual(json.load(response)["units"], ["メニュー"])
+            external_edit = valid + "# Updated on disk\n"
+            config_path.write_text(external_edit, encoding="utf-8", newline="")
+            with self.assertRaises(HTTPError) as stale:
+                self.post(url, "settings", {"revision": revision, "version": saved["version"], "content": valid})
+            self.assertEqual(stale.exception.code, 409)
+            stale.exception.close()
+            self.assertEqual(config_path.read_text(encoding="utf-8"), external_edit)
+
+        self.open_dashboard(inspect)
 
     # 保存済みRunを開くだけでは再開せず、操作を受けてから実行することを検証する。
     def test_saved_resumable_run_waits_for_explicit_resume(self):
@@ -382,6 +476,19 @@ class SavedDashboardTests(SavedRunFixture):
             result = self.open_dashboard(inspect, resume=True)
         self.assertEqual(len(calls), 2)
         self.assertEqual(result["status"], "checker_succeeded")
+
+    def test_resume_from_run_selection_rechecks_the_selected_run(self):
+        mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b"clean\n"))
+
+        def inspect(url):
+            revision, _ = self.get_ready_event(url)
+            with self.post(url, "control", {"action": "resume-run", "run_id": self.run_id, "revision": revision}) as response:
+                self.assertEqual(response.status, 202)
+
+        with mock:
+            result = self.open_dashboard(inspect, resume=True)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(len(calls), 2)
 
     # 二つのCLI起動方法が同じ保存済み表示に入ることを検証する。
     def test_cli_view_and_resume_dashboard_open_saved_run(self):

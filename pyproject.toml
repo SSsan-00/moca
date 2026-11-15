@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "langgraph>=1.0,<2",
   "langgraph-checkpoint-sqlite>=3.1,<4",
+  "tomlkit>=0.13,<1",
 ]
 
 [project.scripts]
@@ -24,4 +25,4 @@ migration_harness = ["dashboard.js"]
 
 [tool.setuptools.data-files]
 # 本番とデモが共用するHTMLを、作業ツリーの外からも読み込める場所に置く。
-"share/php-to-csharp-harness" = ["progress-demo.html"]
+"share/php-to-csharp-harness" = ["progress-demo.html", "harness.example.toml"]

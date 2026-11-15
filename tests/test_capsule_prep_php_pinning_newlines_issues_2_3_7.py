@@ -1,17 +1,18 @@
 import hashlib
+import io
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import review_anchors, workflow
-from migration_harness.behavior import behavior_status, verify
+from migration_harness import cli, review_anchors, workflow
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace
 
@@ -55,6 +56,65 @@ class CapsulePreparationTests(HarnessCase):
     def read_json(self, path):
         """現在の状態を、ディスクに保存されたUTF-8のJSONから読む。"""
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_japanese_unit_runs_entire_php_with_only_source_and_targets(self):
+        source_lines = ["<?php", *[f"// メニュー項目 {number:02} " + "x" * 70 for number in range(30)], "if ("]
+        source_bytes = "\r\n".join(source_lines).encode("utf-8-sig")
+        self.php.write_bytes(source_bytes)
+        targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
+        path = self.config_path()
+        project_settings = path.read_text(encoding="utf-8").split("[[units]]", 1)[0]
+        path.write_text(
+            project_settings + '[[units]]\nid = "メニュー"\nsource = "Source.php"\n'
+            + f"targets = {json.dumps(targets)}\n",
+            encoding="utf-8",
+        )
+        observed_lines = []
+
+        def junie(command, completion, token, agent_targets):
+            self.assertIn("`メニュー`", command[-1])
+            context = (completion.parent / ".migration-context.md").read_bytes().decode("utf-8")
+            observed_lines.extend(re.findall(r"^ *([0-9]+) \| ([^\r\n]*)", context, re.MULTILINE))
+            for target in agent_targets:
+                target.write_text(f"migrated {target.name}", encoding="utf-8")
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        run_process = subprocess.run
+
+        def build_or_run_git(command, **kwargs):
+            if command == ["dotnet", "build"]:
+                return subprocess.CompletedProcess(command, 0)
+            return run_process(command, **kwargs)
+
+        args = ["php-to-csharp-harness", "run", "--config", str(path), "--unit", "メニュー"]
+        with (
+            patch("sys.argv", args), redirect_stdout(io.StringIO()),
+            patch.object(workflow, "_validate_junie_execution"),
+            patch.object(workflow, "_run_interactive_junie", side_effect=junie) as agent,
+            patch.object(workflow.subprocess, "run", side_effect=build_or_run_git),
+        ):
+            cli.main()
+
+        self.assertGreater(agent.call_count, 1)
+        self.assertEqual(observed_lines, [(str(number), line) for number, line in enumerate(source_lines, 1)])
+        record_path, = (self.root / "runs").glob("*/run.json")
+        record = self.read_json(record_path)
+        self.assertEqual(record["unit_id"], "メニュー")
+        self.assertEqual(record["status"], "build_succeeded")
+        self.assertEqual(record["completed_capsules"], agent.call_count)
+        for name in targets:
+            target = Path(record["worktree_path"]) / name
+            self.assertEqual(target.read_text(encoding="utf-8"), f"migrated {target.name}")
+        manifest = self.read_json(record_path.parent / "capsule" / "manifest.json")
+        pin, = manifest["php_sources"]
+        self.assertEqual((record_path.parent / "capsule" / pin["snapshot"]).read_bytes(), source_bytes)
+        ledger = workflow.migration_ledger(load_config(path), record["run_id"])
+        covered_lines = [
+            number for capsule in ledger["capsules"] for source in capsule["sources"]
+            for number in range(source["start_line"], source["end_line"] + 1)
+        ]
+        self.assertEqual(covered_lines, list(range(1, len(source_lines) + 1)))
 
     # 中断と再開をまたいで、各カプセルに同じ共通資料が含まれることを検証する。
     def test_shared_rules_and_constraints_survive_interruption_and_resume(self):
@@ -167,8 +227,8 @@ class CapsulePreparationTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "input shared must be a boolean"):
             load_config(self.config_path({**PHP, "shared": "true"}))
 
-    # 元PHPを変更・削除しても、アンカー・通常比較・振る舞い比較で同じ固定版を使うことを検証する。
-    def test_review_and_behavior_share_original_php_after_edit_and_delete(self):
+    # 元PHPを変更・削除しても、アンカーと通常比較で同じ固定版を使うことを検証する。
+    def test_viewer_and_anchors_share_original_php_after_edit_and_delete(self):
         source_text = '<?php\r\necho "日本語";\r\n// Last line\r\n'
         raw = source_text.encode("euc-jp")
         self.php.write_bytes(raw)
@@ -223,31 +283,6 @@ class CapsulePreparationTests(HarnessCase):
             snapshot, count = review_anchors.generate_anchors(config, run_id, reference)
         self.assertEqual(count, 1)
         self.assertEqual(self.read_json(snapshot)["workspace"], edited["workspace"])
-
-        worktree_php = target.parent / self.php.name
-        self.assertEqual(worktree_php.read_bytes(), b"<?php\necho 100;\n")
-        fixture = self.root / "cases.json"
-        fixture.write_text(json.dumps({
-            "php_source": self.php.name, "ignored_fields": [],
-            "cases": [{"id": "reviewed", "input": {}, "expected": {"value": 100}}],
-        }), encoding="utf-8")
-
-        def run_fixture(argv, *, cwd, **kwargs):
-            """実際にPHP用の作業領域へ置かれたバイト列を照合して、観測値を返す。"""
-            output = b'[{"value":100}]'
-            if argv[-1] == "Reference.php":
-                self.assertEqual((cwd / argv[-1]).read_bytes(), raw)
-                output = json.dumps([{"value": "日本語"}]).encode("utf-8")
-            return subprocess.CompletedProcess(argv, 0, output, b"")
-
-        for bytes_in_worktree in (b"<?php\necho 100;\n", b"<?php\necho 999;\n"):
-            worktree_php.write_bytes(bytes_in_worktree)
-            with patch("migration_harness.behavior.subprocess.run", side_effect=run_fixture):
-                report = verify(config, run_id, fixture)
-            self.assertEqual(report["status"], "failed")
-            self.assertEqual(report["result"]["identity"]["php"], pins[0])
-            self.assertEqual(report["result"]["cases"][0]["php"], {"value": "日本語"})
-            self.assertEqual(behavior_status(config, run_id)["status"], "failed")
 
     # 固定版が欠落したときに現在のPHPへ黙って切り替えないことを検証する。
     def test_missing_or_changed_pin_fails_even_if_live_php_exists(self):

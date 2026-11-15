@@ -146,13 +146,13 @@
 
   <section>
     <h2>1. 現在の実装フロー</h2>
-    <p class="diagram-note">prepareはworktreeとコンテキストカプセルを作成します。runはJunieで移行し、ビルド成功後に設定済みのチェッカーを実行します。終了コードはrun.json、出力はchecker.logに保存します。</p>
+    <p class="diagram-note"><code>[[units]]</code> に機能名を <code>id</code> として設定し、<code>source</code> に移行元PHP、<code>target</code> または <code>targets</code> に移行先を指定します。prepareは指定したPHPの全文を固定し、worktreeとコンテキストカプセルを作成します。runはJunieで移行し、ビルド成功後に設定済みのチェッカーを実行します。終了コードはrun.json、出力はchecker.logに保存します。</p>
     <div class="diagram">
       <pre class="mermaid">
 flowchart TB
-    A([開始]) --> B[TOMLで移行単位と入力範囲を指定]
+    A([開始]) --> B[TOMLで移行元PHPと移行先を指定]
     B --> C[設定・入力ファイルを検証]
-    C --> D[指定行を上限以内のカプセルに分割]
+    C --> D[移行対象を上限以内のカプセルに分割]
     D --> E[基準リビジョンからアプリ用worktreeを作成]
     E --> F{実行コマンド}
     F -- prepare --> G[準備完了。worktree・カプセル・manifestを出力]
@@ -194,6 +194,7 @@ flowchart TB
   <section>
     <h2>ローカル進捗画面の通信方式</h2>
     <p class="diagram-note">追加インストールを増やさず、ローカルのブラウザーで実行状況を確認します。</p>
+    <p><code>h.cmd d</code> を実行すると、進捗、実行、設定の各タブを使えます。実行タブで移行単位の準備と実行、保存済みRunの閲覧を開始できます。設定タブでフォームとTOMLプレビューを表示し、内容を検証してから指定済みのローカルファイルに保存します。</p>
     <div class="diagram">
       <pre class="mermaid">
 sequenceDiagram
@@ -276,9 +277,13 @@ flowchart TB
         <p>各入力項目に対して、移行先ファイル・シンボル・範囲と対応の根拠を記録します。チェッカーなどで行番号がずれた場合も、シンボルや内容を合わせて追跡します。</p>
       </article>
     </div>
+    <div class="callout green">
+      <h3>移行完了の判定</h3>
+      <p>PHPの全範囲に確認済みまたは理由付きの対象外の判断があり、現行の移行先でビルドと設定済みチェッカーの条件を満たすと、移行完了を表示します。確認した移行先が変わった範囲は理由を残して要再確認に戻し、同じRun IDで再検証できます。</p>
+    </div>
     <div class="callout amber">
       <h3>現在実装した上限超過対応</h3>
-      <p>指定範囲を行境界で分割し、複数カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。比較メニューでJunieがアンカーを生成すると、ハーネスは処理済みのPHP範囲に対応する移行先の候補を割り出し、Run IDごとに保存します。「移行台帳」は閲覧専用で、候補の行範囲と確認が必要な箇所を表示し、Diff Viewerで候補のスナップショットを開けます。CLIで記録した「人の確認済み」「対象外」「要確認」の判断と理由も表示します。移行先の内容が変わった範囲は「要再確認」と表示します。依存情報の追加取得、論理境界での分割、対応の自動検証は今後の設計です。</p>
+      <p>PHPの全文または明示した行範囲を、上限に応じて行境界で分割し、カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。比較メニューでJunieがアンカーを生成すると、ハーネスは処理済みのPHP範囲に対応する移行先の候補を割り出し、Run IDごとに保存します。移行台帳では差分と記録済みの判断・理由を閲覧できます。判断はCLIで記録します。移行先の内容が変わった範囲は「要再確認」と表示します。依存情報の追加取得、論理境界での分割、対応の自動検証は今後の設計です。</p>
     </div>
   </section>
 
@@ -375,10 +380,6 @@ flowchart TB
     </div>
   </section>
 
-  <section>
-    <h2>代表処理の振る舞い比較</h2>
-    <p><code>verify</code> は、ケースJSONに定義した入力をRun作成時に固定したPHPと現在のworktreeのC#に渡し、双方のJSON出力を期待値と照合します。比較から外す動的フィールドをケース設定に明示し、配列の順序は照合します。コマンド、実行環境、期待値、実測値とログはRun配下に保存します。コードやケースのハッシュが変わった場合、移行台帳はRun単位で「要再検証」と表示します。</p>
-  </section>
   <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、移行台帳での範囲と対応候補の表示、ビルドとチェッカーの実行、チェッカー指摘の修正ループ、アンカー付きワークスペースJSONの生成。<br><strong>目標:</strong> 論理項目の特定、依存情報の取得、対応の自動検証。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>

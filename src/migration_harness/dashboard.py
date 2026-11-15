@@ -1,22 +1,31 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
 import sys
 import time
 from collections import deque
+from collections.abc import Mapping
 from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Empty, Queue
+from subprocess import CalledProcessError
+from tempfile import NamedTemporaryFile
 from threading import Condition, Thread
 from typing import Any
 
+import tomlkit
+from tomlkit.exceptions import TOMLKitError
+
+from migration_harness.config import load_config
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.workflow import (
-    _load_saved_run, can_resume_run, migration_ledger, resume_with_junie, review_checker, run_observer, run_with_junie,
+    RunInterrupted, _load_saved_run, can_resume_run, migration_ledger, prepare_run, resume_with_junie, review_checker,
+    run_observer, run_with_junie,
 )
 
 
@@ -25,6 +34,105 @@ PROGRESS_FIELDS = (
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
     "build_exit_code", "build_log_path", "checker_exit_code", "checker_log_path", "error",
 )
+
+
+def _dashboard_asset(name: str) -> Path:
+    path = Path(__file__).resolve().parents[2] / name
+    return path if path.is_file() else Path(sys.prefix) / "share" / "php-to-csharp-harness" / name
+
+
+def _read_settings(path: Path) -> tuple[bytes, str]:
+    if not path.exists():
+        return _dashboard_asset("harness.example.toml").read_bytes(), "missing"
+    data = path.read_bytes()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+_PROJECT_SETTINGS = ("root", "worktree_root", "run_root")
+_UNIT_SETTINGS = ("id", "source", "targets")
+
+
+def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict[str, Any]:
+    """フォームで指定したキーだけを更新し、残りのTOMLを保持する。"""
+    try:
+        document = tomlkit.parse(content)
+        project = document.get("project", {})
+        units = document.get("units", [])
+        if not isinstance(project, Mapping) or not isinstance(units, list) or any(not isinstance(unit, Mapping) for unit in units):
+            raise ValueError("invalid project or units")
+    except (TOMLKitError, ValueError):
+        if changes:
+            raise ValueError("TOMLを直接編集し、書式を修正してください。") from None
+        return {"content": content, "form": None}
+
+    if changes:
+        project_changes = changes.get("project", {})
+        unit_changes = changes.get("units", {})
+        if not isinstance(project_changes, dict) or not isinstance(unit_changes, dict):
+            raise ValueError("フォームの入力内容を確認してください。")
+        if project_changes:
+            project = document.setdefault("project", tomlkit.table())
+            for key, value in project_changes.items():
+                if key not in _PROJECT_SETTINGS or not isinstance(value, str):
+                    raise ValueError("プロジェクト設定を確認してください。")
+                project[key] = value
+        if unit_changes:
+            units = document.setdefault("units", tomlkit.aot())
+            for identifier, fields in unit_changes.items():
+                if not identifier.isascii() or not identifier.isdecimal() or not isinstance(fields, dict):
+                    raise ValueError("移行単位を選び直してください。")
+                index = int(identifier)
+                if not 0 <= index <= len(units):
+                    raise ValueError("移行単位を選び直してください。")
+                if index == len(units):
+                    units.append(tomlkit.table())
+                unit = units[index]
+                for key, value in fields.items():
+                    if key not in _UNIT_SETTINGS:
+                        raise ValueError("移行単位の入力内容を確認してください。")
+                    if key == "targets":
+                        if not isinstance(value, list) or any(not isinstance(path, str) for path in value):
+                            raise ValueError("移行先は1行に1ファイル指定してください。")
+                        if len(value) == 1 and "targets" not in unit:
+                            unit["target"] = value[0]
+                        else:
+                            previous = unit.pop("target", None)
+                            targets = tomlkit.item(value)
+                            if previous is not None:
+                                targets.trivia.comment = previous.trivia.comment
+                                targets.trivia.comment_ws = previous.trivia.comment_ws
+                            unit["targets"] = targets
+                    elif not isinstance(value, str):
+                        raise ValueError("移行単位の入力内容を確認してください。")
+                    elif key == "source" and not value:
+                        unit.pop(key, None)
+                    else:
+                        unit[key] = value
+        content = tomlkit.dumps(document)
+
+    return {"content": content, "form": {
+        "project": {key: value for key in _PROJECT_SETTINGS if isinstance(value := project.get(key), str)},
+        "units": [{
+            **{key: value for key in ("id", "source") if isinstance(value := unit.get(key), str)},
+            "targets": [path for path in unit.get("targets", [unit.get("target")]) if isinstance(path, str)]
+            if isinstance(unit.get("targets", []), list) else [],
+        } for unit in units],
+    }}
+
+
+def _save_settings(path: Path, content: str, version: str) -> dict[str, Any]:
+    # 設定ファイルと同じディレクトリで検証し、相対パスの基準を保つ。
+    with NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", newline="", delete=False) as stream:
+        candidate = Path(stream.name)
+    try:
+        candidate.write_text(content, encoding="utf-8", newline="")
+        normalized = load_config(candidate)
+        if _read_settings(path)[1] != version:
+            raise ValueError("設定ファイルが更新されています。最新の設定を読み込み、変更を反映し直してください。")
+        candidate.replace(path)
+        return {**normalized, "config_path": str(path)}
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 class Dashboard:
@@ -64,6 +172,7 @@ class Dashboard:
         state = {
             **self.state, "ready": True, "status": result["status"], "message": message,
             "resumable": can_resume_run(config, result),
+            "anchor_reference": config.get("diff_viewer_anchor_reference") is not None,
         }
         if result["status"] == "checker_needs_review":
             try:
@@ -129,6 +238,10 @@ class Dashboard:
                     self.send_body(200, "text/javascript; charset=utf-8", script)
                 elif self.path == prefix + "events":
                     self.send_events()
+                elif self.path == prefix + "workspace":
+                    self.send_workspace()
+                elif self.path == prefix + "settings":
+                    self.send_settings()
                 elif self.path == prefix + "migration-ledger":
                     run_id = dashboard.state.get("run_id")
                     if run_id and dashboard.state.get("worktree_path"):
@@ -144,6 +257,38 @@ class Dashboard:
                     self.send_comparison()
                 else:
                     self.send_error(404)
+
+            def send_workspace(self) -> None:
+                try:
+                    with dashboard.condition:
+                        units = [unit["id"] for unit in config.get("units", [])]
+                        records = Path(config["run_root"]).glob("*/run.json") if units else ()
+                        newest = sorted(records, key=lambda path: path.stat().st_mtime, reverse=True)
+                        runs = []
+                        for record_path in newest:
+                            try:
+                                _, _, record, _ = _load_saved_run(config, record_path.parent.name)
+                            except (OSError, ValueError, TypeError):
+                                continue
+                            runs.append({key: record[key] for key in ("run_id", "unit_id")})
+                            if len(runs) == 30:
+                                break
+                        body = json.dumps({"units": units, "runs": runs}).encode()
+                except OSError:
+                    message = "保存済みの実行を読み込めませんでした。保存先を確認して、実行タブを開き直してください。"
+                    self.send_body(409, "text/plain; charset=utf-8", message.encode())
+                    return
+                self.send_body(200, "application/json", body)
+
+            def send_settings(self) -> None:
+                try:
+                    path = Path(config["config_path"])
+                    data, version = _read_settings(path)
+                    body = json.dumps({"path": str(path), "version": version, **_settings_draft(data.decode("utf-8"))}).encode()
+                except (KeyError, OSError, UnicodeError):
+                    self.send_body(409, "text/plain; charset=utf-8", "設定を読み込めませんでした。ファイルの場所と文字コードを確認してください。".encode())
+                else:
+                    self.send_body(200, "application/json", body)
 
             def send_comparison(self) -> None:
                 """保存済み比較をダウンロード用JSONか隔離されたViewerとして返す。"""
@@ -203,19 +348,21 @@ class Dashboard:
 
             def do_POST(self) -> None:
                 """オリジンと操作内容を検証してから比較または端末側の操作へ渡す。"""
-                if self.path not in (prefix + "control", prefix + "comparison"):
+                if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings"):
                     self.send_error(404)
                     return
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
                     self.send_error(403)
                     return
                 comparison = self.path == prefix + "comparison"
+                settings = self.path == prefix + "settings"
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if comparison and length == 0:
                         action = {}
                     else:
-                        if not 0 < length <= 16_384 or self.headers.get_content_type() != "application/json":
+                        limit = 8 * 1024 * 1024 if settings else 16_384
+                        if not 0 < length <= limit or self.headers.get_content_type() != "application/json":
                             raise ValueError
                         self.connection.settimeout(5)
                         action = json.loads(self.rfile.read(length))
@@ -223,6 +370,9 @@ class Dashboard:
                             raise ValueError
                 except (OSError, ValueError):
                     self.send_error(400)
+                    return
+                if settings:
+                    self.save_settings(action)
                     return
                 if comparison:
                     try:
@@ -238,8 +388,12 @@ class Dashboard:
                 try:
                     if type(action.get("revision")) is not int:
                         raise ValueError
-                    if action.get("action") not in ("accept", "resume", "anchors"):
+                    if action.get("action") not in ("accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run"):
                         raise ValueError
+                    if action["action"] in ("prepare", "run", "open-run", "resume-run"):
+                        name = action.get("run_id" if action["action"] in ("open-run", "resume-run") else "unit_id")
+                        if not config.get("units") or not isinstance(name, str) or not name.strip():
+                            raise ValueError
                     if action["action"] == "accept" and (
                         not isinstance(action.get("finding_id"), str) or len(action["finding_id"]) != 12
                         or not isinstance(action.get("reason"), str) or not 0 < len(action["reason"].strip()) <= 2_000
@@ -254,6 +408,36 @@ class Dashboard:
                     self.send_body(202, "application/json", b"{}")
                 else:
                     self.send_error(409)
+
+            def save_settings(self, action: dict[str, Any]) -> None:
+                if action.get("mode") == "preview":
+                    if not isinstance(action.get("content"), str) or not isinstance(action.get("changes"), dict):
+                        self.send_error(400)
+                        return
+                    try:
+                        draft = _settings_draft(action["content"], action["changes"])
+                    except (TOMLKitError, ValueError) as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", str(exc).encode())
+                    else:
+                        self.send_body(200, "application/json", json.dumps(draft).encode())
+                    return
+                if not all(isinstance(action.get(key), str) for key in ("content", "version")) or type(action.get("revision")) is not int:
+                    self.send_error(400)
+                    return
+                try:
+                    with dashboard.condition:
+                        if not dashboard.state.get("ready") or action["revision"] != dashboard.revision:
+                            raise ValueError("実行中の処理が終わってから設定を保存してください。")
+                        path = Path(config["config_path"])
+                        updated = _save_settings(path, action["content"], action["version"])
+                        config.update(updated)
+                        dashboard.publish({"status": "idle", "ready": True, "settings_revision": dashboard.revision + 1})
+                except (KeyError, OSError, ValueError) as exc:
+                    message = f"設定を保存できませんでした。内容を確認してください。\n{exc}"
+                    self.send_body(409, "text/plain; charset=utf-8", message.encode())
+                else:
+                    version = hashlib.sha256(action["content"].encode()).hexdigest()
+                    self.send_body(200, "application/json", json.dumps({"version": version}).encode())
 
             def send_anchored_comparison(self, action: dict[str, Any]) -> None:
                 """端末側でアンカー生成が終わるまで待ち、保存した比較のIDを返す。"""
@@ -279,14 +463,12 @@ class Dashboard:
         return server
 
 
-def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None) -> dict[str, Any]:
+def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None) -> dict[str, Any] | None:
     """サーバーを開き、対話が必要な作業を起動元の端末で処理する。"""
-    if (unit_id is None) == (run_id is None):
-        raise ValueError("dashboard requires a migration unit or a saved Run ID")
+    if unit_id is not None and run_id is not None:
+        raise ValueError("choose a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent
-    demo = package_dir.parents[1] / "progress-demo.html"
-    if not demo.is_file():
-        demo = Path(sys.prefix) / "share" / "php-to-csharp-harness" / "progress-demo.html"
+    demo = _dashboard_asset("progress-demo.html")
     html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
     if not marker:
         raise ValueError("progress dashboard template is missing its script marker")
@@ -294,13 +476,16 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
     anchor_reference = config.get("diff_viewer_anchor_reference")
     options = " data-live"
     saved = None
-    if run_id is None:
+    if run_id is None and unit_id is not None:
         view.publish({"status": "preparing", "unit_id": unit_id})
-    else:
+    elif run_id is not None:
         _, _, saved, _ = _load_saved_run(config, run_id)
         view.observe(saved)
         view.ready(config, saved)
         options += " data-saved"
+    else:
+        view.publish({"status": "idle", "ready": True})
+        options += " data-workspace"
     if anchor_reference is not None:
         options += " data-anchor-reference"
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
@@ -311,8 +496,7 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
         token = run_observer.set(view.observe)
         try:
             # Junieは起動元の端末を必要とするため、HTTPスレッドは操作をキューに渡す。
-            if saved is None:
-                assert unit_id is not None
+            if unit_id is not None:
                 result = run_with_junie(config, unit_id)
                 view.ready(config, result)
             else:
@@ -321,14 +505,14 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                 try:
                     action = view.actions.get(timeout=0.25)
                 except KeyboardInterrupt:
-                    return result
+                    return result if result is not None and view.state.get("run_id") == result.get("run_id") else None
                 except Empty:
                     continue
                 if action["action"] == "anchors":
                     reply = action["reply"]
                     try:
                         path, count = generate_anchors(
-                            config, result["run_id"], anchor_reference, focus=action.get("focus"),
+                            config, result["run_id"], config.get("diff_viewer_anchor_reference"), focus=action.get("focus"),
                         )
                     except KeyboardInterrupt:
                         reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))
@@ -340,14 +524,36 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                         view.publish({**view.state, "ready": True, "generating_anchors": False})
                     continue
                 try:
-                    if action["action"] == "accept":
+                    if action["action"] in ("open-run", "resume-run"):
+                        _, _, result, _ = _load_saved_run(config, action["run_id"])
+                        view.observe(result)
+                        if action["action"] == "resume-run":
+                            result = resume_with_junie(config, action["run_id"])
+                        view.ready(config, result)
+                    elif action["action"] in ("prepare", "run"):
+                        view.publish({"status": "preparing", "unit_id": action["unit_id"]})
+                        if action["action"] == "prepare":
+                            prepared = prepare_run(config, action["unit_id"])
+                            _, _, result, _ = _load_saved_run(config, prepared["run_id"])
+                        else:
+                            result = run_with_junie(config, action["unit_id"])
+                        view.ready(config, result)
+                    elif action["action"] == "accept":
                         review_checker(config, result["run_id"], action["finding_id"], action["reason"])
                         view.ready(config, result, "判断理由を記録しました。")
                     else:
                         result = resume_with_junie(config, result["run_id"])
                         view.ready(config, result)
-                except (OSError, ValueError, RuntimeError) as exc:
-                    view.ready(config, result, f"操作を完了できませんでした。{exc}")
+                except RunInterrupted as exc:
+                    _, _, result, _ = _load_saved_run(config, exc.run_id)
+                    view.observe(result)
+                    view.ready(config, result)
+                except (OSError, ValueError, RuntimeError, CalledProcessError) as exc:
+                    message = f"操作を完了できませんでした。設定や実行ログを確認してください。{exc}"
+                    if result is not None and view.state.get("run_id") == result.get("run_id"):
+                        view.ready(config, result, message)
+                    else:
+                        view.publish({"status": "idle", "ready": True, "message": message})
         finally:
             run_observer.reset(token)
             with view.condition:

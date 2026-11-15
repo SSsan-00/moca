@@ -4,6 +4,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+_INPUT_ENCODINGS = {"auto", "utf-8", "utf-8-sig", "euc-jp"}
+
 
 def _outside(root: Path, path: Path, name: str) -> Path:
     """アプリのリポジトリと実行データが混ざらないよう、保存先を解決する。"""
@@ -20,6 +22,8 @@ def load_config(path: Path) -> dict[str, Any]:
         raw = tomllib.load(stream)
 
     project = raw.get("project", {})
+    if not isinstance(project, dict):
+        raise ValueError("[project] must be a table")
     root_value = project.get("root")
     if not isinstance(root_value, str) or not root_value.strip():
         raise ValueError("[project].root is required")
@@ -126,12 +130,28 @@ def load_config(path: Path) -> dict[str, Any]:
         ):
             raise ValueError(f"unit {unit['id']}: target paths must be distinct files")
 
-        inputs = unit.get("inputs")
-        if not isinstance(inputs, list) or not inputs:
-            raise ValueError(f"unit {unit['id']}: at least one [[units.inputs]] entry is required")
-        # リポジトリ全体を走査せず、設定した行範囲だけをAIに渡す。
         normalized_inputs = []
+        if "source" in unit:
+            source = unit["source"]
+            if not isinstance(source, str) or "\0" in source:
+                raise ValueError(f"unit {unit['id']}: source must name a repository-relative .php file")
+            source_path = Path(source)
+            if source_path.anchor or ".." in source_path.parts or source_path.suffix.lower() != ".php":
+                raise ValueError(f"unit {unit['id']}: source must name a repository-relative .php file")
+            encoding = unit.get("source_encoding", "auto")
+            if not isinstance(encoding, str) or encoding not in _INPUT_ENCODINGS:
+                raise ValueError(f"unit {unit['id']}: source_encoding must be auto, utf-8, utf-8-sig, or euc-jp")
+            normalized_inputs.append({
+                "role": "php", "path": source_path.as_posix(), "encoding": encoding,
+                "shared": False, "start_line": 1, "end_line": None,
+            })
+
+        inputs = unit.get("inputs", [])
+        if not isinstance(inputs, list) or not (normalized_inputs or inputs):
+            raise ValueError(f"unit {unit['id']}: specify source or at least one [[units.inputs]] entry")
         for item in inputs:
+            if not isinstance(item, dict):
+                raise ValueError(f"unit {unit['id']}: each [[units.inputs]] entry must be a table")
             item_path = item.get("path")
             role = item.get("role")
             encoding = item.get("encoding", "auto")
@@ -145,7 +165,7 @@ def load_config(path: Path) -> dict[str, Any]:
                 raise ValueError(f"unit {unit['id']}: each input needs a role")
             if symbol is not None and (not isinstance(symbol, str) or not symbol.strip()):
                 raise ValueError(f"unit {unit['id']}: input symbol must be a non-empty string")
-            if not isinstance(encoding, str) or encoding not in {"auto", "utf-8", "utf-8-sig", "euc-jp"}:
+            if not isinstance(encoding, str) or encoding not in _INPUT_ENCODINGS:
                 raise ValueError(f"unit {unit['id']}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
             if not isinstance(shared, bool):
                 raise ValueError(f"unit {unit['id']}: input shared must be a boolean")

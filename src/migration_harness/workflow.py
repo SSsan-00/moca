@@ -170,21 +170,23 @@ def _input_encoding(path: Path, requested: str) -> str:
     raise ValueError(f"{path}: encoding is ambiguous between UTF-8 and EUC-JP; set input encoding explicitly")
 
 
-def _selected_lines(path: Path, start: int, end: int, encoding: str) -> Iterator[tuple[int, str]]:
-    """行末を保持したまま、元ファイルの行番号付きで指定範囲を返す。"""
+def _selected_lines(path: Path, start: int, end: int | None, encoding: str) -> Iterator[tuple[int, str]]:
+    """行末と元の行番号を保持し、終端指定がなければファイル末尾まで読む。"""
     selected_count = 0
     reached_end = False
     with path.open("r", encoding=encoding, errors="strict", newline="") as stream:
         for number, line in enumerate(stream, start=1):
-            if start <= number <= end:
+            if number >= start:
                 selected_count += 1
                 yield number, line
-            if number >= end:
+            if number == end:
                 reached_end = True
                 break
     if not selected_count:
+        if end is None:
+            raise ValueError(f"input file has no lines: {path}")
         raise ValueError(f"requested lines {start}-{end} do not exist in {path}")
-    if not reached_end:
+    if end is not None and not reached_end:
         raise ValueError(f"requested line {end} does not exist in {path}")
 
 
@@ -963,6 +965,7 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
         "error": record.get("error"),
         "build_exit_code": record["build_exit_code"],
         "build_log_path": str(log_path) if log_path.is_file() else None,
+        "verification": record.get("verification"),
     }
 
 
@@ -1164,6 +1167,11 @@ def _verify_worktree(
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
     while True:
+        record["verification"] = {
+            "target_hashes": {path.as_posix(): _review_target_hash(worktree, path) for path in targets},
+            "build_project": config["build_project"],
+            "checker_command": command,
+        }
         verified = _build_worktree(config, result, record)
         if command is None or record["status"] == "build_failed":
             return verified
@@ -1327,12 +1335,11 @@ def _read_pinned_php(capsule_path: Path, source: dict[str, str]) -> bytes:
 
 def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     """保存した対応と判断を現在の移行先で照合し、閲覧用の状態をまとめる。"""
-    from migration_harness.behavior import behavior_status
-
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
     mappings = record.get("migration_mappings", {})
     reviews = record.get("migration_reviews", {})
+    targets = [path.as_posix() for path in _target_paths(unit)]
     hashes: dict[str, str | None] = {}
 
     def current_hash(path: str) -> str | None:
@@ -1342,6 +1349,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         return hashes[path]
 
     capsules = []
+    reviewed = total = 0
     for part in manifest["parts"]:
         sources = []
         for index, source in enumerate(part.get("sources", [])):
@@ -1353,69 +1361,129 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             review = reviews.get(key)
             mapping = mappings.get(key) or (review.get("mapping") if review else None)
             if review:
-                valid_review = (
-                    all(current_hash(path) == digest for path, digest in review["target_hashes"].items())
-                    and (review["state"] != "confirmed" or (
-                        mapping and all(mapping.get(field) == review["mapping"].get(field)
-                                        for field in ("path", "start_line", "end_line", "sha256"))
-                    ))
-                )
-                entry["review"] = {"state": review["state"] if valid_review else "stale", "reason": review["reason"]}
+                state = review["state"]
+                if state == "confirmed":
+                    saved_mapping = review.get("mapping")
+                    # 旧Runの候補付き確認も、対応するファイルの版で判定する。
+                    checked_targets = (
+                        {saved_mapping["path"]: saved_mapping["sha256"]} if saved_mapping else review["target_hashes"]
+                    )
+                    if (
+                        not checked_targets
+                        or any(digest is None or current_hash(path) != digest for path, digest in checked_targets.items())
+                        or (saved_mapping and (
+                            not mapping or any(mapping.get(field) != saved_mapping.get(field)
+                                               for field in ("path", "start_line", "end_line", "sha256"))
+                        ))
+                    ):
+                        state = "stale"
+                entry["review"] = {"state": state, "reason": review["reason"]}
+                if review["state"] == "confirmed" and not review.get("mapping"):
+                    entry["review"]["targets"] = list(review["target_hashes"])
+                if state in {"confirmed", "excluded"} and review["reason"].strip():
+                    reviewed += 1
             if mapping:
                 path = mapping["path"]
                 valid = current_hash(path) == mapping["sha256"]
                 pending = "candidate_snapshot" in mapping
                 entry["mapping"] = {
                     **{key: mapping[key] for key in ("path", "start_line", "end_line")},
-                    "confirmed": valid and not pending,
+                    "valid": valid,
                 }
                 if valid and pending:
                     entry["mapping"].update(snapshot_id=mapping["candidate_snapshot"], anchors=mapping["anchors"])
             sources.append(entry)
+            total += 1
         capsules.append({"index": part["index"], "sources": sources})
+
+    verification = record.get("verification") or {}
+    saved_checker = verification.get("checker_command")
+    configured_checker = config["checker_command"]
+    status = record["status"]
+    checker_passed = status == "checker_succeeded" and record.get("checker_exit_code") == 0
+    if status == "checker_accepted":
+        approved_file_hashes = record.get("review_file_hashes", {})
+        checker_passed = bool(approved_file_hashes) and all(
+            digest is not None and current_hash(path) == digest for path, digest in approved_file_hashes.items()
+        )
+    verification_passed = (
+        not record.get("target_apply_pending")
+        and record.get("completed_capsules") == len(capsules)
+        and record.get("build_exit_code") == 0
+        and bool(verification)
+        and verification.get("build_project") == config["build_project"]
+        and (configured_checker is None or saved_checker == configured_checker)
+        and (status == "build_succeeded" if saved_checker is None else checker_passed)
+    )
+    if verification_passed:
+        current_targets = {path: current_hash(path) for path in targets}
+        verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
+
     return {
         "run_id": run_id,
         "target": unit["target"],
-        "targets": [path.as_posix() for path in _target_paths(unit)],
-        "behavior_status": behavior_status(config, run_id)["status"],
+        "targets": targets,
         "capsules": capsules,
+        "completion": {
+            "complete": verification_passed and total > 0 and reviewed == total,
+            "verification_passed": verification_passed,
+            "reviewed": reviewed,
+            "total": total,
+        },
     }
 
 
 def review_migration_ranges(
     config: dict[str, Any], run_id: str, range_ids: list[str], state: str, reason: str,
+    *, confirmed_targets: list[str] | None = None,
 ) -> None:
     """選んだ範囲の判断と根拠を、対象ファイルの版とともに一括で記録する。"""
     if not range_ids or state not in {"confirmed", "excluded", "needs_review"} or not reason.strip():
         raise ValueError("choose range IDs, a review state and a non-empty reason")
+    if confirmed_targets and state != "confirmed":
+        raise ValueError("--target is only available with --state confirmed")
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
     if record.get("target_apply_pending") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
         raise ValueError("wait for migration, build or verification to finish before recording a range review")
+    target_paths = _target_paths(unit)
     entries = {
         f"{part['index']}:{index + 1}": (part["index"], index)
         for part in manifest["parts"]
         for index, source in enumerate(part.get("sources", []))
         if Path(source["path"]).suffix.lower() == ".php"
     }
-    hashes = {path.as_posix(): _review_target_hash(worktree, path) for path in _target_paths(unit)}
+    manual_hashes = {}
+    allowed_targets = set(target_paths)
+    for name in confirmed_targets or []:
+        path = Path(name)
+        if path not in allowed_targets:
+            raise ValueError(f"review target is outside the configured migration targets: {name}")
+        digest = _review_target_hash(worktree, path)
+        if digest is None:
+            raise ValueError(f"review target is missing or unsafe: {name}")
+        manual_hashes[path.as_posix()] = digest
     decisions = record.setdefault("migration_reviews", {})
     for identifier in range_ids:
         if identifier not in entries:
             raise ValueError(f"PHP range not found in this Run: {identifier}")
         capsule, index = entries[identifier]
         key = f"{capsule}:{index}"
-        saved_hashes = hashes.copy()
-        decision = {"state": state, "reason": reason.strip(), "target_hashes": saved_hashes}
+        decision = {"state": state, "reason": reason.strip(), "target_hashes": {}}
         if state == "confirmed":
             mapping = record.get("migration_mappings", {}).get(key)
-            if capsule > record["completed_capsules"] or not mapping:
-                raise ValueError(f"range {identifier} has no processed mapping candidate to confirm")
-            digest = _review_target_hash(worktree, Path(mapping["path"]))
-            if digest is None or digest != mapping["sha256"]:
-                raise ValueError(f"range {identifier} changed after its comparison; generate a new candidate")
-            saved_hashes[mapping["path"]] = digest
-            decision["mapping"] = mapping
+            if capsule > record["completed_capsules"]:
+                raise ValueError(f"range {identifier} has not been processed")
+            if manual_hashes:
+                decision["target_hashes"] = manual_hashes
+            else:
+                if not mapping:
+                    raise ValueError(f"range {identifier} has no mapping candidate; specify the reviewed --target paths")
+                digest = _review_target_hash(worktree, Path(mapping["path"]))
+                if digest is None or digest != mapping["sha256"]:
+                    raise ValueError(f"range {identifier} changed after its comparison; generate a new candidate")
+                decision["target_hashes"] = {mapping["path"]: digest}
+                decision["mapping"] = mapping
         decisions[key] = decision
     _write_run_record(run_path / "run.json", record)
 
@@ -1522,7 +1590,8 @@ def review_checker(
 
 
 _BUILD_RESUME_STATUSES = {"junie_finished", "building", "build_failed", "repairing"}
-_CHECKER_RESUME_STATUSES = {"build_succeeded", "checking", "checker_needs_review", "checker_failed"}
+_CHECKER_RESUME_STATUSES = {"checking", "checker_needs_review", "checker_failed"}
+VERIFIED_STATUSES = {"build_succeeded", "checker_succeeded", "checker_accepted"}
 _JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrupted"}
 
 
@@ -1531,7 +1600,13 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     status = record.get("status")
     if status in _CHECKER_RESUME_STATUSES:
         return config["checker_command"] is not None and record.get("build_exit_code") == 0
-    return status in _BUILD_RESUME_STATUSES or status in _JUNIE_RESUME_STATUSES
+    if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
+        checker_required = (
+            status in {"checker_succeeded", "checker_accepted"}
+            or (record.get("verification") or {}).get("checker_command") is not None
+        )
+        return not checker_required or config["checker_command"] is not None
+    return status in _JUNIE_RESUME_STATUSES
 
 
 def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
@@ -1541,6 +1616,8 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     if not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
+        if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
+            raise ValueError("rechecking this Run requires its checker command; set it in TOML or pass --checker-command")
         raise ValueError(f"run is not resumable from status {status!r}")
 
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
@@ -1564,7 +1641,7 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         context_paths.append(str(context_path))
 
     completed_capsules = record.get("completed_capsules", 0)
-    migration_complete = status in _BUILD_RESUME_STATUSES or status in _CHECKER_RESUME_STATUSES
+    migration_complete = status in _BUILD_RESUME_STATUSES or status in _CHECKER_RESUME_STATUSES or status in VERIFIED_STATUSES
     if (
         not isinstance(completed_capsules, int)
         or (completed_capsules != len(context_paths) if migration_complete else not 0 <= completed_capsules < len(context_paths))

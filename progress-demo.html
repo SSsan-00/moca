@@ -75,6 +75,86 @@
     .brand:hover { color: var(--blue); }
     .top-links { display: flex; gap: 18px; font-size: 13px; }
     .top-links a { text-decoration: none; }
+    .workspace-tabs { position: relative; display: flex; gap: 12px; border-bottom: 2px solid var(--line); }
+    .workspace-tabs button { min-height: 42px; padding: 0 16px; border: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .workspace-tabs button:hover { background: var(--surface-hover); }
+    .workspace-tabs button[aria-selected="true"] { color: var(--blue); font-weight: 700; }
+    .workspace-tabs button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .workspace-tab-indicator { position: absolute; inset: auto auto -3px 0; height: 4px; border-radius: 2px; background: var(--blue); pointer-events: none; transition: transform 250ms cubic-bezier(.65,0,.35,1), width 250ms cubic-bezier(.65,0,.35,1); }
+    .workspace-panels { position: relative; min-width: 0; min-height: 0; }
+    .workspace-pane { height: 100%; min-width: 0; overflow: hidden auto; }
+    .workspace-pane[hidden] { display: none; }
+    .workspace-pane[data-leaving] { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    #workspace-progress:not([hidden]) { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 16px; }
+    .workspace-tools { max-width: 880px; padding: 18px; overflow-wrap: anywhere; }
+    .workspace-tools h2 { margin: 0 0 10px; font-size: 16px; }
+    .workspace-tools form + form { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+    .workspace-tools label { display: block; margin-bottom: 4px; font-weight: 650; }
+    .workspace-tools select, .workspace-tools input, .workspace-tools textarea { display: block; width: 100%; min-height: 38px; margin-bottom: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--paper); font: inherit; }
+    .workspace-tools :is(select, input, textarea):focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+    .workspace-tools textarea { height: min(55dvh, 520px); min-height: 160px; resize: vertical; font: 13px/1.55 var(--mono); }
+    .workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    #workspace-runs .workspace-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, 264px); }
+    #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
+    .workspace-feedback { margin-bottom: 0; white-space: pre-wrap; color: var(--muted); }
+    .workspace-feedback:empty { display: none; }
+    #workspace-settings { overflow: hidden; }
+    .workspace-settings { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; max-width: none; }
+    .settings-heading .run-detail { margin-block: 0; }
+    .settings-columns { display: grid; min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 20px; }
+    .settings-columns:has(#workspace-settings-fields[hidden]) { grid-template-columns: minmax(0, 1fr); }
+    #workspace-settings-fields:not([hidden]) { display: flex; flex-direction: column; min-height: 0; overflow: hidden auto; padding: 3px; }
+    .settings-fields { min-inline-size: 0; margin: 0 0 14px; padding: 0; border: 0; }
+    .settings-fields legend { margin-bottom: 8px; padding: 0; font-weight: 700; }
+    .settings-fields label { font-size: 12px; }
+    .settings-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .settings-unit-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+    .settings-unit-picker .button { margin-bottom: 10px; }
+    #settings-unit-fields, #settings-unit-inputs:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; margin-bottom: 0; }
+    #settings-unit-targets { flex: 1; height: auto; min-height: 72px; margin-bottom: 0; resize: none; }
+    .settings-preview { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; min-width: 0; min-height: 0; padding: 3px; }
+    .settings-preview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+    .settings-preview h2 { margin-bottom: 0; }
+    #workspace-config-toggle { min-inline-size: 10em; }
+    .settings-preview :is(pre, textarea) { height: 100%; min-height: 0; margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .settings-preview textarea { resize: none; }
+    .settings-preview :is(pre, textarea)[hidden] { display: none; }
+    .settings-footer { padding-top: 10px; border-top: 1px solid var(--line); }
+    .settings-footer .workspace-feedback { max-height: 4.65em; margin-top: 6px; overflow: auto; }
+    .workspace-select { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
+    @supports (appearance: base-select) and selector(::picker(select)) {
+      .workspace-select, .workspace-select::picker(select) { appearance: base-select; }
+      .workspace-select, .workspace-tools select.workspace-select { display: flex; align-items: center; cursor: pointer; }
+      .workspace-select:disabled { cursor: default; }
+      .workspace-select:open { outline: 2px solid var(--blue); outline-offset: -2px; }
+      .workspace-select::picker-icon { flex: none; margin-inline-start: auto; color: var(--muted); transition: rotate 250ms cubic-bezier(.22,.61,.36,1); }
+      .workspace-select:open::picker-icon { rotate: 180deg; }
+      .workspace-select::picker(select) {
+        box-sizing: border-box; inline-size: anchor-size(width); min-inline-size: 0;
+        max-block-size: min(320px, 45dvh); margin-block: 5px; padding: 4px; overflow: auto;
+        border: 1px solid var(--line); border-radius: 8px;
+        background: var(--paper); color: var(--ink); box-shadow: 0 6px 18px #0b121d30;
+        opacity: 0; translate: 0 -6px; pointer-events: none;
+        transition: opacity 150ms ease-in-out, translate 150ms ease-in-out, display 150ms allow-discrete, overlay 150ms allow-discrete;
+      }
+      .workspace-select:open::picker(select) {
+        opacity: 1; translate: 0 0; pointer-events: auto;
+        transition-duration: 250ms; transition-timing-function: cubic-bezier(.22,.61,.36,1);
+      }
+      @starting-style { .workspace-select:open::picker(select) { opacity: 0; translate: 0 -6px; } }
+      .workspace-select option { min-height: 30px; padding: 4px 8px; border-radius: 5px; white-space: normal; overflow-wrap: anywhere; }
+      .workspace-select option:is(:checked, :focus-visible, :hover):not(:disabled) { background: var(--blue-soft); color: var(--blue); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .workspace-select::picker(select), .workspace-select::picker-icon { transition: none !important; }
+    }
+    @media (max-width: 840px) {
+      .settings-columns { display: block; overflow: hidden auto; }
+      #workspace-settings-fields:not([hidden]) { overflow: visible; }
+      #settings-unit-targets { flex: none; height: 76px; }
+      .settings-preview { height: min(380px, 60dvh); margin-top: 12px; }
+    }
+    @media (max-width: 560px) { .settings-pair { grid-template-columns: minmax(0, 1fr); gap: 0; } }
     .theme-toggle { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); color: var(--ink); cursor: pointer; transition: background 160ms ease, border-color 160ms ease, transform 120ms ease; }
     .theme-toggle:hover { border-color: var(--blue); background: var(--blue-soft); }
     .theme-toggle:active { transform: scale(.94); }
@@ -83,7 +163,7 @@
     .demo-badge, .state { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
     .demo-badge { background: var(--amber-soft); color: var(--amber); }
     .demo-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #c78912; }
-    .runbar { display: flex; align-items: center; gap: 14px; min-height: 66px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+    .runbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 66px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
     .run-meta { min-width: 0; flex: 1; }
     .run-titleline { display: flex; align-items: center; gap: 9px; }
     .run-name { min-width: 0; margin: 0; overflow: hidden; font-size: 13px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
@@ -98,7 +178,7 @@
     .state[data-state="waiting"] { background: var(--amber-soft); color: var(--amber); }
     .state-orb { width: 9px; height: 9px; border-radius: 50%; background: currentColor; transform-origin: center bottom; }
     .is-running .state-orb { animation: squash-bounce 1.175s ease-in-out infinite; }
-    .controls { display: flex; gap: 7px; }
+    .controls { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 7px; }
     #toggle { width: 128px; }
     #restart { width: 84px; }
     .button { display: inline-flex; height: 38px; min-height: 38px; align-items: center; justify-content: center; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); cursor: pointer; white-space: nowrap; transition: background 140ms ease, border-color 140ms ease, transform 100ms ease; }
@@ -137,7 +217,7 @@
     .metric-label { color: var(--muted); font-size: 11px; }
     .metric-value { margin-top: 3px; font: 700 17px var(--mono); }
     .metric-value span { color: var(--muted); font: 11px system-ui, sans-serif; }
-    .side { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; }
+    .side { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; }
     .side > .panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
     .activity { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 18px 14px; }
     .event { display: grid; grid-template-columns: 62px 9px 1fr; gap: 9px; min-height: 56px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); animation: arrive 240ms var(--ease) both; }
@@ -161,8 +241,7 @@
     .meter-label strong { color: var(--ink); font-family: var(--mono); font-weight: 650; }
     .ledger { overflow: hidden; }
     .ledger .panel-head { display: grid; grid-template-columns: 1fr; gap: 8px; border-bottom: 0; }
-    .ledger-controls { display: flex; min-width: 0; justify-content: flex-start; gap: 4px; overflow-x: auto; scrollbar-width: none; }
-    .ledger-controls::-webkit-scrollbar { display: none; }
+    .ledger-controls { display: flex; flex-wrap: wrap; min-width: 0; justify-content: flex-start; gap: 4px; }
     .filter-button { height: 27px; flex: 0 0 auto; padding: 0 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
     .filter-button:hover { background: var(--surface-hover); color: var(--ink); }
     .filter-button[aria-pressed="true"] { border-color: var(--line); background: var(--blue-soft); color: var(--blue); font-weight: 700; }
@@ -256,11 +335,13 @@
     #open-migration-ledger { min-height: 36px; height: 36px; }
     .migration-ledger-target { margin: 4px 0 8px; color: var(--muted); overflow-wrap: anywhere; }
     .migration-ledger-target code { color: var(--ink); }
+    .migration-ledger-comparisons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .migration-ledger-comparisons [hidden] { display: none; }
     .migration-ledger-list { margin: 0; padding: 0; list-style: none; }
     .migration-ledger-row { padding: 10px 0; border-top: 1px solid var(--line); }
     .migration-ledger-row > div { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
     .migration-ledger-row h3 { margin: 0; font-size: 13px; }
-    .migration-ledger-row ul { margin: 4px 0 0; padding-inline-start: 18px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .migration-ledger-row ul { margin: 4px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .migration-ledger-row code { color: var(--ink); }
     .migration-ledger-state { flex-shrink: 0; font-size: 12px; font-weight: 700; color: var(--muted); }
     .migration-ledger-state[data-state="complete"] { color: var(--green); }
@@ -294,8 +375,9 @@
     :root[data-wipe="star"] { --wipe-animation: reveal-star; }
     ::view-transition-new(root) { z-index: 2; filter: drop-shadow(0 0 3px #fff); animation: var(--wipe-animation) 1.15s cubic-bezier(.65,0,.35,1) both; }
     @media (max-width: 820px) {
-      :root:not([data-live]) .runbar { flex-wrap: wrap; }
-      :root:not([data-live]) .run-meta { flex-basis: 100%; }
+      .runbar { flex-wrap: wrap; }
+      .run-meta { flex-basis: 100%; }
+      .runbar .controls { flex-wrap: wrap; min-width: 0; }
       .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
       .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
       .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
@@ -305,6 +387,7 @@
     @media (max-width: 560px) {
       .shell { display: grid; width: calc(100% - 22px); height: 100%; min-height: 0; grid-template-rows: 36px auto minmax(0, 1fr); gap: 10px; padding: 10px 0; }
       .topline { margin-bottom: 0; }
+      #workspace-progress:not([hidden]) { gap: 10px; }
       .topline, .top-actions { gap: 8px; }
       .top-links { gap: 11px; font-size: 12px; }
       .runbar { flex-wrap: wrap; gap: 10px; margin-bottom: 0; padding: 10px; }
@@ -371,8 +454,16 @@
       </button>
     </div>
   </nav>
-  <section class="runbar" aria-label="実行情報">
-    <div class="run-meta"><div class="run-titleline"><h1 class="run-name">注文履歴ページの移行</h1><span class="demo-badge">模擬進捗</span></div><div class="run-detail">run-2026-11-14-001 · worktree: migration/order-history</div><p class="run-detail demo-comparison-status" id="demo-anchor-status" role="status" data-demo-only></p></div>
+  <div class="workspace-tabs" role="tablist" aria-label="ハーネス操作">
+    <button id="tab-progress" type="button" role="tab" aria-selected="true" aria-controls="workspace-progress">進捗</button>
+    <button id="tab-runs" type="button" role="tab" aria-selected="false" aria-controls="workspace-runs" tabindex="-1">実行</button>
+    <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="workspace-settings" tabindex="-1">設定</button>
+    <span class="workspace-tab-indicator" aria-hidden="true"></span>
+  </div>
+  <div class="workspace-panels">
+  <section class="workspace-pane" id="workspace-progress" role="tabpanel" aria-labelledby="tab-progress" tabindex="0">
+  <div class="runbar" aria-label="実行情報">
+    <div class="run-meta"><div class="run-titleline"><h1 class="run-name">注文履歴ページの移行</h1><span class="demo-badge">模擬進捗</span></div><div class="run-detail">run-2026-11-14-001 · worktree: migration/order-history</div><p class="run-detail demo-comparison-status" id="demo-anchor-status" role="status" data-demo-only></p><p class="workspace-feedback" id="workspace-progress-feedback" role="status"></p></div>
     <time class="elapsed" id="elapsed" datetime="PT0S" aria-label="実行経過時間"><span>経過時間</span><strong id="elapsed-value">00:00:00</strong></time>
     <span class="state is-running" id="run-state" data-state="running" aria-live="polite"><span class="state-orb" aria-hidden="true"></span><span id="state-label">Junieが実行中</span></span>
     <div class="controls" aria-label="デモ操作">
@@ -386,7 +477,7 @@
         </details>
       </div>
     </div>
-  </section>
+  </div>
 
   <div class="layout">
     <section class="panel" aria-labelledby="flow-title">
@@ -452,6 +543,98 @@
       </section>
     </div>
   </div>
+  </section>
+  <section class="workspace-pane" id="workspace-runs" role="tabpanel" aria-labelledby="tab-runs" tabindex="0" hidden>
+    <div class="panel workspace-tools">
+      <form id="workspace-new-run">
+        <h2>新規実行</h2>
+        <label for="workspace-unit">移行単位</label>
+        <select class="workspace-select" id="workspace-unit" required></select>
+        <div class="workspace-actions">
+          <button class="button primary" type="submit" value="run">移行を実行</button>
+          <button class="button" type="submit" value="prepare">準備</button>
+        </div>
+      </form>
+      <form id="workspace-open-run">
+        <h2>保存済みの実行</h2>
+        <label for="workspace-run-id">Run ID</label>
+        <input id="workspace-run-id" list="workspace-run-options" placeholder="候補から選択するか、Run IDを入力" autocomplete="off" required>
+        <datalist id="workspace-run-options"></datalist>
+        <div class="workspace-actions">
+          <button class="button primary" type="submit" value="resume-run">移行を再開</button>
+          <button class="button" type="submit" value="open-run">進捗を表示</button>
+        </div>
+      </form>
+      <p class="workspace-feedback" id="workspace-run-feedback" role="status"></p>
+    </div>
+  </section>
+  <section class="workspace-pane" id="workspace-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+    <form class="panel workspace-tools workspace-settings" id="workspace-config-form">
+      <div class="settings-heading">
+        <h2>設定ファイル（TOML）</h2>
+        <p class="run-detail" id="workspace-config-path"></p>
+      </div>
+      <div class="settings-columns">
+        <div id="workspace-settings-fields" hidden>
+          <fieldset class="settings-fields" id="settings-project-fields">
+            <legend>プロジェクト</legend>
+            <label for="settings-root">アプリのリポジトリ</label>
+            <input id="settings-root" data-setting="root" autocomplete="off">
+            <div class="settings-pair">
+              <div>
+                <label for="settings-worktree-root">作業ツリーの保存先</label>
+                <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off">
+              </div>
+              <div>
+                <label for="settings-run-root">実行データの保存先</label>
+                <input id="settings-run-root" data-setting="run_root" autocomplete="off">
+              </div>
+            </div>
+          </fieldset>
+          <fieldset class="settings-fields" id="settings-unit-fields">
+            <legend>移行単位</legend>
+            <div class="settings-unit-picker">
+              <div>
+                <label for="settings-unit">編集する移行単位</label>
+                <select class="workspace-select" id="settings-unit"></select>
+              </div>
+              <button class="button" id="settings-unit-add" type="button">移行単位を追加</button>
+            </div>
+            <div id="settings-unit-inputs" hidden>
+              <div class="settings-pair">
+                <div>
+                  <label for="settings-unit-id">機能名（ID）</label>
+                  <input id="settings-unit-id" data-setting="id" autocomplete="off">
+                </div>
+                <div>
+                  <label for="settings-unit-source">移行元PHP</label>
+                  <input id="settings-unit-source" data-setting="source" autocomplete="off">
+                </div>
+              </div>
+              <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
+              <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false"></textarea>
+            </div>
+          </fieldset>
+        </div>
+        <section class="settings-preview" aria-labelledby="workspace-preview-title">
+          <div class="settings-preview-toolbar">
+            <h2 id="workspace-preview-title">TOMLプレビュー</h2>
+            <button class="button" id="workspace-config-toggle" type="button" aria-controls="workspace-config" aria-expanded="false">TOMLを直接編集</button>
+          </div>
+          <pre id="workspace-config-preview" tabindex="0" aria-labelledby="workspace-preview-title"></pre>
+          <textarea id="workspace-config" aria-label="TOML本文" spellcheck="false" autocomplete="off" hidden></textarea>
+        </section>
+      </div>
+      <div class="settings-footer">
+        <div class="workspace-actions">
+          <button class="button primary" type="submit">設定を保存</button>
+          <button class="button" id="workspace-config-reload" type="button">読み込み直す</button>
+        </div>
+        <p class="workspace-feedback" id="workspace-config-feedback" role="status"></p>
+      </div>
+    </form>
+  </section>
+  </div>
   <dialog class="review-dialog" id="review-dialog" aria-labelledby="review-title">
     <div class="review-dialog-inner">
       <header class="review-heading">
@@ -511,9 +694,12 @@
     <div id="migration-ledger-details" hidden>
       <p class="run-detail">Run ID <code id="migration-ledger-run-id"></code></p>
       <p class="migration-ledger-target">移行先 <code id="migration-ledger-target"></code></p>
-      <p class="migration-ledger-target">振る舞い比較 <strong id="migration-behavior-status"></strong></p>
-      <div id="migration-candidate-comparison" hidden>
-        <button class="button" type="button">候補をDiff Viewerで開く</button>
+      <p class="migration-ledger-target" id="migration-ledger-completion" role="status"></p>
+      <div class="migration-ledger-comparisons">
+        <button class="review-action" id="migration-ledger-compare" type="button">差分を開く</button>
+        <div id="migration-candidate-comparison" hidden>
+          <button class="review-action" type="button">候補をDiff Viewerで開く</button>
+        </div>
       </div>
     </div>
     <p class="review-intro" id="migration-ledger-message" role="status" hidden></p>
@@ -527,6 +713,283 @@
   </div>
 </template>
 <script>
+const workspaceTabs = document.querySelector(".workspace-tabs");
+const harnessTabs = [...workspaceTabs.querySelectorAll('[role="tab"]')];
+const tabIndicator = workspaceTabs.querySelector(".workspace-tab-indicator");
+const harnessPanes = harnessTabs.map(tab => document.getElementById(tab.getAttribute("aria-controls")));
+let activeHarnessTab = 0;
+
+function positionTabIndicator() {
+  const tab = harnessTabs[activeHarnessTab];
+  tabIndicator.style.width = `${tab.offsetWidth}px`;
+  tabIndicator.style.transform = `translateX(${tab.offsetLeft}px)`;
+}
+
+function switchHarnessTab(index, focus = false) {
+  if (focus) harnessTabs[index].focus();
+  if (index === activeHarnessTab) return;
+  const previous = harnessPanes[activeHarnessTab];
+  activeHarnessTab = index;
+  const next = harnessPanes[index];
+  harnessTabs.forEach((tab, i) => {
+    tab.setAttribute("aria-selected", String(i === index));
+    tab.tabIndex = i === index ? 0 : -1;
+  });
+  for (const panel of harnessPanes) {
+    for (const animation of panel.getAnimations()) animation.cancel();
+    panel.hidden = panel !== next;
+    panel.inert = panel !== next;
+    delete panel.dataset.leaving;
+  }
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    previous.hidden = false;
+    previous.dataset.leaving = "";
+    const leaving = previous.animate([{opacity: 1}, {opacity: 0}], 200);
+    leaving.onfinish = () => { previous.hidden = true; delete previous.dataset.leaving; };
+    next.animate([{opacity: 0, transform: "translateY(8px)"}, {opacity: 1}], {duration: 200, delay: 100, fill: "backwards"});
+  }
+  positionTabIndicator();
+  workspaceTabs.dispatchEvent(new Event("harnesstab"));
+}
+
+harnessTabs.forEach((tab, index) => tab.addEventListener("click", () => switchHarnessTab(index)));
+workspaceTabs.addEventListener("keydown", event => {
+  const index = harnessTabs.indexOf(event.target);
+  if (index < 0) return;
+  const movement = {ArrowLeft: -1, ArrowRight: 1};
+  let next = index;
+  if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = harnessTabs.length - 1;
+  else if (event.key in movement) next = (index + movement[event.key] + harnessTabs.length) % harnessTabs.length;
+  else return;
+  event.preventDefault();
+  switchHarnessTab(next, true);
+});
+new ResizeObserver(positionTabIndicator).observe(workspaceTabs);
+positionTabIndicator();
+
+const workspaceUnit = document.querySelector("#workspace-unit");
+const workspaceRunID = document.querySelector("#workspace-run-id");
+const workspaceRunOptions = document.querySelector("#workspace-run-options");
+const workspaceConfig = document.querySelector("#workspace-config");
+const workspaceRunFeedback = document.querySelector("#workspace-run-feedback");
+const workspaceConfigFeedback = document.querySelector("#workspace-config-feedback");
+let workspaceControls = () => {};
+
+function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct}) {
+  const newRun = document.querySelector("#workspace-new-run");
+  const openRun = document.querySelector("#workspace-open-run");
+  const settings = document.querySelector("#workspace-config-form");
+  const reload = document.querySelector("#workspace-config-reload");
+  const preview = document.querySelector("#workspace-config-preview");
+  const previewTitle = document.querySelector("#workspace-preview-title");
+  const editToggle = document.querySelector("#workspace-config-toggle");
+  const fields = document.querySelector("#workspace-settings-fields");
+  const projectFields = [...fields.querySelectorAll("#settings-project-fields [data-setting]")];
+  const unitFields = [...fields.querySelectorAll("#settings-unit-inputs [data-setting]")];
+  const unit = document.querySelector("#settings-unit");
+  const emptyChanges = () => ({project: {}, units: {}});
+  let settingsVersion;
+  let settingsForm;
+  let changes = emptyChanges();
+  let timer;
+  let draftRevision = 0;
+  let previewPending = false;
+  let readingTOML = false;
+  let busy = false;
+  let lastRunRequest = 0;
+  workspaceControls = () => {
+    const available = canAct() && !busy;
+    for (const control of newRun.querySelectorAll("button")) control.disabled = !available || !workspaceUnit.value;
+    for (const control of openRun.querySelectorAll("button")) control.disabled = !available || !workspaceRunID.value.trim();
+    settings.querySelector('button[type="submit"]').disabled = !available || previewPending || !settingsVersion || !preview.textContent.trim();
+    workspaceConfig.readOnly = !available || !settingsVersion || (previewPending && !readingTOML);
+    for (const fieldset of fields.querySelectorAll("fieldset")) fieldset.disabled = !available || readingTOML;
+    reload.disabled = busy;
+  };
+
+  function showUnit() {
+    const current = settingsForm.units[Number(unit.value)];
+    document.querySelector("#settings-unit-inputs").hidden = !current;
+    for (const field of unitFields) {
+      const value = current?.[field.dataset.setting];
+      field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+    }
+  }
+
+  function showUnitOptions(index = Number(unit.value)) {
+    unit.replaceChildren(...settingsForm.units.map(({id}, i) => new Option(id || `移行単位 ${i + 1}`, i)));
+    if (index < settingsForm.units.length) unit.value = String(index);
+    showUnit();
+  }
+
+  function showTOMLEditor(editing) {
+    preview.hidden = editing;
+    workspaceConfig.hidden = !editing;
+    previewTitle.textContent = editing ? "TOML編集" : "TOMLプレビュー";
+    editToggle.textContent = editing ? "プレビューに戻る" : "TOMLを直接編集";
+    editToggle.setAttribute("aria-expanded", String(editing));
+  }
+
+  editToggle.addEventListener("click", () => showTOMLEditor(workspaceConfig.hidden));
+
+  function showSettingsDraft(data, showFields) {
+    workspaceConfig.value = data.content;
+    preview.textContent = data.content;
+    if (!showFields) return;
+    settingsForm = data.form;
+    fields.hidden = !settingsForm;
+    if (settingsForm) {
+      for (const field of projectFields) field.value = settingsForm.project[field.dataset.setting] ?? "";
+      showUnitOptions();
+    } else {
+      showTOMLEditor(true);
+    }
+  }
+
+  function schedulePreview(fromTOML = false) {
+    clearTimeout(timer);
+    const revision = ++draftRevision;
+    previewPending = true;
+    readingTOML = fromTOML;
+    workspaceConfigFeedback.textContent = "プレビューを更新しています。";
+    workspaceControls();
+    timer = setTimeout(async () => {
+      try {
+        const draft = await previewSettings(preview.textContent, fromTOML ? {} : changes);
+        if (revision !== draftRevision) return;
+        showSettingsDraft(draft, fromTOML);
+        changes = emptyChanges();
+        previewPending = false;
+        workspaceConfigFeedback.textContent = draft.form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
+      } catch (error) {
+        if (revision !== draftRevision) return;
+        workspaceConfigFeedback.textContent = error.message;
+      } finally {
+        if (revision === draftRevision) {
+          readingTOML = fromTOML && previewPending;
+          workspaceControls();
+        }
+      }
+    }, 160);
+  }
+
+  async function loadRuns() {
+    const request = ++lastRunRequest;
+    try {
+      const {units, runs} = await readRuns();
+      if (request !== lastRunRequest) return;
+      const selected = workspaceUnit.value;
+      workspaceUnit.replaceChildren(...units.map(unit => new Option(unit, unit)));
+      if (units.includes(selected)) workspaceUnit.value = selected;
+      workspaceRunOptions.replaceChildren(...runs.map(run => new Option(run.unit_id, run.run_id)));
+      workspaceRunFeedback.textContent = units.length ? "" : "設定タブで移行単位を登録してください。";
+    } catch (error) {
+      workspaceRunFeedback.textContent = error.message;
+    }
+    workspaceControls();
+  }
+
+  async function loadSettings(force = false) {
+    if (busy || (settingsVersion && !force)) return;
+    busy = true;
+    clearTimeout(timer);
+    ++draftRevision;
+    workspaceConfigFeedback.textContent = "設定を読み込んでいます。";
+    workspaceControls();
+    try {
+      const data = await readSettings();
+      settingsVersion = data.version;
+      showSettingsDraft(data, true);
+      changes = emptyChanges();
+      previewPending = readingTOML = false;
+      document.querySelector("#workspace-config-path").textContent = data.path;
+      workspaceConfigFeedback.textContent = data.form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
+    } catch (error) {
+      workspaceConfigFeedback.textContent = error.message;
+    } finally {
+      busy = false;
+      workspaceControls();
+    }
+  }
+
+  async function runAction(action, payload) {
+    if (busy || !canAct()) return;
+    busy = true;
+    workspaceControls();
+    try {
+      await execute(action, payload);
+      switchHarnessTab(0, true);
+    } catch (error) {
+      workspaceRunFeedback.textContent = error.message;
+    } finally {
+      busy = false;
+      workspaceControls();
+    }
+  }
+
+  newRun.addEventListener("submit", event => {
+    event.preventDefault();
+    if (workspaceUnit.value) runAction(event.submitter.value, {unit_id: workspaceUnit.value});
+  });
+  openRun.addEventListener("submit", event => {
+    event.preventDefault();
+    if (workspaceRunID.value.trim()) runAction(event.submitter.value, {run_id: workspaceRunID.value.trim()});
+  });
+  settings.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (busy || previewPending || !canAct() || !settingsVersion || !preview.textContent.trim()) return;
+    busy = true;
+    workspaceConfigFeedback.textContent = "設定を保存しています。";
+    workspaceControls();
+    try {
+      const saved = await saveSettings(preview.textContent, settingsVersion);
+      settingsVersion = saved.version;
+      workspaceConfigFeedback.textContent = "設定を保存しました。実行タブから移行単位を選べます。";
+    } catch (error) {
+      workspaceConfigFeedback.textContent = error.message;
+    } finally {
+      busy = false;
+      workspaceControls();
+    }
+  });
+  for (const field of projectFields) field.addEventListener("input", () => {
+    const key = field.dataset.setting;
+    changes.project[key] = settingsForm.project[key] = field.value;
+    schedulePreview();
+  });
+  for (const field of unitFields) field.addEventListener("input", () => {
+    const index = Number(unit.value);
+    const key = field.dataset.setting;
+    const value = key === "targets" ? field.value.split("\n").map(path => path.trim()).filter(Boolean) : field.value;
+    changes.units[index] ??= {};
+    changes.units[index][key] = settingsForm.units[index][key] = value;
+    if (key === "id") unit.selectedOptions[0].text = value || `移行単位 ${index + 1}`;
+    schedulePreview();
+  });
+  unit.addEventListener("change", showUnit);
+  document.querySelector("#settings-unit-add").addEventListener("click", () => {
+    const index = settingsForm.units.length;
+    const draft = {id: "", source: "", targets: []};
+    changes.units[index] = {...draft};
+    settingsForm.units.push(draft);
+    showUnitOptions(index);
+    unitFields[0].focus();
+    schedulePreview();
+  });
+  workspaceConfig.addEventListener("input", () => {
+    preview.textContent = workspaceConfig.value;
+    schedulePreview(true);
+  });
+  reload.addEventListener("click", () => loadSettings(true));
+  for (const control of [workspaceUnit, workspaceRunID]) control.addEventListener("input", workspaceControls);
+  workspaceTabs.addEventListener("harnesstab", () => {
+    if (activeHarnessTab === 1) loadRuns();
+    if (activeHarnessTab === 2) loadSettings();
+  });
+  workspaceControls();
+}
+
 "use strict";
 
 // ダッシュボードは分割マーカーより前のHTMLとスクリプトを配信する。
@@ -566,7 +1029,6 @@ const migrationLedgerList = document.querySelector("#migration-ledger-list");
 const migrationLedgerMessage = document.querySelector("#migration-ledger-message");
 const migrationLedgerDetails = document.querySelector("#migration-ledger-details");
 const migrationCandidateComparison = document.querySelector("#migration-candidate-comparison");
-
 // 受信したカプセルの状態を台帳の既存行に反映する。
 function updateMigrationLedgerStatuses(snapshot) {
   if (!migrationLedgerDialog.open) return;
@@ -596,10 +1058,12 @@ function migrationMapping({mapping, review}) {
   const entry = document.querySelector("#migration-mapping-template").content.firstElementChild.cloneNode(true);
   const status = entry.querySelector(".migration-mapping-status");
   const location = entry.querySelector(".migration-mapping-location");
-  const confirmation = review?.state || (mapping?.confirmed ? "confirmed" : mapping?.snapshot_id ? "candidate" : mapping ? "stale" : "needs_review");
+  const confirmation = review?.state || (mapping?.valid || mapping?.snapshot_id ? "candidate" : mapping ? "stale" : "needs_review");
   status.dataset.confirmation = confirmation;
   status.textContent = {confirmed: "人の確認済み", candidate: "候補あり", excluded: "対象外", needs_review: "要確認", stale: "要再確認"}[confirmation];
-  if (mapping) {
+  if (review?.targets) {
+    location.textContent = ` · ${review.targets.join(" / ")}`;
+  } else if (mapping) {
     const lines = mapping.start_line === mapping.end_line ? `${mapping.start_line}行目` : `${mapping.start_line}–${mapping.end_line}行`;
     location.textContent = ` · ${mapping.path} ${lines}`;
     if (mapping.snapshot_id) location.append(`（アンカー ${mapping.anchors}件）`);
@@ -623,6 +1087,7 @@ function migrationLedgerRow(capsule) {
   badge.dataset.capsule = capsule.index;
   header.append(title, badge);
   const ranges = document.createElement("ul");
+  ranges.setAttribute("role", "list");
   for (const source of capsule.sources) {
     const range = document.createElement("li");
     const path = document.createElement("code");
@@ -630,12 +1095,14 @@ function migrationLedgerRow(capsule) {
     const lines = source.start_line === source.end_line
       ? `${source.start_line}行目`
       : `${source.start_line}–${source.end_line}行`;
-    range.append(path, ` · ${lines}`);
-    if (source.symbol) range.append(` · ${source.symbol}`);
-    if (source.id) range.append(` [${source.id}]`);
+    const text = document.createElement("span");
+    text.append(path, ` · ${lines}`);
+    if (source.symbol) text.append(` · ${source.symbol}`);
+    if (source.id) text.append(` [${source.id}]`);
     for (const slice of source.character_slices || []) {
-      range.append(`（${slice.line}行目の${slice.focus_start_column}–${slice.focus_end_column}文字目）`);
+      text.append(`（${slice.line}行目の${slice.focus_start_column}–${slice.focus_end_column}文字目）`);
     }
+    range.append(text);
     range.append(migrationMapping(source));
     ranges.append(range);
   }
@@ -663,8 +1130,11 @@ function openMigrationLedger(message = "") {
 function showMigrationLedger(ledger, snapshot, compare) {
   document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
   document.querySelector("#migration-ledger-target").textContent = (ledger.targets || [ledger.target]).join(" / ");
-  document.querySelector("#migration-behavior-status").textContent =
-    {not_run: "未実行", passed: "サンプル検証済み", failed: "失敗", stale: "要再検証"}[ledger.behavior_status] || "未実行";
+  const {complete, verification_passed, reviewed, total} = ledger.completion;
+  const progress = `確認済み・対象外 ${reviewed} / ${total} 範囲`;
+  const verification = verification_passed ? "ビルド・チェック確認済み" : "ビルド・チェックの確認が必要";
+  document.querySelector("#migration-ledger-completion").textContent =
+    `${complete ? "移行完了" : "移行未完了"} · ${progress} · ${verification}`;
   migrationLedgerList.replaceChildren(...ledger.capsules.map(migrationLedgerRow));
   migrationLedgerDetails.hidden = false;
   migrationLedgerMessage.hidden = true;
@@ -728,6 +1198,71 @@ function showMigrationLedger(ledger, snapshot, compare) {
   let correctionRequested = false;
   let capsuleInterrupted = false;
   const demoMappings = new Map();
+  const demoMigrationTargets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"];
+  const demoRunID = "run-2026-11-14-001";
+  let demoSettings = '[project]\nroot = "C:/apps/orders"\nworktree_root = "C:/migration/worktrees"\nrun_root = "C:/migration/runs"\n\n[[units]]\nid = "注文履歴"\nsource = "php/orders.php"\ntargets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]\n';
+  const demoUnits = () => [...demoSettings.matchAll(/^\s*id\s*=\s*"([^"\r\n]+)"/gm)].map(match => match[1]);
+  // デモの設定例は文字列と文字列の配列だけで構成される。
+  function demoSettingsDraft(content, changes = {}) {
+    const blocks = content.split(/(?=^\s*\[)/m);
+    let project = blocks.findIndex(block => /^\s*\[project\]/.test(block));
+    const units = blocks.flatMap((block, index) => /^\s*\[\[units\]\]/.test(block) ? [index] : []);
+    const fieldPattern = key => new RegExp(`^\\s*${key}\\s*=([^\\r\\n]*)`, "m");
+    function patchBlock(index, fields) {
+      for (const [key, value] of Object.entries(fields)) {
+        const assignment = `${key} = ${JSON.stringify(value)}`;
+        const pattern = fieldPattern(key);
+        blocks[index] = pattern.test(blocks[index])
+          ? blocks[index].replace(pattern, match => match.replace(/\S.*$/, () => assignment))
+          : `${blocks[index].trimEnd()}\n${assignment}\n\n`;
+      }
+    }
+    if (changes.project && Object.keys(changes.project).length) {
+      if (project < 0) project = blocks.push("\n[project]\n") - 1;
+      patchBlock(project, changes.project);
+    }
+    for (const [index, fields] of Object.entries(changes.units || {})) {
+      units[index] ??= blocks.push("\n[[units]]\n") - 1;
+      if ("targets" in fields) blocks[units[index]] = blocks[units[index]].replace(/^\s*target\s*=.*$/m, "");
+      patchBlock(units[index], fields);
+    }
+    const read = (index, key) => {
+      const value = blocks[index]?.match(fieldPattern(key))?.[1];
+      return value === undefined ? undefined : JSON.parse(value.trim());
+    };
+    const updated = blocks.join("");
+    try {
+      return {content: updated, form: {
+        project: Object.fromEntries(["root", "worktree_root", "run_root"].map(key => [key, read(project, key)])),
+        units: units.map(index => ({id: read(index, "id"), source: read(index, "source"),
+          targets: read(index, "targets") || [read(index, "target")].filter(Boolean)})),
+      }};
+    } catch {
+      return {content, form: null};
+    }
+  }
+  bindHarnessWorkspace({
+    readRuns: async () => ({units: demoUnits(), runs: [{run_id: demoRunID, unit_id: "注文履歴"}]}),
+    readSettings: async () => ({path: "harness.local.toml（デモ内）", version: "demo", ...demoSettingsDraft(demoSettings)}),
+    previewSettings: async (content, changes) => demoSettingsDraft(content, changes),
+    saveSettings: async content => { demoSettings = content; return {version: "demo"}; },
+    execute: async (action, data) => {
+      if (action === "open-run" || action === "resume-run") {
+        if (data.run_id !== demoRunID) throw new Error("保存済みの候補からデモのRun IDを選択してください。");
+        if (action === "resume-run" && !playing) play();
+        return;
+      }
+      reset();
+      document.querySelector(".run-name").textContent = `${data.unit_id} の移行`;
+      if (action === "run") play();
+      else {
+        updateStep(3);
+        stop();
+        stateLabel.textContent = "準備完了";
+      }
+    },
+    canAct: () => true,
+  });
   let demoCandidateWorkspace;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -745,18 +1280,24 @@ function showMigrationLedger(ledger, snapshot, compare) {
   migrationLedgerButton.disabled = false;
   // 模擬データを共通の台帳に渡し、比較時点の内容を再表示できるようにする。
   function showDemoMigrationLedger() {
+    const verificationPassed = current >= steps.length;
+    const reviewed = verificationPassed ? 2 : 0;
+    const complete = verificationPassed && reviewed === capsuleCalls.length;
+    if (verificationPassed) stateLabel.textContent = complete ? "移行完了" : "移行台帳の確認待ち";
     showMigrationLedger({
       run_id: "run-2026-11-14-001",
       target: "Pages/Orders/Index.cshtml.cs",
-      targets: ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"],
-      behavior_status: current >= steps.length ? "passed" : "not_run",
+      targets: demoMigrationTargets,
+      completion: {complete, verification_passed: verificationPassed, reviewed, total: capsuleCalls.length},
       capsules: capsuleCalls.map(({lines}, index) => ({
         index: index + 1,
         sources: [{
           path: "php/orders.php", start_line: lines[0], end_line: lines[1],
           id: `${index + 1}:1`, symbol: index === 0 ? "get_status_label" : undefined,
           mapping: demoMappings.get(index + 1),
-          review: index === 2 && demoMappings.size ? {state: "needs_review", reason: "対応先を特定できるアンカーがありません。"} : undefined,
+          review: verificationPassed && index < 2
+            ? {state: "confirmed", reason: "原文と移行先の対応を確認しました。", targets: demoMigrationTargets}
+            : undefined,
         }],
       })),
     }, demoMigrationLedgerState(), () => openDiffViewer(
@@ -768,6 +1309,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
     openMigrationLedger();
     showDemoMigrationLedger();
   });
+  document.querySelector("#migration-ledger-compare").addEventListener("click", () => openDiffViewer(migrationLedgerMessage));
   // 工程の切り替えに合わせて、計測・表示・人の確認待ちを更新する。
   function updateStep(index) {
     toggle.removeAttribute("aria-haspopup");
@@ -827,7 +1369,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
       correctionRequested = false;
     }
     if (index === 6 && !humanReviewHandled) requestHumanReview();
-    updateMigrationLedgerStatuses(demoMigrationLedgerState());
+    if (migrationLedgerDialog.open) showDemoMigrationLedger();
   }
 
   // 指摘の見出しにフォーカスして確認を始める。

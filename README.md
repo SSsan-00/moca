@@ -4,8 +4,8 @@ PythonとLangGraphで、PHPからASP.NET Core Razor Pages（現状.NET 9）へ�
 
 ## 現在の実装
 
-- 移行単位ごとに、入力ファイルと行範囲をTOMLで明示する
-- 指定行だけを行番号付きコンテキストにまとめ、設定上限ごとのカプセルに分割する
+- 移行単位ごとに、移行元PHPと移行先をTOMLで指定する
+- 移行元を行番号付きコンテキストにまとめ、設定上限ごとのカプセルに分割する
 - アプリ用のGit worktreeを、指定した基準リビジョンから作成する
 - `run`では、設定した移行先ファイルと、その回のカプセルを渡し、Junie CLIを順番に起動する
 - 各Junie呼び出し後に編集を許可した移行先をworktreeへ反映し、実行記録を保存する
@@ -16,7 +16,7 @@ PythonとLangGraphで、PHPからASP.NET Core Razor Pages（現状.NET 9）へ�
 - `resume`では、既存の実行記録・worktree・agent workspaceを使い、未完了カプセルから再開する
 - JunieにPHPとC#の対応行を提案させ、アンカー付きのDiff ViewerワークスペースJSONを保存する
 
-アンカーの座標は保存前に検証します。PHPとC#の意味上の対応はDiff Viewerで確認できます。代表処理の振る舞いは `verify` で比較できます。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
+アンカーの座標は保存前に検証します。PHPとC#の意味上の対応はDiff Viewerで確認できます。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
 
 Junieへ渡す情報と作業フォルダはハーネスで絞りますが、別の絶対パスへのアクセスをOSレベルで遮断するものではありません。Junieを使うと、選択したコンテキストがJunieのサービスへ送られます。生成後は`run.json`とworktreeの差分を人が確認してください。
 
@@ -29,7 +29,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-テストは一時ディレクトリにGitリポジトリとRunを作ります。PHPと.NET 10 SDKがある環境では振る舞い比較の実行テストも動きます。準備処理はGitとLangGraphを実行し、制御のテストではJunieや.NETなどをテスト用の処理に置き換えます。GitHub ActionsはmainへのpushとPRで、WindowsとLinuxのPython 3.11・3.13を検証します。
+テストは一時ディレクトリにGitリポジトリとRunを作ります。準備処理はGitとLangGraphを実行し、制御のテストではJunieや.NETなどをテスト用の処理に置き換えます。GitHub ActionsはmainへのpushとPRで、WindowsとLinuxのPython 3.11・3.13を検証します。
 
 ## セットアップ（Windows）
 
@@ -46,13 +46,22 @@ Copy-Item harness.example.toml harness.local.toml
 
 `pip install -e .`はハーネスのコマンドを仮想環境に登録し、LangGraphなどのPython依存パッケージをインストールします。`-e`はソースをclone先に置いたまま使う開発向け設定で、ハーネスを改造すると次回実行から変更が反映されます。Python、Git、Junie CLI自体はこのコマンドではインストールされません。
 
-`harness.local.toml`を編集して、アプリのGitリポジトリ、基準リビジョン、worktree保存先、実行データ保存先、移行単位と入力範囲を指定します。worktreeと実行データはアプリリポジトリおよびこのハーネスリポジトリの外に置いてください。設定例のパスと行範囲はプレースホルダーです。
+`harness.local.toml`を編集して、アプリのGitリポジトリ、基準リビジョン、worktree保存先、実行データ保存先、移行単位を指定します。worktreeと実行データはアプリリポジトリおよびこのハーネスリポジトリの外に置いてください。設定例のパスはプレースホルダーです。
 
-Razorページの画面とPageModelを一緒に編集する場合は、同じ `[[units]]` に `targets = ["Pages/Orders.cshtml.cs", "Pages/Orders.cshtml"]` を指定します。1ファイルの場合は従来の `target = "Pages/Orders.cshtml.cs"` を引き続き使えます。同じRun IDで再開するときは、Run作成時と同じ移行先を指定します。チェッカーの指摘はファイルごとに追跡します。
+たとえば、メニュー機能を移行する単位は次のように設定します。
+
+```toml
+[[units]]
+id = "メニュー"
+source = "php/menu.php"
+targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
+```
+
+`id` は設定ファイル内で一意の機能名です。`"メニュー"` や `"menu"` のように、日本語でも英数字でも指定できます。`source` にはアプリリポジトリからの相対パスを指定します。ハーネスはPHPの全文を固定し、1行目からファイル末尾までをJunieに渡します。移行先が1ファイルなら `target`、画面とPageModelを一緒に編集するなら `targets` を使います。同じRun IDで再開するときは、Run作成時と同じ移行先を指定します。チェッカーの指摘はファイルごとに追跡します。
 
 反映中に停止した場合は、内容のハッシュを照合して同じRun IDから残りを反映します。移行先や保存済みのJunie出力に外部編集があった場合は、該当ファイルを照合してから再開してください。全カプセルの反映後にビルドします。
 
-入力には、移行元PHP、コメントだけを追加した注釈版PHP、仮C#、移行ルールの該当箇所、必要な既存C#例などを指定できます。各入力はファイルと開始・終了行を明示します。`max_context_chars`の既定値は100,000文字です。これは1回のJunie呼び出しに渡すコンテキストカプセルごとの上限であり、トークン数の厳密な上限ではありません。範囲が上限を超えると現在は行境界で分割し、`run`は順番にJunieへ渡します。関数や制御構文の境界は現在判定しません。1行自体が上限を超える場合は文字位置を記録して分割し、隣接する断片の前後512文字（上限の小さい設定ではその5%）を読み取り用に重ねます。AIには重なり部分を再移行せず、指定されたfocus範囲だけを処理するよう指示します。各入力の文字コードは`encoding`で指定できます。`auto`ではUTF-8 BOMを優先し、BOMなしの場合はUTF-8とEUC-JPを厳密に判定します。両方で異なる文字列として読める曖昧な入力や、どちらでも読めない入力は自動選択せず、`encoding = "utf-8"`または`encoding = "euc-jp"`の指定を求めます。対象ファイル全体や会話履歴・ツール出力は文字数に含みません。
+`[[units.inputs]]` では、注釈版PHP、仮C#、移行ルール、既存C#例などのファイルと開始・終了行を指定できます。参照資料として `source` に追加することも、従来どおり `[[units.inputs]]` だけで移行範囲を指定することもできます。`max_context_chars`の既定値は100,000文字です。これは1回のJunie呼び出しに渡すコンテキストカプセルごとの上限であり、トークン数の厳密な上限ではありません。範囲が上限を超えると現在は行境界で分割し、`run`は順番にJunieへ渡します。関数や制御構文の境界は現在判定しません。1行自体が上限を超える場合は文字位置を記録して分割し、隣接する断片の前後512文字（上限の小さい設定ではその5%）を読み取り用に重ねます。AIには重なり部分を再移行せず、指定されたfocus範囲だけを処理するよう指示します。文字コードを明示する場合は、`source` に対しては同じ `[[units]]` に `source_encoding`、`[[units.inputs]]` に対しては `encoding` を指定します。`auto`ではUTF-8 BOMを優先し、BOMなしの場合はUTF-8とEUC-JPを厳密に判定します。両方で異なる文字列として読める曖昧な入力や、どちらでも読めない入力は自動選択せず、`"utf-8"` や `"euc-jp"` の明示指定を求めます。対象ファイル全体や会話履歴・ツール出力は文字数に含みません。
 
 全カプセルで必須のルールは `role = "migration_rules"` で指定します。他の参照入力も `shared = true` を指定すると毎回同梱されます。準備時に共通入力と見出し分の文字数を確保し、残りに移行対象を詰めます。共通入力だけで上限を超える場合や対象を入れる余裕がない場合は、準備時に理由を表示します。再開時は保存済みのカプセルを使います。
 
@@ -60,46 +69,55 @@ Razorページの画面とPageModelを一緒に編集する場合は、同じ `[
 
 ### 大規模ソースの情報欠落を防ぐ設計
 
-指定行を文字数上限に合わせて分割し、`run`で順番にJunieへ渡します。`capsule/manifest.json`に各カプセルの文字数、文字コード、元ファイル・行範囲、行内のfocus範囲と重なり範囲を記録します。巨大な1行では前後の文字列を重ねて渡し、Junieが境界付近の文脈を参照できるようにします。複数カプセルになった場合は、`run.json`の確認フラグに従って分割位置をレビューしてください。
+移行対象を文字数上限に合わせて分割し、`run`で順番にJunieへ渡します。`capsule/manifest.json`に各カプセルの文字数、文字コード、元ファイル・行範囲、行内のfocus範囲と重なり範囲を記録します。巨大な1行では前後の文字列を重ねて渡し、Junieが境界付近の文脈を参照できるようにします。複数カプセルになった場合は、`run.json`の確認フラグに従って分割位置をレビューしてください。
 
 ダッシュボードの **移行台帳** では、Run IDごとに、カプセルに含まれるPHPの行範囲、設定した移行先ファイル、処理状態を確認できます。範囲は `capsule/manifest.json`、完了数と処理中のカプセルは `run.json` に保存され、同じRun IDで再開した後も確認できます。**処理済み** はJunieの完了記録が反映された状態です。処理の対応関係はDiff Viewerでレビューします。
 
 準備時に参照PHPの原文をRun配下の `capsule/php-sources/` に保存します。Diff Viewerとアンカー生成は、このコピーをmanifestの文字コードとSHA-256で照合して使います。この仕組みを導入する前のRunでは、manifestのパスと文字コードで現在のプロジェクトから読みます。移行時点の原文を確認するには、元の版でRunを作り直してください。
 
-ダッシュボード上部の **比較ツールを開く** メニューから **Junieで対応行を提案して開く** を選ぶと、ハーネスが処理済みのPHP範囲に対応する候補をアンカーから割り出し、同じRun IDの `run.json` に自動で保存します。移行台帳は閲覧専用です。候補のファイルと行範囲を確認し、**候補をDiff Viewerで開く** から元のスナップショットを見直せます。
+ダッシュボード上部の **比較ツールを開く** メニューから **Junieで対応行を提案して開く** を選ぶと、ハーネスが処理済みのPHP範囲に対応する候補をアンカーから割り出し、同じRun IDの `run.json` に自動で保存します。候補のファイルと行範囲を確認し、**候補をDiff Viewerで開く** から元のスナップショットを見直せます。
 
 候補を絞れない範囲は **要確認**、候補の保存後に移行先が変わった範囲は **要再確認** と表示します。以前に記録した対応は、移行先の内容が一致していれば **人の確認済み** と表示します。進捗デモでも、同じ操作で模擬データを確認できます。
 
-入力設定に `symbol = "get_status_label"` を指定すると、台帳に元のシンボル名を表示します。人の判断を残す必要がある場合は、台帳に表示した範囲IDをCLIに渡します。範囲IDを繰り返し指定すると、同じ判断と理由をまとめて記録できます。
+入力設定に `symbol = "get_status_label"` を指定すると、台帳に元のシンボル名を表示します。移行台帳では記録済みの判断と理由を確認でき、**差分を開く** で移行先を見直せます。
+
+CLIを使う場合は、台帳に表示した範囲IDを指定します。
 
 ```powershell
 php-to-csharp-harness ledger-review --config harness.local.toml --run-id RUN_ID --range 1:1 --range 2:1 --state excluded --reason "旧画面でのみ使用"
 ```
 
-`--state` は `confirmed`（人の確認済み）、`excluded`（対象外）、`needs_review`（要確認）から選びます。確認済みの記録には、現在の移行先と一致する対応候補が必要です。記録した時点の移行先や対応箇所が変わると、理由を残したまま **要再確認** と表示します。
+`--state` は `confirmed`（確認済み）、`excluded`（理由付きの対象外）、`needs_review`（要確認）から選びます。現在の対応候補を確認した場合はそのまま `confirmed` にできます。候補を作れない範囲や複数ファイルにまたがる範囲では、Diff Viewerで確認した移行先を `--target` で指定します。複数の範囲をまとめて指定すると、同じ移行先で確認を記録します。
+
+```powershell
+php-to-csharp-harness ledger-review --config harness.local.toml --run-id RUN_ID --range 1:1 --state confirmed --target Pages/Menu.cshtml.cs --target Pages/Menu.cshtml --reason "原文と画面・PageModelの対応を確認"
+```
+
+**移行完了** になるのは、台帳の全PHP範囲が確認済みか理由付きの対象外になり、現在の移行先に対してビルドと設定済みのチェッカーが成功しているときです。チェッカーの指摘を理由付きで承認し、再実行でも承認済みの指摘だけが残った場合も条件を満たします。確認した移行先が変わった範囲は、理由を残して **要再確認** に戻ります。対象外の判断は保持します。
+
+移行先が変わったら、差分を確認してCLIで判断を登録し、ダッシュボードの **ビルド・チェックを再実行** を選びます。CLIからは同じRun IDで `resume` できます。検証時のハッシュが記録されていない旧Runでも、同じ操作で現在の内容を検証できます。
 
 関数などの論理境界に基づく分割、依存資料の追加取得、対応の自動検証は今後の設計です。
 
-## 代表処理の振る舞い比較
-
-PHP 8以上と.NET 10 SDKを使う任意の検証です。`examples/behavior-search` の3ファイルを隔離したサンプルアプリのGitリポジトリに置き、`Search.cs` を移行先、`search.php` をPHP入力として `prepare` します。PHPは準備時にRunへ保存した固定スナップショット、C#は同じRunのworktreeから読み、検証用の一時フォルダで実行します。
-
-```powershell
-php-to-csharp-harness verify --config harness.local.toml --run-id RUN_ID --fixture PATH_TO_CASES_JSON
-php-to-csharp-harness verify --config harness.local.toml --run-id RUN_ID
-```
-
-ケースは入力と期待結果をJSONで定義します。PHPとC#の両方が標準入力でケースの配列を受け取り、同じ順番で結果オブジェクトを返します。サンプルは検索の必須条件、文字列の `0`、件数の境界、並び順、日本語の表示値を検証します。動的な `generated_at` は `ignored_fields` に指定し、他の値と配列の順序を照合します。
-
-Run配下の `behavior.json` とログに、実行コマンド、PHP・.NETの情報、対象ファイルとケースのハッシュ、期待値・実測値を残します。`--fixture` を省くと保存結果を表示します。台帳ではRun単位で未実行・サンプル検証済み・失敗・要再検証を表示します。対象ファイルやケースが変わった場合は同じRun IDと `--fixture` を指定して再検証します。固定PHPの欠損やハッシュ不一致がある場合は、以前の結果を **要再検証** と表示します。旧方式で保存した結果も要再検証になります。固定PHPを持たないRunは、元の版で作り直してから比較します。このサンプルは独立した処理用の契約です。
-
 ## 実行
+
+### ダッシュボードから管理する
+
+WindowsのPowerShellで `.\h.cmd d` を実行し、端末に表示されたローカルURLを開きます。通常のCLIでは `php-to-csharp-harness dashboard --config harness.local.toml` を使います。
+
+- **設定** のフォームでプロジェクトと移行単位を編集し、TOMLプレビューを確認して保存します。作業ツリーは既定で現在の `HEAD` から作ります。別のGitリビジョンが必要な場合は **TOMLを直接編集** で `base_ref` を指定します。初回は設定例を表示し、内容を検証してから保存します。
+- **実行** で移行単位を選んで準備や移行を開始します。保存済みのRunは **移行を再開** または **進捗を表示** で操作します。
+- **進捗** でログ、差分、移行台帳を確認し、必要に応じて同じRunを再開します。Junieが対話を求めたときは、ダッシュボードを起動した端末で応答します。
+
+進捗デモでも3つのタブと台帳を試せます。デモでの設定編集はページ内の模擬データに反映されます。
+
+### コマンドから実行する
 
 Windowsでは、リポジトリ内の`h.cmd`を短いランチャーとして使えます。仮想環境の有効化や`--config`指定は不要です。
 
 ```powershell
-.\h.cmd p example-page
-.\h.cmd r example-page
+.\h.cmd p "メニュー"
+.\h.cmd r "メニュー"
 .\h.cmd s
 ```
 
@@ -108,13 +126,13 @@ Windowsでは、リポジトリ内の`h.cmd`を短いランチャーとして使
 指定内容の検証、コンテキスト作成、worktree作成だけを行う場合:
 
 ```powershell
-php-to-csharp-harness prepare --config harness.local.toml --unit example-page
+php-to-csharp-harness prepare --config harness.local.toml --unit "メニュー"
 ```
 
 Junieを起動して対象ファイルを移行する場合:
 
 ```powershell
-php-to-csharp-harness run --config harness.local.toml --unit example-page
+php-to-csharp-harness run --config harness.local.toml --unit "メニュー"
 ```
 
 `run`には対話ターミナル、`PATH`上のJunie CLI、移行先に対応する.NET SDKが必要です。Junie用作業フォルダには、設定した対象ファイルとコンテキストを配置します。複数カプセルがある場合は、前の呼び出しで更新したファイルを次の呼び出しへ引き継ぎ、各呼び出し後にworktreeへ反映します。
@@ -128,7 +146,7 @@ Junieはカプセルの作業を終えると、作業フォルダに今回の起
 ビルド成功後、チェッカーをworktreeのルートで実行します。`--checker-command` はコマンドの最後に置き、実行ファイル名と引数を続けて指定します。たとえば、アプリ側の `tools/check_migration.py` をWindowsで呼ぶ場合は次のようにします。
 
 ```powershell
-php-to-csharp-harness run --config harness.local.toml --unit example-page --checker-command py -3.11 tools/check_migration.py
+php-to-csharp-harness run --config harness.local.toml --unit "メニュー" --checker-command py -3.11 tools/check_migration.py
 ```
 
 `.\h.cmd r` や `.\h.cmd s` から使う場合は、`harness.local.toml` に設定します。CLIに指定したコマンドがTOMLより優先されます。指定を省略するとビルドで終了します。
@@ -168,7 +186,7 @@ php-to-csharp-harness resume --config harness.local.toml --run-id $runId
 ### ブラウザーで進捗と指摘を確認する
 
 ```powershell
-php-to-csharp-harness run --config harness.local.toml --unit example-page --dashboard
+php-to-csharp-harness run --config harness.local.toml --unit "メニュー" --dashboard
 ```
 
 ターミナルに表示された `http://127.0.0.1:...` のURLを開きます。完了後を含む保存済みの実行は、次のコマンドで開きます。Windowsでは `.\h.cmd v` も使えます。

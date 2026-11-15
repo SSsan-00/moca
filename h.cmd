@@ -10,6 +10,7 @@ if /I "%ACTION%"=="p" set "ACTION=prepare"
 if /I "%ACTION%"=="r" set "ACTION=run"
 if /I "%ACTION%"=="s" set "ACTION=resume"
 if /I "%ACTION%"=="v" set "ACTION=view"
+if /I "%ACTION%"=="d" set "ACTION=dashboard"
 
 if not exist "%HARNESS%" (
   echo ハーネスが未インストールです。次を実行してください:
@@ -17,6 +18,7 @@ if not exist "%HARNESS%" (
   echo .venv\Scripts\python -m pip install -e .
   exit /b 2
 )
+if /I "%ACTION%"=="dashboard" goto dashboard
 if not exist "%CONFIG%" (
   echo harness.local.tomlがありません。harness.example.tomlをコピーして設定してください。
   exit /b 2
@@ -27,6 +29,10 @@ if /I "%ACTION%"=="run" goto unit
 if /I "%ACTION%"=="resume" goto saved
 if /I "%ACTION%"=="view" goto saved
 goto usage
+
+:dashboard
+"%HARNESS%" dashboard --config "%CONFIG%"
+exit /b %errorlevel%
 
 :unit
 if "%~2"=="" goto usage
@@ -44,7 +50,8 @@ if not defined RUN_ID exit /b 2
 exit /b %errorlevel%
 
 :usage
-echo 使い方: h.cmd p ^| r ^<unit-id^> ^| s [run-id] ^| v [run-id]
+echo 使い方: h.cmd d ^| p ^| r ^<unit-id^> ^| s [run-id] ^| v [run-id]
+echo   d  ダッシュボードで設定と実行を管理
 echo   p  移行準備
 echo   r  Junieで移行
 echo   s  中断した実行を再開。Run IDを省くと入力を求める

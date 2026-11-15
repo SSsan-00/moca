@@ -26,21 +26,23 @@ steps[4].querySelector("h3").textContent = "ビルド";
 steps[6].querySelector("h3").textContent = "人の確認";
 for (const step of steps) step.querySelector(".step-elapsed").hidden = true;
 const statusNames = {
-  preparing: "準備中", prepared: "準備完了", junie_running: "Junieで移行中",
-  junie_finished: "移行完了", repairing: "Junieで修正中", building: "ビルド中",
+  idle: "実行を選択してください", preparing: "準備中", prepared: "準備完了", junie_running: "Junieで移行中",
+  junie_finished: "Junieの編集完了", repairing: "Junieで修正中", building: "ビルド中",
   build_succeeded: "ビルド成功", build_failed: "ビルド失敗", checking: "チェッカー実行中",
   checker_needs_review: "人の確認待ち", checker_failed: "チェッカー実行失敗",
-  checker_succeeded: "確認完了", checker_accepted: "人の判断を反映して完了",
+  checker_succeeded: "チェッカー成功", checker_accepted: "チェッカーの指摘を承認済み",
   interrupted: "中断", junie_failed: "Junie実行失敗",
 };
 const savedView = document.documentElement.hasAttribute("data-saved");
-const complete = new Set(["checker_succeeded", "checker_accepted", "build_succeeded"]);
+const verifiedStatuses = new Set(["checker_succeeded", "checker_accepted", "build_succeeded"]);
 const stage = {
   preparing: 0, prepared: 2, junie_running: 3, junie_finished: 3, interrupted: 3, junie_failed: 3,
   repairing: 3, building: 4, build_succeeded: 4, build_failed: 4, checking: 5, checker_failed: 5,
   checker_needs_review: 6, checker_succeeded: 6, checker_accepted: 6,
 };
 let snapshot = {status: "preparing"};
+let migrationCompletion;
+let migrationLedgerRequest = 0;
 let rev = 0;
 let submitting = false;
 let connected = false;
@@ -90,6 +92,7 @@ element("#review-later").hidden = true;
 accept.textContent = "問題なしとして記録";
 resume.textContent = "同じ実行を再開";
 const findings = document.createElement("select");
+findings.className = "workspace-select";
 findings.setAttribute("aria-label", "レビューする指摘");
 const diagnostic = document.createElement("pre");
 diagnostic.className = "review-code";
@@ -118,6 +121,7 @@ function showNotice(message) {
 // 接続と実行状態に応じて、端末で受け付ける操作だけを有効にする。
 function syncActions() {
   const canAct = connected && snapshot.ready && !submitting;
+  workspaceControls();
   const canReview = snapshot.status === "checker_needs_review";
   const selected = snapshot.review?.findings[findings.selectedIndex];
   accept.disabled = !canAct || !canReview || !selected || selected[2] || !note.value.trim();
@@ -125,6 +129,7 @@ function syncActions() {
   reviewButton.disabled = !canAct || !(canReview || snapshot.resumable);
   migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
   dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || snapshotting;
+  element("#migration-ledger-compare").disabled = dashboardViewer.disabled;
   for (const button of anchorButtons) {
     button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
   }
@@ -176,18 +181,27 @@ function describe(state) {
   return label;
 }
 
-// 現在のRunの台帳を取得し、閉じるまでに受信した結果だけを表示する。
+// 台帳と完了判定を、同じRunの最新情報から更新する。
 async function loadMigrationLedger() {
+  const requestedState = snapshot;
+  const request = ++migrationLedgerRequest;
   try {
-    const response = await fetch("migration-ledger");
+    const response = await fetch("migration-ledger", {cache: "no-store"});
     if (!response.ok) throw new Error();
     const ledger = await response.json();
+    if (snapshot !== requestedState || request !== migrationLedgerRequest) return;
+    migrationCompletion = ledger.completion;
+    render();
     if (!migrationLedgerDialog.open) return;
     showMigrationLedger(ledger, snapshot, id => {
       const url = new URL(`review/${id}.html`, document.baseURI);
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
     });
   } catch {
+    if (snapshot !== requestedState || request !== migrationLedgerRequest) return;
+    migrationCompletion = undefined;
+    render();
+    if (!migrationLedgerDialog.open) return;
     migrationLedgerMessage.hidden = false;
     migrationLedgerMessage.textContent = "移行台帳を読み込めませんでした。画面を閉じてから、もう一度お試しください。";
   }
@@ -197,37 +211,78 @@ migrationLedgerButton.addEventListener("click", () => {
   openMigrationLedger("移行台帳を読み込み中");
   loadMigrationLedger();
 });
+window.addEventListener("focus", () => {
+  if (snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
+});
+
+async function workspaceRequest(path, payload) {
+  const message = "操作できませんでした。接続と入力内容を確認して、もう一度お試しください。";
+  let response;
+  try {
+    response = await fetch(path, payload === undefined ? {cache: "no-store"} : {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error(message);
+  }
+  if (!response.ok) {
+    throw new Error(response.headers.get("Content-Type")?.startsWith("text/plain") ? await response.text() : message);
+  }
+  return response.json();
+}
+
+bindHarnessWorkspace({
+  readRuns: () => workspaceRequest("workspace"),
+  readSettings: () => workspaceRequest("settings"),
+  previewSettings: (content, changes) => workspaceRequest("settings", {mode: "preview", content, changes}),
+  saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: rev}),
+  execute: (action, payload) => workspaceRequest("control", {action, revision: rev, ...payload}),
+  canAct: () => connected && snapshot.ready && !submitting,
+});
+workspaceTabs.addEventListener("harnesstab", render);
+if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1);
 
 // 最新のSSE状態を工程・入力・指摘に反映し、確認待ちを案内する。
 function render() {
   const data = snapshot;
+  if (data.ready) {
+    document.documentElement.toggleAttribute("data-anchor-reference", !!data.anchor_reference);
+    for (const button of anchorButtons) button.closest("details").hidden = !data.anchor_reference;
+  }
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
-  const stopped = data.ready && (data.resumable || showReview || data.status === "checker_failed");
-  const done = data.ready && !stopped && complete.has(data.status);
+  const verificationFinished = data.ready && verifiedStatuses.has(data.status);
+  const stopped = data.ready && !verificationFinished && (data.resumable || showReview || data.status === "checker_failed");
+  const done = verificationFinished && migrationCompletion?.complete;
   element(".demo-badge").textContent = savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
   element("#elapsed").style.display = savedView && data.ready ? "none" : "";
-  element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : "移行を準備中";
-  element(".run-detail").textContent = data.run_id ? `Run ID ${data.run_id} · ${data.target || ""}` : "実行情報を取得中";
+  element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : data.status === "idle" ? "移行ハーネス" : "移行を準備中";
+  element(".run-detail").textContent = data.run_id ? `Run ID ${data.run_id} · ${data.target || ""}` : "";
+  element("#workspace-progress-feedback").textContent = data.message || "";
   element(".run-detail").title = data.worktree_path || "";
-  element("#state-label").textContent = describe(data);
+  let label = describe(data);
+  if (verificationFinished && migrationCompletion) {
+    label = done ? "移行完了" : migrationCompletion.verification_passed ? "移行台帳の確認待ち" : "ビルド・チェックの再確認が必要";
+  }
+  element("#state-label").textContent = label;
   const state = element("#run-state");
-  state.classList.toggle("is-running", !stopped && !done);
-  state.dataset.state = done ? "complete" : stopped ? (showReview ? "waiting" : "paused") : "running";
-  reviewButton.textContent = showReview ? "判断が必要です" : "同じ実行を再開";
+  state.classList.toggle("is-running", !stopped && !verificationFinished);
+  state.dataset.state = done ? "complete" : showReview || verificationFinished ? "waiting" : stopped ? "paused" : "running";
+  reviewButton.textContent = showReview ? "判断が必要です" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
   if (showReview) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
   reviewButton.hidden = !showReview && !((data.ready || data.generating_anchors) && data.resumable);
-  const current = data.status === "checker_needs_review" && !showReview ? 5 : stage[data.status] ?? 0;
+  const current = verificationFinished ? 6 : data.status === "checker_needs_review" && !showReview ? 5 : stage[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
   const completed = data.completed_capsules ?? 0;
   updateMigrationLedgerStatuses(data);
   element("#step-count").textContent = `${completed} / ${total || "—"} カプセル`;
   steps.forEach((item, index) => {
-    const finished = index < current || (index === current && done);
+    const finished = index < current || (index === current && !!done);
     item.classList.toggle("is-done", finished);
-    item.classList.toggle("is-active", index === current && !done && (!stopped || showReview));
+    item.classList.toggle("is-active", index === current && !finished && !done && (!stopped || showReview));
     item.querySelector(".node").textContent = finished ? "✓" : String(index + 1);
-    item.querySelector(".step-status").textContent = finished ? "完了" : index === current ? (stopped ? "確認待ち" : "処理中") : "待機中";
+    const skipped = data.status === "build_succeeded" && index === 5 && migrationCompletion?.verification_passed;
+    item.querySelector(".step-status").textContent = skipped ? "省略" : finished ? "完了" : index === current ? (stopped || verificationFinished ? "確認待ち" : "処理中") : "待機中";
   });
   const index = Math.max(0, (data.current_capsule ?? 1) - 1);
   const chars = data.context_part_chars?.[index] ?? 0;
@@ -278,7 +333,7 @@ function render() {
   else if (selected !== -1) findings.selectedIndex = selected;
   selectFinding();
   showNotice(data.message || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
-  if (showReview && data.ready && !prompted) {
+  if (showReview && data.ready && !prompted && activeHarnessTab === 0) {
     prompted = true;
     openReview();
   } else if (!showReview) {
@@ -455,6 +510,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
 
 viewer.addEventListener("click", () => openSnapshot({fromReview: true}));
 dashboardViewer.addEventListener("click", () => openSnapshot());
+element("#migration-ledger-compare").addEventListener("click", () => openSnapshot());
 reviewButton.addEventListener("click", () => snapshot.status === "checker_needs_review" ? openReview() : send("resume"));
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
 element("#theme-toggle").addEventListener("click", () => {
@@ -475,12 +531,14 @@ stream.onerror = () => {
 };
 stream.onmessage = event => {
   snapshot = JSON.parse(event.data);
+  migrationCompletion = undefined;
   rev = Number(event.lastEventId);
   lastObserved = snapshot.observed_at * 1000;
   submitting = false;
   if (snapshot.message === "判断理由を記録しました。") note.value = "";
   addEvent(snapshot);
   render();
+  if (snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
 };
 setInterval(() => {
   if (!snapshot.created_at) return;

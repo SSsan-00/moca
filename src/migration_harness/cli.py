@@ -8,7 +8,8 @@ from typing import Any
 
 from migration_harness.config import load_config, validate_checker_command
 from migration_harness.workflow import (
-    prepare_run, resume_with_junie, review_checker, review_migration_ranges, run_with_junie,
+    VERIFIED_STATUSES, migration_ledger, prepare_run, resume_with_junie, review_checker, review_migration_ranges,
+    run_with_junie,
 )
 
 
@@ -23,6 +24,7 @@ def _parse_args() -> argparse.Namespace:
         command.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
         return command
 
+    configured_command("dashboard", "Open the local workspace for configuration and migration runs")
     prepare = configured_command("prepare", "Create a worktree and bounded context capsules")
     prepare.add_argument("--unit", required=True, help="Migration unit ID from the config")
     run = configured_command("run", "Migrate, build and run the configured checker")
@@ -40,12 +42,10 @@ def _parse_args() -> argparse.Namespace:
     ledger_review.add_argument("--range", dest="ranges", action="append", required=True, help="Range ID from the ledger; repeat to record multiple")
     ledger_review.add_argument("--state", choices=("confirmed", "excluded", "needs_review"), required=True)
     ledger_review.add_argument("--reason", required=True)
+    ledger_review.add_argument("--target", dest="review_targets", action="append", help="Reviewed target file; repeat for multiple files")
     anchors = configured_command("anchors", "Generate Diff Viewer anchors with Junie")
     anchors.add_argument("--run-id", required=True, help="Run ID with PHP and migration target files")
     anchors.add_argument("--reference", type=Path, required=True, help="Existing Diff Viewer workspace JSON with manual anchors")
-    verify = configured_command("verify", "Run or inspect a saved Run's behavior comparison")
-    verify.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
-    verify.add_argument("--fixture", type=Path, help="Case JSON to execute; omit to inspect the saved result")
     run.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
     resume.add_argument("--dashboard", action="store_true", help="Open the saved run and resume from the dashboard")
     for command in (run, resume, view):
@@ -60,31 +60,26 @@ def main() -> None:
     """利用者の操作を振り分け、途中停止や入力エラーを終了コードで伝える。"""
     args = _parse_args()
     try:
+        if args.command == "dashboard":
+            from migration_harness.dashboard import run_dashboard
+
+            try:
+                config = load_config(args.config)
+            except (OSError, ValueError):
+                config = {"config_path": str(args.config.expanduser().resolve())}
+            run_dashboard(config)
+            return
         config = load_config(args.config)
         checker_command = getattr(args, "checker_command", None)
         if checker_command is not None:
             validate_checker_command(checker_command)
             config["checker_command"] = checker_command
         if args.command == "ledger-review":
-            review_migration_ranges(config, args.run_id, args.ranges, args.state, args.reason)
+            review_migration_ranges(
+                config, args.run_id, args.ranges, args.state, args.reason, confirmed_targets=args.review_targets,
+            )
             print(f"Migration ledger updated for {args.run_id}")
-            return
-        if args.command == "verify":
-            from migration_harness.behavior import behavior_status, verify as verify_behavior
-
-            report = (verify_behavior(config, args.run_id, args.fixture)
-                      if args.fixture is not None else behavior_status(config, args.run_id))
-            status = report["status"]
-            print(f"Behavior: {status}")
-            if report.get("reason"):
-                print(report["reason"])
-            if result := report["result"]:
-                for case in result["cases"]:
-                    if not all(case["matches"].values()):
-                        print(f"{case['id']}: expected={case['expected']!r} php={case['php']!r} csharp={case['csharp']!r}")
-                print(f"Behavior log: {result['log_path']}")
-            if status in {"failed", "stale"}:
-                raise SystemExit(1)
+            _print_migration_progress(migration_ledger(config, args.run_id)["completion"])
             return
         if args.command == "anchors":
             from migration_harness.review_anchors import generate_anchors
@@ -109,10 +104,13 @@ def main() -> None:
                 run_dashboard(config, run_id=args.run_id)
                 return
             result = run_dashboard(config, unit_id=args.unit)
+            if result is None or "capsule_count" not in result:
+                return
         elif args.command == "run":
             result = run_with_junie(config, args.unit)
         else:
             result = resume_with_junie(config, args.run_id)
+        completion = migration_ledger(config, result["run_id"])["completion"] if result.get("status") in VERIFIED_STATUSES else None
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         details = getattr(exc, "stderr", None)
         print(f"error: {details.strip() if details else exc}", file=sys.stderr)
@@ -126,6 +124,16 @@ def main() -> None:
         raise SystemExit(130)
 
     _print_run_result(result, prepared=args.command == "prepare")
+    if completion is not None:
+        _print_migration_progress(completion)
+
+
+def _print_migration_progress(completion: dict[str, Any]) -> None:
+    """コマンドの成功とは別に、現在の移行完了判定を伝える。"""
+    status = "complete" if completion["complete"] else "incomplete"
+    print(f"Migration: {status} ({completion['reviewed']}/{completion['total']} PHP ranges reviewed)")
+    if not completion["verification_passed"]:
+        print("A successful build and any configured checker are required for the current targets.")
 
 
 def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:
