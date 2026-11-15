@@ -174,23 +174,34 @@ class Dashboard:
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
                     self.send_error(403)
                     return
-                if self.path == prefix + "comparison":
+                comparison = self.path == prefix + "comparison"
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if comparison and length == 0:
+                        action = {}
+                    else:
+                        if not 0 < length <= 16_384 or self.headers.get_content_type() != "application/json":
+                            raise ValueError
+                        self.connection.settimeout(5)
+                        action = json.loads(self.rfile.read(length))
+                        if not isinstance(action, dict):
+                            raise ValueError
+                except (OSError, ValueError):
+                    self.send_error(400)
+                    return
+                if comparison:
                     try:
                         run_id = dashboard.state.get("run_id")
                         if not run_id or not dashboard.state.get("worktree_path"):
                             raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
-                        response = json.dumps({"id": create_snapshot(config, run_id)}).encode("utf-8")
+                        snapshot_id = create_snapshot(config, run_id, focus=action.get("focus"))
+                        response = json.dumps({"id": snapshot_id}).encode("utf-8")
                         self.send_body(201, "application/json", response)
                     except (OSError, RuntimeError, ValueError) as exc:
                         self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
                     return
                 try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= 16_384 or self.headers.get_content_type() != "application/json":
-                        raise ValueError
-                    self.connection.settimeout(5)
-                    action = json.loads(self.rfile.read(length))
-                    if not isinstance(action, dict) or type(action.get("revision")) is not int:
+                    if type(action.get("revision")) is not int:
                         raise ValueError
                     if action.get("action") not in ("accept", "resume", "anchors"):
                         raise ValueError
@@ -270,7 +281,9 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                 if action["action"] == "anchors":
                     reply = action["reply"]
                     try:
-                        path, count = generate_anchors(config, result["run_id"], anchor_reference)
+                        path, count = generate_anchors(
+                            config, result["run_id"], anchor_reference, focus=action.get("focus"),
+                        )
                     except KeyboardInterrupt:
                         reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))
                     except (OSError, ValueError, RuntimeError) as exc:

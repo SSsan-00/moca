@@ -35,7 +35,9 @@ def _pane(files: list[tuple[str, str]]) -> tuple[str, list[dict[str, Any]]]:
     return "".join(parts), segments
 
 
-def capture_workspace(config: dict[str, Any], run_id: str) -> tuple[Path, dict[str, Any]]:
+def capture_workspace(
+    config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None,
+) -> tuple[Path, dict[str, Any]]:
     run_path, worktree, _, unit = _load_saved_run(config, run_id)
     project = Path(config["project_root"])
     manifest_path = _inside_file(run_path, "capsule/manifest.json")
@@ -85,6 +87,17 @@ def capture_workspace(config: dict[str, Any], run_id: str) -> tuple[Path, dict[s
             "anchors": {"manualAnchors": [], "staleManualAnchors": []},
         },
     }
+    if isinstance(focus, dict):
+        name, line = focus.get("path"), focus.get("line")
+        if isinstance(name, str) and type(line) is int:
+            for segment in right_segments:
+                if Path(segment["fileName"]) == Path(name) and 1 <= line <= segment["lineCount"]:
+                    # ファイル内の行番号を連結した右ペインの座標へ変換する。
+                    payload["workspace"]["rightActiveFile"] = segment["fileName"]
+                    payload["workspace"]["rightCursor"] = {
+                        "lineNumber": segment["startLine"] + line - 1, "column": 1,
+                    }
+                    break
     return run_path, payload
 
 
@@ -99,8 +112,8 @@ def save_workspace(run_path: Path, payload: dict[str, Any]) -> str:
     return snapshot_id
 
 
-def create_snapshot(config: dict[str, Any], run_id: str) -> str:
-    return save_workspace(*capture_workspace(config, run_id))
+def create_snapshot(config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None) -> str:
+    return save_workspace(*capture_workspace(config, run_id, focus=focus))
 
 
 def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> bytes:
@@ -118,12 +131,38 @@ def review_html(config: dict[str, Any], workspace: bytes) -> bytes:
         raise ValueError("設定したHTMLにはDiff Viewerのワークスペース取込機能がありません。")
     # ソースの文字列をHTMLとして実行せず、Viewerの通常のJSON取込に渡す。
     payload = workspace.replace(b"<", b"\\u003c")
+    # 取込でカーソルが復元されても画面外に残るため、カード生成後にViewerの行ジャンプを使う。
     bootstrap = b"""
 <script id="harness-review-workspace" type="application/json">""" + payload + b"""</script>
 <script>
 window.addEventListener("load", () => {
   const input = document.querySelector("#workspace-import-file");
   const payload = document.querySelector("#harness-review-workspace").textContent;
+  const {rightCursor, rightActiveFile, rightSegments} = JSON.parse(payload).workspace;
+  const segment = rightCursor && rightSegments?.find(item => item.fileName === rightActiveFile);
+  const cards = document.querySelector("#right-file-cards");
+  const gotoLine = document.querySelector("#right-goto-line-input");
+  if (segment && cards && gotoLine) {
+    const observer = new MutationObserver(() => {
+      const card = Array.from(cards.querySelectorAll("button[data-file]"))
+        .find(button => button.dataset.file === rightActiveFile);
+      if (!card) return;
+      observer.disconnect();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        card.click();
+        document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "g", code: "KeyG", ctrlKey: true, bubbles: true, cancelable: true
+        }));
+        if (document.activeElement !== gotoLine) return;
+        gotoLine.value = String(rightCursor.lineNumber - segment.startLine + 1);
+        gotoLine.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", bubbles: true, cancelable: true
+        }));
+      }));
+    });
+    observer.observe(cards, {childList: true});
+    setTimeout(() => observer.disconnect(), 10000);
+  }
   const transfer = new DataTransfer();
   transfer.items.add(new File([payload], "review-workspace.json", {type: "application/json"}));
   input.files = transfer.files;

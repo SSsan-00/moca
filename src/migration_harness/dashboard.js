@@ -64,7 +64,7 @@ for (const button of anchorButtons) {
   button.addEventListener("click", () => {
     options.open = false;
     summary.focus();
-    openSnapshot(true);
+    openSnapshot({withAnchors: true, fromReview: dialog.contains(button)});
   });
   document.addEventListener("click", event => {
     if (options.open && !options.contains(event.target)) options.open = false;
@@ -331,8 +331,11 @@ function showComparisonStatus(...content) {
   modalComparisonStatus.hidden = !content.length;
 }
 
-async function openSnapshot(withAnchors = false) {
+async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   if (snapshotting) return;
+  const reported = fromReview ? snapshot.review?.locations?.[findings.selectedIndex] : null;
+  const line = Number(reported?.line);
+  const focus = Number.isSafeInteger(line) && line > 0 ? {path: reported.path, line} : undefined;
   const progress = withAnchors
     ? "Junieでアンカーを生成中です。確認が表示されたら起動元の端末で操作してください。"
     : "スナップショットを取得中";
@@ -346,12 +349,10 @@ async function openSnapshot(withAnchors = false) {
   syncActions();
   showComparisonStatus(progress);
   try {
-    const response = withAnchors
-      ? await fetch("control", {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action: "anchors", revision: rev}),
-        })
-      : await fetch("comparison", {method: "POST"});
+    const request = withAnchors ? {action: "anchors", revision: rev, focus} : focus ? {focus} : null;
+    const response = await fetch(withAnchors ? "control" : "comparison", request ? {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request),
+    } : {method: "POST"});
     if (!response.ok) throw new Error(await response.text());
     const {id, count} = await response.json();
     const open = document.createElement("a");
@@ -375,7 +376,7 @@ async function openSnapshot(withAnchors = false) {
   }
 }
 
-viewer.addEventListener("click", () => openSnapshot());
+viewer.addEventListener("click", () => openSnapshot({fromReview: true}));
 dashboardViewer.addEventListener("click", () => openSnapshot());
 reviewButton.addEventListener("click", () => snapshot.status === "checker_needs_review" ? openReview() : send("resume"));
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());

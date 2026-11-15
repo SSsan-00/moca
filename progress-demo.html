@@ -245,6 +245,12 @@
     .comparison-options summary:focus-visible { position: relative; z-index: 1; }
     .demo-comparison-status { margin-block: 5px 0; color: var(--muted); }
     .demo-comparison-status:empty { margin: 0; }
+    .viewer-preview { width: min(1200px, calc(100vw - 24px)); height: 94dvh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink); }
+    .viewer-preview[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .viewer-preview::backdrop { background: #12141c6b; }
+    .viewer-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+    .viewer-preview-header h2 { margin: 0; font-size: 14px; }
+    .viewer-preview-body p { margin: 16px; }
     [data-live] [data-demo-only] { display: none; }
     @keyframes review-dialog-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
     @keyframes review-dialog-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
@@ -471,6 +477,13 @@
     </div>
   </dialog>
 </main>
+<dialog class="viewer-preview" id="viewer-preview" aria-labelledby="viewer-preview-title" data-demo-only>
+  <header class="viewer-preview-header">
+    <h2 id="viewer-preview-title">注文履歴の差分比較</h2>
+    <form method="dialog"><button class="review-close" type="submit" aria-label="差分比較を閉じる">×</button></form>
+  </header>
+  <div class="viewer-preview-body"></div>
+</dialog>
 <!-- dashboard-script -->
 <script>
   const steps = [...document.querySelectorAll(".step")];
@@ -479,6 +492,9 @@
   const state = document.querySelector("#run-state");
   const stateLabel = document.querySelector("#state-label");
   const toggle = document.querySelector("#toggle");
+  const viewerPreview = document.querySelector("#viewer-preview");
+  const viewerPreviewBody = viewerPreview.querySelector(".viewer-preview-body");
+  viewerPreview.addEventListener("close", () => viewerPreviewBody.replaceChildren());
   const themeToggle = document.querySelector("#theme-toggle");
   const stepCount = document.querySelector("#step-count");
   const elapsed = document.querySelector("#elapsed");
@@ -621,7 +637,9 @@
         ],
         leftActiveFile: "php/orders.php",
         rightActiveFile: "Pages/Orders/Index.cshtml.cs",
-        leftCursor: null, rightCursor: null, leftScrollTop: null, rightScrollTop: null,
+        leftCursor: null,
+        rightCursor: state.dataset.state === "waiting" && current >= 4 ? { lineNumber: 2, column: 1 } : null,
+        leftScrollTop: null, rightScrollTop: null,
         anchors: {
           manualAnchors: withAnchors && current >= 4 ? [{ leftLineNo: 1, rightLineNo: 1 }] : [],
           staleManualAnchors: [], autoAnchor: null,
@@ -637,13 +655,13 @@
     const workspace = createReviewWorkspace(withAnchors);
     const payload = JSON.stringify(workspace, null, 2);
     const viewerUrl = new URL("tools/dist/index.min.html", location.href);
-    const popup = window.open("about:blank", "_blank");
     const progress = withAnchors ? "対応行の候補を生成中（デモ）" : "";
     status.textContent = progress;
-    if (popup) {
-      popup.opener = null;
-      popup.document.body.textContent = progress || "比較用のスナップショットを開いています。";
-    }
+    viewerPreview.showModal();
+    const loading = document.createElement("p");
+    loading.setAttribute("role", "status");
+    loading.textContent = progress || "比較用のスナップショットを開いています。";
+    viewerPreviewBody.replaceChildren(loading);
     if (withAnchors) {
       await new Promise(resolve => setTimeout(resolve, 650));
       const count = workspace.workspace.anchors.manualAnchors.length;
@@ -655,9 +673,17 @@
     download.download = withAnchors ? "LegacyStatusMap.anchors.workspace.json" : "LegacyStatusMap.workspace.json";
     download.click();
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
-    if (!popup || popup.closed) return;
+    if (!loading.isConnected) return;
+    const openViewerFile = () => {
+      if (loading.isConnected) {
+        const link = document.createElement("a");
+        link.href = viewerUrl.href;
+        link.textContent = "Diff Viewerを開く";
+        loading.replaceChildren("自動で読み込めませんでした。Viewerでダウンロード済みのJSONをインポートしてください。 ", link);
+      }
+    };
     if (location.protocol === "file:") {
-      popup.location.replace(viewerUrl.href);
+      openViewerFile();
       return;
     }
     try {
@@ -666,27 +692,52 @@
       const html = await response.text();
       const offset = html.toLowerCase().lastIndexOf("</body");
       if (offset < 0 || !html.includes("workspace-import-file")) throw new Error();
+      // 取込後にViewerがファイル一覧と右ペインを描画してから、指摘行へ移動する。
       const bootstrap = `<script id="demo-workspace" type="application/json">${payload.replaceAll("<", "\\u003c")}<\/script>
 <script>const demoImportTimer = setInterval(() => {
   const input = document.querySelector("#workspace-import-file");
   if (!input || !document.querySelector("#left-editor .monaco-editor")) return;
   clearInterval(demoImportTimer);
+  const payload = document.querySelector("#demo-workspace").textContent;
+  const {rightCursor, rightActiveFile} = JSON.parse(payload).workspace;
+  const cards = document.querySelector("#right-file-cards");
+  const gotoLine = document.querySelector("#right-goto-line-input");
+  if (rightCursor && cards && gotoLine) {
+    const observer = new MutationObserver(() => {
+      const card = Array.from(cards.querySelectorAll("button[data-file]"))
+        .find(button => button.dataset.file === rightActiveFile);
+      if (!card) return;
+      observer.disconnect();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        card.click();
+        document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "g", code: "KeyG", ctrlKey: true, bubbles: true, cancelable: true
+        }));
+        if (document.activeElement !== gotoLine) return;
+        gotoLine.value = String(rightCursor.lineNumber);
+        gotoLine.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", bubbles: true, cancelable: true
+        }));
+      }));
+    });
+    observer.observe(cards, {childList: true});
+    setTimeout(() => observer.disconnect(), 10000);
+  }
   const files = new DataTransfer();
-  files.items.add(new File([document.querySelector("#demo-workspace").textContent], "demo.workspace.json", {type:"application/json"}));
+  files.items.add(new File([payload], "demo.workspace.json", {type:"application/json"}));
   input.files = files.files;
   input.dispatchEvent(new Event("change", {bubbles: true}));
 }, 50);
 setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
-      const frame = popup.document.createElement("iframe");
+      if (!loading.isConnected) return;
+      const frame = document.createElement("iframe");
       frame.title = "Diff Viewer";
       frame.setAttribute("sandbox", "allow-scripts allow-downloads");
-      frame.style.cssText = "display:block;width:100vw;height:100vh;border:0";
+      frame.style.cssText = "display:block;width:100%;height:100%;border:0";
       frame.srcdoc = html.slice(0, offset) + bootstrap + html.slice(offset);
-      popup.document.title = "注文履歴の差分比較";
-      popup.document.body.style.margin = "0";
-      popup.document.body.replaceChildren(frame);
+      viewerPreviewBody.replaceChildren(frame);
     } catch {
-      if (!popup.closed) popup.location.replace(viewerUrl.href);
+      openViewerFile();
     }
   }
 

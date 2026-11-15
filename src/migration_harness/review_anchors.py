@@ -63,10 +63,12 @@ def _validated_anchors(path: Path, left: list[str], right: list[str]) -> list[di
     return anchors
 
 
-def generate_anchors(config: dict[str, Any], run_id: str, reference: Path) -> tuple[Path, int]:
+def generate_anchors(
+    config: dict[str, Any], run_id: str, reference: Path, *, focus: dict[str, Any] | None = None,
+) -> tuple[Path, int]:
     _validate_junie_execution()
     examples = _reference_examples(reference)
-    run_path, payload = capture_workspace(config, run_id)
+    run_path, payload = capture_workspace(config, run_id, focus=focus)
     workspace = payload["workspace"]
     left, right = _pane_lines(workspace["leftText"]), _pane_lines(workspace["rightText"])
     with TemporaryDirectory(prefix="migration-review-") as temporary:
