@@ -70,6 +70,9 @@ def load_config(path: Path) -> dict[str, Any]:
     checker_command = checker.get("command")
     if "command" in checker:
         validate_checker_command(checker_command)
+    max_repair_attempts = checker.get("max_repair_attempts", 0)
+    if type(max_repair_attempts) is not int or max_repair_attempts < 0:
+        raise ValueError("[checker].max_repair_attempts must be a non-negative integer")
 
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
@@ -133,6 +136,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "max_context_chars": max_context_chars,
         "build_project": build_project,
         "checker_command": checker_command,
+        "max_repair_attempts": max_repair_attempts,
         "junie_max_steps": junie_max_steps,
         "units": normalized_units,
     }

@@ -11,9 +11,10 @@ PythonとLangGraphで、PHPからASP.NET Core Razor Pages（現状.NET 9）へ�
 - 各Junie呼び出し後に対象ファイルをworktreeへ反映し、実行記録を保存する
 - 全カプセルの反映後にworktreeで `dotnet build` を実行し、結果を `run.json`、出力を `build.log` に保存する
 - ビルド成功後に設定した独自チェッカーを実行し、終了コードを `run.json`、標準出力と標準エラーを `checker.log` に保存する
+- 有効にした場合は、チェッカーの指摘をJunieに渡し、修正後にビルドとチェッカーを再実行する
 - `resume`では、既存の実行記録・worktree・agent workspaceを使い、未完了カプセルから再開する
 
-テスト、チェッカーの指摘解析、修正ループ、Diff Viewer用アンカーJSONは未実装です。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
+テストの実行、人による指摘の承認記録、Diff Viewer用アンカーJSONは今後の実装です。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
 
 Junieへ渡す情報と作業フォルダはハーネスで絞りますが、別の絶対パスへのアクセスをOSレベルで遮断するものではありません。Junieを使うと、選択したコンテキストがJunieのサービスへ送られます。生成後は`run.json`とworktreeの差分を人が確認してください。
 
@@ -85,9 +86,18 @@ php-to-csharp-harness run --config harness.local.toml --unit example-page --chec
 ```toml
 [checker]
 command = ["py", "-3.11", "tools/check_migration.py"]
+max_repair_attempts = 2
 ```
 
-終了コードが非ゼロの場合は要確認として扱い、`checker.log` に出力を保存します。指摘の妥当性はログで確認してください。チェッカーを再実行する場合は、同じRun IDで `resume` を実行します。CLIでのみ指定した場合は、`resume` にも `--checker-command` を指定します。ログは直近の試行の内容に更新されます。
+### チェッカーの指摘を自動修正する
+
+`max_repair_attempts` に正の整数を指定すると、1つのRunで実行するJunieの修正回数を制限できます。既定値の `0` では、チェッカーの出力を保存したところで人の確認に回します。
+
+自動修正する場合、チェッカーは指摘があるときに非ゼロで終了し、指摘をUTF-8の `ルールID ファイル:行 warning: メッセージ` または `ルールID ファイル:行 error: メッセージ` で出力します。たとえば `MIG101 Pages/Example.cshtml:12 warning: 共通関数を使用してください` の形式です。既存のチェッカーが違う形式を使う場合は、利用者側のラッパーで整形できます。
+
+Junieは設定済みの移行先ファイルだけを修正します。修正前のチェッカー出力は `checker-before-repair-N.log`、直近の結果は `checker.log`、試行履歴は `run.json` に残ります。過去に修正した指摘が残るか再発した場合は、行番号が変わっていてもルールID・対象ファイル・メッセージで照合し、人の確認に回します。上限、対象外のファイル、解析できない出力、Junieの未完了や変更なしでも、その理由を記録します。
+
+人が確認した後は、同じRun IDで `resume` を実行できます。修正ループに入った実行はビルドからやり直し、過去の修正回数と指摘の履歴を維持します。CLIでのみチェッカーを指定した場合は、`resume` にも `--checker-command` を指定します。
 
 ### 中断・失敗から再開する
 

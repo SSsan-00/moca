@@ -83,8 +83,8 @@ def main() -> None:
                 print(f"Checker log: {result['checker_log_path']}")
             if result["status"] != "checker_succeeded":
                 if result["error"]:
-                    print(f"Checker failed: {result['error']}")
-                print("Review the checker result. Resume with the same Run ID and checker configuration to rerun it.")
+                    print(f"Review reason: {result['error']}")
+                print("Review the checker log and worktree diff. Resume with the same Run ID and checker configuration.")
                 raise SystemExit(1)
         print("Review the worktree diff.")
 

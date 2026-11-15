@@ -18,6 +18,8 @@ max_context_chars = 100000
 [checker]
 # 実行ファイル名と引数を個別に並べる。相対パスの基準はworktreeのルート。
 # command = ["py", "-3.11", "tools/check_migration.py"]
+# 0は確認のみ。正の整数を設定すると対応形式の指摘をJunieで修正する。
+# max_repair_attempts = 2
 
 [[units]]
 id = "example-page"

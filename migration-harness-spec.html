@@ -331,20 +331,18 @@ flowchart TB
       </article>
       <article class="diagram-card">
         <h3>ビルドとチェッカーの修正</h3>
-        <p>ビルド成功後のチェッカー実行まで実装済みです。指摘を使った自動修正と、修正回数の制限は設計案です。</p>
+        <p>設定で有効にすると、対象ファイルの指摘をJunieが修正し、ビルド、チェッカーの順で確認します。過去の指摘が残るか再発した場合は人の確認に回します。</p>
         <div class="diagram">
           <pre class="mermaid">
 flowchart TB
-    A[ビルド・テスト] --> B{成功?}
-    B -- いいえ --> C{修正回数に余裕?}
-    C -- はい --> D[Junieが修正]
+    A[ビルド] --> B{成功?}
+    B -- いいえ --> G[ログを保存して人の確認へ]
+    I -- はい --> D[Junieが対象ファイルを修正]
     D --> A
-    C -- いいえ --> G[人の確認待ち]
     B -- はい --> E[独自チェッカー]
-    E --> F{指摘あり?}
-    F -- いいえ --> H[レビュー準備完了]
-    F -- はい --> I{修正回数に余裕?}
-    I -- はい --> D
+    E --> F{終了コードは0?}
+    F -- はい --> H[レビュー準備完了]
+    F -- いいえ --> I{修正可能で、上限内かつ再発なし?}
     I -- いいえ --> G
 
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
@@ -352,7 +350,7 @@ flowchart TB
     classDef ready fill:#e8f6ef,stroke:#176b4b,color:#123c2c
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
     class A,D,E action
-    class B,F,C,I decision
+    class B,F,I decision
     class H ready
     class G pending
           </pre>
@@ -361,7 +359,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>チェッカーの偽陽性</h3>
-      <p>チェッカーのテキスト出力を保存します。ルールIDとファイル名を主な手掛かりにし、ずれる可能性がある行番号だけで指摘を特定しません。人が許容した指摘は理由とともに記録します。</p>
+      <p>チェッカーの出力と停止理由を保存します。同じ指摘の判定にはルールID・対象ファイル・メッセージを使います。人が指摘を許容した理由の記録は今後の設計です。</p>
     </div>
   </section>
 
@@ -395,7 +393,7 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、全カプセル完了後のビルドとチェッカー実行。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
+  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、ビルドとチェッカーの実行、チェッカー指摘の修正ループ。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、アンカーJSONを使った人のレビュー。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>
