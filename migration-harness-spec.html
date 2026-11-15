@@ -71,6 +71,7 @@
     .diagram { overflow-x: auto; padding: 8px 4px; }
     .mermaid { width: 100%; min-width: 0; text-align: center; }
     .mermaid svg { max-width: 100%; height: auto; }
+    .mermaid .flow-start-label { display: inline-block; min-width: 144px; font-size: 24px; font-weight: 700; }
     @media screen {
       .mermaid { margin: 0; }
       .mermaid svg {
@@ -162,7 +163,7 @@
     <div class="diagram diagram-compact">
       <pre class="mermaid">
 flowchart TB
-    A([開始]) --> B[TOMLで移行元PHPと移行先を指定]
+    A(["&lt;span class='flow-start-label'&gt;開始&lt;/span&gt;"]) --> B[TOMLで移行元PHPと移行先を指定]
     B --> C[設定・入力ファイルを検証]
     C --> D[移行対象を上限以内のカプセルに分割]
     D --> E[成功後に基準リビジョンからアプリ用worktreeを作成]
@@ -277,10 +278,12 @@ flowchart TB
     H --> I[同じRun IDで保存済みの編集から再開]
     I --> A
 
+    classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px,font-weight:bold
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
     classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
-    class A,B,C,D,I action
+    class A start
+    class B,C,D,I action
     class E,H pending
     class R decision
           </pre>
@@ -307,11 +310,13 @@ flowchart TB
     I -- いいえ --> G[ログを保存して人の確認へ]
     G -- 問題なしを記録してresume --> A
 
+    classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px,font-weight:bold
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
     classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
     classDef ready fill:#e8f6ef,stroke:#176b4b,color:#123c2c
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
-    class A,D action
+    class A start
+    class D action
     class B,E,F,I decision
     class H ready
     class G,J pending
@@ -357,7 +362,7 @@ flowchart TB
   </section>
 </main>
 <script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.esm.min.mjs';
   const root = document.documentElement;
   const themeToggle = document.querySelector('#theme-toggle');
   const diagrams = [...document.querySelectorAll('.mermaid')];
