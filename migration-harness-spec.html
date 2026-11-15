@@ -69,6 +69,7 @@
     .tag { display: inline-block; margin: 2px 4px 6px 0; padding: 2px 8px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-size: .82rem; font-weight: 650; }
     .diagram-note { margin: -5px 0 13px; color: var(--muted); font-size: .92rem; }
     .diagram { overflow-x: auto; padding: 8px 4px; }
+    .diagram-compact:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
     .mermaid { width: 100%; min-width: 0; text-align: center; }
     .mermaid svg { max-width: 100%; height: auto; }
     .mermaid .flow-start-label { display: inline-block; min-width: 144px; font-size: 24px; font-weight: 700; }
@@ -84,6 +85,7 @@
       .diagram-compact .mermaid svg {
         max-height: calc(80vh - 16px);
         max-height: calc(80dvh - 16px);
+        min-width: min(530px, 62dvh);
       }
     }
     .diagram-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
@@ -158,24 +160,33 @@
   </section>
 
   <section>
-    <h2>1. 現在の実装フロー</h2>
+    <h2 id="overview-flow">1. 現在の実装フロー</h2>
     <p class="diagram-note"><code>[[units]]</code> に機能名（<code>id</code>）、移行元PHP（<code>source</code>）、移行先（<code>target</code> または <code>targets</code>）を指定します。チェッカーの終了コードは <code>run.json</code>、出力は <code>checker.log</code> に保存します。</p>
-    <div class="diagram diagram-compact">
+    <div class="diagram diagram-compact" tabindex="0" role="region" aria-labelledby="overview-flow">
       <pre class="mermaid">
+---
+config:
+  themeVariables:
+    fontSize: 18px
+  flowchart:
+    padding: 6
+    rankSpacing: 14
+    wrappingWidth: 300
+---
 flowchart TB
-    A(["&lt;span class='flow-start-label'&gt;開始&lt;/span&gt;"]) --> B[TOMLで移行元PHPと移行先を指定]
+    A(["&lt;span class='flow-start-label'&gt;開始&lt;/span&gt;"]) --> B[移行元PHPと移行先を指定]
     B --> C[設定・入力ファイルを検証]
-    C --> D[移行対象を上限以内のカプセルに分割]
-    D --> E[成功後に基準リビジョンからアプリ用worktreeを作成]
+    C --> D[上限以内のカプセルに分割]
+    D --> E[基準リビジョンからworktreeを作成]
     E --> F{実行コマンド}
     F -- prepare --> G[準備完了。worktree・カプセル・manifestを出力]
-    F -- run --> H[対象ファイルと次のカプセルをJunie用フォルダへ配置]
-    H --> I[Junie CLIを対話起動して今回分を移行]
-    I --> J[対象ファイルをworktreeへ反映し実行記録を保存]
+    F -- run --> H[対象ファイルとカプセルをJunie用に配置]
+    H --> I[Junieを対話起動して移行]
+    I --> J[worktreeへ反映し実行記録を保存]
     J --> K{未処理カプセルがある?}
     K -- はい --> H
     K -- いいえ --> M[ビルドと設定済みチェッカーを実行]
-    M --> O[修正可能なエラーは設定回数内で修正して再検証]
+    M --> O[設定回数内で自動修正・再検証]
     O --> L[移行台帳とworktreeの差分を確認]
 
     classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
@@ -290,11 +301,20 @@ flowchart TB
         </div>
       </article>
       <article class="diagram-card">
-        <h3>ビルドとチェッカーの修正</h3>
+        <h3 id="build-repair-flow">ビルドとチェッカーの修正</h3>
         <p>Junieは準備時のルールと参考実装を使い、C#・Razorのコンパイルエラーやチェッカーの指摘を1 Runにつき既定で2回まで修正します。中断した試行は回数に含めず、再開時に指摘と移行先が一致すれば下書きを引き継ぎます。修正回数が0か、同じ指摘が再発した場合は人が確認します。</p>
         <p>自作スクリプトは準備・Junie移行・ビルド・チェッカーの前後に設定順で実行します。準備前はアプリのリポジトリ、それ以降はworktreeで実行します。スクリプトが失敗すると、その工程のログを保存して停止します。</p>
-        <div class="diagram diagram-compact">
+        <div class="diagram diagram-compact" tabindex="0" role="region" aria-labelledby="build-repair-flow">
           <pre class="mermaid">
+---
+config:
+  themeVariables:
+    fontSize: 18px
+  flowchart:
+    padding: 6
+    rankSpacing: 14
+    wrappingWidth: 300
+---
 flowchart TB
     A[ビルド] --> B{成功?}
     B -- いいえ --> I
@@ -302,13 +322,13 @@ flowchart TB
     D --> A
     D -- 中断 --> J[修正回数を消費せず下書きを保持]
     J -- 同じRunを再開 --> A
-    B -- はい --> E{チェッカーを設定済み?}
+    B -- はい --> E{チェッカーあり？}
     E -- いいえ --> H
-    E -- はい --> F{チェッカーの終了コードは0?}
+    E -- はい --> F{終了コードは0？}
     F -- はい --> H[レビュー準備完了]
-    F -- いいえ --> I{修正可能で、上限内かつ再発なし?}
+    F -- いいえ --> I{修正可能・上限内&lt;br/&gt;再発なし？}
     I -- いいえ --> G[ログを保存して人の確認へ]
-    G -- 問題なしを記録してresume --> A
+    G -- 問題なしを記録して再開 --> A
 
     classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px,font-weight:bold
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
@@ -410,6 +430,14 @@ flowchart TB
       node.textContent = source;
     });
     await mermaid.run({ nodes: diagrams });
+
+    // 描画結果の余白を詰め、同じ高さの上限で図を大きく表示する。
+    for (const svg of document.querySelectorAll('.diagram-compact .mermaid > svg')) {
+      const { x, y, width, height } = svg.getBBox();
+      const margin = 8;
+      svg.setAttribute('viewBox', `${x - margin} ${y - margin} ${width + 2 * margin} ${height + 2 * margin}`);
+      svg.style.removeProperty('max-width');
+    }
   }
 
   // クリック後に切り替わるテーマをアイコンと読み上げ名で示す。
