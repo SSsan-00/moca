@@ -185,6 +185,29 @@ class LedgerReviewTest(HarnessCase):
         with patch.object(workflow.subprocess, "run", side_effect=OSError("Git unavailable")):
             self.assertFalse(self.completion()["verification_passed"])
 
+    def test_cli_override_is_reused_only_with_original_toml_default(self):
+        checker = self.target.parent / "override.py"
+        checker.write_text("pass\n", encoding="utf-8")
+        default = [sys.executable, "default.py"]
+        override = [sys.executable, "override.py"]
+        alternate = [sys.executable, "alternate.py"]
+        self.settings.update(checker_from_cli=True, checker_command=override, toml_checker_command=default)
+        self.prepare_for_verification()
+        self.verify()
+
+        self.settings.pop("checker_from_cli")
+        self.settings.pop("toml_checker_command")
+        self.settings["checker_command"] = default
+        self.assertTrue(self.completion()["complete"])
+        self.settings["checker_command"] = alternate
+        self.assertFalse(self.completion()["verification_passed"])
+        self.settings.update(checker_from_cli=True, checker_command=alternate, toml_checker_command=default)
+        self.assertFalse(self.completion()["verification_passed"])
+        self.settings.pop("checker_from_cli")
+        self.settings["checker_command"] = default
+        checker.write_text("# changed checker\n", encoding="utf-8")
+        self.assertFalse(self.completion()["verification_passed"])
+
     def test_checker_cannot_attest_to_build_inputs_changed_by_hook(self):
         change = [sys.executable, "-c", "open('Dependency.cs', 'w').write('class HookEdit {}')"]
         restore = [sys.executable, "-c", "open('Dependency.cs', 'w').write('class Dependency {}\\n')"]

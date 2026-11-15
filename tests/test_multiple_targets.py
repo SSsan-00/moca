@@ -189,6 +189,38 @@ class MultipleTargetsTest(HarnessCase):
             self.assertEqual(repair.call_args.args[2], (page,))
             self.assertEqual(repair.call_args.args[5], f"{page}(2,8): CS0246: Missing PageModel")
 
+    def test_razor_symbolic_paths_require_an_unambiguous_matching_diagnostic(self):
+        project = self.worktree / "App.csproj"
+        generator = self.worktree / "obj" / "Debug" / workflow._RAZOR_GENERATOR
+        diagnostic = f"(2,8): error CS0246: Missing PageModel [{project}]\n"
+        record = {"build_exit_code": 1, "repair_history": []}
+        log = self.run_path / "build.log"
+        for filename, generated_name in (
+            ("Pages/Ordered-Items.cshtml", "Pages/Ordered_Items_cshtml.g.cs"),
+            ("Pages/Ordered.Items.cshtml", "Pages/Ordered_Items_cshtml.g.cs"),
+            ("Pages/Admin-v2/OrderedItems.cshtml", "Pages/Admin_v2/OrderedItems_cshtml.g.cs"),
+        ):
+            page = Path(filename)
+            targets = (page, Path(filename + ".cs"))
+            source = f"{self.worktree / page}{diagnostic}"
+            generated = f"{generator / generated_name}{diagnostic}"
+            log.write_text(source + generated, encoding="utf-8")
+            with self.subTest(page=page), patch.object(workflow, "_validate_junie_execution"), patch.object(
+                workflow, "_attempt_repair",
+            ) as repair:
+                repair_build = workflow._repair_build_failure
+                self.assertTrue(repair_build(self.settings, targets, self.worktree, self.run_path, record))
+                self.assertEqual(repair.call_args.args[2], (page,))
+                repair.reset_mock()
+                collision = Path(generated_name.removesuffix("_cshtml.g.cs") + ".cshtml")
+                self.assertFalse(repair_build(
+                    self.settings, (*targets, collision, Path(f"{collision}.cs")),
+                    self.worktree, self.run_path, record,
+                ))
+                log.write_text(source + generated.replace("App.csproj", "Other.csproj"), encoding="utf-8")
+                self.assertFalse(repair_build(self.settings, targets, self.worktree, self.run_path, record))
+                repair.assert_not_called()
+
     # 手修正後の再開で両ファイルを同期し、参照専用の変更は反映前に検出する。
     def test_repair_syncs_both_files_and_rejects_reference_changes(self):
         self.resume(self.edit_with_junie(complete=False))

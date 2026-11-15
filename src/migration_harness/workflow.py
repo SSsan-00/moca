@@ -1703,6 +1703,16 @@ _BUILD_DIAGNOSTIC = re.compile(
 _RAZOR_GENERATOR = "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerator"
 
 
+def _razor_generated_path(page: Path) -> Path:
+    # Razor preserves separators and classifies each UTF-16 code unit.
+    name = "".join(
+        char if char == "/" or (ord(char) <= 0xFFFF and (char.isalpha() or char.isdecimal()))
+        else "__" if ord(char) > 0xFFFF else "_"
+        for char in page.as_posix()
+    )
+    return Path(f"{name}.g.cs")
+
+
 def _repair_build_failure(
     config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path, record: dict[str, Any],
 ) -> bool:
@@ -1733,7 +1743,7 @@ def _repair_build_failure(
             if code != "CS0246" or _RAZOR_GENERATOR not in path.parts:
                 return False
             generator_index = path.parts.index(_RAZOR_GENERATOR)
-            if "obj" not in path.parts[:generator_index] or not path.name.endswith("_cshtml.g.cs"):
+            if "obj" not in path.parts[:generator_index] or not path.name.lower().endswith("_cshtml.g.cs"):
                 return False
             generated_model_errors.add((Path(*path.parts[generator_index + 1:]), message, project_suffix))
             continue
@@ -1741,8 +1751,15 @@ def _repair_build_failure(
             project_dir = (worktree / project_suffix[2:-1]).resolve().parent
             if project_dir.is_relative_to(worktree) and resolved.is_relative_to(project_dir):
                 page = resolved.relative_to(project_dir)
-                generated = page.with_name(f"{page.stem}_cshtml.g.cs")
-                source_model_errors.add((generated, message, project_suffix))
+                generated = _razor_generated_path(page)
+                # Sanitized names can collide, even when only one page has a source diagnostic.
+                if not any(
+                    other != path and other.suffix.lower() == ".cshtml"
+                    and (worktree / other).is_relative_to(project_dir)
+                    and _razor_generated_path((worktree / other).relative_to(project_dir)) == generated
+                    for other in targets
+                ):
+                    source_model_errors.add((generated, message, project_suffix))
         key = path.as_posix(), code, message
         findings.setdefault(key, f"{path.as_posix()}({match['location']}): {code}: {message}")
     # Only suppress generated copies that also have a diagnostic on an editable Razor source file.
@@ -1807,6 +1824,8 @@ def _verify_worktree(
             "scripts": scripts,
             "scripts_passed": not scripts,
         }
+        if config.get("checker_from_cli"):
+            record["verification"]["toml_checker_command"] = config.get("toml_checker_command")
         verified = _build_worktree(config, result, record)
         if record["status"] == "build_failed":
             try:
@@ -2064,8 +2083,12 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     verification = record.get("verification") or {}
     saved_checker = verification.get("checker_command")
     configured_checker = config["checker_command"]
-    if configured_checker is None and verification.get("checker_from_cli"):
-        # ledger-review loads TOML without the run's CLI override.
+    if (
+        verification.get("checker_from_cli")
+        and not config.get("checker_from_cli")
+        and configured_checker == verification.get("toml_checker_command")
+    ):
+        # Reuse the saved override while the TOML default still matches the original.
         configured_checker = saved_checker
     scripts = _verification_scripts(config, configured_checker)
     fingerprint = verification.get("input_fingerprint")

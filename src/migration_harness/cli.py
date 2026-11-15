@@ -73,6 +73,7 @@ def main() -> None:
         checker_command = getattr(args, "checker_command", None)
         if checker_command is not None:
             validate_checker_command(checker_command)
+            config["toml_checker_command"] = config["checker_command"]
             config["checker_command"] = checker_command
             config["checker_from_cli"] = True
         if args.command == "ledger-review":
