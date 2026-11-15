@@ -739,7 +739,7 @@ def _run_prepared_with_junie(
 
     if exit_code is None:
         raise RuntimeError("context preparation produced no capsules")
-    return {
+    result = {
         **result,
         "junie_exit_code": exit_code,
         "agent_workspace_path": str(agent_root),
@@ -747,6 +747,58 @@ def _run_prepared_with_junie(
         "status": record["status"],
         "current_capsule": record["current_capsule"],
         "error": record.get("error"),
+    }
+    if record["status"] == "junie_finished":
+        return _build_worktree(config, result, record)
+    return result
+
+
+def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    worktree = Path(result["worktree_path"])
+    run_path = Path(result["run_path"])
+    record_path = run_path / "run.json"
+    log_path = run_path / "build.log"
+    build_project = config["build_project"]
+    command = ["dotnet", "build"]
+
+    record.update(status="building", build_exit_code=None, build_log_path=str(log_path))
+    record.pop("error", None)
+    _write_run_record(record_path, record)
+    print(f"Building in {worktree} (log: {log_path})", flush=True)
+    try:
+        # MSBuildの出力は実行データ側に残し、アプリの差分に混ぜない。
+        with log_path.open("wb") as log:
+            try:
+                if build_project is not None:
+                    target = (worktree / build_project).resolve()
+                    if not target.is_relative_to(worktree.resolve()) or not target.is_file():
+                        raise ValueError(f"build project is missing or outside the worktree: {build_project}")
+                    command.append(str(target))
+                completed = subprocess.run(command, cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
+            except (OSError, ValueError) as exc:
+                log.write(f"{exc}\n".encode("utf-8"))
+                raise
+        record["build_exit_code"] = completed.returncode
+        if completed.returncode:
+            record["error"] = f"dotnet build exited with code {completed.returncode}"
+    except (OSError, ValueError) as exc:
+        record["error"] = str(exc)
+    except KeyboardInterrupt:
+        record.update(status="build_failed", error="build interrupted by user")
+        _write_run_record(record_path, record)
+        raise RunInterrupted(record["run_id"]) from None
+
+    record["status"] = "build_failed" if "error" in record else "build_succeeded"
+    _write_run_record(record_path, record)
+    return {
+        **result,
+        "junie_exit_code": record.get("junie_exit_code"),
+        "agent_workspace_path": record.get("agent_workspace_path"),
+        "completed_capsules": record["completed_capsules"],
+        "status": record["status"],
+        "error": record.get("error"),
+        "build_exit_code": record["build_exit_code"],
+        "build_log_path": str(log_path) if log_path.is_file() else None,
     }
 
 
@@ -767,7 +819,6 @@ def _validate_junie_execution() -> None:
 
 
 def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
-    _validate_junie_execution()
     try:
         parsed_run_id = uuid.UUID(run_id)
     except ValueError as exc:
@@ -787,7 +838,8 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         raise ValueError("run record must contain a JSON object")
     if record.get("run_id") != run_id or record.get("project_root") != config["project_root"]:
         raise ValueError("run record does not match the configured project")
-    if record.get("status") not in {"prepared", "junie_running", "junie_failed", "interrupted"}:
+    build_only = record.get("status") in {"junie_finished", "building", "build_failed"}
+    if not build_only and record.get("status") not in {"prepared", "junie_running", "junie_failed", "interrupted"}:
         raise ValueError(f"run is not resumable from status {record.get('status')!r}")
 
     unit_id = record.get("unit_id")
@@ -835,9 +887,12 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         context_paths.append(str(context_path))
 
     completed_capsules = record.get("completed_capsules", 0)
-    if not isinstance(completed_capsules, int) or not 0 <= completed_capsules < len(context_paths):
-        raise ValueError("run has no incomplete capsule to resume")
-    if record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
+    if (
+        not isinstance(completed_capsules, int)
+        or (completed_capsules != len(context_paths) if build_only else not 0 <= completed_capsules < len(context_paths))
+    ):
+        raise ValueError("run record has inconsistent capsule completion")
+    if not build_only and record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
         raise ValueError("run record has inconsistent capsule progress; inspect it before resuming")
 
     result = {
@@ -853,6 +908,9 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "source_boundary_review_required": record["source_boundary_review_required"],
         "max_context_chars": record["max_context_chars"],
     }
+    if build_only:
+        return _build_worktree(config, result, record)
+    _validate_junie_execution()
     record.pop("error", None)
     return _run_prepared_with_junie(
         config, unit, run_path, result, record, resuming=record["status"] != "prepared",

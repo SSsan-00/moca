@@ -53,6 +53,17 @@ def load_config(path: Path) -> dict[str, Any]:
     if not isinstance(max_context_chars, int) or max_context_chars < 1000:
         raise ValueError("[project].max_context_chars must be an integer of at least 1000")
 
+    build = raw.get("build", {})
+    if not isinstance(build, dict):
+        raise ValueError("[build] must be a table")
+    build_project = build.get("project")
+    if build_project is not None:
+        if not isinstance(build_project, str) or not build_project.strip():
+            raise ValueError("[build].project must be a path relative to the worktree")
+        build_path = Path(build_project)
+        if build_path.anchor or ".." in build_path.parts or build_path.suffix.lower() not in {".csproj", ".sln", ".slnx"}:
+            raise ValueError("[build].project must name a .csproj, .sln or .slnx inside the worktree")
+
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
         raise ValueError("[junie] must be a table")
@@ -113,6 +124,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "worktree_root": str(worktree_root),
         "run_root": str(run_root),
         "max_context_chars": max_context_chars,
+        "build_project": build_project,
         "junie_max_steps": junie_max_steps,
         "units": normalized_units,
     }

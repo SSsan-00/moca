@@ -15,10 +15,10 @@ def main() -> None:
     prepare = subparsers.add_parser("prepare", help="Create a worktree and bounded context capsules")
     prepare.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     prepare.add_argument("--unit", required=True, help="Migration unit ID from the config")
-    run = subparsers.add_parser("run", help="Prepare a worktree and run Junie for each context capsule")
+    run = subparsers.add_parser("run", help="Migrate the selected unit with Junie and build the worktree")
     run.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     run.add_argument("--unit", required=True, help="Migration unit ID from the config")
-    resume = subparsers.add_parser("resume", help="Resume an incomplete run from its saved worktree and capsule")
+    resume = subparsers.add_parser("resume", help="Continue migration or retry the build in the saved worktree")
     resume.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     resume.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     args = parser.parse_args()
@@ -55,11 +55,19 @@ def main() -> None:
         print(f"Junie exit code: {result['junie_exit_code']}")
         print(f"Completed capsules: {result['completed_capsules']}/{result['capsule_count']}")
         print(f"Agent workspace: {result['agent_workspace_path']}")
-        if result["status"] != "junie_finished":
+        if "build_exit_code" in result:
+            print(f"Build:     {result['status']} (exit code: {result['build_exit_code']})")
+            if result["build_log_path"]:
+                print(f"Build log: {result['build_log_path']}")
+            if result["status"] == "build_failed":
+                print(f"Build failed: {result['error']}")
+                print("Fix the cause and resume with the Run ID shown above to retry the build.")
+                raise SystemExit(1)
+        else:
             print(f"Paused at capsule {result['current_capsule']}: {result['error']}")
             print("Resume with the Run ID shown above.")
             raise SystemExit(1)
-        print("Review the worktree diff before continuing to build/checker steps.")
+        print("Review the worktree diff before running your checker.")
 
 
 if __name__ == "__main__":

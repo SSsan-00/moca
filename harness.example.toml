@@ -11,6 +11,10 @@ max_context_chars = 100000
 # 任意の正の整数。省略するとJunie CLI側の設定に従う。
 # max_steps = 20
 
+[build]
+# worktreeからの相対パス。省略時はworktree直下でdotnet buildを実行する。
+# project = "src/Application/Application.csproj"
+
 [[units]]
 id = "example-page"
 target = "Pages/Example.cshtml"

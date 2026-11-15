@@ -133,7 +133,7 @@
       </button>
     </div>
     <h1>PHP → C# 移行ハーネス</h1>
-    <p class="lead">Windows上でローカル実行するPython + LangGraphのハーネス。現在は移行対象の準備と、文字数上限に合わせたコンテキストの分割・Junieへの順次入力を実装しています。ビルド、チェッカー、修正ループ、アンカーJSONレビューは今後の設計です。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
+    <p class="lead">Windows上でローカル実行するPython + LangGraphのハーネス。移行対象を準備し、指定範囲を分割してJunieに順次渡します。全カプセルの完了後にworktreeでdotnet buildを実行します。チェッカー、修正ループ、アンカーJSONレビューは今後の設計です。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
   </header>
 
   <section>
@@ -166,7 +166,7 @@
 
   <section>
     <h2>1. 現在の実装フロー</h2>
-    <p class="diagram-note">実装済みの範囲です。prepareはworktreeとコンテキストカプセルを作成し、runはカプセルごとにJunieを起動して対象ファイルへ反映します。中断後はrun IDを指定し、同じworktreeから未完了カプセルを再開できます。</p>
+    <p class="diagram-note">prepareはworktreeとコンテキストカプセルを作成します。runはJunieで移行し、全カプセルを反映してからビルドします。移行の中断やビルド失敗の後は、run IDを指定すると同じworktreeで該当の工程から再開できます。</p>
     <div class="diagram">
       <pre class="mermaid">
 flowchart TB
@@ -181,14 +181,15 @@ flowchart TB
     I --> J[対象ファイルをworktreeへ反映し実行記録を保存]
     J --> K{未処理カプセルがある?}
     K -- はい --> H
-    K -- いいえ --> L[人がrun.jsonとworktreeの差分を確認]
+    K -- いいえ --> M[worktreeでdotnet buildを実行]
+    M --> L[人がログとworktreeの差分を確認]
 
     classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
     classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
     class A start
-    class B,C,D,E,H,I,J action
+    class B,C,D,E,H,I,J,M action
     class F,K decision
     class G,L pending
       </pre>
@@ -391,7 +392,7 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> 対象範囲を絞ったコンテキスト分割、worktree準備、Junieの順次実行。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、中断からの継続、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
+  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、全カプセル完了後のビルド。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>
