@@ -1091,6 +1091,45 @@ def _load_saved_run(
     return run_path, worktree_path, record, unit
 
 
+def _load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
+    capsule_path = (run_path / "capsule").resolve()
+    if not capsule_path.is_relative_to(run_path) or not capsule_path.is_dir():
+        raise ValueError("run capsule directory is missing or outside the run directory")
+    manifest_path = capsule_path / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("run manifest is missing or is a symlink")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("run manifest must contain a JSON object")
+    parts = manifest.get("parts", [])
+    if not isinstance(parts, list) or not parts or any(not isinstance(part, dict) for part in parts):
+        raise ValueError("run manifest has no valid capsule list")
+    if [part.get("index") for part in parts] != list(range(1, len(parts) + 1)):
+        raise ValueError("run manifest has missing or invalid capsule indexes")
+    return capsule_path, manifest
+
+
+def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+    run_path, _, _, unit = _load_saved_run(config, run_id)
+    _, manifest = _load_capsule_manifest(run_path)
+    # 範囲は準備時のマニフェストに固定し、進捗は同じRun IDの実行記録を使う。
+    return {
+        "run_id": run_id,
+        "target": unit["target"],
+        "capsules": [
+            {
+                "index": part["index"],
+                "sources": [
+                    {key: source[key] for key in ("path", "start_line", "end_line", "character_slices") if key in source}
+                    for source in part.get("sources", [])
+                    if Path(source["path"]).suffix.lower() == ".php"
+                ],
+            }
+            for part in manifest["parts"]
+        ],
+    }
+
+
 def review_checker(
     config: dict[str, Any], run_id: str, finding_id: str | None, reason: str | None,
 ) -> dict[str, Any]:
@@ -1157,20 +1196,8 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     resume_attempts = record.get("resume_attempts", 0)
     if not isinstance(resume_attempts, int) or isinstance(resume_attempts, bool) or resume_attempts < 0:
         raise ValueError("run record contains an invalid resume-attempt count")
-    capsule_path = (run_path / "capsule").resolve()
-    if not capsule_path.is_relative_to(run_path) or not capsule_path.is_dir():
-        raise ValueError("run capsule directory is missing or outside the run directory")
-    manifest_path = capsule_path / "manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise ValueError("run manifest is missing or is a symlink")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict):
-        raise ValueError("run manifest must contain a JSON object")
-    parts = manifest.get("parts", [])
-    if not isinstance(parts, list) or not parts or any(not isinstance(part, dict) for part in parts):
-        raise ValueError("run manifest has no valid capsule list")
-    if [part.get("index") for part in parts] != list(range(1, len(parts) + 1)):
-        raise ValueError("run manifest has missing or invalid capsule indexes")
+    capsule_path, manifest = _load_capsule_manifest(run_path)
+    parts = manifest["parts"]
     context_paths = []
     for part in parts:
         part_path = part.get("path")

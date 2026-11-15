@@ -15,7 +15,7 @@ from typing import Any
 
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
 from migration_harness.review_anchors import generate_anchors
-from migration_harness.workflow import resume_with_junie, review_checker, run_observer, run_with_junie
+from migration_harness.workflow import migration_ledger, resume_with_junie, review_checker, run_observer, run_with_junie
 
 
 RESUMABLE = {"checker_needs_review", "checker_failed", "build_failed", "junie_failed", "interrupted"}
@@ -110,6 +110,17 @@ class Dashboard:
                     self.send_body(200, "text/javascript; charset=utf-8", script)
                 elif self.path == prefix + "events":
                     self.send_events()
+                elif self.path == prefix + "migration-ledger":
+                    run_id = dashboard.state.get("run_id")
+                    if run_id and dashboard.state.get("worktree_path"):
+                        try:
+                            ledger = migration_ledger(config, run_id)
+                        except (OSError, ValueError, KeyError, TypeError) as exc:
+                            self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
+                        else:
+                            self.send_body(200, "application/json", json.dumps(ledger, ensure_ascii=False).encode("utf-8"))
+                    else:
+                        self.send_error(404)
                 elif self.path.startswith(prefix + "review/"):
                     self.send_comparison()
                 else:

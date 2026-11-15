@@ -298,7 +298,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>現在実装した上限超過対応</h3>
-      <p>指定範囲を行境界で分割し、複数カプセルを順番にJunieへ渡します。関数・制御構文の境界を安全に判定できる機能は未実装のため、現在は行単位です。極端に長い1行は文字位置で分割し、前後の重なりを付けます。各断片のfocus範囲と参照用の重なり範囲はmanifestに残します。依存情報の追加取得、台帳・網羅性確認は今後の設計です。対象ファイル全体のサイズは現在の上限に含まれません。</p>
+      <p>指定範囲を行境界で分割し、複数カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。ダッシュボードの「移行台帳」では、同じRun IDのmanifestとrun.jsonから、PHPの範囲・移行先ファイル・カプセルの処理状態を確認できます。依存情報の追加取得、関数などの論理境界に基づく分割、移行先の対応箇所を含めた網羅性の確認は今後の設計です。</p>
     </div>
   </section>
 
@@ -395,7 +395,7 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、ビルドとチェッカーの実行、チェッカー指摘の修正ループ、アンカー付きワークスペースJSONの生成。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認。</div>
+  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、カプセル単位の移行台帳、ビルドとチェッカーの実行、チェッカー指摘の修正ループ、アンカー付きワークスペースJSONの生成。<br><strong>目標:</strong> 論理項目と移行先の対応付け、依存情報の取得、網羅性確認。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>

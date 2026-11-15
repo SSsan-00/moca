@@ -252,6 +252,19 @@
     .viewer-preview-header h2 { margin: 0; font-size: 14px; }
     .viewer-preview-body p { margin: 16px; }
     [data-live] [data-demo-only] { display: none; }
+    #open-migration-ledger { min-height: 36px; height: 36px; }
+    .migration-ledger-target { margin: 4px 0 8px; color: var(--muted); overflow-wrap: anywhere; }
+    .migration-ledger-target code { color: var(--ink); }
+    .migration-ledger-list { margin: 0; padding: 0; list-style: none; }
+    .migration-ledger-row { padding: 10px 0; border-top: 1px solid var(--line); }
+    .migration-ledger-row > div { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .migration-ledger-row h3 { margin: 0; font-size: 13px; }
+    .migration-ledger-row ul { margin: 4px 0 0; padding-inline-start: 18px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .migration-ledger-row code { color: var(--ink); }
+    .migration-ledger-state { flex-shrink: 0; font-size: 12px; font-weight: 700; color: var(--muted); }
+    .migration-ledger-state[data-state="complete"] { color: var(--green); }
+    .migration-ledger-state[data-state="running"] { color: var(--blue); }
+    .migration-ledger-state[data-state="paused"] { color: var(--amber); }
     @keyframes review-dialog-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
     @keyframes review-dialog-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
     @keyframes review-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
@@ -288,6 +301,7 @@
       @supports (height: 100dvh) { body { height: 100dvh; } }
       .shell { display: grid; width: calc(100% - 22px); height: 100%; min-height: 0; grid-template-rows: 36px auto minmax(0, 1fr); gap: 10px; padding: 10px 0; }
       .topline { margin-bottom: 0; }
+      .topline, .top-actions { gap: 8px; }
       .top-links { gap: 11px; font-size: 12px; }
       .runbar { flex-wrap: wrap; gap: 10px; margin-bottom: 0; padding: 10px; }
       .run-meta { flex-basis: 100%; }
@@ -348,6 +362,7 @@
     <a class="brand" href="./migration-harness-spec.html">Migration Harness</a>
     <div class="top-actions">
       <div class="top-links"><a href="./migration-harness-spec.html">仕様</a><a href="./README.md">README</a></div>
+      <button class="button" id="open-migration-ledger" type="button" aria-haspopup="dialog" disabled>移行台帳</button>
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="ダークテーマに切り替え" title="テーマを切り替え">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
       </button>
@@ -484,6 +499,103 @@
   </header>
   <div class="viewer-preview-body"></div>
 </dialog>
+<dialog class="review-dialog" id="migration-ledger-dialog" aria-labelledby="migration-ledger-title">
+  <div class="review-dialog-inner">
+    <header class="review-heading">
+      <h2 id="migration-ledger-title" tabindex="-1">移行台帳</h2>
+      <form method="dialog"><button class="review-close" type="submit" aria-label="移行台帳を閉じる">×</button></form>
+    </header>
+    <div id="migration-ledger-details" hidden>
+      <p class="run-detail">Run ID <code id="migration-ledger-run-id"></code></p>
+      <p class="migration-ledger-target">移行先 <code id="migration-ledger-target"></code></p>
+    </div>
+    <p class="review-intro" id="migration-ledger-message" role="status" hidden></p>
+    <ol class="migration-ledger-list" id="migration-ledger-list" aria-label="カプセルごとの処理状況"></ol>
+  </div>
+</dialog>
+<script>
+"use strict";
+
+const migrationLedgerButton = document.querySelector("#open-migration-ledger");
+const migrationLedgerDialog = document.querySelector("#migration-ledger-dialog");
+const migrationLedgerList = document.querySelector("#migration-ledger-list");
+const migrationLedgerMessage = document.querySelector("#migration-ledger-message");
+const migrationLedgerDetails = document.querySelector("#migration-ledger-details");
+
+function updateMigrationLedgerStatuses(snapshot) {
+  if (!migrationLedgerDialog.open) return;
+  for (const badge of migrationLedgerList.querySelectorAll("[data-capsule]")) {
+    const index = Number(badge.dataset.capsule);
+    const current = index === snapshot.current_capsule;
+    let status = "pending";
+    let label = "未処理";
+    if (index <= snapshot.completed_capsules) {
+      status = "complete";
+      label = "処理済み";
+    } else if (current && snapshot.status === "junie_running") {
+      status = "running";
+      label = "処理中";
+    } else if (current && ["interrupted", "junie_failed"].includes(snapshot.status)) {
+      status = "paused";
+      label = snapshot.status === "interrupted" ? "中断" : "失敗";
+    }
+    badge.dataset.state = status;
+    badge.textContent = label;
+  }
+}
+
+function migrationLedgerRow(capsule) {
+  const row = document.createElement("li");
+  row.className = "migration-ledger-row";
+  const header = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = `カプセル ${capsule.index}`;
+  const badge = document.createElement("span");
+  badge.className = "migration-ledger-state";
+  badge.dataset.capsule = capsule.index;
+  header.append(title, badge);
+  const ranges = document.createElement("ul");
+  for (const source of capsule.sources) {
+    const range = document.createElement("li");
+    const path = document.createElement("code");
+    path.textContent = source.path;
+    const lines = source.start_line === source.end_line
+      ? `${source.start_line}行目`
+      : `${source.start_line}–${source.end_line}行`;
+    range.append(path, ` · ${lines}`);
+    for (const slice of source.character_slices || []) {
+      range.append(`（${slice.line}行目の${slice.focus_start_column}–${slice.focus_end_column}文字目）`);
+    }
+    ranges.append(range);
+  }
+  if (!capsule.sources.length) {
+    const range = document.createElement("li");
+    range.textContent = "PHPの入力範囲なし";
+    ranges.append(range);
+  }
+  row.append(header, ranges);
+  return row;
+}
+
+
+function openMigrationLedger(message = "") {
+  migrationLedgerList.replaceChildren();
+  migrationLedgerDetails.hidden = true;
+  migrationLedgerMessage.textContent = message;
+  migrationLedgerMessage.hidden = !message;
+  migrationLedgerDialog.showModal();
+  document.querySelector("#migration-ledger-title").focus();
+}
+
+function showMigrationLedger(ledger, snapshot) {
+  document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
+  document.querySelector("#migration-ledger-target").textContent = ledger.target;
+  migrationLedgerList.replaceChildren(...ledger.capsules.map(migrationLedgerRow));
+  migrationLedgerDetails.hidden = false;
+  migrationLedgerMessage.hidden = true;
+  updateMigrationLedgerStatuses(snapshot);
+}
+</script>
 <!-- dashboard-script -->
 <script>
   const steps = [...document.querySelectorAll(".step")];
@@ -509,9 +621,9 @@
   const reviewNote = document.querySelector("#review-note");
   const reviewRow = document.querySelector('.ledger-row[data-status="judgment"]');
   const capsuleCalls = [
-    { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12" },
-    { unit: "SearchOrder", chars: 43880, time: "10:42:15" },
-    { unit: "FormatDate", chars: 91530, time: "10:42:18" }
+    { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12", lines: [1, 120] },
+    { unit: "SearchOrder", chars: 43880, time: "10:42:15", lines: [121, 240] },
+    { unit: "FormatDate", chars: 91530, time: "10:42:18", lines: [241, 360] }
   ];
   const ledgerRows = [...document.querySelectorAll(".ledger-row[data-status]")];
   const filterButtons = [...document.querySelectorAll(".filter-button")];
@@ -535,8 +647,35 @@
   let playing = true;
   let humanReviewHandled = false;
   let correctionRequested = false;
+  let capsuleInterrupted = false;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  function demoMigrationLedgerState() {
+    return {
+      completed_capsules: current > 3 || correctionRequested
+        ? capsuleCalls.length
+        : current === 3 ? Math.max(0, capsuleCallIndex) : 0,
+      current_capsule: capsuleCallIndex + 1,
+      status: current === 3 ? (playing ? "junie_running" : capsuleInterrupted ? "interrupted" : "prepared") : "prepared",
+    };
+  }
+
+  function updateDemoMigrationLedger() {
+    updateMigrationLedgerStatuses(demoMigrationLedgerState());
+  }
+
+  migrationLedgerButton.disabled = false;
+  migrationLedgerButton.addEventListener("click", () => {
+    openMigrationLedger();
+    showMigrationLedger({
+      run_id: "run-2026-11-14-001",
+      target: "Pages/Orders/Index.cshtml.cs",
+      capsules: capsuleCalls.map(({lines}, index) => ({
+        index: index + 1,
+        sources: [{path: "php/orders.php", start_line: lines[0], end_line: lines[1]}],
+      })),
+    }, demoMigrationLedgerState());
+  });
   function updateStep(index) {
     toggle.removeAttribute("aria-haspopup");
     const now = performance.now();
@@ -592,6 +731,7 @@
       correctionRequested = false;
     }
     if (index === 6 && !humanReviewHandled) requestHumanReview();
+    updateDemoMigrationLedger();
   }
 
   function openReviewDialog() {
@@ -855,6 +995,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     capsuleFill.style.width = `${percent}%`;
     capsuleMeter.setAttribute("aria-valuenow", String(call.chars));
     addEvent(call.time, "Junie入力を確定", `${call.unit} · ${call.chars.toLocaleString("en-US")}文字`);
+    updateDemoMigrationLedger();
   }
 
   function startCapsuleCalls() {
@@ -890,11 +1031,12 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     document.querySelector("#ledger-empty").hidden = visibleCount > 0;
   }
 
-  function stop() {
+  function stop(interruptCapsule = false) {
     clearTimeout(timer);
     timer = undefined;
     pauseStepTimer();
     playing = false;
+    capsuleInterrupted = interruptCapsule && current === 3 && !correctionRequested;
     stopCapsuleCalls();
     flow.classList.add("is-paused");
     stopElapsed();
@@ -902,11 +1044,13 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     state.dataset.state = "paused";
     state.classList.remove("is-running");
     stateLabel.textContent = "一時停止中";
+    updateDemoMigrationLedger();
   }
 
   function play() {
     if (current >= steps.length) reset();
     playing = true;
+    capsuleInterrupted = false;
     if (current < steps.length && !stepStartedAt) stepStartedAt = performance.now();
     if (current === 3) startCapsuleCalls();
     flow.classList.remove("is-paused");
@@ -915,6 +1059,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     state.dataset.state = "running";
     state.classList.add("is-running");
     scheduleNext();
+    updateDemoMigrationLedger();
   }
 
   function scheduleNext() {
@@ -934,6 +1079,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     elapsedStarted = 0;
     resetReview();
     resetCapsuleCalls();
+    capsuleInterrupted = false;
     stepElapsed.fill(0);
     current = 0;
     stepStartedAt = 0;
@@ -1003,7 +1149,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
 
   toggle.addEventListener("click", () => {
     if (state.dataset.state === "waiting") openReviewDialog();
-    else if (playing) stop();
+    else if (playing) stop(true);
     else play();
   });
   document.querySelector("#restart").addEventListener("click", reset);

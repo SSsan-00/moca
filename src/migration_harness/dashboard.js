@@ -133,6 +133,7 @@ function syncActions() {
   accept.disabled = !canAct || !selected || selected[2] || !note.value.trim();
   resume.disabled = !canAct;
   reviewButton.disabled = !canAct;
+  migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
   dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || snapshotting;
   for (const button of anchorButtons) {
     button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
@@ -181,6 +182,17 @@ function describe(state) {
   return label;
 }
 
+migrationLedgerButton.addEventListener("click", async () => {
+  openMigrationLedger("移行台帳を読み込み中");
+  try {
+    const response = await fetch("migration-ledger");
+    if (!response.ok) throw new Error();
+    showMigrationLedger(await response.json(), snapshot);
+  } catch {
+    migrationLedgerMessage.textContent = "移行台帳を読み込めませんでした。画面を閉じてから、もう一度お試しください。";
+  }
+});
+
 function render() {
   const data = snapshot;
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
@@ -200,6 +212,7 @@ function render() {
   const current = data.status === "checker_needs_review" && !showReview ? 5 : stage[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
   const completed = data.completed_capsules ?? 0;
+  updateMigrationLedgerStatuses(data);
   element("#step-count").textContent = `${completed} / ${total || "—"} カプセル`;
   steps[4].querySelector("h3").textContent = "ビルド";
   steps[6].querySelector("h3").textContent = "人の確認";
