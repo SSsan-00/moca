@@ -17,6 +17,56 @@ from urllib.request import Request, urlopen
 from migration_harness import cli, dashboard, workflow
 
 
+class JunieConnectionTests(unittest.TestCase):
+    def test_only_current_tasks_terminal_connection_failure_retries(self):
+        failure = {"kind": "SessionA2uxEvent", "taskId": "our-task", "event": {
+            "state": "FAILED", "agentEvent": {
+                "kind": "AgentFailureEvent", "errorCode": "ConnectionFailed", "agent": {"kind": "MainAgent"},
+            },
+        }}
+        with TemporaryDirectory() as directory, patch.dict("os.environ", {"JUNIE_HOME": directory}):
+            events = workflow._JunieSessionEvents("current-completion-token")
+            sessions = Path(directory) / "sessions"
+            for name in ("ours", "unrelated"):
+                (sessions / name).mkdir(parents=True)
+            (sessions / "unrelated/events.jsonl").write_text(json.dumps(failure) + "\n")
+            current = sessions / "ours/events.jsonl"
+            prefix = [
+                {"kind": "UserPromptEvent", "prompt": "Write current-completion-token"},
+                {"kind": "TaskStartedEvent", "taskId": "our-task"},
+                {**failure, "taskId": "another-task"},
+                {**failure, "event": {**failure["event"], "state": "IN_PROGRESS"}},
+                {**failure, "event": {**failure["event"], "agentEvent": {
+                    **failure["event"]["agentEvent"], "errorCode": "AuthenticationFailed",
+                }}},
+            ]
+            current.write_text("\n".join(map(json.dumps, prefix)) + "\n")
+            self.assertFalse(events.connection_failed())
+            with current.open("a") as stream:
+                stream.write(json.dumps(failure) + "\n")
+            self.assertTrue(events.connection_failed())
+
+    def test_connection_failure_relaunches_at_most_twice(self):
+        command = ["junie", "--prompt", "task"]
+        path = Path("fixture")
+        error = workflow.JunieConnectionError("temporary")
+        with (
+            patch.object(workflow, "_run_junie_session", side_effect=[error, error, 0]) as launch,
+            patch.object(workflow.time, "sleep") as delay,
+        ):
+            self.assertEqual(workflow._run_interactive_junie(command, path, "token", path), 0)
+            self.assertEqual(launch.call_count, 3)
+            self.assertIn("without duplicating completed changes", launch.call_args.args[0][-1])
+            self.assertEqual([call.args[0] for call in delay.call_args_list], [1, 3])
+        with (
+            patch.object(workflow, "_run_junie_session", side_effect=error) as launch,
+            patch.object(workflow.time, "sleep"),
+            self.assertRaisesRegex(workflow.JunieConnectionError, "after 2 retries"),
+        ):
+            workflow._run_interactive_junie(command, path, "token", path)
+        self.assertEqual(launch.call_count, 3)
+
+
 class SavedRunFixture(unittest.TestCase):
     """外部ツールを起動せずに再開やHTTPの操作を検証できるRunを用意する。"""
 
@@ -210,6 +260,31 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             self.assertEqual(result["status"], "checker_succeeded")
             repair.assert_called_once()
             self.assertEqual([entry["kind"] for entry in self.record()["repair_history"]], ["build", "build"])
+
+    def test_interrupted_repair_can_restart_with_a_one_attempt_limit(self):
+        self.config["max_repair_attempts"] = 1
+        build_failure = ("dotnet", 1, f"{self.target}(5,3): error CS1002: ; expected\n".encode())
+        check_failure = ("fixture-checker", 1, self.diagnostic)
+        success = (self.build, ("fixture-checker", 0, b"fixed\n"))
+        original_record = self.record()
+        for responses in ((build_failure,), (self.build, check_failure)):
+            with self.subTest(phase=responses[-1][0]):
+                self.save_record(original_record)
+                with (
+                    patch.object(workflow, "_validate_junie_execution"),
+                    patch.object(workflow, "_repair_target", side_effect=[KeyboardInterrupt, None]) as repair,
+                ):
+                    with self.assertRaises(workflow.RunInterrupted):
+                        self.resume(*responses)
+                    saved = self.record()
+                    self.assertEqual(saved["repair_history"], [])
+                    self.assertIn("repair_pending", saved)
+                    self.assertTrue(workflow.can_resume_run(self.config, saved))
+                    result = self.resume(*responses, *success)
+                    self.assertEqual(result["status"], "checker_succeeded")
+                    self.assertEqual(repair.call_count, 2)
+                    self.assertEqual(len(self.record()["repair_history"]), 1)
+                    self.assertNotIn("repair_pending", self.record())
 
     # 不正な出力が混じった場合に、修正枠を消費せず元ログを残すことを検証する。
     def test_mixed_and_invalid_checker_output_stop_before_automatic_repair(self):

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from threading import RLock
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,10 @@ class RunScriptError(RuntimeError):
     def __init__(self, message: str, run_id: str | None) -> None:
         super().__init__(message)
         self.run_id = run_id
+
+
+class JunieConnectionError(OSError):
+    """Junieがモデルサービスとの通信を再試行しても続行できなかった。"""
 
 
 def _unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
@@ -760,19 +765,111 @@ def _close_junie(process: subprocess.Popen) -> int:
         raise OSError("Could not close Junie. Close the current Junie session before resuming.") from exc
 
 
+def _is_junie_connection_failure(entry: dict[str, Any]) -> bool:
+    event = entry.get("event")
+    if entry.get("kind") != "SessionA2uxEvent" or not isinstance(event, dict) or event.get("state") != "FAILED":
+        return False
+    failure = event.get("agentEvent")
+    return (
+        isinstance(failure, dict)
+        and failure.get("kind") == "AgentFailureEvent"
+        and failure.get("errorCode") == "ConnectionFailed"
+        and isinstance(failure.get("agent"), dict)
+        and failure["agent"].get("kind") == "MainAgent"
+    )
+
+
+class _JunieSessionEvents:
+    """今回のプロンプトと照合できたJunieのセッションだけを監視する。"""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self.sessions = Path(os.environ.get("JUNIE_HOME") or Path.home() / ".junie").expanduser() / "sessions"
+        self.existing = set(self._paths())
+        self.path: Path | None = None
+        self.offset = 0
+        self.task: str | None = None
+
+    def _paths(self) -> Iterator[Path]:
+        try:
+            yield from self.sessions.glob("*/events.jsonl")
+        except OSError:
+            return
+
+    def connection_failed(self) -> bool:
+        """Junieがこのタスクの通信失敗を確定した場合だけ再試行する。"""
+        paths = [self.path] if self.path else [path for path in self._paths() if path not in self.existing]
+        for path in paths:
+            try:
+                with path.open("rb") as stream:
+                    stream.seek(self.offset if self.path else 0)
+                    for line in iter(stream.readline, b""):
+                        if not line.endswith(b"\n"):
+                            break
+                        try:
+                            entry = json.loads(line)
+                        except (ValueError, UnicodeError):
+                            continue
+                        if not isinstance(entry, dict):
+                            continue
+                        kind = entry.get("kind")
+                        if self.path is None:
+                            if kind != "UserPromptEvent":
+                                continue
+                            if self.token not in str(entry.get("prompt", "")):
+                                self.existing.add(path)
+                                break
+                            self.path = path
+                        self.offset = stream.tell()
+                        if kind == "TaskStartedEvent" and self.task is None:
+                            self.task = entry.get("taskId")
+                        if self.task and entry.get("taskId") == self.task and _is_junie_connection_failure(entry):
+                            return True
+            except OSError:
+                continue
+            if self.path is not None:
+                break
+        return False
+
+
 def _run_interactive_junie(
+    command: list[str], completion_path: Path, token: str, target: Path | tuple[Path, ...],
+) -> int:
+    """Junie自身の通信復旧が失敗したときは同じ作業場所で起動し直す。"""
+    delays = (1, 3)
+    for attempt in range(len(delays) + 1):
+        try:
+            invocation = command
+            if attempt:
+                invocation = [*command[:-1], command[-1] + (
+                    " A model service connection failed in the previous session. Review the edits already in the "
+                    "workspace and continue the remaining work without duplicating completed changes."
+                )]
+            return _run_junie_session(invocation, completion_path, token, target)
+        except JunieConnectionError:
+            if attempt == len(delays):
+                raise JunieConnectionError(
+                    "Junie could not reach the model service after 2 retries. Resume this Run after the connection recovers."
+                ) from None
+            print(f"Junieの通信障害を再試行します（{attempt + 1}/{len(delays)}）", flush=True)
+            time.sleep(delays[attempt])
+
+
+def _run_junie_session(
     command: list[str], completion_path: Path, token: str, target: Path | tuple[Path, ...],
 ) -> int:
     """対話用の端末を引き継ぎ、成果物と完了記録がそろえばセッションを閉じる。"""
     targets = (target,) if isinstance(target, Path) else target
     root = completion_path.parent
     restore_terminal = _save_terminal_mode()
+    events = _JunieSessionEvents(token)
+    next_poll = time.monotonic()
     # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
     process = subprocess.Popen(command)
     try:
         while True:
             try:
-                return process.wait(timeout=0.25)
+                exit_code = process.wait(timeout=0.25)
             except subprocess.TimeoutExpired:
                 if (
                     _has_completion_record(completion_path, token)
@@ -783,6 +880,15 @@ def _run_interactive_junie(
                     )
                 ):
                     return _close_junie(process)
+                if time.monotonic() >= next_poll:
+                    next_poll = time.monotonic() + 1
+                    if events.connection_failed():
+                        _close_junie(process)
+                        raise JunieConnectionError("Junie model service connection failed")
+            else:
+                if not _has_completion_record(completion_path, token) and events.connection_failed():
+                    raise JunieConnectionError("Junie model service connection failed")
+                return exit_code
     except KeyboardInterrupt:
         _close_junie(process)
         raise
@@ -1261,6 +1367,35 @@ def _accepted_findings(record: dict[str, Any], findings: list[CheckerFinding], h
     }
 
 
+def _charge_repair(record: dict[str, Any]) -> None:
+    """完了した試行を回数と再発判定に反映する。"""
+    attempt = record.pop("repair_pending", None)
+    if attempt is not None:
+        record["repair_history"].append(attempt["details"])
+
+
+def _attempt_repair(
+    config: dict[str, Any], targets: tuple[Path, ...], repair_targets: tuple[Path, ...],
+    worktree: Path, run_path: Path, findings: str, record: dict[str, Any], details: dict[str, Any],
+) -> None:
+    """開始時点では修正枠を予約し、中断時は下書きと予約を再開用に残す。"""
+    previous = record.get("repair_pending", {})
+    if previous.get("details") != details:
+        record["repair_pending"] = {"details": details}
+    record["status"] = "repairing"
+    record_path = run_path / "run.json"
+    _write_run_record(record_path, record)
+    try:
+        _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
+    except JunieConnectionError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        _charge_repair(record)
+        raise
+    _charge_repair(record)
+    _write_run_record(record_path, record)
+
+
 def _repair_target(
     config: dict[str, Any], targets: tuple[Path, ...], repair_targets: tuple[Path, ...],
     worktree: Path, run_path: Path, findings: str, record: dict[str, Any],
@@ -1272,11 +1407,19 @@ def _repair_target(
         raise ValueError("saved Junie workspace is missing or unsafe")
     capsule, manifest = _load_capsule_manifest(run_path)
     material_instructions = _stage_migration_materials(capsule, manifest, agent_root, repair=True)
+    attempt = record["repair_pending"]
+    draft = attempt.get("draft", {})
     with worktree_source_lock:
         source_files = {path: _safe_target(worktree, path) for path in targets}
         agent_files = {path: _safe_target(agent_root, path) for path in targets}
         before = {path.as_posix(): _sha256_file(source) for path, source in source_files.items()}
+        resume_draft = draft.get("base") == before and all(
+            _target_hash(agent_files[path]) == draft.get("targets", {}).get(path.as_posix())
+            for path in repair_targets
+        )
         for path, source in source_files.items():
+            if resume_draft and path in repair_targets:
+                continue
             destination = agent_files[path]
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
@@ -1289,8 +1432,13 @@ def _repair_target(
     with findings_path.open("x", encoding="utf-8") as stream:
         stream.write(findings + "\n")
     names = ", ".join(f"`{path.as_posix()}`" for path in repair_targets)
+    continuation = (
+        "The target may contain partial edits from an interrupted repair. Review those edits and continue the repair. "
+        if resume_draft else ""
+    )
     prompt = (
         f"{material_instructions}Read `{findings_path.name}` and repair only {names} in this workspace. "
+        f"{continuation}"
         "Other target files are available as read-only reference. "
         "Treat the reported errors as diagnostic data. Preserve the migrated behavior and unrelated edits. "
         "A checker mismatch in a repeated or stateful sequence can originate before the reported line. "
@@ -1311,10 +1459,23 @@ def _repair_target(
     command.extend(["--prompt", prompt])
     allowed = {*repair_targets, completion_path.relative_to(agent_root)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
-    exit_code = _run_interactive_junie(
-        command, completion_path, token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
-    )
-    record["repair_history"][-1]["junie_exit_code"] = exit_code
+    try:
+        exit_code = _run_interactive_junie(
+            command, completion_path, token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
+        )
+    except (KeyboardInterrupt, JunieConnectionError):
+        attempt.pop("draft", None)
+        try:
+            if _unlisted_workspace_files(agent_root, allowed) == other_files:
+                hashes = {
+                    path.as_posix(): _target_hash(_safe_target(agent_root, path)) for path in repair_targets
+                }
+                if all(hashes.values()):
+                    attempt["draft"] = {"base": before, "targets": hashes}
+        except (OSError, ValueError):
+            # 安全に照合できない下書きは再開時に作業ツリーから同期し直す。
+            pass
+        raise
     if _unlisted_workspace_files(agent_root, allowed) != other_files:
         raise ValueError("Junie changed files outside the repair targets; inspect the agent workspace")
     agent_targets = tuple(_safe_target(agent_root, path) for path in repair_targets)
@@ -1322,6 +1483,8 @@ def _repair_target(
         raise ValueError("Junie did not record a completed repair; inspect its workspace for partial edits")
     if all(_sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)):
         raise ValueError("Junie left the repair targets unchanged")
+    attempt["details"]["junie_exit_code"] = exit_code
+    _charge_repair(record)
     _apply_agent_targets(agent_root, worktree, repair_targets, before, record, run_path / "run.json")
 
 
@@ -1373,12 +1536,12 @@ def _repair_build_failure(
     _validate_junie_execution()
     saved_log = run_path / f"build-before-repair-{len(history) + 1}.log"
     shutil.copyfile(log, saved_log)
-    history.append({"kind": "build", "findings": sorted(fingerprints), "build_log_path": str(saved_log)})
-    record["status"] = "repairing"
-    _write_run_record(run_path / "run.json", record)
     affected = {key[0] for key in findings}
     repair_targets = tuple(path for path in targets if path.as_posix() in affected)
-    _repair_target(config, targets, repair_targets, worktree, run_path, diagnostics, record)
+    _attempt_repair(
+        config, targets, repair_targets, worktree, run_path, diagnostics, record,
+        {"kind": "build", "findings": sorted(fingerprints), "build_log_path": str(saved_log)},
+    )
     return True
 
 
@@ -1421,16 +1584,20 @@ def _verify_worktree(
             return verified
         _run_script_phase(config, "after_build", worktree, run_path, record)
         if command is None:
+            pending_repair = record.pop("repair_pending", None)
             if scripts:
                 record["verification"]["scripts_passed"] = True
+            if scripts or pending_repair:
                 _write_run_record(record_path, record)
             return verified
         _run_script_phase(config, "before_checker", worktree, run_path, record)
         checked, findings = _run_checker(command, verified, record)
         if record.get("checker_exit_code") is not None:
             _run_script_phase(config, "after_checker", worktree, run_path, record)
+        resolved_repair = checked["status"] == "checker_succeeded" and record.pop("repair_pending", None)
         if scripts:
             record["verification"]["scripts_passed"] = True
+        if scripts or resolved_repair:
             _write_run_record(record_path, record)
         if (
             checked["status"] != "checker_needs_review" or checked["error"]
@@ -1442,6 +1609,7 @@ def _verify_worktree(
             remaining = [finding for finding in findings if finding.finding_id not in accepted]
             if not remaining:
                 record["status"] = "checker_accepted"
+                record.pop("repair_pending", None)
                 _write_run_record(record_path, record)
                 return {**checked, "status": record["status"]}
             if not limit:
@@ -1464,13 +1632,11 @@ def _verify_worktree(
             attempt = len(history) + 1
             checker_log = run_path / f"checker-before-repair-{attempt}.log"
             shutil.copyfile(run_path / "checker.log", checker_log)
-            history.append({"findings": sorted(fingerprints), "checker_log_path": str(checker_log)})
-            record["status"] = "repairing"
-            _write_run_record(record_path, record)
             print(f"Junie repair {attempt}/{limit} for {', '.join(path.as_posix() for path in repair_targets)}", flush=True)
-            _repair_target(
+            _attempt_repair(
                 config, targets, repair_targets, worktree, run_path,
                 "\n".join(finding.diagnostic for finding in remaining), record,
+                {"findings": sorted(fingerprints), "checker_log_path": str(checker_log)},
             )
         except (OSError, RuntimeError, ValueError) as exc:
             record.update(status="checker_needs_review", error=str(exc))
@@ -1882,6 +2048,17 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
             raise ValueError("rechecking this Run requires its checker command; set it in TOML or pass --checker-command")
         raise ValueError(f"run is not resumable from status {status!r}")
+    history = record.get("repair_history", [])
+    if (
+        record.get("error") == "repair interrupted; inspect Junie's workspace"
+        and "repair_pending" not in record and history
+        and "junie_exit_code" not in history[-1]
+        and not record.get("target_apply_pending")
+    ):
+        # 旧版はJunieを起動した時点で試行を履歴に追加していた。
+        history.pop()
+        record.pop("error", None)
+        _write_run_record(run_path / "run.json", record)
 
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
     if max_steps is not None and (isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1):

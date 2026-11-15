@@ -204,3 +204,36 @@ class MultipleTargetsTest(HarnessCase):
                     else:
                         self.assertIn(model_name, result["error"])
                         self.assertFalse(model.exists())
+
+    def test_repair_resumes_with_the_unpublished_draft(self):
+        self.resume(self.edit_with_junie(complete=False))
+        _, page = self.targets
+        record = self.record()
+        record.update(status="checker_needs_review", build_exit_code=0, completed_capsules=1)
+        workflow._write_run_record(self.record_path, record)
+        self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
+
+        def check(command, *, cwd, stdout, **kwargs):
+            if command[0] == "fixture-checker" and (Path(cwd) / page).read_text() != "ready":
+                stdout.write(f"RZ1 {page}:1 error: fix output\n".encode())
+                return subprocess.CompletedProcess(command, 1)
+            return subprocess.CompletedProcess(command, 0)
+
+        def interrupt(command, completion, token, target):
+            target.write_text("draft")
+            raise KeyboardInterrupt
+
+        def complete(command, completion, token, target):
+            self.assertIn("partial edits from an interrupted repair", command[-1])
+            self.assertEqual(target.read_text(), "draft")
+            target.write_text("ready")
+            completion.write_text(token)
+            return 0
+
+        with patch.object(workflow.subprocess, "run", side_effect=check):
+            with self.assertRaises(workflow.RunInterrupted):
+                self.resume(interrupt)
+            self.assertNotEqual((self.worktree / page).read_text(), "draft")
+            self.assertEqual(self.record()["repair_history"], [])
+            self.assertEqual(self.resume(complete)["status"], "checker_succeeded")
+        self.assertEqual(len(self.record()["repair_history"]), 1)

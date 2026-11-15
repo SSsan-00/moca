@@ -395,7 +395,9 @@ class Dashboard:
     def observe(self, record: dict[str, Any]) -> None:
         """Run記録から公開する項目を絞り、進捗に影響する変更だけを配信する。"""
         state = {key: record[key] for key in PROGRESS_FIELDS if key in record}
-        state["repair_count"] = len(record.get("repair_history", []))
+        state["repair_count"] = len(record.get("repair_history", [])) + (
+            record.get("status") == "repairing" and "repair_pending" in record
+        )
         with self.condition:
             fields = (*PROGRESS_FIELDS, "repair_count")
             if state != {key: self.state[key] for key in fields if key in self.state}:
