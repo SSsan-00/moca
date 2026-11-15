@@ -69,7 +69,6 @@
     .tag { display: inline-block; margin: 2px 4px 6px 0; padding: 2px 8px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-size: .82rem; font-weight: 650; }
     .diagram-note { margin: -5px 0 13px; color: var(--muted); font-size: .92rem; }
     .diagram { overflow-x: auto; padding: 8px 4px; }
-    .diagram-compact:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
     .mermaid { width: 100%; min-width: 0; text-align: center; }
     .mermaid svg { max-width: 100%; height: auto; }
     .mermaid .flow-start-label { display: inline-block; min-width: 144px; font-size: 24px; font-weight: 700; }
@@ -85,7 +84,6 @@
       .diagram-compact .mermaid svg {
         max-height: calc(80vh - 16px);
         max-height: calc(80dvh - 16px);
-        min-width: min(530px, 62dvh);
       }
     }
     .diagram-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
@@ -160,9 +158,9 @@
   </section>
 
   <section>
-    <h2 id="overview-flow">1. 現在の実装フロー</h2>
+    <h2>1. 現在の実装フロー</h2>
     <p class="diagram-note"><code>[[units]]</code> に機能名（<code>id</code>）、移行元PHP（<code>source</code>）、移行先（<code>target</code> または <code>targets</code>）を指定します。チェッカーの終了コードは <code>run.json</code>、出力は <code>checker.log</code> に保存します。</p>
-    <div class="diagram diagram-compact" tabindex="0" role="region" aria-labelledby="overview-flow">
+    <div class="diagram diagram-compact">
       <pre class="mermaid">
 ---
 config:
@@ -301,10 +299,10 @@ flowchart TB
         </div>
       </article>
       <article class="diagram-card">
-        <h3 id="build-repair-flow">ビルドとチェッカーの修正</h3>
+        <h3>ビルドとチェッカーの修正</h3>
         <p>Junieは準備時のルールと参考実装を使い、C#・Razorのコンパイルエラーやチェッカーの指摘を1 Runにつき既定で2回まで修正します。中断した試行は回数に含めず、再開時に指摘と移行先が一致すれば下書きを引き継ぎます。修正回数が0か、同じ指摘が再発した場合は人が確認します。</p>
         <p>自作スクリプトは準備・Junie移行・ビルド・チェッカーの前後に設定順で実行します。準備前はアプリのリポジトリ、それ以降はworktreeで実行します。スクリプトが失敗すると、その工程のログを保存して停止します。</p>
-        <div class="diagram diagram-compact" tabindex="0" role="region" aria-labelledby="build-repair-flow">
+        <div class="diagram diagram-compact">
           <pre class="mermaid">
 ---
 config:
