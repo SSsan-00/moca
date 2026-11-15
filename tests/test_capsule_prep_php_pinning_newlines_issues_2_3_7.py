@@ -133,11 +133,11 @@ class CapsulePreparationTests(HarnessCase):
 
         path = self.config_path({**PHP, "end_line": 101}, shared_inputs[1])
         common = [
-            '[[project.migration_rules]]\npath = "common.md"',
+            '[[project.migration_rules]]\npath = "common.md"\nstart_line = 2\nend_line = 2',
             *[
                 "[[project.references]]\n" + "\n".join(
                     f"{key} = {json.dumps(item[key])}" for key in ("role", "path")
-                )
+                ) + "\nstart_line = 1\nend_line = 1"
                 for item in shared_inputs[2:]
             ],
         ]
@@ -160,7 +160,7 @@ class CapsulePreparationTests(HarnessCase):
             )
             references = manifest["reference_sources"]
             self.assertEqual([entry["path"] for entry in references], [item["path"] for item in shared_inputs[2:]])
-            self.assertEqual(references[-1]["end_line"], 3)
+            self.assertEqual([entry["end_line"] for entry in references], [2, 2, 2, 3])
             agent = self.root / f"agent-{unit_id}"
             agent.mkdir()
             prompt = workflow._stage_migration_materials(capsule, manifest, agent, repair=True)

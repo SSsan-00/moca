@@ -667,13 +667,13 @@
           <div class="settings-field-pane settings-shared-pane">
             <section class="settings-materials" aria-labelledby="settings-rules-title">
               <h2 id="settings-rules-title">プロジェクト共通の移行ルール</h2>
-              <p>すべての移行単位に適用します。アプリのリポジトリからの相対パスを指定してください。</p>
+              <p>すべての移行単位で全文を使います。リポジトリからの相対パスを指定してください。</p>
               <div id="settings-rules"></div>
               <button class="button" id="settings-rule-add" type="button">移行ルールを追加</button>
             </section>
             <section class="settings-materials" aria-labelledby="settings-references-title">
               <h2 id="settings-references-title">プロジェクト共通の参考実装</h2>
-              <p>すべての移行単位で参照します。元PHPと対応するC#／Razorを、リポジトリからの相対パスで指定してください。</p>
+              <p>元PHPと対応するC#／Razorの相対パスを指定してください。準備時に各ファイルの全文を保存します。</p>
               <div id="settings-references"></div>
               <button class="button" id="settings-reference-add" type="button">参考実装ペアを追加</button>
             </section>
@@ -845,12 +845,11 @@ const scriptPhases = {
   before_build: "ビルド前", after_build: "ビルド成功後",
   before_checker: "チェッカー実行前", after_checker: "チェッカー実行後",
 };
-const inputEncodings = {"": "自動判定", "utf-8": "UTF-8", "utf-8-sig": "UTF-8（BOM付き）", "euc-jp": "EUC-JP"};
 const numericSettings = {
   max_repair_attempts: [0, "自動修正回数"], max_context_chars: [1000, "カプセルの文字数上限"],
   max_steps: [1, "Junieのステップ数上限"], start_line: [1, "開始行"], end_line: [1, "終了行"],
 };
-const hasInputContent = item => Boolean(item.path?.trim() || item.encoding || item.start_line || item.end_line || item.symbol || item.shared);
+const hasInputContent = item => Boolean(item.path?.trim());
 
 function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct}) {
   const newRun = document.querySelector("#workspace-new-run");
@@ -917,11 +916,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     }
     const cleanup = {};
     const removeEmptyUnits = [];
-    function checkRange(input) {
-      const {start_line: start, end_line: end} = input;
-      if ((!start && !end) || (start && end && Number(end) >= Number(start))) return;
-      throw new Error("行範囲は、開始行とそれ以降の終了行を指定してください。");
-    }
     for (const [index, entry] of settingsForm.units.entries()) {
       if (!added.has(entry)) continue;
       const {id, source, targets} = entry;
@@ -936,7 +930,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     if (rules.some(item => item.role && !item.path.trim())) {
       throw new Error("移行ルールのファイルパスを指定してください。");
     }
-    for (const rule of rules) checkRange(rule);
     if (rules.length !== settingsForm.migrationRules.length) cleanup.migrationRules = rules;
 
     const references = [];
@@ -949,7 +942,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
             && (!source.path.trim() || !targets.some(item => item.path.trim())))) {
         throw new Error("入力途中の参考実装ペアに、元PHPと移行済みC#／Razorのパスを指定してください。");
       }
-      for (const item of filled) checkRange(item);
       references.push(...filled);
     }
     if (references.length !== settingsForm.references.length) cleanup.references = references;
@@ -1066,38 +1058,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       control.addEventListener("click", action);
       return control;
     }
-    function materialDetails(item) {
-      const details = document.createElement("details");
-      details.className = "settings-details";
-      const summary = document.createElement("summary");
-      summary.textContent = "ファイルの詳細設定";
-      details.append(summary);
-      function addField(parent, labelText, key, placeholder = "") {
-        const label = document.createElement("label");
-        label.textContent = labelText;
-        const field = document.createElement(key === "encoding" ? "select" : "input");
-        if (key === "encoding") {
-          field.className = "workspace-select";
-          field.setAttribute("aria-label", labelText);
-          field.append(...Object.entries(inputEncodings).map(([value, name]) => new Option(name, value)));
-        } else {
-          field.placeholder = placeholder;
-          if (key in numericSettings) field.inputMode = "numeric";
-        }
-        field.value = key === "encoding" && item[key] === "auto" ? "" : item[key] ?? "";
-        field.addEventListener("input", () => { item[key] = field.value.trim(); change(); });
-        label.append(field);
-        parent.append(label);
-      }
-      addField(details, "文字コード", "encoding");
-      const range = document.createElement("div");
-      range.className = "settings-pair";
-      addField(range, "開始行", "start_line", "空欄なら全文");
-      addField(range, "終了行", "end_line", "空欄なら全文");
-      details.append(range);
-      addField(details, "シンボル名", "symbol", "例：get_status_label");
-      return details;
-    }
     function inputField(container, item, title, removal) {
       const label = document.createElement("label");
       label.textContent = title;
@@ -1138,7 +1098,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
         const title = `移行ルール ${++ruleNumber}`;
         const card = addCard(rules, title);
         inputField(card, item, "ルールファイル", removeButton(`${title}を削除`, () => remove([item], addRule)));
-        card.append(materialDetails(item));
         continue;
       }
 
@@ -1151,7 +1110,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
           ? removeButton(`${title}の移行済みファイル ${position}を削除`, () => remove([entry], item))
           : undefined;
         inputField(card, entry, label, removal);
-        card.append(materialDetails(entry));
       }
       const actions = document.createElement("div");
       actions.className = "workspace-actions";

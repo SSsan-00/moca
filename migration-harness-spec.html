@@ -71,7 +71,21 @@
     .diagram { overflow-x: auto; padding: 8px 4px; }
     .mermaid { width: 100%; min-width: 0; text-align: center; }
     .mermaid svg { max-width: 100%; height: auto; }
-    .diagram-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    @media screen {
+      .mermaid { margin: 0; }
+      .mermaid svg {
+        display: block;
+        width: auto;
+        max-height: calc(100vh - 16px);
+        max-height: calc(100dvh - 16px);
+        margin-inline: auto;
+      }
+      .diagram-compact .mermaid svg {
+        max-height: calc(80vh - 16px);
+        max-height: calc(80dvh - 16px);
+      }
+    }
+    .diagram-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
     .diagram-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
     .diagram-card h3 { margin-bottom: 2px; }
     .diagram-card > p { margin-bottom: 7px; color: var(--muted); font-size: .9rem; }
@@ -84,13 +98,11 @@
     .callout p { color: var(--muted); }
     .callout.amber { border-color: var(--amber); background: var(--amber-soft); }
     .callout.green { border-color: var(--green); background: var(--green-soft); }
-    .summary { margin-top: 18px; padding: 18px 20px; border: 1px solid var(--blue-line); border-radius: 13px; background: var(--blue-soft); }
-    footer { padding: 18px 3px 0; color: var(--muted); font-size: .84rem; }
     a { color: var(--blue); }
     @media (max-width: 760px) {
       main { width: calc(100% - 20px); margin-top: 22px; }
       section { padding: 17px; }
-      .grid, .diagram-pair, .steps { grid-template-columns: 1fr; }
+      .grid, .steps { grid-template-columns: 1fr; }
       .diagram { padding: 6px 0; }
       .diagram-card { padding: 12px; }
     }
@@ -113,7 +125,7 @@
       </button>
     </div>
     <h1>PHP → C# 移行ハーネス</h1>
-    <p class="lead">Windows上でローカル実行するPythonのハーネス。移行対象を準備し、指定範囲を分割してJunieに順次渡します。全カプセルの完了後にworktreeでビルドし、成功した場合は設定したチェッカーを実行します。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
+    <p class="lead">Windowsで動くPython製の移行ハーネスです。PHPを分割してJunieで移行し、ビルドと設定済みチェッカーで検証します。<a href="./progress-demo.html">進捗画面のデモ</a></p>
   </header>
 
   <section>
@@ -121,39 +133,39 @@
     <div class="grid">
       <article class="card">
         <h3>構成と移行先</h3>
-        <p><span class="tag">Python</span><span class="tag">Junie</span><span class="tag">.NET 9</span></p>
-        <p>Pythonで入力を検証し、カプセルの作成が成功してからworktreeを作成します。その後、Junie CLIをカプセルごとに順次起動します。JunieはdotUltimateなどで利用するエージェントです。移行先は既存のASP.NET Core Razor Pages（現状.NET 9）で、共通関数などは.csに配置します。</p>
+        <p><span class="tag">Python 3.11以上</span><span class="tag">Junie CLI</span><span class="tag">Git</span><span class="tag">.NET SDK</span></p>
+        <p>C#やRazorに移行します。ビルド対象に合う.NET SDKを用意します。</p>
       </article>
       <article class="card">
         <h3>移行材料</h3>
         <ul>
           <li>元のPHPと、コメントだけを追加した注釈版PHP</li>
           <li>別ツールが生成した仮C#</li>
-          <li>独自移行ルールの該当箇所と必要最小限の既存C#例</li>
+          <li>共通の移行ルールと参考実装ペア</li>
           <li>差分レビューに使うDiff ViewerワークスペースJSON</li>
         </ul>
       </article>
       <article class="card">
         <h3>大規模コードへの対応</h3>
-        <p>数百万行のリポジトリや数万行のファイルを丸ごとAIへ渡しません。アプリ用worktreeを1つ作り、Junieには対象箇所と必要な参照だけを入れた一時作業フォルダを渡します。</p>
+        <p>アプリ用worktreeはRunごとに1つ作成します。Junieには対象ファイルと必要な資料を入れた一時作業フォルダを渡します。</p>
       </article>
       <article class="card">
         <h3>公開する範囲</h3>
-        <p>公開するのは汎用ハーネスと設定例です。独自ルールMarkdown、利用者固有のスクリプト、アプリのソースや設定は利用者側で用意します。</p>
+        <p>汎用ハーネスと設定例を公開します。アプリのソースや設定、独自ルール、自作スクリプトは利用者が用意します。</p>
       </article>
     </div>
   </section>
 
   <section>
     <h2>1. 現在の実装フロー</h2>
-    <p class="diagram-note"><code>[[units]]</code> に機能名を <code>id</code> として設定し、<code>source</code> に移行元PHP、<code>target</code> または <code>targets</code> に移行先を指定します。prepareは指定したPHPの全文を固定し、worktreeとコンテキストカプセルを作成します。runはJunieで移行し、ビルド成功後に設定済みのチェッカーを実行します。終了コードはrun.json、出力はchecker.logに保存します。</p>
-    <div class="diagram">
+    <p class="diagram-note"><code>[[units]]</code> に機能名（<code>id</code>）、移行元PHP（<code>source</code>）、移行先（<code>target</code> または <code>targets</code>）を指定します。チェッカーの終了コードは <code>run.json</code>、出力は <code>checker.log</code> に保存します。</p>
+    <div class="diagram diagram-compact">
       <pre class="mermaid">
 flowchart TB
     A([開始]) --> B[TOMLで移行元PHPと移行先を指定]
     B --> C[設定・入力ファイルを検証]
     C --> D[移行対象を上限以内のカプセルに分割]
-    D --> E[基準リビジョンからアプリ用worktreeを作成]
+    D --> E[成功後に基準リビジョンからアプリ用worktreeを作成]
     E --> F{実行コマンド}
     F -- prepare --> G[準備完了。worktree・カプセル・manifestを出力]
     F -- run --> H[対象ファイルと次のカプセルをJunie用フォルダへ配置]
@@ -161,11 +173,9 @@ flowchart TB
     I --> J[対象ファイルをworktreeへ反映し実行記録を保存]
     J --> K{未処理カプセルがある?}
     K -- はい --> H
-    K -- いいえ --> M[worktreeでdotnet buildを実行]
-    M --> N{ビルド成功かつチェッカー設定済み?}
-    N -- はい --> O[チェッカーを実行して結果を保存]
-    O --> L[人がログとworktreeの差分を確認]
-    N -- いいえ --> L
+    K -- いいえ --> M[ビルドと設定済みチェッカーを実行]
+    M --> O[修正可能なエラーは設定回数内で修正して再検証]
+    O --> L[移行台帳とworktreeの差分を確認]
 
     classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
@@ -173,28 +183,28 @@ flowchart TB
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
     class A start
     class B,C,D,E,H,I,J,M,O action
-    class F,K,N decision
+    class F,K decision
     class G,L pending
       </pre>
     </div>
     <div class="callout">
       <h3>実行記録と再開</h3>
-      <p>同じRun IDを指定すると、既存の実行記録（run.json）、カプセル、作業ツリーを使って未完了のカプセルから再開します。</p>
+      <p>「実行」タブで同じRun IDを選び、「移行を再開」を押します。未完了のカプセルがあれば保存済みの編集から続け、全カプセルが処理済みならビルドから再検証します。カプセル作成に失敗した場合は、設定を直して新しく実行します。</p>
     </div>
     <div class="callout amber">
       <h3>参照範囲の制限</h3>
-      <p>ハーネスは指定した資料だけをコンテキストにまとめ、Junie用フォルダには対象ファイルとコンテキストだけを置きます。これはハーネス上の範囲指定であり、別の絶対パスへのアクセスをOSレベルで遮断するものではありません。</p>
+      <p>ハーネスがJunie用フォルダに置くのは、対象ファイルと指定した資料です。JunieはOSで許可された他のパスにもアクセスできます。</p>
     </div>
     <div class="callout">
       <h3>現在の文字数上限</h3>
-      <p><code>max_context_chars</code>の既定値は100,000文字です。1回分のコンテキストが上限を超える場合、原文を切り捨てず、現在は行境界で複数カプセルに分割して順にJunieへ渡します。関数や制御構文の境界を判定する機能は未実装です。極端に長い1行は文字位置を記録して分割し、隣接断片の前後512文字（上限の小さい設定では5%）を読み取り用に重ねます。AIにはfocus範囲のみを移行し、重なり範囲は文脈参照に限るよう指示します。文字コード・文字数・元の行範囲・focus範囲・重なり範囲は<code>capsule/manifest.json</code>に記録します。入力はUTF-8 BOMを優先し、BOMなしはUTF-8とEUC-JPを厳密に判定します。両方で異なる文字列になる曖昧な入力や、どちらでも読めない入力は自動選択せず、設定で文字コードを指定します。対象ファイル全体や会話履歴・ツール出力は計上しません。必須の移行ルールと <code>shared = true</code> の入力は毎回同梱し、先に文字数を確保します。原文の改行を保持し、生成するMarkdownの区切りにはLFを使います。</p>
+      <p><code>max_context_chars</code>の既定値は1カプセルあたり100,000文字です。必須ルールと同梱する共通入力の分を先に確保し、原文は行単位（長すぎる行は文字単位）で分割して順にJunieへ渡します。断片の重なりは文脈の参照に使います。共通の参考実装は全文をRunに保存し、Junieが必要な範囲を読みます。</p>
     </div>
   </section>
 
   <section>
     <h2>ローカル進捗画面の通信方式</h2>
     <p class="diagram-note">追加インストールを増やさず、ローカルのブラウザーで実行状況を確認します。</p>
-    <p><code>h.cmd d</code> を実行すると、進捗、実行、設定の各タブを使えます。実行タブで移行単位の準備と実行、保存済みRunの閲覧を開始できます。設定タブでフォームとTOMLプレビューを表示し、内容を検証してから指定済みのローカルファイルに保存します。</p>
+    <p><code>h.cmd d</code> でダッシュボードを起動します。「実行」タブで準備・実行や保存済みRunの閲覧・再開を行い、「設定」タブで設定を検証・保存できます。「TOMLを直接編集」で設定ファイルを開けます。</p>
     <div class="diagram">
       <pre class="mermaid">
 sequenceDiagram
@@ -213,87 +223,45 @@ sequenceDiagram
     <div class="grid">
       <article class="card">
         <h3>進捗の配信</h3>
-        <p>Python標準ライブラリのHTTPサーバーを127.0.0.1で起動し、ブラウザーの標準EventSource APIへSSEで状態とログを送ります。SSEは一方向の配信に使い、WebSocketは使いません。</p>
+        <p>Python標準ライブラリのHTTPサーバーを <code>127.0.0.1</code> で起動し、SSEでブラウザーに進捗とログを配信します。</p>
       </article>
       <article class="card">
         <h3>画面からの操作</h3>
-        <p>モーダルから判断理由の記録と再開をHTTP POSTで送ります。再開時は同じrun IDを使い、Junieはハーネスを起動した端末で対話します。CLIの <code>view</code> で完了済みRunの結果・台帳・差分を開けます。保存済みRunを開いた場合、再開は画面で操作した時点で行います。</p>
+        <p>判断理由の記録と再開はHTTP POSTで送ります。Junieとの対話はハーネスを起動した端末で行います。</p>
       </article>
       <article class="card">
         <h3>再接続と履歴</h3>
-        <p>サーバーは直近100件のイベントに連番IDを付け、再接続時に未受信分を再送します。実行結果と判断理由はrun.jsonに保存します。</p>
+        <p>直近100件のイベントを保持し、再接続時に未受信分を再送します。実行結果と判断理由は <code>run.json</code> に保存します。</p>
       </article>
       <article class="card">
         <h3>公開デモとの違い</h3>
-        <p>公開デモは模擬データで操作を試せます。ハーネスを --dashboard 付きで起動すると、同じ画面で実際の進捗と指摘を確認できます。</p>
+        <p>公開デモでは模擬データ、ローカル画面では実際の進捗と指摘を表示します。</p>
       </article>
     </div>
   </section>
 
   <section>
-    <h2>2. 大規模ソースの情報欠落を防ぐ（設計案）</h2>
-    <p class="diagram-note">一度に渡す量を抑えながら、原文を保持し、全範囲が処理・確認されたことを追跡します。</p>
-    <div class="diagram">
-      <pre class="mermaid">
-flowchart TB
-    A[元ソース・移行資料を保持] --> B[論理項目ごとに台帳化]
-    B --> C[未処理項目をキューから選ぶ]
-    C --> D[該当する原文・依存先・ルールを取得]
-    D --> E{今回分が設定上限以内? 既定100,000文字}
-    E -- いいえ --> F[論理境界で分割しキューへ戻す]
-    F --> C
-    E -- はい --> G[Junieに今回分を渡す]
-    G --> H[移行先候補と根拠を記録]
-    H --> I{未処理・未確認項目が残る?}
-    I -- はい --> C
-    I -- いいえ --> J[全項目の対応・対象外理由を照合]
-    J --> K[ビルド・チェッカー・人のレビュー]
-    D -.依存先が不明・分割できない.-> L[人の確認待ち]
-
-    classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
-    classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
-    classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
-    classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
-    class A,B,C,D,F,G,H,J,K action
-    class E,I decision
-    class L pending
-      </pre>
-    </div>
-    <div class="grid">
-      <article class="card">
-        <h3>台帳の単位（案）</h3>
-        <p>PHPの関数・メソッド・ページ処理など、意味のまとまりを1項目にします。構造を判定できない場合は、設定したファイルと行範囲を使います。行番号だけに頼らず、ファイル・シンボル名・該当範囲を併記します。</p>
-      </article>
-      <article class="card">
-        <h3>状態（案）</h3>
-        <p>未処理、移行候補あり、確認済み、対象外（理由付き）、人の判断待ちを区別します。未処理や判断待ちが残る項目は完了扱いにしません。</p>
-      </article>
-      <article class="card">
-        <h3>依存情報の取得</h3>
-        <p>呼び出し先、include、共通関数、既存C#例、該当ルールを関係情報から探し、必要な原文を追加で渡します。要約は索引として使い、原文の代わりにはしません。</p>
-      </article>
-      <article class="card">
-        <h3>移行先との対応</h3>
-        <p>各入力項目に対して、移行先ファイル・シンボル・範囲と対応の根拠を記録します。チェッカーなどで行番号がずれた場合も、シンボルや内容を合わせて追跡します。</p>
-      </article>
-    </div>
+    <h2>2. カプセルの分割と移行台帳</h2>
+    <p>PHPの原文をRunに固定し、カプセルごとに移行範囲と参照範囲を記録します。同じ入力から分割したカプセルには、前後最大12行ずつを参照用に添えます。</p>
+    <p>繰り返しや定数表は、Junieが元PHPから値と順序を抽出して移行先と照合します。チェッカーが差を検出した場合は、保存済みのカプセルを参照して修正します。</p>
+    <p>移行台帳ではRunごとにPHPの範囲、処理状態、移行先の候補、記録済みの判断と理由を閲覧できます。確認済みや理由付きの対象外はCLIの <code>ledger-review</code> で記録します。</p>
     <div class="callout green">
       <h3>移行完了の判定</h3>
-      <p>PHPの全範囲に確認済みまたは理由付きの対象外の判断があり、現行の移行先でビルドと設定済みチェッカーの条件を満たすと、移行完了を表示します。確認した移行先が変わった範囲は理由を残して要再確認に戻し、同じRun IDで再検証できます。</p>
+      <p>PHPの全範囲が確認済みか理由付きの対象外で、現行の移行先がビルドと設定済みチェッカーの条件を満たせば完了です。確認後に移行先が変わった範囲は要再確認として記録します。</p>
     </div>
     <div class="callout amber">
-      <h3>現在実装した上限超過対応</h3>
-      <p>PHPの全文または明示した行範囲を、上限に応じて行境界で分割し、カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。同じ入力のカプセル間では、前後の行を読み取り用に添えます。比較メニューでJunieがアンカーを生成すると、ハーネスは処理済みのPHP範囲に対応する移行先の候補を割り出し、Run IDごとに保存します。移行台帳では差分と記録済みの判断・理由を閲覧できます。判断はCLIで記録します。移行先の内容が変わった範囲は「要再確認」と表示します。依存情報の追加取得、論理境界での分割、対応の自動検証は今後の設計です。</p>
+      <h3>分割と対応候補の範囲</h3>
+      <p>依存先の追加や、処理の意味に沿った分割は手動で行います。アンカー生成時に、処理済みのPHP範囲に対応する移行先の候補をRunに保存します。</p>
     </div>
   </section>
 
   <section>
-    <h2>3. 対話実行の継続と今後の修正ループ</h2>
-    <p class="diagram-note">Junieは対話モードで起動し、各カプセルの作業が終わると完了記録を残します。有効な記録を検知すると、ハーネスが対話画面を閉じて次へ進みます。途中で閉じた場合は、保存した編集から再開できます。</p>
+    <h2>3. 中断後の再開と自動修正</h2>
+    <p class="diagram-note">カプセルごとの完了記録を検知すると、ハーネスはJunieの対話画面を閉じて次のカプセルへ進みます。最後のカプセルを終えたらビルドに進みます。</p>
     <div class="diagram-pair">
       <article class="diagram-card">
         <h3>Junieの停止と再開</h3>
-        <p>ステップ上限では同じ対話画面で続きを依頼できます。利用枠の回復を待つ場合は、その時点の編集を保存して保留できます。</p>
+        <p>ステップ上限に達したら、同じ対話画面で続きを依頼できます。通信失敗が確定すると、同じ作業場所で1秒、3秒の待機を挟んで最大2回再起動します。復旧しない場合は、接続を確認して同じRunを再開します。</p>
         <div class="diagram">
           <pre class="mermaid">
 flowchart TB
@@ -301,9 +269,12 @@ flowchart TB
     B -- ステップ上限 --> E[同じ対話画面で続きを依頼]
     E --> B
     B -- 有効な完了記録 --> C[対話画面を自動で閉じて編集を保存]
-    C --> D[次のカプセルへ。最後なら終了]
-    B -- 記録がないまま終了 --> H[部分編集を保存して保留]
-    H --> I[resumeで保存済みの編集から再開]
+    C --> D[次のカプセルへ。最後ならビルドへ]
+    B -- 通信失敗が確定 --> R{再試行が2回未満?}
+    R -- はい --> A
+    R -- いいえ --> H[保存済みの編集を残して保留]
+    B -- 記録がないまま終了 --> H
+    H --> I[同じRun IDで保存済みの編集から再開]
     I --> A
 
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
@@ -311,22 +282,26 @@ flowchart TB
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
     class A,B,C,D,I action
     class E,H pending
+    class R decision
           </pre>
         </div>
       </article>
       <article class="diagram-card">
         <h3>ビルドとチェッカーの修正</h3>
-        <p>Junieは移行先のC#・Razorのコンパイラエラーと独自チェッカーの指摘を、既定で1つのRunにつき合計2回まで修正します。準備時のルールと参考実装を使い、修正後はビルド、チェッカーの順で確認します。自動修正を0回に設定した場合や、過去の指摘が残るか再発した場合は人の確認に回します。</p>
-        <p>準備、Junie移行、ビルド、チェッカーの前後に自作スクリプトを設定できます。準備前はアプリのリポジトリ、それ以降はRunのworktreeで工程ごとに設定順に実行します。非ゼロで終了した場合は、その工程のログを保存して停止します。</p>
-        <div class="diagram">
+        <p>Junieは準備時のルールと参考実装を使い、C#・Razorのコンパイルエラーやチェッカーの指摘を1 Runにつき既定で2回まで修正します。中断した試行は回数に含めず、再開時に指摘と移行先が一致すれば下書きを引き継ぎます。修正回数が0か、同じ指摘が再発した場合は人が確認します。</p>
+        <p>自作スクリプトは準備・Junie移行・ビルド・チェッカーの前後に設定順で実行します。準備前はアプリのリポジトリ、それ以降はworktreeで実行します。スクリプトが失敗すると、その工程のログを保存して停止します。</p>
+        <div class="diagram diagram-compact">
           <pre class="mermaid">
 flowchart TB
     A[ビルド] --> B{成功?}
     B -- いいえ --> I
     I -- はい --> D[Junieが対象ファイルを修正]
     D --> A
-    B -- はい --> E[独自チェッカー]
-    E --> F{終了コードは0?}
+    D -- 中断 --> J[修正回数を消費せず下書きを保持]
+    J -- 同じRunを再開 --> A
+    B -- はい --> E{チェッカーを設定済み?}
+    E -- いいえ --> H
+    E -- はい --> F{チェッカーの終了コードは0?}
     F -- はい --> H[レビュー準備完了]
     F -- いいえ --> I{修正可能で、上限内かつ再発なし?}
     I -- いいえ --> G[ログを保存して人の確認へ]
@@ -336,54 +311,50 @@ flowchart TB
     classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
     classDef ready fill:#e8f6ef,stroke:#176b4b,color:#123c2c
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
-    class A,D,E action
-    class B,F,I decision
+    class A,D action
+    class B,E,F,I decision
     class H ready
-    class G pending
+    class G,J pending
           </pre>
         </div>
       </article>
     </div>
     <div class="callout amber">
       <h3>チェッカーの偽陽性</h3>
-      <p>CLIのreviewで指摘ごとに「問題なし」と判断した理由をrun.jsonに記録できます。同じrun IDで再開するとビルドとチェッカーを実行し、承認済みの指摘だけが残った場合はレビュー済みとして完了します。解釈できないログは人の確認に回します。大きなログでも手動レビューに利用できます。</p>
+      <p><code>review</code> で「問題なし」と判断した理由を記録できます。同じRunを再開して再検証し、承認済みの指摘だけが残れば完了します。解釈できないログは人が確認します。</p>
     </div>
   </section>
 
   <section>
     <h2>4. 差分レビューとアンカー連携</h2>
-    <p class="diagram-note">進捗ダッシュボード上部の「比較ツールを開く」を押すと、Run作成時の参照PHPとその時点のworktreeの移行先をDiff Viewerで表示し、同じ内容のJSONを自動でダウンロードします。Razorページの右ペインには .cshtml.cs と .cshtml を並べます。<code>targets</code> に両方を明示した場合は、同じRunで両方を編集・ビルド対象にできます。</p>
+    <p class="diagram-note">進捗画面の「比較ツールを開く」で、準備時のPHPと現在の移行先を比較し、ワークスペースJSONをダウンロードします。<code>targets</code> に <code>.cshtml</code> と <code>.cshtml.cs</code> を指定すると、同じRunで両方を移行・ビルドできます。</p>
     <div class="steps">
       <article class="step">
-        <h3>既存JSONから対応情報を読む</h3>
-        <p>既存のワークスペースJSONを設定ファイルの anchor_reference で指定すると、進捗画面と確認モーダルの比較オプションから「Junieで対応行を提案して開く」を選べます。CLIの anchors からも生成できます。ハーネスは既存アンカーの左右の行を抽出し、対応の例としてJunieに渡します。</p>
+        <h3>差分ビューアーと対応例の設定</h3>
+        <p>設定で差分ビューアーを有効にし、HTMLを指定します。進捗画面や確認モーダルから「Junieで対応行を提案して開く」を選べます。同じRunの確認済みの対応例は自動で参照します。</p>
       </article>
       <article class="step">
         <h3>Junieがアンカー案を作る</h3>
-        <p>Junieは、準備時に文字コードとハッシュを記録したPHPと、比較時の移行先のコピーを読み、PHPと移行先で同じ処理を担う行の組を提案します。</p>
+        <p>Junieは準備時のPHPと現在の移行先のコピーから、同じ処理を担う行の組を提案します。</p>
       </article>
       <article class="step">
         <h3>JSONを検査する</h3>
-        <p>ハーネスはペイン全体の行番号の範囲、重複、順序を検証し、アンカー付きのワークスペースJSONを別ファイルに保存します。</p>
+        <p>行番号の範囲・重複・順序を検証し、アンカー付きJSONを別ファイルに保存します。</p>
       </article>
       <article class="step">
         <h3>Diff Viewerで人が確認する</h3>
-        <p>画面から生成した場合はDiff Viewerが別タブで開き、同じJSONがダウンロードされます。CLIの場合は表示されたJSONをインポートします。Viewerで提案された対応行を確認し、必要に応じてアンカーを調整します。</p>
+        <p>Diff Viewerが別タブで開き、アンカー付きJSONがダウンロードされます。対応行を確認し、必要に応じてアンカーを調整します。</p>
       </article>
     </div>
     <div class="callout amber">
       <h3>Viewerではソースを変更しない</h3>
-      <p>Diff Viewerは保存済みJSONのコピーを表示します。比較画面やJSONを操作しても、PHPやworktreeのソースには書き戻しません。</p>
+      <p>Diff Viewerで変更できるのはワークスペースJSON内のデータです。</p>
     </div>
     <div class="callout green">
       <h3>レビュー後に保存するもの</h3>
-      <p>レビュー済みアンカーJSON、ファイル対応情報、ビルド・テスト結果、チェッカー出力、人が許容した指摘と理由を移行単位ごとに保存します。ソースの差分はアプリ用worktreeから参照し、Viewerから書き戻しません。</p>
+      <p>移行単位ごとに、レビュー済みアンカーJSON、ファイル対応、ビルド・テスト結果、チェッカー出力、承認した指摘と理由を保存します。ソースの差分はworktreeで確認できます。</p>
     </div>
   </section>
-
-  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、移行台帳での範囲と対応候補の表示、ビルドとチェッカーの実行、チェッカー指摘の修正ループ、アンカー付きワークスペースJSONの生成。<br><strong>目標:</strong> 論理項目の特定、依存情報の取得、対応の自動検証。</div>
-
-  <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';

@@ -245,7 +245,9 @@ def _normalize_input(
     if not isinstance(shared, bool):
         raise ValueError(f"{scope}: input shared must be a boolean")
     shared = shared or role == "migration_rules" or project_reference
-    if start is None and end is None and shared:
+    if role == "migration_rules" or (shared and role in REFERENCE_ROLES):
+        start, end = 1, None
+    elif start is None and end is None and shared:
         start = 1
     elif not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
         raise ValueError(f"{scope}: input line ranges must be positive and ordered")
