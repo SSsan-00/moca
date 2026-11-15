@@ -251,6 +251,7 @@
     .viewer-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
     .viewer-preview-header h2 { margin: 0; font-size: 14px; }
     .viewer-preview-body p { margin: 16px; }
+    .viewer-preview-body iframe { display: block; width: 100%; height: 100%; border: 0; }
     [data-live] [data-demo-only] { display: none; }
     #open-migration-ledger { min-height: 36px; height: 36px; }
     .migration-ledger-target { margin: 4px 0 8px; color: var(--muted); overflow-wrap: anywhere; }
@@ -302,8 +303,6 @@
       .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
     }
     @media (max-width: 560px) {
-      body { height: 100vh; overflow: hidden; }
-      @supports (height: 100dvh) { body { height: 100dvh; } }
       .shell { display: grid; width: calc(100% - 22px); height: 100%; min-height: 0; grid-template-rows: 36px auto minmax(0, 1fr); gap: 10px; padding: 10px 0; }
       .topline { margin-bottom: 0; }
       .topline, .top-actions { gap: 8px; }
@@ -312,8 +311,7 @@
       .run-meta { flex-basis: 100%; }
       .elapsed { width: 92px; height: 34px; flex-basis: 92px; padding-inline: 7px; }
       .state { width: 114px; height: 34px; flex-basis: 114px; margin-left: 0; }
-      .controls { margin-left: auto; }
-      .controls { flex-wrap: wrap; justify-content: flex-end; }
+      .controls { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
       .button { padding-inline: 9px; font-size: 12px; }
       #toggle { width: 106px; }
       #restart { width: 68px; }
@@ -531,6 +529,37 @@
 <script>
 "use strict";
 
+// ダッシュボードは分割マーカーより前のHTMLとスクリプトを配信する。
+// 本番とデモの経過時間を、24時間を超えても折り返さない表記にする。
+function formatDuration(milliseconds) {
+  const seconds = Math.floor(milliseconds / 1000);
+  const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor(seconds % 3600 / 60)).padStart(2, "0");
+  const remainder = String(seconds % 60).padStart(2, "0");
+  return `${hours}:${minutes}:${remainder}`;
+}
+
+
+// 比較メニューの項目選択・外側クリック・Escape時の閉じ方を揃える。
+function bindComparisonOptions(button, compare) {
+  const options = button.closest("details");
+  const summary = options.querySelector("summary");
+  button.addEventListener("click", () => {
+    options.open = false;
+    summary.focus();
+    compare();
+  });
+  document.addEventListener("click", event => {
+    if (options.open && !options.contains(event.target)) options.open = false;
+  });
+  options.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || !options.open) return;
+    event.preventDefault();
+    options.open = false;
+    summary.focus();
+  });
+}
+
 const migrationLedgerButton = document.querySelector("#open-migration-ledger");
 const migrationLedgerDialog = document.querySelector("#migration-ledger-dialog");
 const migrationLedgerList = document.querySelector("#migration-ledger-list");
@@ -538,6 +567,7 @@ const migrationLedgerMessage = document.querySelector("#migration-ledger-message
 const migrationLedgerDetails = document.querySelector("#migration-ledger-details");
 const migrationCandidateComparison = document.querySelector("#migration-candidate-comparison");
 
+// 受信したカプセルの状態を台帳の既存行に反映する。
 function updateMigrationLedgerStatuses(snapshot) {
   if (!migrationLedgerDialog.open) return;
   for (const badge of migrationLedgerList.querySelectorAll("[data-capsule]")) {
@@ -561,6 +591,7 @@ function updateMigrationLedgerStatuses(snapshot) {
   }
 }
 
+// 対応候補と人の判断を区別し、記録済みの理由を表示する。
 function migrationMapping({mapping, review}) {
   const entry = document.querySelector("#migration-mapping-template").content.firstElementChild.cloneNode(true);
   const status = entry.querySelector(".migration-mapping-status");
@@ -580,6 +611,7 @@ function migrationMapping({mapping, review}) {
   return entry;
 }
 
+// カプセル内のPHP範囲を、元ファイルの行番号とともに並べる。
 function migrationLedgerRow(capsule) {
   const row = document.createElement("li");
   row.className = "migration-ledger-row";
@@ -617,6 +649,7 @@ function migrationLedgerRow(capsule) {
 }
 
 
+// 前のRunの表示をクリアし、内容を読み込む間も見出しにフォーカスを置く。
 function openMigrationLedger(message = "") {
   migrationLedgerList.replaceChildren();
   migrationLedgerDetails.hidden = true;
@@ -626,6 +659,7 @@ function openMigrationLedger(message = "") {
   document.querySelector("#migration-ledger-title").focus();
 }
 
+// 閲覧用の台帳と、その対応候補を作った比較への導線を表示する。
 function showMigrationLedger(ledger, snapshot, compare) {
   document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
   document.querySelector("#migration-ledger-target").textContent = (ledger.targets || [ledger.target]).join(" / ");
@@ -697,6 +731,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
   let demoCandidateWorkspace;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  // 再生位置と中断状態を、本番と同じ台帳の入力形式に整える。
   function demoMigrationLedgerState() {
     return {
       completed_capsules: current > 3 || correctionRequested
@@ -707,11 +742,8 @@ function showMigrationLedger(ledger, snapshot, compare) {
     };
   }
 
-  function updateDemoMigrationLedger() {
-    updateMigrationLedgerStatuses(demoMigrationLedgerState());
-  }
-
   migrationLedgerButton.disabled = false;
+  // 模擬データを共通の台帳に渡し、比較時点の内容を再表示できるようにする。
   function showDemoMigrationLedger() {
     showMigrationLedger({
       run_id: "run-2026-11-14-001",
@@ -736,6 +768,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
     openMigrationLedger();
     showDemoMigrationLedger();
   });
+  // 工程の切り替えに合わせて、計測・表示・人の確認待ちを更新する。
   function updateStep(index) {
     toggle.removeAttribute("aria-haspopup");
     const now = performance.now();
@@ -760,7 +793,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
       if (index === 3) startCapsuleCalls();
       else stopCapsuleCalls();
     } else {
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = undefined;
       stopCapsuleCalls();
       playing = false;
@@ -779,7 +812,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
       activeItem.className = `ledger-state${index >= steps.length ? " done" : index >= 3 ? " current" : ""}`;
       if (index >= steps.length) { activeItem.textContent = "レビュー待ち"; activeItem.parentElement.dataset.status = "review"; }
       else if (index >= 3) { activeItem.textContent = "移行中"; activeItem.parentElement.dataset.status = "running"; }
-      else { activeItem.textContent = "未処理"; activeItem.parentElement.dataset.status = "pending"; activeItem.dataset.current = "true"; }
+      else { activeItem.textContent = "未処理"; activeItem.parentElement.dataset.status = "pending"; }
     }
     applyLedgerFilter();
     if (index > 3 && events[index - 4]) addEvent(...events[index - 4]);
@@ -794,15 +827,17 @@ function showMigrationLedger(ledger, snapshot, compare) {
       correctionRequested = false;
     }
     if (index === 6 && !humanReviewHandled) requestHumanReview();
-    updateDemoMigrationLedger();
+    updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
+  // 指摘の見出しにフォーカスして確認を始める。
   function openReviewDialog() {
     if (reviewDialog.open) return;
     reviewDialog.showModal();
     reviewHeading.focus();
   }
 
+  // 閉じるアニメーションを終えてから操作元へ戻す。
   function closeReviewDialog() {
     if (!reviewDialog.open || reviewDialog.classList.contains("is-closing")) return;
     reviewDialog.classList.add("is-closing");
@@ -812,6 +847,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
     }, 220);
   }
 
+  // 現在のデモの内容を、Viewerが読み込める行座標付きの形式にする。
   function createReviewWorkspace(withAnchors) {
     const php = `function get_status_label($status) {
     return $statusLabels[$status] ?? 'Unknown';
@@ -825,6 +861,7 @@ echo $statusText;
     ViewData["StatusText"] = ${correctionRequested ? "OrderStatusMap.ToLabel(row.Status)" : "GetStatusText(row.Status)"};
 }`;
     const razorPage = `<span>@ViewData["StatusText"]</span>`;
+    // 各ペインの座標には、末尾の空行を含めたViewer上の行数を使う。
     const lines = text => text.split("\n").length;
     const rightText = `${pageModel}\n${razorPage}`;
     return {
@@ -857,6 +894,7 @@ echo $statusText;
     };
   }
 
+  // 比較時点のデモデータを保存し、組み込みViewerへ渡す。
   async function openDiffViewer(status, withAnchors = false, savedWorkspace) {
     // 画面を開くのを待つ間にデモが進んでも、クリックした時点の内容を保持する。
     const workspace = savedWorkspace ?? createReviewWorkspace(withAnchors);
@@ -889,6 +927,7 @@ echo $statusText;
     download.click();
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
     if (!loading.isConnected) return;
+    // 画面内で読み込めない環境から、手動で取り込めるViewerへ案内する。
     const openViewerFile = () => {
       if (loading.isConnected) {
         const link = document.createElement("a");
@@ -948,7 +987,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
       const frame = document.createElement("iframe");
       frame.title = "Diff Viewer";
       frame.setAttribute("sandbox", "allow-scripts allow-downloads");
-      frame.style.cssText = "display:block;width:100%;height:100%;border:0";
       frame.srcdoc = html.slice(0, offset) + bootstrap + html.slice(offset);
       viewerPreviewBody.replaceChildren(frame);
     } catch {
@@ -956,6 +994,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     }
   }
 
+  // 判断を待つ間は模擬実行と経過時間の計測を止める。
   function requestHumanReview() {
     clearTimeout(timer);
     timer = undefined;
@@ -972,12 +1011,14 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     openReviewDialog();
   }
 
+  // 未判断の件数とフィルタの強調状態を揃える。
   function updateReviewCount() {
     const count = document.querySelectorAll('.ledger-row[data-status="judgment"]').length;
     document.querySelector("#pending-count").innerHTML = `${count} <span>件</span>`;
     document.querySelector('[data-filter="judgment"]').classList.toggle("has-pending", count > 0);
   }
 
+  // 判断待ちのときだけ、行をモーダルの起点にする。
   function setReviewRow(status, label, canOpen) {
     reviewRow.dataset.status = status;
     const name = document.createElement(canOpen ? "button" : "span");
@@ -994,12 +1035,14 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     statusNode.textContent = label;
   }
 
+  // デモ上の判断は、固定の再生時刻ではなく操作時刻で記録する。
   function logHumanAction(title, detail) {
     const now = new Date();
     const timestamp = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
     addEvent(timestamp, title, detail);
   }
 
+  // 人の判断を受け、デモの修正工程に戻す。
   function resumeForCorrection() {
     humanReviewHandled = true;
     correctionRequested = true;
@@ -1022,6 +1065,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     scheduleNext();
   }
 
+  // 指摘の判断を表示に反映し、デモの実行を続ける。
   function acceptReview() {
     humanReviewHandled = true;
     setReviewRow("done", "問題なし", false);
@@ -1033,6 +1077,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateStep(steps.length);
   }
 
+  // 初回再生と同じ指摘・入力状態に戻す。
   function resetReview() {
     humanReviewHandled = false;
     correctionRequested = false;
@@ -1042,6 +1087,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     applyLedgerFilter();
   }
 
+  // 新しい実行ログをリスト末尾に置き、追って読める位置に移す。
   function addEvent(time, title, detail) {
     const row = document.createElement("div");
     row.className = "event live";
@@ -1060,6 +1106,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     activity.scrollTop = activity.scrollHeight;
   }
 
+  // その時点のJunie呼び出しと文字数の比率を表示する。
   function updateCapsuleCall(index) {
     const call = capsuleCalls[index];
     const percent = Math.round(call.chars / 100000 * 100);
@@ -1070,9 +1117,10 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     capsuleFill.style.width = `${percent}%`;
     capsuleMeter.setAttribute("aria-valuenow", String(call.chars));
     addEvent(call.time, "Junie入力を確定", `${call.unit} · ${call.chars.toLocaleString("en-US")}文字`);
-    updateDemoMigrationLedger();
+    updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
+  // 再生中の移行工程だけでカプセル表示を進める。
   function startCapsuleCalls() {
     if (capsuleTimer) return;
     if (capsuleCallIndex < 0) updateCapsuleCall(0);
@@ -1082,11 +1130,13 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     }, 2600);
   }
 
+  // 現在のカプセル表示を残したまま、進行タイマーを止める。
   function stopCapsuleCalls() {
     clearInterval(capsuleTimer);
     capsuleTimer = undefined;
   }
 
+  // 次の再生で最初のカプセルを表示できる状態に戻す。
   function resetCapsuleCalls() {
     stopCapsuleCalls();
     capsuleCallIndex = -1;
@@ -1097,6 +1147,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     capsuleMeter.setAttribute("aria-valuenow", "0");
   }
 
+  // 状態が変わった行にも、選択中の絞り込みを適用する。
   function applyLedgerFilter() {
     let visibleCount = 0;
     ledgerRows.forEach(row => {
@@ -1106,6 +1157,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     document.querySelector("#ledger-empty").hidden = visibleCount > 0;
   }
 
+  // 再生を止め、移行工程の途中ならデモ台帳にも中断を反映する。
   function stop(interruptCapsule = false) {
     clearTimeout(timer);
     timer = undefined;
@@ -1119,9 +1171,10 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     state.dataset.state = "paused";
     state.classList.remove("is-running");
     stateLabel.textContent = "一時停止中";
-    updateDemoMigrationLedger();
+    updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
+  // 保留した工程から再生を続け、完了後は先頭の状態に戻す。
   function play() {
     if (current >= steps.length) reset();
     playing = true;
@@ -1134,9 +1187,10 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     state.dataset.state = "running";
     state.classList.add("is-running");
     scheduleNext();
-    updateDemoMigrationLedger();
+    updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
+  // 再生中の工程に対応する待ち時間で次の工程を予約する。
   function scheduleNext() {
     clearTimeout(timer);
     timer = setTimeout(() => {
@@ -1145,6 +1199,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     }, durations[current] || 2300);
   }
 
+  // 模擬実行と比較候補を初期化し、先頭で一時停止する。
   function reset() {
     clearTimeout(timer);
     timer = undefined;
@@ -1171,6 +1226,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     toggle.textContent = "デモを再生";
   }
 
+  // 全体と各工程の経過時間を同じ更新周期で表示する。
   function updateElapsed() {
     const seconds = Math.floor((elapsedTotal + (elapsedStarted ? performance.now() - elapsedStarted : 0)) / 1000);
     elapsedValue.textContent = formatDuration(seconds * 1000);
@@ -1178,14 +1234,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     renderStepElapsed();
   }
 
-  function formatDuration(milliseconds) {
-    const seconds = Math.floor(milliseconds / 1000);
-    const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
-    const minutes = String(Math.floor(seconds % 3600 / 60)).padStart(2, "0");
-    const remainder = String(seconds % 60).padStart(2, "0");
-    return `${hours}:${minutes}:${remainder}`;
-  }
-
+  // 完了した工程の時間を固定し、実行中の工程だけ加算する。
   function renderStepElapsed() {
     const now = performance.now();
     steps.forEach((step, index) => {
@@ -1201,6 +1250,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     });
   }
 
+  // 現在の工程を、中断した時点までの経過時間で確定する。
   function pauseStepTimer() {
     if (!stepStartedAt || current >= steps.length) return;
     stepElapsed[current] += performance.now() - stepStartedAt;
@@ -1208,6 +1258,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     renderStepElapsed();
   }
 
+  // 二重計測を避けて再生時間の加算を始める。
   function startElapsed() {
     if (elapsedStarted) return;
     elapsedStarted = performance.now();
@@ -1215,6 +1266,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     elapsedTimer = setInterval(updateElapsed, 1000);
   }
 
+  // 再生中の加算を確定し、停止中の時間を集計から外す。
   function stopElapsed() {
     if (!elapsedStarted) return;
     elapsedTotal += performance.now() - elapsedStarted;
@@ -1238,29 +1290,16 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   document.querySelector("#review-accept").addEventListener("click", acceptReview);
   document.querySelector("#review-fix").addEventListener("click", resumeForCorrection);
   for (const comparison of document.querySelectorAll(".comparison-control")) {
-    const options = comparison.querySelector(".comparison-options");
-    const summary = options.querySelector("summary");
     const status = document.querySelector(comparison.closest("dialog") ? "#review-anchor-status" : "#demo-anchor-status");
-    const propose = options.querySelector("[data-propose-anchors]");
+    const propose = comparison.querySelector("[data-propose-anchors]");
     comparison.querySelector("[data-compare]").addEventListener("click", () => openDiffViewer(status));
-    propose.addEventListener("click", async () => {
-      options.open = false;
-      summary.focus();
+    bindComparisonOptions(propose, async () => {
       propose.disabled = true;
       try {
         await openDiffViewer(status, true);
       } finally {
         propose.disabled = false;
       }
-    });
-    document.addEventListener("click", event => {
-      if (options.open && !options.contains(event.target)) options.open = false;
-    });
-    options.addEventListener("keydown", event => {
-      if (event.key !== "Escape" || !options.open) return;
-      event.preventDefault();
-      options.open = false;
-      summary.focus();
     });
   }
   reviewDialog.addEventListener("cancel", event => {
@@ -1278,6 +1317,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   themeToggle.addEventListener("click", () => {
     const root = document.documentElement;
     const next = root.dataset.theme === "dark" ? "light" : "dark";
+    // テーマ、ブラウザーの配色、切り替えボタンの説明を同時に変更する。
     const switchTheme = () => {
       root.dataset.theme = next;
       document.querySelector('meta[name="theme-color"]').content = next === "dark" ? "#0b121d" : "#edf1f6";

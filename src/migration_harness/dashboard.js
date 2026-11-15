@@ -1,5 +1,6 @@
 "use strict";
 
+// ダッシュボードテンプレートの単一要素を取得する。
 const element = selector => document.querySelector(selector);
 const dialog = element("#review-dialog");
 const note = element("#review-note");
@@ -21,6 +22,9 @@ element(".review-actions").before(notice);
 const activity = element("#activity");
 const ledger = element("#ledger-list");
 const steps = [...document.querySelectorAll(".step")];
+steps[4].querySelector("h3").textContent = "ビルド";
+steps[6].querySelector("h3").textContent = "人の確認";
+for (const step of steps) step.querySelector(".step-elapsed").hidden = true;
 const statusNames = {
   preparing: "準備中", prepared: "準備完了", junie_running: "Junieで移行中",
   junie_finished: "移行完了", repairing: "Junieで修正中", building: "ビルド中",
@@ -36,7 +40,6 @@ const stage = {
   repairing: 3, building: 4, build_succeeded: 4, build_failed: 4, checking: 5, checker_failed: 5,
   checker_needs_review: 6, checker_succeeded: 6, checker_accepted: 6,
 };
-const archived = [];
 let snapshot = {status: "preparing"};
 let rev = 0;
 let submitting = false;
@@ -61,23 +64,8 @@ modalComparisonStatus.hidden = true;
 element(".review-actions").before(modalComparisonStatus);
 const anchorButtons = document.querySelectorAll("[data-propose-anchors]");
 for (const button of anchorButtons) {
-  const options = button.closest("details");
-  const summary = options.querySelector("summary");
-  options.hidden = !document.documentElement.hasAttribute("data-anchor-reference");
-  button.addEventListener("click", () => {
-    options.open = false;
-    summary.focus();
-    openSnapshot({withAnchors: true, fromReview: dialog.contains(button)});
-  });
-  document.addEventListener("click", event => {
-    if (options.open && !options.contains(event.target)) options.open = false;
-  });
-  options.addEventListener("keydown", event => {
-    if (event.key !== "Escape" || !options.open) return;
-    event.preventDefault();
-    options.open = false;
-    summary.focus();
-  });
+  button.closest("details").hidden = !document.documentElement.hasAttribute("data-anchor-reference");
+  bindComparisonOptions(button, () => openSnapshot({withAnchors: true, fromReview: dialog.contains(button)}));
 }
 element(".controls").setAttribute("aria-label", "実行操作");
 const allFilter = element('[data-filter="all"]');
@@ -87,8 +75,8 @@ for (const button of element(".ledger-controls").children) {
 }
 const emptyFinding = element("#ledger-empty");
 element("#ledger-title").textContent = "チェッカーの指摘";
-element("#activity").replaceChildren();
-element("#ledger-list").replaceChildren();
+activity.replaceChildren();
+ledger.replaceChildren();
 element(".work-summary .metric-label").textContent = "カプセル総数";
 element(".work-summary .metric:nth-child(2) .metric-label").textContent = "移行済み";
 element(".review-eyebrow").hidden = true;
@@ -121,11 +109,13 @@ const connection = document.createElement("span");
 connection.setAttribute("role", "status");
 element("#activity-title").after(connection);
 
+// 判断に関する通知はメッセージがあるときだけ表示する。
 function showNotice(message) {
   notice.textContent = message;
   notice.hidden = !message;
 }
 
+// 接続と実行状態に応じて、端末で受け付ける操作だけを有効にする。
 function syncActions() {
   const canAct = connected && snapshot.ready && !submitting;
   const canReview = snapshot.status === "checker_needs_review";
@@ -140,6 +130,7 @@ function syncActions() {
   }
 }
 
+// 選んだ指摘の診断箇所と操作可否を同期する。
 function selectFinding() {
   const selected = snapshot.review?.findings[findings.selectedIndex];
   diagnostic.textContent = selected?.[1] || snapshot.review_error || "選択できる指摘はありません。";
@@ -150,6 +141,7 @@ function selectFinding() {
   syncActions();
 }
 
+// 選択した指摘を見せ、別の指摘の判断理由が残らないようにする。
 function openReview(index = findings.selectedIndex) {
   if (index !== findings.selectedIndex) {
     findings.selectedIndex = index;
@@ -162,6 +154,7 @@ function openReview(index = findings.selectedIndex) {
   }
 }
 
+// 判断状態で行を絞り込み、該当件数がない場合の表示を更新する。
 function applyFindingFilter() {
   allFilter.setAttribute("aria-pressed", String(!pendingOnly));
   pendingFilter.setAttribute("aria-pressed", String(pendingOnly));
@@ -173,6 +166,7 @@ function applyFindingFilter() {
   emptyFinding.hidden = visible > 0;
 }
 
+// 同じRun状態の説明を、実行ログと画面上部に使う。
 function describe(state) {
   if (state.generating_anchors) return "Junieでアンカー生成中";
   const label = statusNames[state.status] || state.status;
@@ -182,6 +176,7 @@ function describe(state) {
   return label;
 }
 
+// 現在のRunの台帳を取得し、閉じるまでに受信した結果だけを表示する。
 async function loadMigrationLedger() {
   try {
     const response = await fetch("migration-ledger");
@@ -203,6 +198,7 @@ migrationLedgerButton.addEventListener("click", () => {
   loadMigrationLedger();
 });
 
+// 最新のSSE状態を工程・入力・指摘に反映し、確認待ちを案内する。
 function render() {
   const data = snapshot;
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
@@ -226,15 +222,12 @@ function render() {
   const completed = data.completed_capsules ?? 0;
   updateMigrationLedgerStatuses(data);
   element("#step-count").textContent = `${completed} / ${total || "—"} カプセル`;
-  steps[4].querySelector("h3").textContent = "ビルド";
-  steps[6].querySelector("h3").textContent = "人の確認";
   steps.forEach((item, index) => {
     const finished = index < current || (index === current && done);
     item.classList.toggle("is-done", finished);
     item.classList.toggle("is-active", index === current && !done && (!stopped || showReview));
     item.querySelector(".node").textContent = finished ? "✓" : String(index + 1);
     item.querySelector(".step-status").textContent = finished ? "完了" : index === current ? (stopped ? "確認待ち" : "処理中") : "待機中";
-    item.querySelector(".step-elapsed").hidden = true;
   });
   const index = Math.max(0, (data.current_capsule ?? 1) - 1);
   const chars = data.context_part_chars?.[index] ?? 0;
@@ -295,8 +288,9 @@ function render() {
   syncActions();
 }
 
+// 同じログの連続表示を抑え、画面に直近100件を残す。
 function addEvent(data) {
-  if (savedView && !data.ready && !archived.length) return;
+  if (savedView && !data.ready && !activity.childElementCount) return;
   const title = describe(data);
   const detail = [data.message || (data.ready ? data.error || data.review_error : "")];
   if (data.ready) {
@@ -327,11 +321,11 @@ function addEvent(data) {
   for (const line of detail) if (line) text.append(document.createElement("br"), line);
   row.append(time, pin, text);
   activity.append(row);
-  archived.push(row);
-  if (archived.length > 100) archived.shift().remove();
-  activity.scrollTop = savedView && archived.length === 1 ? 0 : activity.scrollHeight;
+  if (activity.childElementCount > 100) activity.firstElementChild.remove();
+  activity.scrollTop = savedView && activity.childElementCount === 1 ? 0 : activity.scrollHeight;
 }
 
+// 受信済みの連番を付けて利用者の操作を端末へ送る。
 async function send(action) {
   if (submitting) return;
   submitting = true;
@@ -366,12 +360,14 @@ pendingFilter.addEventListener("click", () => {
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
 resume.addEventListener("click", () => send("resume"));
+// 比較の進捗と保存リンクを上部と確認モーダルに揃えて表示する。
 function showComparisonStatus(...content) {
   snapshotStatus.replaceChildren(...content);
   modalComparisonStatus.replaceChildren(...Array.from(snapshotStatus.childNodes, node => node.cloneNode(true)));
   modalComparisonStatus.hidden = !content.length;
 }
 
+// ブラウザーが操作を許すクリック直後に比較先のタブを確保する。
 function reserveComparisonTab(progress) {
   try {
     const popup = window.open("about:blank", "_blank");
@@ -385,6 +381,7 @@ function reserveComparisonTab(progress) {
   }
 }
 
+// 確保したタブを使い、利用できない環境では画面内で比較を開く。
 function displayComparison(url, popup) {
   try {
     if (popup && !popup.closed) {
@@ -397,12 +394,12 @@ function displayComparison(url, popup) {
   const frame = document.createElement("iframe");
   frame.title = "Diff Viewer";
   frame.setAttribute("sandbox", "allow-scripts allow-downloads");
-  frame.style.cssText = "display:block;width:100%;height:100%;border:0";
   frame.src = url;
   viewerPreviewBody.replaceChildren(frame);
   viewerPreview.showModal();
 }
 
+// 現在の指摘を基準にスナップショットを作り、Viewerで開けるようにする。
 async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   if (snapshotting) return;
   const index = fromReview ? findings.selectedIndex : snapshot.review?.findings.findIndex(item => !item[2]);
@@ -489,9 +486,7 @@ setInterval(() => {
   if (!snapshot.created_at) return;
   const start = Date.parse(snapshot.created_at);
   const end = snapshot.ready || !connected ? lastObserved : Date.now();
-  const seconds = Math.max(0, Math.floor((end - start) / 1000));
-  element("#elapsed-value").textContent = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
-    .map(value => String(value).padStart(2, "0")).join(":");
+  element("#elapsed-value").textContent = formatDuration(Math.max(0, end - start));
 }, 250);
 render();
 document.documentElement.dataset.liveReady = "true";

@@ -28,7 +28,10 @@ PROGRESS_FIELDS = (
 
 
 class Dashboard:
+    """端末側の実行状態、ブラウザー向けのイベント履歴、操作待ち行列を管理する。"""
+
     def __init__(self) -> None:
+        """接続し直すブラウザー向けに直近のイベントを保持できる状態を作る。"""
         self.condition = Condition()
         self.events: deque[tuple[int, bytes]] = deque(maxlen=100)
         self.revision = 0
@@ -37,6 +40,7 @@ class Dashboard:
         self.closed = False
 
     def publish(self, state: dict[str, Any]) -> None:
+        """状態が変わったときだけ再送用の連番を付けて配信を通知する。"""
         with self.condition:
             if state == self.state:
                 return
@@ -47,6 +51,7 @@ class Dashboard:
             self.condition.notify_all()
 
     def observe(self, record: dict[str, Any]) -> None:
+        """Run記録から公開する項目を絞り、進捗に影響する変更だけを配信する。"""
         state = {key: record[key] for key in PROGRESS_FIELDS if key in record}
         state["repair_count"] = len(record.get("repair_history", []))
         with self.condition:
@@ -55,6 +60,7 @@ class Dashboard:
                 self.publish(state)
 
     def ready(self, config: dict[str, Any], result: dict[str, Any], message: str = "") -> None:
+        """処理が一区切りついた時点の操作可否とレビュー状態を公開する。"""
         state = {
             **self.state, "ready": True, "status": result["status"], "message": message,
             "resumable": can_resume_run(config, result),
@@ -67,6 +73,7 @@ class Dashboard:
         self.publish(state)
 
     def submit(self, action: dict[str, Any]) -> bool:
+        """古い画面からの操作や、処理中の重複実行を拒否する。"""
         with self.condition:
             generating_anchors = action["action"] == "anchors"
             if (
@@ -84,19 +91,24 @@ class Dashboard:
             return True
 
     def server(
-        self, config: dict[str, Any], html: bytes, script: bytes, anchor_reference: Path | None,
+        self, config: dict[str, Any], html: bytes, script: bytes,
     ) -> ThreadingHTTPServer:
+        """Runの画面、イベント、操作を同じローカルオリジンに公開する。"""
         dashboard = self
         # ポート番号だけで操作できないようにし、他サイトからのPOSTも拒否する。
         prefix = "/" + secrets.token_urlsafe(24) + "/"
 
         class Handler(BaseHTTPRequestHandler):
+            """ダッシュボード専用のパスとオリジンでHTTPの受付範囲を絞る。"""
+
             def log_message(self, format: str, *args: Any) -> None:
+                """継続接続のHTTPログがJunieの対話端末に混ざるのを防ぐ。"""
                 pass
 
             def send_body(
                 self, status: int, content_type: str, body: bytes, headers: dict[str, str] | None = None,
             ) -> None:
+                """保存済みの画面やソースをキャッシュしない応答を返す。"""
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
@@ -108,6 +120,7 @@ class Dashboard:
                 self.wfile.write(body)
 
             def do_GET(self) -> None:
+                """閲覧用のアセット、進捗配信、保存された結果を振り分ける。"""
                 if self.headers.get("Host") != host:
                     self.send_error(403)
                 elif self.path == prefix:
@@ -133,6 +146,7 @@ class Dashboard:
                     self.send_error(404)
 
             def send_comparison(self) -> None:
+                """保存済み比較をダウンロード用JSONか隔離されたViewerとして返す。"""
                 match = re.fullmatch(r"([a-f0-9]{32})\.(html|json)", self.path.removeprefix(prefix + "review/"))
                 if not match or not (run_id := dashboard.state.get("run_id")):
                     self.send_error(404)
@@ -159,6 +173,7 @@ class Dashboard:
                     self.send_body(409, "text/plain; charset=utf-8", f"比較ツールを開けませんでした。\n{exc}".encode("utf-8"), headers)
 
             def send_events(self) -> None:
+                """SSEの再接続では、受信済みの連番より新しいイベントを再送する。"""
                 try:
                     cursor = max(0, int(self.headers.get("Last-Event-ID", "0")))
                 except ValueError:
@@ -187,6 +202,7 @@ class Dashboard:
                     return
 
             def do_POST(self) -> None:
+                """オリジンと操作内容を検証してから比較または端末側の操作へ渡す。"""
                 if self.path not in (prefix + "control", prefix + "comparison"):
                     self.send_error(404)
                     return
@@ -240,7 +256,8 @@ class Dashboard:
                     self.send_error(409)
 
             def send_anchored_comparison(self, action: dict[str, Any]) -> None:
-                if anchor_reference is None:
+                """端末側でアンカー生成が終わるまで待ち、保存した比較のIDを返す。"""
+                if config.get("diff_viewer_anchor_reference") is None:
                     self.send_body(409, "text/plain; charset=utf-8", "設定ファイルで参照ワークスペースJSONを指定してください。".encode())
                     return
                 # ブラウザーを閉じても端末側は結果を保存できる。応答は要求元だけに返す。
@@ -263,6 +280,7 @@ class Dashboard:
 
 
 def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None) -> dict[str, Any]:
+    """サーバーを開き、対話が必要な作業を起動元の端末で処理する。"""
     if (unit_id is None) == (run_id is None):
         raise ValueError("dashboard requires a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent
@@ -287,7 +305,7 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
         options += " data-anchor-reference"
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
     html += '<script src="dashboard.js" defer></script></body></html>'
-    with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes(), anchor_reference) as server:
+    with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         token = run_observer.set(view.observe)

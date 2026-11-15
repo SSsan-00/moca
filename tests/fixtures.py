@@ -7,7 +7,10 @@ from migration_harness.config import load_config
 
 
 class HarnessCase(unittest.TestCase):
+    """実行データを隔離できるGitフィクスチャを各テストに提供する。"""
+
     def setUp(self):
+        """ユーザーの署名や改行設定に依存しないGitリポジトリを用意する。"""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
@@ -20,24 +23,25 @@ class HarnessCase(unittest.TestCase):
         self.git("config", "commit.gpgsign", "false")
 
     def git(self, *args):
+        """すべてのGit操作をサンプルリポジトリに限定する。"""
         return subprocess.run(
             ["git", "-C", str(self.project), *args], check=True, capture_output=True,
         )
 
     def commit_project(self):
+        """worktreeを作れる基準リビジョンにサンプルを固定する。"""
         self.git("add", ".")
         self.git("commit", "-qm", "Create fixture")
 
-    def config(self, target='target = "Page.cs"', *, extra="", max_context=1000):
+    def config(self, target='target = "Page.cs"'):
+        """サンプルに閉じた最小の動作設定を、実際の設定パーサーに通す。"""
         path = self.root / "test.toml"
         path.write_text(
             f"""[project]
 root = "app"
 worktree_root = "trees"
 run_root = "runs"
-max_context_chars = {max_context}
-
-{extra}
+max_context_chars = 1000
 
 [[units]]
 id = "sample"

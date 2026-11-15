@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+// C#版の比較基準として、文字列の 0 を有効な検索条件に含める。
 function search(array $input): array
 {
     $records = [

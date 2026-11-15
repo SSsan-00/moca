@@ -1,6 +1,7 @@
 @echo off
 setlocal
 
+rem 呼び出し元のディレクトリによらず、このスクリプトに隣接する環境と設定を使う。
 set "HARNESS=%~dp0.venv\Scripts\php-to-csharp-harness.exe"
 set "CONFIG=%~dp0harness.local.toml"
 set "ACTION=%~1"
@@ -33,6 +34,7 @@ if "%~2"=="" goto usage
 exit /b %errorlevel%
 
 :saved
+rem CLIには小文字のコマンド名を渡し、Run IDがなければ対話で受け取る。
 if /I "%ACTION%"=="resume" set "ACTION=resume"
 if /I "%ACTION%"=="view" set "ACTION=view"
 set "RUN_ID=%~2"

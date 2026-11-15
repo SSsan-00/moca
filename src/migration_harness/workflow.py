@@ -21,6 +21,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Iterator, TypedDict
 
+# チェックポイントの読込に使う型を制限する設定は、LangGraphのimport前に適用する。
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -31,6 +32,7 @@ worktree_source_lock = RLock()
 
 
 class PrepareState(TypedDict, total=False):
+    """準備グラフのノード間で受け渡す項目を定義する。"""
     config: dict[str, Any]
     unit_id: str
     run_id: str
@@ -43,16 +45,19 @@ class PrepareState(TypedDict, total=False):
     capsule_path: str
     capsule_count: int
     source_boundary_review_required: bool
-    error: str
 
 
 class RunInterrupted(KeyboardInterrupt):
+    """中断後の案内に使うRun IDを保持する。"""
+
     def __init__(self, run_id: str) -> None:
+        """再開対象のRun IDを例外に関連付ける。"""
         super().__init__(run_id)
         self.run_id = run_id
 
 
 def _unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+    """設定で許可された移行単位だけを解決する。"""
     for unit in config["units"]:
         if unit["id"] == unit_id:
             return unit
@@ -60,10 +65,12 @@ def _unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
 
 
 def _target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:
+    """単一移行先を指定した旧設定も同じ順序付き形式で扱う。"""
     return tuple(Path(name) for name in unit.get("targets", [unit["target"]]))
 
 
 def _has_symlink_component(root: Path, relative_path: Path) -> bool:
+    """中間ディレクトリも含めてリンクの有無を調べる。"""
     current = root
     for part in relative_path.parts:
         current /= part
@@ -73,6 +80,7 @@ def _has_symlink_component(root: Path, relative_path: Path) -> bool:
 
 
 def _validate(state: PrepareState) -> dict[str, Any]:
+    """作業場所を作る前に入力ファイルがアプリ内にあることを確認する。"""
     config = state["config"]
     unit = _unit(config, state["unit_id"])
     root = Path(config["project_root"])
@@ -86,13 +94,13 @@ def _validate(state: PrepareState) -> dict[str, Any]:
 
 
 def _create_worktree(state: PrepareState) -> dict[str, Any]:
+    """指定リビジョンの分離したworktreeと初期Run記録を用意する。"""
     config = state["config"]
     root = Path(config["project_root"])
     worktree = Path(config["worktree_root"]) / state["run_id"]
     worktree.parent.mkdir(parents=True, exist_ok=True)
     if worktree.exists():
         raise FileExistsError(f"worktree path already exists: {worktree}")
-    # 実行ごとに指定した基準リビジョンから独立した作業場所を作る。
     subprocess.run(
         ["git", "-C", str(root), "worktree", "add", "--detach", str(worktree), config["base_ref"]],
         check=True,
@@ -128,6 +136,7 @@ def _create_worktree(state: PrepareState) -> dict[str, Any]:
 
 
 def _text_fingerprint(path: Path, encoding: str) -> bytes | None:
+    """厳密にデコードできる場合だけ、文字列を比較用に要約する。"""
     decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
     digest = hashlib.sha256()
     try:
@@ -141,6 +150,7 @@ def _text_fingerprint(path: Path, encoding: str) -> bytes | None:
 
 
 def _input_encoding(path: Path, requested: str) -> str:
+    """BOMを優先し、UTF-8とEUC-JPの判定が曖昧な場合は明示指定を求める。"""
     if requested != "auto":
         return requested
     with path.open("rb") as stream:
@@ -161,6 +171,7 @@ def _input_encoding(path: Path, requested: str) -> str:
 
 
 def _selected_lines(path: Path, start: int, end: int, encoding: str) -> Iterator[tuple[int, str]]:
+    """行末を保持したまま、元ファイルの行番号付きで指定範囲を返す。"""
     selected_count = 0
     reached_end = False
     with path.open("r", encoding=encoding, errors="strict", newline="") as stream:
@@ -178,6 +189,7 @@ def _selected_lines(path: Path, start: int, end: int, encoding: str) -> Iterator
 
 
 def _context_header(unit: dict[str, Any]) -> str:
+    """共通ヘッダに移行単位と編集を許可したファイルを記載する。"""
     return "\n".join([
         f"# Migration unit: {unit['id']}",
         "",
@@ -189,22 +201,30 @@ def _context_header(unit: dict[str, Any]) -> str:
 
 
 def _max_backtick_run(text: str) -> int:
+    """ソース中のバッククォートでMarkdownの囲みが閉じないよう最長の連続数を求める。"""
     return max((len(run) for run in re.findall(r"`+", text)), default=0)
 
 
-def _group_size(group: dict[str, Any]) -> int:
+def _group_markdown_frame(group: dict[str, Any]) -> tuple[str, str]:
+    """予算の計算と出力に使うMarkdownの前後を組み立てる。"""
     item = group["item"]
     fence = "`" * max(3, group["max_backticks"] + 1)
-    heading = (
+    opening = (
         f"## {item['role']} — `{item['path']}` lines "
-        f"{group['start_line']}-{group['end_line']}\n\n"
+        f"{group['start_line']}-{group['end_line']}\n\n{fence}text\n"
     )
-    opening = f"{fence}text\n"
     closing = ("" if group["ends_with_newline"] else "\n") + f"{fence}\n\n"
-    return len(heading) + len(opening) + group["content_chars"] + len(closing)
+    return opening, closing
+
+
+def _group_size(group: dict[str, Any]) -> int:
+    """本文を連結せず、見出しと囲みを含む出力文字数を求める。"""
+    opening, closing = _group_markdown_frame(group)
+    return len(opening) + group["content_chars"] + len(closing)
 
 
 def _new_group(input_index: int, item: dict[str, Any], line_number: int, record: str) -> dict[str, Any]:
+    """1件目の抜粋と、次の行を詰めるための文字数を保持する。"""
     return {
         "input_index": input_index,
         "item": item,
@@ -226,6 +246,7 @@ def _append_context_record(
     base_chars: int,
     max_chars: int,
 ) -> bool:
+    """上限内に収まる場合だけ抜粋を追加し、入らない場合は編集中のグループを保つ。"""
     record_backticks = _max_backtick_run(record)
     last = groups[-1] if groups and groups[-1]["input_index"] == input_index else None
     if last and line_number <= last["end_line"] + 1:
@@ -239,11 +260,8 @@ def _append_context_record(
         total_chars = base_chars + sum(_group_size(group) for group in groups[:-1]) + _group_size(candidate)
         if total_chars > max_chars:
             return False
-        last["end_line"] = candidate["end_line"]
-        last["records"].append(record)
-        last["content_chars"] = candidate["content_chars"]
-        last["max_backticks"] = candidate["max_backticks"]
-        last["ends_with_newline"] = candidate["ends_with_newline"]
+        candidate["records"].append(record)
+        groups[-1] = candidate
         return True
 
     candidate = _new_group(input_index, item, line_number, record)
@@ -254,21 +272,16 @@ def _append_context_record(
 
 
 def _render_groups(groups: list[dict[str, Any]]) -> str:
+    """行末を保持して表示用の抜粋を連結する。"""
     parts = []
     for group in groups:
-        item = group["item"]
-        fence = "`" * max(3, group["max_backticks"] + 1)
-        parts.extend([
-            f"## {item['role']} — `{item['path']}` lines {group['start_line']}-{group['end_line']}\n\n",
-            f"{fence}text\n",
-            *group["records"],
-            "" if group["ends_with_newline"] else "\n",
-            f"{fence}\n\n",
-        ])
+        opening, closing = _group_markdown_frame(group)
+        parts.extend((opening, *group["records"], closing))
     return "".join(parts)
 
 
 def _manifest_source(group: dict[str, Any]) -> dict[str, Any]:
+    """抜粋を元のファイル・行範囲・行内の担当範囲に結び付ける。"""
     return {
         "role": group["item"]["role"],
         "path": group["item"]["path"],
@@ -293,6 +306,7 @@ def _manifest_source(group: dict[str, Any]) -> dict[str, Any]:
 def _prepare_inputs(
     root: Path, capsule: Path, inputs: list[dict[str, Any]],
 ) -> tuple[list[tuple[dict[str, Any], Path]], list[dict[str, str]]]:
+    """PHPをRunに固定し、入力ごとの文字コードを確定する。"""
     prepared = []
     php_sources: dict[str, dict[str, str]] = {}
     for item in inputs:
@@ -324,6 +338,7 @@ def _prepare_inputs(
 
 
 def _prepare_context(state: PrepareState) -> dict[str, Any]:
+    """共通資料の予算を先に取り、残りに移行対象を詰める。"""
     config = state["config"]
     unit = _unit(config, state["unit_id"])
     root = Path(config["project_root"])
@@ -369,6 +384,7 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     split_line_coverage: list[dict[str, Any]] = []
 
     def flush_capsule() -> None:
+        """確定した抜粋と実際の文字数を保存して、次のカプセルを空にする。"""
         if not groups:
             return
         context = prefix + _render_groups(groups)
@@ -482,6 +498,7 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
 
 
 def _graph():
+    """入力と上限の検証を終えてからworktreeを作る準備グラフを構成する。"""
     builder = StateGraph(PrepareState)
     builder.add_node("validate", _validate)
     builder.add_node("create_worktree", _create_worktree)
@@ -495,6 +512,7 @@ def _graph():
 
 
 def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+    """Run IDを発行し、準備グラフとチェックポイントの寿命を管理する。"""
     run_id = str(uuid.uuid4())
     run_root = Path(config["run_root"])
     run_root.mkdir(parents=True, exist_ok=True)
@@ -522,6 +540,7 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
 
 
 def _sha256_file(path: Path) -> str:
+    """ファイル全体を一度に保持せず、保存バイト列を照合するハッシュを計算する。"""
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while chunk := stream.read(64 * 1024):
@@ -530,6 +549,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _write_run_record(path: Path, record: dict[str, Any]) -> None:
+    """Run記録を置き換えてから、進捗の購読側へ状態を通知する。"""
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
@@ -539,6 +559,7 @@ def _write_run_record(path: Path, record: dict[str, Any]) -> None:
 
 
 def _safe_target(root: Path, relative: Path) -> Path:
+    """シンボリックリンクや作業場所外への書き込みを防ぐ。"""
     target = root / relative
     if _has_symlink_component(root, relative) or not target.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"target escapes its workspace or is a symlink: {relative}")
@@ -548,12 +569,14 @@ def _safe_target(root: Path, relative: Path) -> Path:
 
 
 def _target_hash(path: Path) -> str | None:
+    """移行先の未作成状態をハッシュの不一致と区別して扱う。"""
     return _sha256_file(path) if path.is_file() else None
 
 
 def _finish_pending_targets(
     agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any], record_path: Path,
 ) -> None:
+    """中断前後の版を照合し、未反映の移行先だけを適用する。"""
     pending = record.get("target_apply_pending")
     if pending is None:
         return
@@ -600,6 +623,7 @@ def _apply_agent_targets(
     agent_root: Path, worktree: Path, targets: tuple[Path, ...],
     before: dict[str, str | None], record: dict[str, Any], record_path: Path,
 ) -> None:
+    """外部編集を検出し、複数ファイルを反映する前に復旧用の記録を残す。"""
     with worktree_source_lock:
         pending = {}
         for relative in targets:
@@ -616,6 +640,7 @@ def _apply_agent_targets(
 
 
 def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]:
+    """編集対象外のファイルを記録し、Junie呼び出し前後で差分を検出できるようにする。"""
     files = {}
     for path in root.rglob("*"):
         relative = path.relative_to(root)
@@ -629,6 +654,7 @@ def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]
 
 
 def _has_completion_record(path: Path, token: str) -> bool:
+    """現在の呼び出しが残した完了トークンだけを受理する。"""
     if path.is_symlink() or not path.is_file():
         return False
     expected = token.encode("ascii")
@@ -641,6 +667,7 @@ def _has_completion_record(path: Path, token: str) -> bool:
 
 
 def _close_junie(process: subprocess.Popen) -> int:
+    """Junieの終了を待ち、次のカプセルと端末操作が重ならないようにする。"""
     if process.poll() is not None:
         return process.returncode
     try:
@@ -663,6 +690,7 @@ def _close_junie(process: subprocess.Popen) -> int:
 def _run_interactive_junie(
     command: list[str], completion_path: Path, token: str, target: Path | tuple[Path, ...],
 ) -> int:
+    """対話用の端末を引き継ぎ、成果物と完了記録がそろえばセッションを閉じる。"""
     targets = (target,) if isinstance(target, Path) else target
     root = completion_path.parent
     restore_terminal = _save_terminal_mode()
@@ -691,7 +719,7 @@ def _run_interactive_junie(
 
 
 def _save_terminal_mode() -> Callable[[], None]:
-    # 自動終了でJunieの後処理が走らない場合に備え、起動前の端末設定を復元する。
+    """強制終了で端末設定が残る場合に備えて、起動前の復元処理を作る。"""
     if os.name == "nt":
         import ctypes
         import msvcrt
@@ -707,6 +735,7 @@ def _save_terminal_mode() -> Callable[[], None]:
                     modes.append((handle, mode))
 
         def restore() -> None:
+            """Junieを起動する前の端末設定に戻す。"""
             for handle, mode in modes:
                 kernel.SetConsoleMode(handle, mode)
 
@@ -721,6 +750,7 @@ def _save_terminal_mode() -> Callable[[], None]:
         return lambda: None
 
     def restore() -> None:
+        """Junieを起動する前の端末設定に戻す。"""
         termios.tcsetattr(fd, termios.TCSANOW, mode)
 
     return restore
@@ -735,6 +765,7 @@ def _run_prepared_with_junie(
     *,
     resuming: bool,
 ) -> dict[str, Any]:
+    """保存済みの編集と進捗から未完了のカプセルを順に処理する。"""
     worktree_root = Path(result["worktree_path"]).resolve()
     if not worktree_root.is_dir() or not worktree_root.is_relative_to(Path(config["worktree_root"]).resolve()):
         raise ValueError(f"run worktree is missing or outside configured worktree root: {worktree_root}")
@@ -839,7 +870,7 @@ def _run_prepared_with_junie(
                 raise ValueError("Junie changed files outside the configured targets; inspect the agent workspace")
             _apply_agent_targets(
                 agent_root, worktree_root, relative_targets,
-                record.get("target_hashes", hashes), record, record_path,
+                record["target_hashes"], record, record_path,
             )
         except (OSError, ValueError) as exc:
             record.update(status="junie_failed", error=str(exc))
@@ -884,6 +915,7 @@ def _run_prepared_with_junie(
 
 
 def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    """対象worktreeをビルドし、以前のチェッカー結果を更新対象から外す。"""
     worktree = Path(result["worktree_path"])
     run_path = Path(result["run_path"])
     record_path = run_path / "run.json"
@@ -936,6 +968,7 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
 def _run_checker(
     command: list[str], result: dict[str, Any], record: dict[str, Any],
 ) -> tuple[dict[str, Any], list[CheckerFinding]]:
+    """元の出力を保存し、読み取れた指摘をその時点のファイル内容にひも付ける。"""
     run_path = Path(result["run_path"])
     record_path = run_path / "run.json"
     log_path = run_path / "checker.log"
@@ -980,13 +1013,8 @@ def _run_checker(
     _write_run_record(record_path, record)
     return {
         **result,
-        "junie_exit_code": record.get("junie_exit_code"),
-        "agent_workspace_path": record.get("agent_workspace_path"),
-        "completed_capsules": record["completed_capsules"],
         "status": record["status"],
         "error": record.get("error"),
-        "build_exit_code": record["build_exit_code"],
-        "build_log_path": record.get("build_log_path"),
         "checker_exit_code": record["checker_exit_code"],
         "checker_log_path": str(log_path) if log_path.is_file() else None,
     }, findings
@@ -999,6 +1027,7 @@ _CHECKER_FINDING = re.compile(
 
 
 def _review_target_hash(worktree: Path, relative_target: Path) -> str | None:
+    """worktree内の通常ファイルだけをレビュー対象として照合する。"""
     target = worktree / relative_target
     if _has_symlink_component(worktree, relative_target) or not target.resolve().is_relative_to(worktree.resolve()):
         return None
@@ -1007,6 +1036,7 @@ def _review_target_hash(worktree: Path, relative_target: Path) -> str | None:
 
 @dataclass(frozen=True)
 class CheckerFinding:
+    """指摘の表示内容と、修正履歴・承認に使う識別情報を保持する。"""
     finding_id: str
     repair_fingerprint: str
     path: str
@@ -1015,6 +1045,7 @@ class CheckerFinding:
 
 
 def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFinding], bool]:
+    """対応形式の指摘を抽出し、読み取れない出力が混じっているかも返す。"""
     worktree = worktree.resolve()
     findings = []
     unrecognized = False
@@ -1055,6 +1086,7 @@ def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFindi
 
 
 def _accepted_findings(record: dict[str, Any], findings: list[CheckerFinding], hashes: dict[str, str | None]) -> set[str]:
+    """指摘IDと対象ファイルの版がともに一致する承認だけを返す。"""
     accepted = {(entry["finding_id"], entry["target_sha256"]) for entry in record.get("checker_reviews", [])}
     counts = Counter(finding.finding_id for finding in findings)
     return {
@@ -1067,6 +1099,7 @@ def _repair_target(
     config: dict[str, Any], relative_target: Path | tuple[Path, ...], worktree: Path, run_path: Path,
     findings: str, record: dict[str, Any],
 ) -> None:
+    """指摘のあった移行先だけでJunieの修正を試し、完了を確認して反映する。"""
     _validate_junie_execution()
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.is_dir():
@@ -1115,6 +1148,7 @@ def _repair_target(
 def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
 ) -> dict[str, Any]:
+    """毎回ビルドを先に実行し、指摘の状態に応じて修正かレビューに進む。"""
     run_path = Path(result["run_path"])
     worktree = Path(result["worktree_path"])
     targets = _target_paths(unit)
@@ -1179,6 +1213,7 @@ def _verify_worktree(
 
 
 def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+    """新規Runを準備し、移行から検証まで実行する。"""
     _validate_junie_execution()
     result = prepare_run(config, unit_id)
     unit = _unit(config, unit_id)
@@ -1188,6 +1223,7 @@ def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
 
 
 def _validate_junie_execution() -> None:
+    """実行前に対話端末とJunie CLIが利用できることを確認する。"""
     if not sys.stdin.isatty():
         raise RuntimeError("Junie run requires an interactive terminal")
     if shutil.which("junie") is None:
@@ -1197,6 +1233,7 @@ def _validate_junie_execution() -> None:
 def _load_saved_run(
     config: dict[str, Any], run_id: str,
 ) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
+    """保存済みのプロジェクト・移行先・作業場所を現在の設定と照合する。"""
     try:
         parsed_run_id = uuid.UUID(run_id)
     except ValueError as exc:
@@ -1235,6 +1272,7 @@ def _load_saved_run(
 
 
 def _load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
+    """Runに属し、番号が連続したカプセルのmanifestを読み込む。"""
     capsule_path = (run_path / "capsule").resolve()
     if not capsule_path.is_relative_to(run_path) or not capsule_path.is_dir():
         raise ValueError("run capsule directory is missing or outside the run directory")
@@ -1253,6 +1291,7 @@ def _load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
 
 
 def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """保存した対応と判断を現在の移行先で照合し、閲覧用の状態をまとめる。"""
     from migration_harness.behavior import behavior_status
 
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
@@ -1262,6 +1301,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     hashes: dict[str, str | None] = {}
 
     def current_hash(path: str) -> str | None:
+        """同じ移行先を複数のPHP範囲が参照する場合に再読込を避ける。"""
         if path not in hashes:
             hashes[path] = _review_target_hash(worktree, Path(path))
         return hashes[path]
@@ -1310,6 +1350,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
 def review_migration_ranges(
     config: dict[str, Any], run_id: str, range_ids: list[str], state: str, reason: str,
 ) -> None:
+    """選んだ範囲の判断と根拠を、対象ファイルの版とともに一括で記録する。"""
     if not range_ids or state not in {"confirmed", "excluded", "needs_review"} or not reason.strip():
         raise ValueError("choose range IDs, a review state and a non-empty reason")
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
@@ -1347,12 +1388,13 @@ def review_migration_ranges(
 def record_migration_candidates(
     config: dict[str, Any], run_id: str, snapshot_id: str, workspace: dict[str, Any], target_hashes: dict[str, str],
 ) -> None:
+    """確認できるアンカーを、処理済みPHP範囲の候補として保存する。"""
     run_path, _, record, _ = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
     if not record.get("completed_capsules") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
         return
-    # アンカーのペイン座標から、ファイル内の行番号に戻す。
     def file_line(segments: list[dict[str, Any]], index: int) -> tuple[str, int]:
+        """0始まりのペイン座標を1始まりのファイル内行番号に戻す。"""
         for segment in segments:
             local = index + 2 - segment["startLine"]
             if 1 <= local <= segment["lineCount"]:
@@ -1395,6 +1437,7 @@ def record_migration_candidates(
 def review_checker(
     config: dict[str, Any], run_id: str, finding_id: str | None, reason: str | None,
 ) -> dict[str, Any]:
+    """指摘を一覧し、指定された承認は現在のファイル内容を照合して記録する。"""
     if (finding_id is None) != (reason is None) or (reason is not None and not reason.strip()):
         raise ValueError("--accept requires a finding ID and a non-empty --reason")
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
@@ -1449,6 +1492,7 @@ _JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrup
 
 
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
+    """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
     if status in _CHECKER_RESUME_STATUSES:
         return config["checker_command"] is not None and record.get("build_exit_code") == 0
@@ -1456,6 +1500,7 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
 
 
 def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = _load_saved_run(config, run_id)
     status = record.get("status")
     if not can_resume_run(config, record):

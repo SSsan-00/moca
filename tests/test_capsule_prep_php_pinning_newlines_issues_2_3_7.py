@@ -2,13 +2,13 @@ import hashlib
 import json
 import os
 import sqlite3
-import subprocess
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+from fixtures import HarnessCase
 from migration_harness import review_anchors, workflow
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace
@@ -19,33 +19,22 @@ RULES = {"path": "rules.md", "role": "migration_rules", "start_line": 1, "end_li
 CONSTRAINT = {"path": "constraints.md", "role": "target_constraints", "shared": True, "start_line": 1, "end_line": 1}
 
 
-class CapsulePreparationTests(unittest.TestCase):
+class CapsulePreparationTests(HarnessCase):
+    """カプセルの上限・固定した原文・改行を準備経路から検証する。"""
+
     def setUp(self):
-        fixture = tempfile.TemporaryDirectory()
-        self.addCleanup(fixture.cleanup)
-        self.root = Path(fixture.name).resolve()
-        self.project = self.root / "project"
-        self.project.mkdir()
+        """移行対象と元PHPの基準版をGitに入れる。"""
+        super().setUp()
         self.php = self.project / PHP["path"]
         self.php.write_bytes(b"<?php\necho 100;\n")
         (self.project / "Target.cs").write_bytes(b"class Target {}\n")
-        self.git("init", "-q")
-        self.git("config", "core.autocrlf", "false")
-        self.git("add", "--", "Source.php", "Target.cs")
-        self.git(
-            "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
-            "-c", "commit.gpgSign=false", "commit", "-qm", "Fixture",
-        )
-
-    def git(self, *args):
-        return subprocess.run(
-            ["git", "-C", str(self.project), *args], check=True, capture_output=True, encoding="utf-8",
-        ).stdout
+        self.commit_project()
 
     def config_path(self, *inputs):
+        """入力の順序や範囲をテストごとに変更できるTOMLを作る。"""
         path = self.root / "harness.toml"
         sections = [
-            '[project]\nroot = "project"\nworktree_root = "worktrees"\nrun_root = "runs"\nmax_context_chars = 1000',
+            '[project]\nroot = "app"\nworktree_root = "worktrees"\nrun_root = "runs"\nmax_context_chars = 1000',
             '[[units]]\nid = "example"\ntarget = "Target.cs"',
         ]
         for item in inputs:
@@ -55,14 +44,17 @@ class CapsulePreparationTests(unittest.TestCase):
         return path
 
     def prepare(self, *inputs):
+        """実際の準備処理を使い、保存済みmanifestまで取得する。"""
         config = load_config(self.config_path(*inputs))
         result = workflow.prepare_run(config, "example")
         run_path = Path(result["run_path"])
         return config, result, self.read_json(run_path / "capsule" / "manifest.json")
 
     def read_json(self, path):
+        """現在の状態を、ディスクに保存されたUTF-8のJSONから読む。"""
         return json.loads(path.read_text(encoding="utf-8"))
 
+    # 中断と再開をまたいで、各カプセルに同じ共通資料が含まれることを検証する。
     def test_shared_rules_and_constraints_survive_interruption_and_resume(self):
         long_line = "$value = '" + "abcd" * 655 + "';"
         self.php.write_bytes(f"<?php\r\n{long_line}\r\necho $value;\r\n".encode("ascii"))
@@ -74,6 +66,7 @@ class CapsulePreparationTests(unittest.TestCase):
         observed_contexts = []
 
         def junie(command, completion, token, target):
+            """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             observed_contexts.append((target.parent / ".migration-context.md").read_bytes())
             if len(observed_contexts) == 2:
                 target.write_bytes(b"class Partial {}\n")
@@ -125,13 +118,14 @@ class CapsulePreparationTests(unittest.TestCase):
         for earlier, later in zip(focus_ranges, focus_ranges[1:]):
             self.assertEqual(earlier[1] + 1, later[0])
         self.assertEqual(result["context_chars"], sum(part["chars"] for part in parts))
-        worktrees = self.git("worktree", "list", "--porcelain", "-z").split("\0")
+        worktrees = self.git("worktree", "list", "--porcelain", "-z").stdout.decode("utf-8").split("\0")
         worktree_paths = [Path(entry.removeprefix("worktree ")) for entry in worktrees if entry.startswith("worktree ")]
         self.assertIn(Path(result["worktree_path"]), worktree_paths)
         with closing(sqlite3.connect(Path(config["run_root"]) / "checkpoints.sqlite")) as db:
             count = db.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)).fetchone()[0]
         self.assertGreater(count, 0)
 
+    # 共通資料が上限を超えた場合にworktreeが残らないことを検証する。
     def test_excess_shared_rules_fail_before_creating_a_worktree(self):
         (self.project / RULES["path"]).write_bytes(b"x" * 1001 + b"\n")
         config = load_config(self.config_path(PHP, RULES))
@@ -140,6 +134,7 @@ class CapsulePreparationTests(unittest.TestCase):
         self.assertFalse(Path(config["worktree_root"]).exists())
         self.assertEqual(list(Path(config["run_root"]).glob("*/run.json")), [])
 
+    # 共通資料で余裕が少ない場合も、必須範囲を欠落させないことを検証する。
     def test_narrow_segment_budget_can_fit_focus_without_overlap(self):
         line = b"//" + b"x" * 120
         self.php.write_bytes(line + b"\r")
@@ -157,6 +152,7 @@ class CapsulePreparationTests(unittest.TestCase):
         self.assertIn(line[last["context_start_column"] - 1:] + b"\r", final_capsule)
         self.assertNotIn(line[last["context_start_column"] - 1:] + b"\r\n", final_capsule)
 
+    # 移行対象がない設定を移行カプセルとして数えないことを検証する。
     def test_shared_rules_alone_cannot_create_a_migration_capsule(self):
         (self.project / RULES["path"]).write_bytes(b"Required rule\n")
         config = load_config(self.config_path(RULES))
@@ -164,10 +160,12 @@ class CapsulePreparationTests(unittest.TestCase):
             workflow.prepare_run(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())
 
+    # 共通資料の指定に文字列を使った場合に設定を拒否することを検証する。
     def test_shared_option_must_be_boolean(self):
         with self.assertRaisesRegex(ValueError, "input shared must be a boolean"):
             load_config(self.config_path({**PHP, "shared": "true"}))
 
+    # 元PHPを変更・削除しても、アンカーと通常比較で同じ固定版を使うことを検証する。
     def test_viewer_and_anchors_share_original_php_after_edit_and_delete(self):
         source_text = '<?php\r\necho "日本語";\r\n// Last line\r\n'
         raw = source_text.encode("euc-jp")
@@ -209,6 +207,7 @@ class CapsulePreparationTests(unittest.TestCase):
         reference.write_text(json.dumps(edited), encoding="utf-8")
 
         def junie(command, completion, token, proposal):
+            """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             numbered_php = (proposal.parent / "left.txt").read_text(encoding="utf-8")
             self.assertIn('2\techo "日本語";\n', numbered_php)
             self.assertIn("5\techo 200;\n", numbered_php)
@@ -223,6 +222,7 @@ class CapsulePreparationTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(self.read_json(snapshot)["workspace"], edited["workspace"])
 
+    # 固定版が欠落したときに現在のPHPへ黙って切り替えないことを検証する。
     def test_missing_or_changed_pin_fails_even_if_live_php_exists(self):
         config, result, manifest = self.prepare(PHP)
         pin_path = Path(result["capsule_path"]) / manifest["php_sources"][0]["snapshot"]
@@ -233,6 +233,7 @@ class CapsulePreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "php-sources/0001.php"):
             capture_workspace(config, result["run_id"])
 
+    # 固定版を持たないRunの比較と、保存済みカプセルからの再開を検証する。
     def test_legacy_manifest_reads_live_php_and_resumes_saved_context(self):
         self.php.write_bytes('<?php\necho "日本語";\n'.encode("euc-jp"))
         config, result, manifest = self.prepare(PHP)
@@ -250,6 +251,7 @@ class CapsulePreparationTests(unittest.TestCase):
             capture_workspace(config, result["run_id"])
 
         def junie(command, completion, token, target):
+            """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             self.assertEqual((target.parent / ".migration-context.md").read_bytes(), expected_context)
             return 0
 
@@ -261,6 +263,7 @@ class CapsulePreparationTests(unittest.TestCase):
         invocation.assert_called_once()
         self.assertEqual(resumed["status"], "interrupted")
 
+    # Windowsの既定のテキスト出力で旧処理のCRLF重複を再現する。
     @unittest.skipUnless(os.name == "nt", "observes Windows default text translation")
     def test_legacy_windows_writer_doubles_crlf(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -268,10 +271,12 @@ class CapsulePreparationTests(unittest.TestCase):
             legacy.write_text("excerpt\r\n", encoding="utf-8")
             self.assertEqual(legacy.read_bytes(), b"excerpt\r\r\n")
 
+    # 改行が異なるPHP抜粋とmanifestの文字数が一致することを検証する。
     def test_windows_text_write_preserves_lf_crlf_and_heredoc(self):
         original_open = Path.open
 
         def windows_open(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+            """改行を明示しない書き込みにWindows相当の変換を適用する。"""
             if path.name == "context.md" and mode == "w" and newline is None:
                 newline = "\r\n"
             return original_open(path, mode, buffering, encoding, errors, newline)

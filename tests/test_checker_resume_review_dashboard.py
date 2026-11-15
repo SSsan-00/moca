@@ -18,7 +18,10 @@ from migration_harness import cli, dashboard, workflow
 
 
 class SavedRunFixture(unittest.TestCase):
+    """外部ツールを起動せずに再開やHTTPの操作を検証できるRunを用意する。"""
+
     def setUp(self):
+        """チェッカーが判断待ちになった直後のRunと移行先を作る。"""
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -71,16 +74,20 @@ class SavedRunFixture(unittest.TestCase):
         })
 
     def save_record(self, record):
+        """シナリオの開始状態をRun記録に書き込む。"""
         self.record_path.write_text(json.dumps(record), encoding="utf-8")
 
     def record(self):
+        """見かけの戻り値とは別に、実際に保存されたRun記録を取得する。"""
         return json.loads(self.record_path.read_text(encoding="utf-8"))
 
     def mock_commands(self, *responses):
+        """外部コマンドの順序とログを制御する。"""
         expected = iter(responses)
         calls = []
 
         def run(command, *, cwd, stdout, stderr, check):
+            """指定した順序と実行場所で呼ばれたことを確認し、結果を返す。"""
             calls.append(command)
             name, returncode, log = next(expected)
             self.assertEqual(command, ["dotnet", "build"] if name == "dotnet" else [name])
@@ -93,6 +100,7 @@ class SavedRunFixture(unittest.TestCase):
         return patch.object(workflow.subprocess, "run", side_effect=run), calls
 
     def resume(self, *responses):
+        """外部ツールを差し替えて通常の再開経路を実行する。"""
         mock, calls = self.mock_commands(*responses)
         with mock, redirect_stdout(io.StringIO()):
             result = workflow.resume_with_junie(self.config, self.run_id)
@@ -100,13 +108,17 @@ class SavedRunFixture(unittest.TestCase):
         return result
 
     def review(self, finding_id=None, reason=None):
+        """同じRunの一覧取得と指摘への承認を呼び分ける。"""
         return workflow.review_checker(self.config, self.run_id, finding_id, reason)
 
 
 class CheckerResumeAndReviewTests(SavedRunFixture):
+    """再開時の検証順序とチェッカー指摘の判定を検証する。"""
+
     build = ("dotnet", 0, b"rebuilt edited target\n")
     diagnostic = b"MIG101 Example.cs:1 warning: use SharedUtility\n"
 
+    # 承認や修正履歴がない手編集でも、再ビルドが先に走ることを検証する。
     def test_manual_edit_rebuilds_before_rechecking_without_history_or_approvals(self):
         self.target.write_text("class ManuallyEdited {}\n", encoding="utf-8")
         result = self.resume(self.build, ("fixture-checker", 0, b"no findings\n"))
@@ -118,6 +130,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(self.build_log.read_bytes(), self.build[2])
         self.assertEqual(self.checker_log.read_bytes(), b"no findings\n")
 
+    # 新しいビルドが失敗した場合に、以前の成功を再利用しないことを検証する。
     def test_failed_rebuild_stops_before_checker_and_records_current_failure(self):
         self.target.write_text("broken C#", encoding="utf-8")
         old_checker_log = self.checker_log.read_bytes()
@@ -130,6 +143,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(self.build_log.read_bytes(), b"edited target does not build\n")
         self.assertEqual(self.checker_log.read_bytes(), old_checker_log)
 
+    # 不正な出力が混じった場合に、修正枠を消費せず元ログを残すことを検証する。
     def test_mixed_and_invalid_checker_output_stop_before_automatic_repair(self):
         self.config["max_repair_attempts"] = 2
         malformed = (
@@ -159,6 +173,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 self.assertTrue(report["unrecognized"])
                 self.assertEqual(len(report["findings"]), 1)
 
+    # 有効な指摘だけなら通常の自動修正経路を使用することを検証する。
     def test_supported_diagnostics_still_allow_automatic_repair(self):
         self.config["max_repair_attempts"] = 1
         with (
@@ -175,6 +190,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(len(self.record()["repair_history"]), 1)
         self.assertEqual((self.run_path / "checker-before-repair-1.log").read_bytes(), self.diagnostic)
 
+    # AIに渡せない大きさの指摘でも、人は一覧と承認を操作できることを検証する。
     def test_character_and_byte_limits_only_block_automatic_repair(self):
         self.config["max_repair_attempts"] = 1
         for count, size, error in ((70, 110, "too much text"), (350, 180, "too large")):
@@ -198,6 +214,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 self.assertTrue(self.review()["findings"][-1][2])
                 self.assertEqual(len(self.record()["repair_history"]), 0)
 
+    # 大きなログでも有効な承認だけが残れば完了できることを検証する。
     def test_large_approved_log_can_complete_on_resume(self):
         self.config["max_repair_attempts"] = 1
         log = b"MIG101 Example.cs:1 warning: " + b"x" * 65_536 + b"\n"
@@ -208,6 +225,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(result["status"], "checker_accepted")
         self.assertEqual(self.record()["checker_exit_code"], 1)
 
+    # 既知の指摘をすべて承認しても、未知の出力が残る間は完了にしないことを検証する。
     def test_unknown_output_prevents_previously_approved_findings_from_completing_run(self):
         self.resume(self.build, ("fixture-checker", 1, self.diagnostic))
         self.review(self.review()["findings"][0][0], "The warning is expected.")
@@ -215,6 +233,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(result["status"], "checker_needs_review")
         self.assertIn("unrecognized", result["error"])
 
+    # 同じ識別子の指摘を個別承認と誤認しないことを検証する。
     def test_duplicate_id_remains_ambiguous(self):
         log = self.diagnostic + self.diagnostic.replace(b":1", b":2")
         self.resume(self.build, ("fixture-checker", 1, log))
@@ -224,6 +243,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             self.review(first[0], "Cannot distinguish these findings.")
         self.assertFalse(self.record().get("checker_reviews"))
 
+    # 承認後に編集した対象を再確認に戻すことを検証する。
     def test_approval_expires_when_target_changes(self):
         self.resume(self.build, ("fixture-checker", 1, self.diagnostic))
         finding_id = self.review()["findings"][0][0]
@@ -239,8 +259,11 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
 
 class SavedDashboardTests(SavedRunFixture):
+    """保存済みRunの画面取得と、明示した操作だけが起動することを検証する。"""
+
     @staticmethod
     def get_ready_event(url):
+        """SSEから操作可能になった時点の連番と状態を取得する。"""
         with urlopen(url + "events", timeout=3) as response:
             for line in response:
                 if line.startswith(b"id: "):
@@ -253,17 +276,20 @@ class SavedDashboardTests(SavedRunFixture):
 
     @staticmethod
     def post(url, endpoint, payload):
+        """同じオリジンからブラウザー相当の操作を送る。"""
         origin = urlsplit(url)
         headers = {"Origin": f"{origin.scheme}://{origin.netloc}", "Content-Type": "application/json"}
         return urlopen(Request(url + endpoint, json.dumps(payload).encode(), headers), timeout=3)
 
     def open_dashboard(self, inspect, *, resume=False):
+        """HTTPが待ち受けている間に、一時サーバーで確認処理を実行する。"""
         terminal = io.StringIO()
         view = dashboard.Dashboard()
         dequeue = view.actions.get
         inspected = False
 
         def interact(*, timeout):
+            """操作待ちのタイミングでブラウザー側の確認処理を呼び出す。"""
             nonlocal inspected
             if inspected:
                 raise KeyboardInterrupt
@@ -281,6 +307,7 @@ class SavedDashboardTests(SavedRunFixture):
         ):
             return dashboard.run_dashboard(self.config, run_id=self.run_id)
 
+    # 完了状態で外部コマンドを起動せず、記録と比較を閲覧できることを検証する。
     def test_complete_runs_show_saved_results_ledger_and_diff_without_running_commands(self):
         original = self.record()
         for status, checker_exit in (("checker_succeeded", 0), ("checker_accepted", 1), ("build_succeeded", None)):
@@ -296,6 +323,7 @@ class SavedDashboardTests(SavedRunFixture):
                 before = self.record_path.read_bytes()
 
                 def inspect(url):
+                    """サーバーが動いている間に、今回のシナリオのHTTP操作を確認する。"""
                     revision, state = self.get_ready_event(url)
                     self.assertEqual(state["status"], status)
                     self.assertEqual(state["build_exit_code"], 0)
@@ -335,11 +363,13 @@ class SavedDashboardTests(SavedRunFixture):
                 self.assertEqual(result["status"], status)
                 self.assertEqual(self.record_path.read_bytes(), before)
 
+    # 保存済みRunを開くだけでは再開せず、操作を受けてから実行することを検証する。
     def test_saved_resumable_run_waits_for_explicit_resume(self):
         mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b"clean\n"))
         before = self.record_path.read_bytes()
 
         def inspect(url):
+            """サーバーが動いている間に、今回のシナリオのHTTP操作を確認する。"""
             revision, state = self.get_ready_event(url)
             self.assertTrue(state["resumable"])
             self.assertEqual(state["status"], "checker_needs_review")
@@ -353,6 +383,7 @@ class SavedDashboardTests(SavedRunFixture):
         self.assertEqual(len(calls), 2)
         self.assertEqual(result["status"], "checker_succeeded")
 
+    # 二つのCLI起動方法が同じ保存済み表示に入ることを検証する。
     def test_cli_view_and_resume_dashboard_open_saved_run(self):
         for args in (["view"], ["resume", "--dashboard"]):
             with (

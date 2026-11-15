@@ -10,54 +10,34 @@
       color-scheme: light;
       --ink: #172033;
       --muted: #566276;
-      --soft: #77849a;
       --line: #dbe3ed;
       --paper: #f9fafc;
       --canvas: #edf1f6;
       --surface-soft: #f4f6f9;
-      --surface-hover: #eef2f7;
       --blue: #2459a6;
       --blue-soft: #eaf2ff;
-      --blue-hover: #1c4b90;
-      --blue-ink: #fff;
       --blue-line: #c9d8ef;
-      --border-hover: #aebed2;
       --green: #176b4b;
       --green-soft: #e8f6ef;
-      --green-ink: #fff;
       --amber: #815300;
       --amber-soft: #fff4d9;
-      --amber-line: #f0dfb2;
-      --amber-ink: #665222;
-      --red: #9d3131;
-      --red-soft: #fff0ef;
       --shadow: #2334520a;
     }
     :root[data-theme="dark"] {
       color-scheme: dark;
       --ink: #e7edf6;
       --muted: #aab7ca;
-      --soft: #7f8ea4;
       --line: #2d3a4d;
       --paper: #111b29;
       --canvas: #0b121d;
       --surface-soft: #141f2e;
-      --surface-hover: #1a2a3e;
       --blue: #8db8ff;
       --blue-soft: #1b2e48;
-      --blue-hover: #76a8f2;
-      --blue-ink: #0b1b31;
       --blue-line: #2f4e78;
-      --border-hover: #526782;
       --green: #87d3b2;
       --green-soft: #173329;
-      --green-ink: #0b261c;
       --amber: #e5bd69;
       --amber-soft: #352b18;
-      --amber-line: #59451f;
-      --amber-ink: #d8c28f;
-      --red: #f08d8d;
-      --red-soft: #3a2227;
       --shadow: #00000040;
     }
     * { box-sizing: border-box; }
@@ -416,6 +396,7 @@ flowchart TB
     ['#fff0ef', '#3a2227'], ['#c45a52', '#d68179'], ['#702727', '#ffd8d5'],
   ]);
 
+  // Mermaidの元テキストを保持し、テーマ変更時も同じ図から描き直す。
   async function renderDiagrams(dark) {
     const palette = dark
       ? {
@@ -453,6 +434,7 @@ flowchart TB
     await mermaid.run({ nodes: diagrams });
   }
 
+  // クリック後に切り替わるテーマをアイコンと読み上げ名で示す。
   function updateThemeButton(dark) {
     themeToggle.setAttribute('aria-label', `${dark ? 'ライト' : 'ダーク'}テーマに切り替え`);
     themeToggle.innerHTML = dark
@@ -466,6 +448,7 @@ flowchart TB
 
   themeToggle.addEventListener('click', async () => {
     const dark = root.dataset.theme !== 'dark';
+    // ページとブラウザーの配色を、マスクの切り替えと同時に変更する。
     const updateTheme = () => {
       root.dataset.theme = dark ? 'dark' : 'light';
       document.querySelector('meta[name="theme-color"]').content = dark ? '#0b121d' : '#edf1f6';

@@ -5,6 +5,7 @@ using System.Text.Json;
 using var inputs = JsonDocument.Parse(Console.In.ReadToEnd());
 Console.WriteLine(JsonSerializer.Serialize(inputs.RootElement.EnumerateArray().Select(Search)));
 
+// PHP版と同じ必須条件・件数制限・並び順でケースを評価する。
 static object Search(JsonElement input)
 {
     var records = new[]

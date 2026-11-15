@@ -12,6 +12,7 @@ from migration_harness.workflow import _input_encoding, _load_saved_run, worktre
 
 
 def _inside_file(root: Path, relative: str) -> Path:
+    """相対パスが指定ディレクトリ内の既存ファイルを指すことを確認する。"""
     path = (root / relative).resolve()
     if not path.is_relative_to(root) or not path.is_file():
         raise ValueError(f"比較に必要なファイルを参照できません: {relative}")
@@ -19,6 +20,7 @@ def _inside_file(root: Path, relative: str) -> Path:
 
 
 def _pane(files: list[tuple[str, str]]) -> tuple[str, list[dict[str, Any]]]:
+    """複数ファイルを連結し、Viewerが元のファイルと行へ戻れる境界情報を作る。"""
     parts = []
     segments = []
     start = 1
@@ -40,6 +42,7 @@ def capture_workspace(
     config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None,
     target_hashes: dict[str, str] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
+    """Runの参照PHPと移行先をそろえて読み、比較時点の内容を固定する。"""
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     if record.get("target_apply_pending"):
         raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
@@ -135,6 +138,7 @@ def capture_workspace(
 
 
 def save_workspace(run_path: Path, payload: dict[str, Any]) -> str:
+    """過去の比較と区別できるIDを発行し、ワークスペースを上書きせずに保存する。"""
     snapshot_id = uuid.uuid4().hex
     directory = run_path / "review-snapshots"
     directory.mkdir(exist_ok=True)
@@ -146,10 +150,12 @@ def save_workspace(run_path: Path, payload: dict[str, Any]) -> str:
 
 
 def create_snapshot(config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None) -> str:
+    """アンカー生成を伴わない通常比較用のワークスペースを保存する。"""
     return save_workspace(*capture_workspace(config, run_id, focus=focus))
 
 
 def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> bytes:
+    """比較IDから当該Runに属する保存済みJSONだけを読み出す。"""
     if re.fullmatch(r"[a-f0-9]{32}", snapshot_id) is None:
         raise ValueError("スナップショットIDが無効です。")
     run_path, _, _, _ = _load_saved_run(config, run_id)
@@ -157,6 +163,7 @@ def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> byt
 
 
 def review_html(config: dict[str, Any], workspace: bytes) -> bytes:
+    """既存ViewerのJSON取込に比較データと初期表示位置を渡す。"""
     path = _inside_file(Path(config["project_root"]), config["diff_viewer_html"])
     html = path.read_bytes()
     closing = list(re.finditer(rb"</body\s*>", html, flags=re.IGNORECASE))

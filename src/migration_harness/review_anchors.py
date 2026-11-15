@@ -13,10 +13,12 @@ from migration_harness.workflow import (
 
 
 def _pane_lines(text: str) -> list[str]:
+    """Viewerと同じ行の数え方で、改行コードを統一する。"""
     return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
 def _anchor_pair(entry: Any, left: list[str], right: list[str], *, first_line: int) -> tuple[int, int]:
+    """左右のアンカーが有効な行を指すことを確認し、0始まりにそろえる。"""
     if not isinstance(entry, dict):
         raise ValueError("アンカーは leftLineNo と rightLineNo を持つオブジェクトで指定してください。")
     a, b = entry.get("leftLineNo"), entry.get("rightLineNo")
@@ -28,6 +30,7 @@ def _anchor_pair(entry: Any, left: list[str], right: list[str], *, first_line: i
 
 
 def _reference_examples(path: Path) -> list[dict[str, str]]:
+    """既存の手動アンカーから、Junieに渡す対応行の例を用意する。"""
     reference = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(reference, dict) or reference.get("kind") != "diff-viewer-workspace" or reference.get("version") != 1:
         raise ValueError("参照JSONにはDiff Viewerのワークスペース（version 1）を指定してください。")
@@ -48,6 +51,7 @@ def _reference_examples(path: Path) -> list[dict[str, str]]:
 
 
 def _validated_anchors(path: Path, left: list[str], right: list[str]) -> list[dict[str, int]]:
+    """重複・逆順・空行を含むアンカー提案を拒否する。"""
     proposals = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(proposals, list):
         raise ValueError("Junieのアンカー出力にはJSON配列が必要です。")
@@ -68,6 +72,7 @@ def _validated_anchors(path: Path, left: list[str], right: list[str]) -> list[di
 def generate_anchors(
     config: dict[str, Any], run_id: str, reference: Path, *, focus: dict[str, Any] | None = None,
 ) -> tuple[Path, int]:
+    """対話端末でJunieに対応を提案させ、検証した比較をRunに保存する。"""
     _validate_junie_execution()
     examples = _reference_examples(reference)
     target_hashes: dict[str, str] = {}

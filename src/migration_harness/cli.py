@@ -4,6 +4,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from migration_harness.config import load_config, validate_checker_command
 from migration_harness.workflow import (
@@ -11,38 +12,38 @@ from migration_harness.workflow import (
 )
 
 
-def main() -> None:
+def _parse_args() -> argparse.Namespace:
+    """CLIの起動方法と、後続をチェッカーへ渡す引数の境界を定義する。"""
     parser = argparse.ArgumentParser(prog="php-to-csharp-harness")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    prepare = subparsers.add_parser("prepare", help="Create a worktree and bounded context capsules")
-    prepare.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+
+    def configured_command(name: str, help_text: str) -> argparse.ArgumentParser:
+        """設定ファイルを必須とするサブコマンドを定義する。"""
+        command = subparsers.add_parser(name, help=help_text)
+        command.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+        return command
+
+    prepare = configured_command("prepare", "Create a worktree and bounded context capsules")
     prepare.add_argument("--unit", required=True, help="Migration unit ID from the config")
-    run = subparsers.add_parser("run", help="Migrate, build and run the configured checker")
-    run.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    run = configured_command("run", "Migrate, build and run the configured checker")
     run.add_argument("--unit", required=True, help="Migration unit ID from the config")
-    resume = subparsers.add_parser("resume", help="Continue migration, build or checker in the saved worktree")
-    resume.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    resume = configured_command("resume", "Continue migration, build or checker in the saved worktree")
     resume.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
-    view = subparsers.add_parser("view", help="Open the dashboard for a saved run")
-    view.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    view = configured_command("view", "Open the dashboard for a saved run")
     view.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
-    review = subparsers.add_parser("review", help="List checker findings or accept one with a reason")
-    review.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    review = configured_command("review", "List checker findings or accept one with a reason")
     review.add_argument("--run-id", required=True, help="Run ID awaiting review")
     review.add_argument("--accept", metavar="FINDING_ID", help="Finding ID shown by review")
     review.add_argument("--reason", help="Why the finding can be accepted")
-    ledger_review = subparsers.add_parser("ledger-review", help="Record a decision for PHP ranges shown in the migration ledger")
-    ledger_review.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    ledger_review = configured_command("ledger-review", "Record a decision for PHP ranges shown in the migration ledger")
     ledger_review.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     ledger_review.add_argument("--range", dest="ranges", action="append", required=True, help="Range ID from the ledger; repeat to record multiple")
     ledger_review.add_argument("--state", choices=("confirmed", "excluded", "needs_review"), required=True)
     ledger_review.add_argument("--reason", required=True)
-    anchors = subparsers.add_parser("anchors", help="Generate Diff Viewer anchors with Junie")
-    anchors.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    anchors = configured_command("anchors", "Generate Diff Viewer anchors with Junie")
     anchors.add_argument("--run-id", required=True, help="Run ID with PHP and migration target files")
     anchors.add_argument("--reference", type=Path, required=True, help="Existing Diff Viewer workspace JSON with manual anchors")
-    verify = subparsers.add_parser("verify", help="Run or inspect a saved Run's behavior comparison")
-    verify.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    verify = configured_command("verify", "Run or inspect a saved Run's behavior comparison")
     verify.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     verify.add_argument("--fixture", type=Path, help="Case JSON to execute; omit to inspect the saved result")
     run.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
@@ -52,8 +53,12 @@ def main() -> None:
             "--checker-command", nargs=argparse.REMAINDER, metavar="EXECUTABLE",
             help="Checker executable and its arguments. Put this option last.",
         )
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def main() -> None:
+    """利用者の操作を振り分け、途中停止や入力エラーを終了コードで伝える。"""
+    args = _parse_args()
     try:
         config = load_config(args.config)
         checker_command = getattr(args, "checker_command", None)
@@ -120,13 +125,18 @@ def main() -> None:
             print("Interrupted.", file=sys.stderr)
         raise SystemExit(130)
 
+    _print_run_result(result, prepared=args.command == "prepare")
+
+
+def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:
+    """Run ID、成果物の場所と、次の操作に必要な結果を伝える。"""
     print(f"Run:       {result['run_id']}")
     print(f"Worktree:  {result['worktree_path']}")
     print(f"Capsules:  {result['capsule_count']} (max {result['max_context_chars']} characters each)")
     print(f"Context:   {result['capsule_path']} ({result['context_chars']} characters total)")
     if result["source_boundary_review_required"]:
         print("Review:    Check capsule boundaries and character ranges in manifest.json")
-    if args.command == "prepare":
+    if prepared:
         print("Status:    prepared (no source files changed)")
     else:
         print(f"Junie exit code: {result['junie_exit_code']}")

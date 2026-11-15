@@ -6,6 +6,7 @@ from typing import Any
 
 
 def _outside(root: Path, path: Path, name: str) -> Path:
+    """アプリのリポジトリと実行データが混ざらないよう、保存先を解決する。"""
     resolved = path.expanduser().resolve()
     if resolved == root or resolved.is_relative_to(root):
         raise ValueError(f"{name} must be outside the application repository: {resolved}")
@@ -13,6 +14,7 @@ def _outside(root: Path, path: Path, name: str) -> Path:
 
 
 def load_config(path: Path) -> dict[str, Any]:
+    """ローカルTOMLを検証し、準備と再開で共通の設定形式に整える。"""
     config_path = path.expanduser().resolve()
     with config_path.open("rb") as stream:
         raw = tomllib.load(stream)
@@ -40,10 +42,10 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("[project].worktree_root and [project].run_root are required")
 
     def resolve_output(value: str) -> Path:
+        """相対指定の保存先を、設定ファイルのあるディレクトリから解決する。"""
         candidate = Path(value).expanduser()
         return (config_path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 
-    # 移行元の作業ツリーと生成データを分離し、誤変更や公開リポジトリへの混入を防ぐ。
     worktree_root = _outside(root, resolve_output(worktree_value), "worktree_root")
     run_root = _outside(root, resolve_output(run_value), "run_root")
     if worktree_root == run_root or worktree_root.is_relative_to(run_root) or run_root.is_relative_to(worktree_root):
@@ -184,6 +186,7 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def validate_checker_command(command: Any) -> None:
+    """シェル文字列ではなく、実行ファイルと引数の配列を受理する。"""
     if (
         not isinstance(command, list)
         or not command

@@ -1,8 +1,6 @@
-"""Opt-in comparison of a saved Run's standalone PHP and C# programs.
+"""RunのPHPとC#を隔離した作業場所で実行し、代表ケースを比較する。
 
-Both trusted programs read a UTF-8 JSON array of case inputs from stdin and
-emit a JSON array of result objects in the same order. The PHP source and
-declared C# sources must be self-contained and run in separate scratch directories.
+両プログラムはUTF-8のJSON配列を標準入力から受け取り、同じ順番で結果を出力する。
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ from typing import Any, BinaryIO
 
 from migration_harness.workflow import _has_symlink_component, _load_saved_run, worktree_source_lock
 
-_RESULT_VERSION = 1  # Bump when execution or comparison semantics change.
+_RESULT_VERSION = 1  # 実行や照合の契約が変わるときに更新する。
 _RESULT_FILE = "behavior.json"
 _FRAMEWORK = "net10.0"
 _PROJECT = f"""<Project Sdk="Microsoft.NET.Sdk">
@@ -32,7 +30,9 @@ _NUGET_CONFIG = "<configuration><packageSources><clear /></packageSources></conf
 
 
 def _decode_json(data: bytes) -> Any:
+    """曖昧な比較を避けるため、重複キーや非有限値を含むJSONを拒否する。"""
     def unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        """同名キーの後勝ちを禁止して、入力や実測値の欠落を防ぐ。"""
         result = {}
         for key, value in pairs:
             if key in result:
@@ -46,6 +46,7 @@ def _decode_json(data: bytes) -> Any:
 
 
 def _source_path(worktree: Path, name: str) -> Path:
+    """Runのworktree内にある、リンクを経由しない実行対象を解決する。"""
     relative = Path(name)
     if relative.anchor or ".." in relative.parts:
         raise ValueError(f"behavior source must be worktree-relative: {name}")
@@ -58,6 +59,7 @@ def _source_path(worktree: Path, name: str) -> Path:
 def _read_inputs(
     worktree: Path, unit: dict[str, Any], fixture_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes, dict[str, bytes]]:
+    """ケースとソースを検証し、実行するバイト列の版を記録する。"""
     if not fixture_path.is_file():
         raise ValueError(f"behavior fixture is missing: {fixture_path}")
     fixture_bytes = fixture_path.read_bytes()
@@ -131,6 +133,7 @@ def _command(
     timeout: int = 15,
     input_bytes: bytes = b"",
 ) -> bytes:
+    """外部処理を制限時間付きで実行し、ログと終了理由を保存する。"""
     step: dict[str, Any] = {"argv": argv, "timeout_seconds": timeout, "exit_code": None}
     steps.append(step)
     log.write(f"\nCommand: {json.dumps(argv)}\n".encode("utf-8"))
@@ -157,6 +160,7 @@ def _command(
 
 
 def _observations(raw: bytes, count: int) -> list[dict[str, Any]]:
+    """ケース順の実測値が件数と形式の契約を満たすことを確認する。"""
     value = _decode_json(raw)
     if not isinstance(value, list) or len(value) != count or any(not isinstance(item, dict) for item in value):
         raise ValueError(f"expected {count} JSON result objects in case order")
@@ -164,12 +168,14 @@ def _observations(raw: bytes, count: int) -> list[dict[str, Any]]:
 
 
 def _matches(actual: dict[str, Any], expected: dict[str, Any], ignored: list[str]) -> bool:
+    """除外した項目を除き、型と配列の順序を含めて期待値と照合する。"""
     compared = {key: value for key, value in actual.items() if key not in ignored}
-    # JSON serialization distinguishes booleans from integers and preserves array order.
+    # 辞書の等価比較では true と 1 が一致するため、JSONに直して比較する。
     return json.dumps(compared, sort_keys=True) == json.dumps(expected, sort_keys=True)
 
 
-def _view(report: dict[str, Any], worktree: Path, unit: dict[str, Any]) -> dict[str, Any]:
+def _check_result_freshness(report: dict[str, Any], worktree: Path, unit: dict[str, Any]) -> dict[str, Any]:
+    """保存時から入力やソースが変わった場合は再検証を求める状態にする。"""
     try:
         fixture_path = Path(report["identity"]["fixture"]["path"])
         if not fixture_path.is_absolute():
@@ -184,7 +190,7 @@ def _view(report: dict[str, Any], worktree: Path, unit: dict[str, Any]) -> dict[
 
 
 def behavior_status(config: dict[str, Any], run_id: str) -> dict[str, Any]:
-    """Read the latest result and check its inputs without running any commands."""
+    """外部プロセスを起動せず、最後の結果が今の対象に対応するか照合する。"""
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     path = run_path / _RESULT_FILE
     try:
@@ -208,11 +214,11 @@ def behavior_status(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         return {"status": "stale", "result": None, "reason": str(exc)}
     if record.get("target_apply_pending"):
         return {"status": "stale", "result": report, "reason": "migration files are being applied"}
-    return _view(report, worktree, unit)
+    return _check_result_freshness(report, worktree, unit)
 
 
 def verify(config: dict[str, Any], run_id: str, fixture_path: Path) -> dict[str, Any]:
-    """Explicitly run the fixture and atomically save the latest result under the Run."""
+    """隔離した作業場所で比較を実行し、結果をRunに保存する。"""
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     if record.get("target_apply_pending") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
         raise ValueError("finish or pause the current migration operation before verifying behavior")
@@ -308,4 +314,4 @@ def verify(config: dict[str, Any], run_id: str, fixture_path: Path) -> dict[str,
         temporary.unlink(missing_ok=True)
     if interrupted:
         raise KeyboardInterrupt
-    return _view(report, worktree, unit)
+    return _check_result_freshness(report, worktree, unit)

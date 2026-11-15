@@ -17,7 +17,10 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "behavior-search"
 
 
 class BehaviorVerificationTests(unittest.TestCase):
+    """振る舞い比較の入力契約と結果の鮮度を検証する。"""
+
     def setUp(self):
+        """代表ケースと比較対象を独立したRun配下に配置する。"""
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name).resolve()
@@ -51,6 +54,7 @@ class BehaviorVerificationTests(unittest.TestCase):
         self.cases = json.loads(self.fixture.read_bytes())["cases"]
 
     def stub_process(self, argv, *, cwd, input, **kwargs):
+        """本番と同じ入出力契約で、期待値を返すテスト用プロセスを再現する。"""
         self.assertNotEqual(cwd, self.worktree)
         self.assertFalse(cwd.is_relative_to(self.worktree))
         if argv[-1] in ("Reference.php", "bin/Release/net10.0/Behavior.dll"):
@@ -59,11 +63,13 @@ class BehaviorVerificationTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(observations).encode(), b"")
         return subprocess.CompletedProcess(argv, 0, b"fake toolchain", b"diagnostic")
 
+    # 結果のないRunを未実行として表示することを検証する。
     def test_legacy_run_without_result_is_not_run(self):
         with patch("migration_harness.behavior.subprocess.run") as execute:
             self.assertEqual(behavior_status(self.config, self.run_id), {"status": "not_run", "result": None})
         execute.assert_not_called()
 
+    # ケース、PHP、移行先のいずれが変わっても以前の成功が失効することを検証する。
     def test_fixture_php_and_target_bytes_each_invalidate_pass(self):
         with patch("migration_harness.behavior.subprocess.run", side_effect=self.stub_process):
             result = verify(self.config, self.run_id, self.fixture)
@@ -86,6 +92,7 @@ class BehaviorVerificationTests(unittest.TestCase):
             self.assertEqual(behavior_status(self.config, self.run_id)["status"], "stale")
         execute.assert_not_called()
 
+    # 比較コードと同じRunのRazorファイルを変更検知の対象に含めることを検証する。
     def test_multi_target_identity_covers_primary_and_noncompiled_target(self):
         view = self.worktree / "Search.cshtml"
         view.write_text("<h1>Search</h1>", encoding="utf-8")
@@ -99,10 +106,12 @@ class BehaviorVerificationTests(unittest.TestCase):
         view.write_text("<h1>Results</h1>", encoding="utf-8")
         self.assertEqual(behavior_status(self.config, self.run_id)["status"], "stale")
 
+    # 比較中に元ファイルが変わっても保存した版を実行し、結果を要再検証にすることを検証する。
     def test_verifies_copied_bytes_and_marks_concurrent_edit_stale(self):
         original = self.target.read_bytes()
 
         def edit_and_run(argv, **kwargs):
+            """比較開始後の外部編集を再現し、コピーが実行対象のままであることを確認する。"""
             if argv[-1] == "Reference.php":
                 self.target.write_bytes(original + b"\n// edited\n")
             if argv[:2] == ["dotnet", "build"]:
@@ -116,8 +125,10 @@ class BehaviorVerificationTests(unittest.TestCase):
         self.assertEqual(result["result"]["status"], "passed")
         self.assertEqual(behavior_status(self.config, self.run_id), result)
 
+    # 片側が時間切れでも、期待値ともう一方の実測値を保存することを検証する。
     def test_runtime_timeout_saves_expected_and_other_observations(self):
         def time_out_php(argv, **kwargs):
+            """PHPだけを時間切れにし、残りの処理では通常のテスト結果を返す。"""
             if argv[-1] == "Reference.php":
                 raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output=b"partial output")
             return self.stub_process(argv, **kwargs)
@@ -134,6 +145,7 @@ class BehaviorVerificationTests(unittest.TestCase):
         self.assertEqual(report["cases"][0]["matches"], {"php": False, "csharp": True})
         self.assertEqual(behavior_status(self.config, self.run_id), result)
 
+    # 無効なケースを読み込んだ場合に外部処理を起動しないことを検証する。
     def test_invalid_fixture_never_executes(self):
         fixture = json.loads(self.fixture.read_bytes())
         fixture["ignored_fields"] = ["status"]
@@ -143,6 +155,7 @@ class BehaviorVerificationTests(unittest.TestCase):
                 verify(self.config, self.run_id, self.fixture)
         execute.assert_not_called()
 
+    # リンクを通じた移行先の実行を防ぐことを検証する。
     def test_symlinked_target_never_executes(self):
         self.target.unlink()
         try:
@@ -154,6 +167,7 @@ class BehaviorVerificationTests(unittest.TestCase):
                 verify(self.config, self.run_id, self.fixture)
         execute.assert_not_called()
 
+    # 不正な結果や別Runからのコピーを現行の結果と見なさないことを検証する。
     def test_malformed_or_copied_result_is_never_current(self):
         result_path = self.run_path / "behavior.json"
         result_path.write_text("{", encoding="utf-8")
@@ -161,6 +175,7 @@ class BehaviorVerificationTests(unittest.TestCase):
         result_path.write_text(json.dumps({"version": 1, "run_id": str(uuid.uuid4()), "status": "passed"}))
         self.assertEqual(behavior_status(self.config, self.run_id)["status"], "stale")
 
+    # 実際のPHPと.NETで、補助ファイルによる並び順の回帰を検出する。
     def test_real_php_and_dotnet_detect_ordering_regression_in_companion(self):
         if not shutil.which("php") or not shutil.which("dotnet"):
             self.skipTest("requires PHP 8+ CLI and the .NET 10 SDK/runtime")
