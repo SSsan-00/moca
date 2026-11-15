@@ -36,7 +36,7 @@ const statusNames = {
 };
 const savedView = document.documentElement.hasAttribute("data-saved");
 const verifiedStatuses = new Set(["checker_succeeded", "checker_accepted", "build_succeeded"]);
-const stage = {
+const statusStages = {
   preparing: 0, prepared: 2, junie_running: 3, junie_finished: 3, interrupted: 3, junie_failed: 3,
   repairing: 3, building: 4, build_succeeded: 4, build_failed: 4, checking: 5, checker_failed: 5,
   checker_needs_review: 6, checker_succeeded: 6, checker_accepted: 6,
@@ -48,7 +48,7 @@ const scriptStages = {
 let snapshot = {status: "preparing"};
 let migrationCompletion;
 let migrationLedgerRequest = 0;
-let rev = 0;
+let dashboardRevision = 0;
 let submitting = false;
 let connected = false;
 let prompted = false;
@@ -139,15 +139,14 @@ function syncActions() {
   }
 }
 
-// 選んだ指摘の診断箇所と操作可否を同期する。
-function selectFinding() {
+// 選んだ指摘の診断とソース位置を表示する。
+function renderSelectedFinding() {
   const selected = snapshot.review?.findings[findings.selectedIndex];
   diagnostic.textContent = selected?.[1] || snapshot.review_error || "選択できる指摘はありません。";
   const reported = snapshot.review?.locations?.[findings.selectedIndex];
   findingLocation.hidden = !reported || Number(reported.line) < 1;
   locationPath.textContent = reported?.path || "";
   locationLine.textContent = reported ? `チェッカー報告 · ${reported.line}行目` : "";
-  syncActions();
 }
 
 // 選択した指摘を見せ、別の指摘の判断理由が残らないようにする。
@@ -156,7 +155,8 @@ function openReview(index = findings.selectedIndex) {
     findings.selectedIndex = index;
     note.value = "";
   }
-  selectFinding();
+  renderSelectedFinding();
+  syncActions();
   if (!dialog.open) {
     dialog.showModal();
     element("#review-title").focus();
@@ -239,8 +239,8 @@ bindHarnessWorkspace({
   readRuns: () => workspaceRequest("workspace"),
   readSettings: () => workspaceRequest("settings"),
   previewSettings: (content, changes) => workspaceRequest("settings", {mode: "preview", content, changes}),
-  saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: rev}),
-  execute: (action, payload) => workspaceRequest("control", {action, revision: rev, ...payload}),
+  saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: dashboardRevision}),
+  execute: (action, payload) => workspaceRequest("control", {action, revision: dashboardRevision, ...payload}),
   canAct: () => connected && snapshot.ready && !submitting,
 });
 const tokenRuns = bindTokenRuns(run => {
@@ -265,6 +265,67 @@ workspaceTabs.addEventListener("harnesstab", async () => {
   }
 });
 if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1);
+
+function renderCapsuleProgress(data, total, completed) {
+  const capsuleIndex = Math.max(0, (data.current_capsule ?? 1) - 1);
+  const chars = data.context_part_chars?.[capsuleIndex] ?? 0;
+  const limit = data.max_context_chars ?? 0;
+  const percent = limit ? Math.round(chars * 100 / limit) : 0;
+  element("#capsule-call").textContent = total ? `カプセル ${capsuleIndex + 1}/${total}` : "入力を準備中";
+  element(".capsule-top > span").textContent = limit ? `上限 ${limit.toLocaleString("ja-JP")}文字` : "上限 —";
+  element("#char-count").textContent = chars.toLocaleString("ja-JP");
+  element("#capsule-percent").textContent = `上限の${percent}%`;
+  element("#capsule-meter").setAttribute("aria-valuemax", String(limit || 1));
+  element("#capsule-meter").setAttribute("aria-valuenow", String(chars));
+  element("#meter-fill").style.width = `${percent}%`;
+  element(".work-summary .metric-value").textContent = String(total);
+  element("#checked-count").textContent = `${completed} / ${total}`;
+}
+
+function renderCheckerReview(data, showReview) {
+  const items = data.review?.findings || [];
+  const pendingCount = items.filter(item => !item[2]).length;
+  element("#pending-count").textContent = String(pendingCount);
+  pendingFilter.classList.toggle("has-pending", pendingCount > 0);
+  const previousText = findings.options[findings.selectedIndex]?.text;
+  findings.replaceChildren();
+  ledger.replaceChildren();
+  for (const [index, [id, text, accepted]] of items.entries()) {
+    findings.add(new Option(`${accepted ? "記録済み · " : ""}${text}`, id));
+    const row = document.createElement("li");
+    row.className = "ledger-row";
+    row.dataset.status = accepted ? "done" : "judgment";
+    const button = document.createElement("button");
+    button.className = "ledger-name ledger-review-trigger";
+    button.type = "button";
+    button.textContent = text;
+    button.setAttribute("aria-haspopup", "dialog");
+    row.addEventListener("click", () => openReview(index));
+    const label = document.createElement("span");
+    label.className = "ledger-state";
+    label.textContent = accepted ? "記録済み" : "判断待ち";
+    row.append(button, label);
+    ledger.append(row);
+  }
+  emptyFinding.textContent = showReview && !items.length ? "ログで確認が必要です。" : "表示する指摘はありません。";
+  ledger.append(emptyFinding);
+  applyFindingFilter();
+  findings.hidden = !items.length;
+  reviewFiles.textContent = data.checker_log_path ? `チェッカーログ：${data.checker_log_path}` : "";
+  const selected = [...findings.options].findIndex(option => option.text === previousText);
+  const nextPending = items.findIndex(item => !item[2]);
+  if (data.message === "判断理由を記録しました。" && nextPending !== -1) findings.selectedIndex = nextPending;
+  else if (selected !== -1) findings.selectedIndex = selected;
+  renderSelectedFinding();
+  showNotice(data.message || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
+  if (showReview && data.ready && !prompted && activeHarnessTab === 0) {
+    prompted = true;
+    openReview();
+  } else if (!showReview) {
+    prompted = false;
+    if (dialog.open) dialog.close();
+  }
+}
 
 // 最新のSSE状態を工程・入力・指摘に反映し、確認待ちを案内する。
 function render() {
@@ -301,7 +362,7 @@ function render() {
   else reviewButton.removeAttribute("aria-haspopup");
   reviewButton.hidden = !showReview && !((data.ready || data.generating_anchors) && data.resumable);
   const current = verificationFinished ? 6 : data.status === "checker_needs_review" && !showReview ? 5
-    : scriptStages[data.script_phase] ?? stage[data.status] ?? 0;
+    : scriptStages[data.script_phase] ?? statusStages[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
   const completed = data.completed_capsules ?? 0;
   updateMigrationLedgerStatuses(data);
@@ -314,62 +375,8 @@ function render() {
     const skipped = data.status === "build_succeeded" && index === 5 && migrationCompletion?.verification_passed;
     item.querySelector(".step-status").textContent = skipped ? "省略" : finished ? "完了" : index === current ? (stopped || verificationFinished ? "確認待ち" : "処理中") : "待機中";
   });
-  const index = Math.max(0, (data.current_capsule ?? 1) - 1);
-  const chars = data.context_part_chars?.[index] ?? 0;
-  const limit = data.max_context_chars ?? 0;
-  const percent = limit ? Math.round(chars * 100 / limit) : 0;
-  element("#capsule-call").textContent = total ? `カプセル ${index + 1}/${total}` : "入力を準備中";
-  element(".capsule-top > span").textContent = limit ? `上限 ${limit.toLocaleString("ja-JP")}文字` : "上限 —";
-  element("#char-count").textContent = chars.toLocaleString("ja-JP");
-  element("#capsule-percent").textContent = `上限の${percent}%`;
-  element("#capsule-meter").setAttribute("aria-valuemax", String(limit || 1));
-  element("#capsule-meter").setAttribute("aria-valuenow", String(chars));
-  element("#meter-fill").style.width = `${percent}%`;
-
-  const items = data.review?.findings || [];
-  element(".work-summary .metric-value").textContent = String(total);
-  element("#checked-count").textContent = `${completed} / ${total}`;
-  const pendingCount = items.filter(item => !item[2]).length;
-  element("#pending-count").textContent = String(pendingCount);
-  pendingFilter.classList.toggle("has-pending", pendingCount > 0);
-  const previousText = findings.options[findings.selectedIndex]?.text;
-  findings.replaceChildren();
-  ledger.replaceChildren();
-  for (const [index, [id, text, accepted]] of items.entries()) {
-    findings.add(new Option(`${accepted ? "記録済み · " : ""}${text}`, id));
-    const row = document.createElement("li");
-    row.className = "ledger-row";
-    row.dataset.status = accepted ? "done" : "judgment";
-    const button = document.createElement("button");
-    button.className = "ledger-name ledger-review-trigger";
-    button.type = "button";
-    button.textContent = text;
-    button.setAttribute("aria-haspopup", "dialog");
-    row.addEventListener("click", () => openReview(index));
-    const label = document.createElement("span");
-    label.className = "ledger-state";
-    label.textContent = accepted ? "記録済み" : "判断待ち";
-    row.append(button, label);
-    ledger.append(row);
-  }
-  emptyFinding.textContent = showReview && !items.length ? "ログで確認が必要です。" : "表示する指摘はありません。";
-  ledger.append(emptyFinding);
-  applyFindingFilter();
-  findings.hidden = !items.length;
-  reviewFiles.textContent = data.checker_log_path ? `チェッカーログ：${data.checker_log_path}` : "";
-  const selected = [...findings.options].findIndex(option => option.text === previousText);
-  const nextPending = items.findIndex(item => !item[2]);
-  if (data.message === "判断理由を記録しました。" && nextPending !== -1) findings.selectedIndex = nextPending;
-  else if (selected !== -1) findings.selectedIndex = selected;
-  selectFinding();
-  showNotice(data.message || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
-  if (showReview && data.ready && !prompted && activeHarnessTab === 0) {
-    prompted = true;
-    openReview();
-  } else if (!showReview) {
-    prompted = false;
-    if (dialog.open) dialog.close();
-  }
+  renderCapsuleProgress(data, total, completed);
+  renderCheckerReview(data, showReview);
   syncActions();
 }
 
@@ -421,7 +428,7 @@ async function send(action) {
   try {
     const response = await fetch("control", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({action, revision: rev, finding_id: findings.value, reason: note.value.trim()}),
+      body: JSON.stringify({action, revision: dashboardRevision, finding_id: findings.value, reason: note.value.trim()}),
     });
     if (!response.ok) throw new Error();
   } catch {
@@ -435,7 +442,8 @@ async function send(action) {
 
 findings.addEventListener("change", () => {
   note.value = "";
-  selectFinding();
+  renderSelectedFinding();
+  syncActions();
 });
 allFilter.addEventListener("click", () => {
   pendingOnly = false;
@@ -507,7 +515,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   syncActions();
   showComparisonStatus(progress);
   try {
-    const request = withAnchors ? {action: "anchors", revision: rev, focus} : focus ? {focus} : null;
+    const request = withAnchors ? {action: "anchors", revision: dashboardRevision, focus} : focus ? {focus} : null;
     const response = await fetch(withAnchors ? "control" : "comparison", request ? {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request),
     } : {method: "POST"});
@@ -570,6 +578,7 @@ stream.onerror = () => {
 };
 stream.onmessage = event => {
   const data = JSON.parse(event.data);
+  // 使用量と観測時刻だけの更新では、進行中の台帳リクエストを維持する。
   const {token_usage: previousUsage, observed_at: previousTime, ...previous} = snapshot;
   const {token_usage: usage, observed_at: time, ...current} = data;
   const progressChanged = JSON.stringify(previous) !== JSON.stringify(current);
@@ -578,7 +587,7 @@ stream.onmessage = event => {
     migrationLedgerRequest++;
     migrationCompletion = undefined;
   }
-  rev = Number(event.lastEventId);
+  dashboardRevision = Number(event.lastEventId);
   lastObserved = snapshot.observed_at * 1000;
   submitting = false;
   if (snapshot.message === "判断理由を記録しました。") note.value = "";

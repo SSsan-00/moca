@@ -100,21 +100,20 @@ class LedgerReviewTest(HarnessCase):
             sys.executable, "-m", "migration_harness.cli", "ledger-review",
             "--config", self.settings["config_path"], "--run-id", self.run_id, "--range", "1:1",
         ]
-        with workflow._track_junie_usage(run_path, "anchors"):
-            report = workflow._junie_usage_reporter.get()
-            report([18, 4, 5, 3, 1])
-            subprocess.run([
-                *review_command, "--state", "confirmed", "--reason", "Confirmed again", "--target", self.target.name,
-            ], check=True, capture_output=True)
-            report([1, 0, 0, 0, 1])
-            self.assertEqual(self.source()["review"], {
-                "state": "confirmed", "reason": "Confirmed again", "targets": [self.target.name],
-            })
-            self.assertTrue(self.completion()["complete"])
-            subprocess.run([
-                *review_command, "--state", "needs_review", "--reason", "Different result",
-            ], check=True, capture_output=True)
-            report([2, 1, 0, 0, 1])
+        report = workflow.junie_usage_recorder(run_path, "anchors")
+        report([18, 4, 5, 3, 1])
+        subprocess.run([
+            *review_command, "--state", "confirmed", "--reason", "Confirmed again", "--target", self.target.name,
+        ], check=True, capture_output=True)
+        report([1, 0, 0, 0, 1])
+        self.assertEqual(self.source()["review"], {
+            "state": "confirmed", "reason": "Confirmed again", "targets": [self.target.name],
+        })
+        self.assertTrue(self.completion()["complete"])
+        subprocess.run([
+            *review_command, "--state", "needs_review", "--reason", "Different result",
+        ], check=True, capture_output=True)
+        report([2, 1, 0, 0, 1])
 
         hashes = {}
         _, payload = capture_workspace(self.settings, self.run_id, target_hashes=hashes)

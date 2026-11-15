@@ -6,11 +6,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from migration_harness import junie_cli
 from migration_harness.diff_viewer import capture_workspace, save_workspace, snapshot_bytes
-from migration_harness.workflow import (
-    _has_completion_record, _run_interactive_junie, _track_junie_usage,
-    _validate_junie_execution, migration_ledger, record_migration_candidates,
-)
+from migration_harness.workflow import junie_usage_recorder, migration_ledger, record_migration_candidates
 
 
 def _pane_lines(text: str) -> list[str]:
@@ -125,7 +123,7 @@ def generate_anchors(
     """対話端末でJunieに対応を提案させ、検証した比較をRunに保存する。"""
     if not config.get("diff_viewer_html"):
         raise ValueError("アンカーを生成するには、設定で差分ビューアーを有効にしてください。")
-    _validate_junie_execution()
+    junie_cli.require_interactive_cli()
     target_hashes: dict[str, str] = {}
     run_path, payload = capture_workspace(config, run_id, focus=focus, target_hashes=target_hashes)
     examples = _automatic_examples(config, run_id) if reference is None else _reference_examples(reference)
@@ -157,12 +155,11 @@ def generate_anchors(
             f"Check the result against the exact numbered lines, then write exactly {token} to "
             f"{completion.name} as your final action. Leave the completion file absent if interrupted."
         )
-        command = ["junie", "--project", str(agent)]
-        if config["junie_max_steps"] is not None:
-            command.extend(["--max-steps", str(config["junie_max_steps"])])
-        with _track_junie_usage(run_path, "anchors"):
-            _run_interactive_junie([*command, "--prompt", prompt], completion, token, result)
-        if not _has_completion_record(completion, token) or result.is_symlink() or not result.is_file():
+        command = junie_cli.build_command(agent, prompt, config["junie_max_steps"])
+        junie_cli.run_interactive(
+            command, completion, token, (result,), report_usage=junie_usage_recorder(run_path, "anchors"),
+        )
+        if not junie_cli.has_completion_record(completion, token) or result.is_symlink() or not result.is_file():
             raise ValueError("Junieのアンカー作成が完了しませんでした。")
         anchors = _validated_anchors(result, left, right)
     workspace["anchors"]["manualAnchors"] = anchors

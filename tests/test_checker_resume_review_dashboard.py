@@ -14,7 +14,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from migration_harness import cli, dashboard, workflow
+from migration_harness import cli, dashboard, junie_cli, workflow
+from migration_harness.settings_form import build_settings_draft
 
 
 class JunieConnectionTests(unittest.TestCase):
@@ -28,7 +29,7 @@ class JunieConnectionTests(unittest.TestCase):
             return json.dumps(entry).encode("utf-8") + b"\n"
 
         with TemporaryDirectory() as directory, patch.dict("os.environ", {"JUNIE_HOME": directory}):
-            events = workflow._JunieSessionEvents("this-launch")
+            events = junie_cli._JunieSessionEvents("this-launch")
             sessions = Path(directory) / "sessions"
             for name in ("current", "unrelated"):
                 (sessions / name).mkdir(parents=True)
@@ -43,16 +44,16 @@ class JunieConnectionTests(unittest.TestCase):
                 + line(event("another-task", inputTokens=100, outputTokens=100))
                 + line(event("task", inputTokens=None, outputTokens=100)) + line(metadata)[:-1],
             )
-            self.assertFalse(events.connection_failed())
+            self.assertFalse(events.read_new_events())
             self.assertEqual(events.usage, [0, 0, 0, 0, 0])
             with current.open("ab") as stream:
                 stream.write(b"\n")
             for _ in range(2):
-                self.assertFalse(events.connection_failed())
+                self.assertFalse(events.read_new_events())
                 self.assertEqual(events.usage, [18, 4, 5, 3, 1])
             with current.open("ab") as stream:
                 stream.write(line({**task, "taskId": "continue"}) + line(event("continue", inputTokens=2, outputTokens=1)))
-            self.assertFalse(events.connection_failed())
+            self.assertFalse(events.read_new_events())
             self.assertEqual(events.usage, [20, 5, 5, 3, 2])
 
     def test_usage_persists_across_launches_without_resetting_dashboard_actions(self):
@@ -65,10 +66,9 @@ class JunieConnectionTests(unittest.TestCase):
                 workflow._write_run_record(run_path / "run.json", record)
                 view.publish({**view.state, "ready": False, "generating_anchors": True})
                 for delta in ([18, 4, 5, 3, 1], [2, 1, 0, 0, 1]):
-                    with workflow._track_junie_usage(run_path, "anchors"):
-                        report = workflow._junie_usage_reporter.get()
-                        report([0, 0, 0, 0, 0])
-                        report(delta)
+                    report = workflow.junie_usage_recorder(run_path, "anchors")
+                    report([0, 0, 0, 0, 0])
+                    report(delta)
                     self.assertTrue(view.state["generating_anchors"])
                 loaded = json.loads((run_path / "run.json").read_bytes())
                 self.assertEqual(loaded["token_usage"], [{
@@ -86,7 +86,7 @@ class JunieConnectionTests(unittest.TestCase):
             },
         }}
         with TemporaryDirectory() as directory, patch.dict("os.environ", {"JUNIE_HOME": directory}):
-            events = workflow._JunieSessionEvents("current-completion-token")
+            events = junie_cli._JunieSessionEvents("current-completion-token")
             sessions = Path(directory) / "sessions"
             for name in ("ours", "unrelated"):
                 (sessions / name).mkdir(parents=True)
@@ -102,31 +102,34 @@ class JunieConnectionTests(unittest.TestCase):
                 }}},
             ]
             current.write_text("\n".join(map(json.dumps, prefix)) + "\n")
-            self.assertFalse(events.connection_failed())
+            self.assertFalse(events.read_new_events())
             with current.open("a") as stream:
                 stream.write(json.dumps(failure) + "\n")
-            self.assertTrue(events.connection_failed())
+            self.assertTrue(events.read_new_events())
 
     def test_connection_failure_relaunches_at_most_twice(self):
         command = ["junie", "--prompt", "task"]
         path = Path("fixture")
-        error = workflow.JunieConnectionError("temporary")
+        error = junie_cli.JunieConnectionError("temporary")
+        usage_updates = []
+        report_usage = usage_updates.append
         with (
-            patch.object(workflow, "_run_junie_session", side_effect=[error, error, 0]) as launch,
-            patch.object(workflow.time, "sleep") as delay,
+            patch.object(junie_cli, "_run_session", side_effect=[error, error, 0]) as launch,
+            patch.object(junie_cli.time, "sleep") as delay,
         ):
-            self.assertEqual(workflow._run_interactive_junie(command, path, "token", path), 0)
+            self.assertEqual(junie_cli.run_interactive(command, path, "token", (path,), report_usage=report_usage), 0)
             self.assertEqual(launch.call_count, 3)
+            self.assertTrue(all(call.kwargs["report_usage"] is report_usage for call in launch.call_args_list))
             self.assertIn("without duplicating completed changes", launch.call_args.args[0][-1])
             self.assertEqual([call.args[0] for call in delay.call_args_list], [1, 3])
         with (
-            patch.object(workflow, "_run_junie_session", side_effect=error) as launch,
-            patch.object(workflow.time, "sleep") as delay,
+            patch.object(junie_cli, "_run_session", side_effect=error) as launch,
+            patch.object(junie_cli.time, "sleep") as delay,
             io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict") as stdout,
             redirect_stdout(stdout),
-            self.assertRaisesRegex(workflow.JunieConnectionError, "after 2 retries"),
+            self.assertRaisesRegex(junie_cli.JunieConnectionError, "after 2 retries"),
         ):
-            workflow._run_interactive_junie(command, path, "token", path)
+            junie_cli.run_interactive(command, path, "token", (path,))
         self.assertEqual(launch.call_count, 3)
         self.assertEqual([call.args[0] for call in delay.call_args_list], [1, 3])
 
@@ -135,10 +138,10 @@ class JunieConnectionTests(unittest.TestCase):
         with (
             io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict") as stdout,
             redirect_stdout(stdout),
-            patch.object(workflow, "_run_junie_session", side_effect=[workflow.JunieConnectionError("temporary"), 0]) as launch,
-            patch.object(workflow.time, "sleep") as delay,
+            patch.object(junie_cli, "_run_session", side_effect=[junie_cli.JunieConnectionError("temporary"), 0]) as launch,
+            patch.object(junie_cli.time, "sleep") as delay,
         ):
-            self.assertEqual(workflow._run_interactive_junie(["junie", "--prompt", "task"], path, "token", path), 0)
+            self.assertEqual(junie_cli.run_interactive(["junie", "--prompt", "task"], path, "token", (path,)), 0)
             self.assertIn(b"Retrying Junie", stdout.buffer.getvalue())
         self.assertEqual(launch.call_count, 2)
         delay.assert_called_once_with(1)
@@ -328,7 +331,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 2
         error = f"{self.target}(5,3): error CS1002: ; expected\n".encode()
         with (
-            patch.object(workflow, "_validate_junie_execution"),
+            patch.object(junie_cli, "require_interactive_cli"),
             patch.object(workflow, "_repair_target") as repair,
         ):
             result = self.resume(("dotnet", 1, error), ("dotnet", 1, error.replace(b"(5,3)", b"(6,3)")))
@@ -353,7 +356,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             with self.subTest(phase=responses[-1][0]):
                 self.save_record(original_record)
                 with (
-                    patch.object(workflow, "_validate_junie_execution"),
+                    patch.object(junie_cli, "require_interactive_cli"),
                     patch.object(workflow, "_repair_target", side_effect=[KeyboardInterrupt, None]) as repair,
                 ):
                     with self.assertRaises(workflow.RunInterrupted):
@@ -382,7 +385,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 log = self.diagnostic + extra
                 with (
                     patch.object(workflow, "_repair_target") as repair,
-                    patch.object(workflow, "_validate_junie_execution") as validate,
+                    patch.object(junie_cli, "require_interactive_cli") as validate,
                 ):
                     result = self.resume(self.build, ("fixture-checker", 2, log))
                 repair.assert_not_called()
@@ -402,7 +405,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
     def test_supported_diagnostics_still_allow_automatic_repair(self):
         self.config["max_repair_attempts"] = 1
         with (
-            patch.object(workflow, "_validate_junie_execution"),
+            patch.object(junie_cli, "require_interactive_cli"),
             patch.object(workflow, "_repair_target") as repair,
         ):
             result = self.resume(
@@ -727,10 +730,10 @@ target = "Search.cs"
             '[[units]]\nid = " "\ntargets = []\n'
             '[[units]]\nid = "added"\nsource = "added.php"\ntarget = "Added.cs"\n'
         )
-        draft = dashboard._settings_draft(content, {"removeEmptyUnits": [1]})
+        draft = build_settings_draft(content, {"removeEmptyUnits": [1]})
         self.assertEqual([unit["id"] for unit in draft["form"]["units"]], ["existing", "added"])
         with self.assertRaisesRegex(ValueError, "入力済み"):
-            dashboard._settings_draft(content, {"removeEmptyUnits": [0]})
+            build_settings_draft(content, {"removeEmptyUnits": [0]})
 
     def test_settings_form_updates_build_and_checker_and_can_restore_defaults(self):
         content = (
@@ -738,11 +741,11 @@ target = "Search.cs"
             '[checker]\ncommand = ["py", "check.py"]\nmax_repair_attempts = 2\n'
             '[project]\nbase_ref = "stable"\n'
         )
-        form = dashboard._settings_draft(content)["form"]
+        form = build_settings_draft(content)["form"]
         self.assertEqual(form["build"]["project"], "App.sln")
         self.assertEqual(form["checker"], {"command": ["py", "check.py"], "max_repair_attempts": "2"})
         command = ["powershell.exe", "-File", "tools/check migration.ps1", ""]
-        draft = dashboard._settings_draft(content, {
+        draft = build_settings_draft(content, {
             "build": {"project": "src/App.csproj"},
             "checker": {"command": command, "max_repair_attempts": "0"},
         })
@@ -751,7 +754,7 @@ target = "Search.cs"
         self.assertIn("max_repair_attempts = 0", draft["content"])
         self.assertEqual(draft["form"]["checker"], {"command": command, "max_repair_attempts": "0"})
 
-        cleared = dashboard._settings_draft(draft["content"], {
+        cleared = build_settings_draft(draft["content"], {
             "build": {"project": ""},
             "checker": {"command": [], "max_repair_attempts": ""},
         })
@@ -759,7 +762,7 @@ target = "Search.cs"
         self.assertEqual(cleared["form"]["build"]["project"], "")
         self.assertEqual(cleared["form"]["checker"], {"command": [], "max_repair_attempts": ""})
         with self.assertRaisesRegex(ValueError, "0以上の整数"):
-            dashboard._settings_draft(draft["content"], {"checker": {"max_repair_attempts": "-1"}})
+            build_settings_draft(draft["content"], {"checker": {"max_repair_attempts": "-1"}})
 
     def test_settings_form_edits_project_options_and_preserves_legacy_inputs(self):
         content = (
@@ -768,12 +771,12 @@ target = "Search.cs"
             '[[units]]\nid = "legacy"\ntarget = "Legacy.cs"\nsource_encoding = "auto"\n'
             '[[units.inputs]]\nrole = "php"\npath = "legacy.php"\nstart_line = 1\nend_line = 2\ncustom = "keep"\n'
         )
-        form = dashboard._settings_draft(content)["form"]
+        form = build_settings_draft(content)["form"]
         self.assertEqual(form["project"]["base_ref"], "stable")
         self.assertNotIn("inputs", form["units"][0])
         self.assertNotIn("source_encoding", form["units"][0])
         self.assertNotIn("anchor_reference", form["diff_viewer"])
-        draft = dashboard._settings_draft(content, {
+        draft = build_settings_draft(content, {
             "project": {"base_ref": "main", "max_context_chars": "25000"},
             "junie": {"max_steps": "20"},
             "diff_viewer": {"html": "viewer.html", "enabled": "false"},
@@ -791,7 +794,7 @@ target = "Search.cs"
         self.assertEqual(draft["form"]["junie"]["max_steps"], "20")
         self.assertEqual(draft["form"]["migrationRules"][0]["encoding"], "utf-8")
         with self.assertRaisesRegex(ValueError, "1000以上"):
-            dashboard._settings_draft(content, {"project": {"max_context_chars": "999"}})
+            build_settings_draft(content, {"project": {"max_context_chars": "999"}})
 
     # 保存済みRunを開くだけでは再開せず、操作を受けてから実行することを検証する。
     def test_saved_resumable_run_waits_for_explicit_resume(self):

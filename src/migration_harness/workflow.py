@@ -14,20 +14,18 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 from threading import RLock
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Iterator
 
+from . import junie_cli
 from .config import REFERENCE_ROLES
+from .files import has_symlink_component, sha256_file
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
-_USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
-_junie_usage_reporter: ContextVar[Callable[[list[int]], None] | None] = ContextVar("junie_usage_reporter", default=None)
 worktree_source_lock = RLock()
 
 
@@ -46,11 +44,7 @@ class RunScriptError(RuntimeError):
         self.run_id = run_id
 
 
-class JunieConnectionError(OSError):
-    """Junieがモデルサービスとの通信を再試行しても続行できなかった。"""
-
-
-def _unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+def _find_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     """設定で許可された移行単位だけを解決する。"""
     for unit in config["units"]:
         if unit["id"] == unit_id:
@@ -61,16 +55,6 @@ def _unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
 def _target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:
     """単一移行先を指定した旧設定も同じ順序付き形式で扱う。"""
     return tuple(Path(name) for name in unit.get("targets", [unit["target"]]))
-
-
-def _has_symlink_component(root: Path, relative_path: Path) -> bool:
-    """中間ディレクトリも含めてリンクの有無を調べる。"""
-    current = root
-    for part in relative_path.parts:
-        current /= part
-        if current.is_symlink():
-            return True
-    return False
 
 
 def _validate_inputs(root: Path, unit: dict[str, Any]) -> None:
@@ -320,7 +304,7 @@ def _prepare_inputs(
                 after = (root / name).stat()
                 if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
                     raise ValueError(f"PHP input changed while preparing its snapshot: {name}")
-                pin = {"path": name, "snapshot": relative, "sha256": _sha256_file(snapshot)}
+                pin = {"path": name, "snapshot": relative, "sha256": sha256_file(snapshot)}
                 php_sources[name] = pin
             # カプセルと比較に同じPHPバイト列を使う。
             source_path = capsule / pin["snapshot"]
@@ -361,7 +345,7 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
                     source_path, item["start_line"], item["end_line"], item["resolved_encoding"],
                 ):
                     stream.write(f"{number:>6} | {line}")
-            materials[name] = _sha256_file(snapshot)
+            materials[name] = sha256_file(snapshot)
             reference_index.append({
                 "role": item["role"], "path": item["path"], "file": name,
                 "start_line": item["start_line"], "end_line": number,
@@ -383,11 +367,11 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
         material_dir.mkdir(exist_ok=True)
         rules = material_dir / "shared.md"
         rules.write_text(_render_groups(shared_groups), encoding="utf-8", newline="")
-        materials[rules.name] = _sha256_file(rules)
+        materials[rules.name] = sha256_file(rules)
     if reference_index:
         index = material_dir / "references.json"
         index.write_text(json.dumps(reference_index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        materials[index.name] = _sha256_file(index)
+        materials[index.name] = sha256_file(index)
     prefix = header + shared_context
     base_chars = len(prefix)
     overlap_chars = min(512, (max_chars - len(shared_context)) // 20)
@@ -423,7 +407,7 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
             "index": part_number,
             "path": str(context_path),
             "chars": len(context),
-            "sha256": _sha256_file(context_path),
+            "sha256": sha256_file(context_path),
             "sources": [_manifest_source(group) for group in groups],
         })
         first, last = groups[0], groups[-1]
@@ -513,7 +497,7 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
     for part in manifest_parts:
         boundary = Path(part["path"]).with_name("boundary.md")
         if boundary.is_file():
-            part["boundary_sha256"] = _sha256_file(boundary)
+            part["boundary_sha256"] = sha256_file(boundary)
     manifest = {
         "unit_id": unit["id"],
         "max_context_chars": max_chars,
@@ -545,7 +529,7 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     run_id = str(uuid.uuid4())
     run_path = Path(config["run_root"]) / run_id
     run_path.parent.mkdir(parents=True, exist_ok=True)
-    unit = _unit(config, unit_id)
+    unit = _find_unit(config, unit_id)
     project_root = Path(config["project_root"])
     if config.get("scripts", {}).get("before_prepare") and (observer := run_observer.get()) is not None:
         observer({"status": "script_running", "script_phase": "before_prepare", "unit_id": unit_id, "run_id": run_id})
@@ -563,15 +547,6 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
         "max_context_chars": config["max_context_chars"],
         "run_path": str(run_path),
     }
-
-
-def _sha256_file(path: Path) -> str:
-    """ファイル全体を一度に保持せず、保存バイト列を照合するハッシュを計算する。"""
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(64 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 @contextmanager
@@ -633,29 +608,24 @@ def _edit_run_record(path: Path) -> Iterator[tuple[dict[str, Any], dict[str, Any
     _notify_run_observer(record)
 
 
-@contextmanager
-def _track_junie_usage(
+def junie_usage_recorder(
     run_path: Path, phase: str, capsule: int | None = None,
-) -> Iterator[None]:
-    """同じ工程・カプセルの再試行や再開分をRunに加算する。"""
+) -> Callable[[list[int]], None]:
+    """同じ工程・カプセルの使用量を保存するコールバックを作る。"""
     def report(delta: list[int]) -> None:
         with _edit_run_record(run_path / "run.json") as (record, changes):
             rows = record.get("token_usage", [])
             row = next((row for row in rows if row["phase"] == phase and row.get("capsule") == capsule), None)
             if row is None:
-                row = {"phase": phase, "capsule": capsule, **dict.fromkeys(_USAGE_FIELDS, 0)}
+                row = {"phase": phase, "capsule": capsule, **dict.fromkeys(junie_cli.USAGE_FIELDS, 0)}
                 rows.append(row)
             elif not any(delta):
                 return
-            for field, value in zip(_USAGE_FIELDS, delta, strict=True):
+            for field, value in zip(junie_cli.USAGE_FIELDS, delta, strict=True):
                 row[field] += value
             changes["token_usage"] = rows
 
-    handle = _junie_usage_reporter.set(report)
-    try:
-        yield
-    finally:
-        _junie_usage_reporter.reset(handle)
+    return report
 
 
 def _run_script_phase(
@@ -717,7 +687,7 @@ def _run_script_phase(
 def _safe_target(root: Path, relative: Path) -> Path:
     """シンボリックリンクや作業場所外への書き込みを防ぐ。"""
     target = root / relative
-    if _has_symlink_component(root, relative) or not target.resolve().is_relative_to(root.resolve()):
+    if has_symlink_component(root, relative) or not target.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"target escapes its workspace or is a symlink: {relative}")
     if target.exists() and not target.is_file():
         raise ValueError(f"target is not a regular file: {relative}")
@@ -726,7 +696,7 @@ def _safe_target(root: Path, relative: Path) -> Path:
 
 def _target_hash(path: Path) -> str | None:
     """移行先の未作成状態をハッシュの不一致と区別して扱う。"""
-    return _sha256_file(path) if path.is_file() else None
+    return sha256_file(path) if path.is_file() else None
 
 
 def _finish_pending_targets(
@@ -806,249 +776,8 @@ def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]
         if path.is_symlink():
             files[relative] = "symlink:" + os.readlink(path)
         elif path.is_file():
-            files[relative] = _sha256_file(path)
+            files[relative] = sha256_file(path)
     return files
-
-
-def _has_completion_record(path: Path, token: str) -> bool:
-    """現在の呼び出しが残した完了トークンだけを受理する。"""
-    if path.is_symlink() or not path.is_file():
-        return False
-    expected = token.encode("ascii")
-    try:
-        with path.open("rb") as stream:
-            value = stream.read(len(expected) + 3)
-    except OSError:
-        return False
-    return value in (expected, expected + b"\n", expected + b"\r\n")
-
-
-def _close_junie(process: subprocess.Popen) -> int:
-    """Junieの終了を待ち、次のカプセルと端末操作が重ならないようにする。"""
-    if process.poll() is not None:
-        return process.returncode
-    try:
-        if os.name == "nt":
-            # Windowsのランチャーが起動した子プロセスも閉じてから次へ進む。
-            taskkill = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
-            subprocess.run(
-                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
-                check=True, capture_output=True, timeout=10,
-            )
-        else:
-            process.terminate()
-        return process.wait(timeout=10)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        if process.poll() is not None:
-            return process.returncode
-        raise OSError("Could not close Junie. Close the current Junie session before resuming.") from exc
-
-
-def _is_junie_connection_failure(entry: dict[str, Any]) -> bool:
-    event = entry.get("event")
-    if entry.get("kind") != "SessionA2uxEvent" or not isinstance(event, dict) or event.get("state") != "FAILED":
-        return False
-    failure = event.get("agentEvent")
-    return (
-        isinstance(failure, dict)
-        and failure.get("kind") == "AgentFailureEvent"
-        and failure.get("errorCode") == "ConnectionFailed"
-        and isinstance(failure.get("agent"), dict)
-        and failure["agent"].get("kind") == "MainAgent"
-    )
-
-
-class _JunieSessionEvents:
-    """今回のプロンプトと照合できたJunieのセッションだけを監視する。"""
-
-    def __init__(self, token: str) -> None:
-        self.token = token
-        self.sessions = Path(os.environ.get("JUNIE_HOME") or Path.home() / ".junie").expanduser() / "sessions"
-        self.existing = set(self._paths())
-        self.path: Path | None = None
-        self.offset = 0
-        self.task: str | None = None
-        self.usage = [0] * len(_USAGE_FIELDS)
-
-    def _paths(self) -> Iterator[Path]:
-        try:
-            yield from self.sessions.glob("*/events.jsonl")
-        except OSError:
-            return
-
-    def connection_failed(self) -> bool:
-        """今回のセッションの新着行から、使用量と通信失敗を読む。"""
-        paths = [self.path] if self.path else [path for path in self._paths() if path not in self.existing]
-        for path in paths:
-            try:
-                with path.open("rb") as stream:
-                    stream.seek(self.offset if self.path else 0)
-                    for line in iter(stream.readline, b""):
-                        if not line.endswith(b"\n"):
-                            break
-                        try:
-                            entry = json.loads(line)
-                        except (ValueError, UnicodeError):
-                            continue
-                        if not isinstance(entry, dict):
-                            continue
-                        kind = entry.get("kind")
-                        if self.path is None:
-                            if kind != "UserPromptEvent":
-                                continue
-                            if self.token not in str(entry.get("prompt", "")):
-                                self.existing.add(path)
-                                break
-                            self.path = path
-                        self.offset = stream.tell()
-                        if kind == "TaskStartedEvent":
-                            self.task = entry.get("taskId")
-                        if self.task and entry.get("taskId") == self.task:
-                            if kind == "SessionA2uxEvent":
-                                self._count_usage(entry.get("event"))
-                            if _is_junie_connection_failure(entry):
-                                return True
-            except OSError:
-                continue
-            if self.path is not None:
-                break
-        return False
-
-    def _count_usage(self, event: Any) -> None:
-        agent = event.get("agentEvent") if isinstance(event, dict) else None
-        if not isinstance(agent, dict) or agent.get("kind") != "LlmResponseMetadataEvent":
-            return
-        usage = agent.get("modelUsage")
-        if not isinstance(usage, list):
-            return
-        for entry in usage:
-            if not isinstance(entry, dict) or "inputTokens" not in entry or "outputTokens" not in entry:
-                continue
-            counts = [entry.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheInputTokens", "cacheCreateTokens")]
-            if all(type(value) is int and value >= 0 for value in counts):
-                cold, output, read, write = counts
-                for i, value in enumerate((cold + read + write, output, read, write, 1)):
-                    self.usage[i] += value
-
-
-def _run_interactive_junie(
-    command: list[str], completion_path: Path, token: str, target: Path | tuple[Path, ...],
-) -> int:
-    """Junie自身の通信復旧が失敗したときは同じ作業場所で起動し直す。"""
-    delays = (1, 3)
-    for attempt in range(len(delays) + 1):
-        try:
-            invocation = command
-            if attempt:
-                invocation = [*command[:-1], command[-1] + (
-                    " A model service connection failed in the previous session. Review the edits already in the "
-                    "workspace and continue the remaining work without duplicating completed changes."
-                )]
-            return _run_junie_session(invocation, completion_path, token, target)
-        except JunieConnectionError:
-            if attempt == len(delays):
-                raise JunieConnectionError(
-                    "Junie could not reach the model service after 2 retries. Resume this Run after the connection recovers."
-                ) from None
-            print(f"Retrying Junie after a connection failure ({attempt + 1}/{len(delays)})", flush=True)
-            time.sleep(delays[attempt])
-
-
-def _run_junie_session(
-    command: list[str], completion_path: Path, token: str, target: Path | tuple[Path, ...],
-) -> int:
-    """対話用の端末を引き継ぎ、成果物と完了記録がそろえばセッションを閉じる。"""
-    targets = (target,) if isinstance(target, Path) else target
-    root = completion_path.parent
-    restore_terminal = _save_terminal_mode()
-    events = _JunieSessionEvents(token)
-    report = _junie_usage_reporter.get()
-
-    def poll() -> bool:
-        failed = events.connection_failed()
-        if report is not None and any(events.usage):
-            delta = events.usage
-            events.usage = [0] * len(_USAGE_FIELDS)
-            report(delta)
-        return failed
-
-    next_poll = time.monotonic()
-    # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
-    process = subprocess.Popen(command)
-    try:
-        if report is not None:
-            report([0] * len(_USAGE_FIELDS))
-        while True:
-            try:
-                exit_code = process.wait(timeout=0.25)
-            except subprocess.TimeoutExpired:
-                if (
-                    _has_completion_record(completion_path, token)
-                    and all(
-                        path.is_file() and not _has_symlink_component(root, path.relative_to(root))
-                        and path.resolve().is_relative_to(root.resolve())
-                        for path in targets
-                    )
-                ):
-                    return _close_junie(process)
-                if time.monotonic() >= next_poll:
-                    next_poll = time.monotonic() + 1
-                    if poll():
-                        _close_junie(process)
-                        raise JunieConnectionError("Junie model service connection failed")
-            else:
-                if poll() and not _has_completion_record(completion_path, token):
-                    raise JunieConnectionError("Junie model service connection failed")
-                return exit_code
-    except (KeyboardInterrupt, OSError):
-        if process.poll() is None:
-            _close_junie(process)
-        raise
-    finally:
-        try:
-            if report is not None:
-                poll()
-        finally:
-            if process.poll() is not None:
-                restore_terminal()
-
-
-def _save_terminal_mode() -> Callable[[], None]:
-    """強制終了で端末設定が残る場合に備えて、起動前の復元処理を作る。"""
-    if os.name == "nt":
-        import ctypes
-        import msvcrt
-        from ctypes import wintypes
-
-        kernel = ctypes.windll.kernel32
-        modes = []
-        for stream in (sys.stdin, sys.stdout, sys.stderr):
-            if stream.isatty():
-                handle = wintypes.HANDLE(msvcrt.get_osfhandle(stream.fileno()))
-                mode = wintypes.DWORD()
-                if kernel.GetConsoleMode(handle, ctypes.byref(mode)):
-                    modes.append((handle, mode))
-
-        def restore() -> None:
-            """Junieを起動する前の端末設定に戻す。"""
-            for handle, mode in modes:
-                kernel.SetConsoleMode(handle, mode)
-
-        return restore
-
-    import termios
-
-    fd = sys.stdin.fileno()
-    try:
-        mode = termios.tcgetattr(fd)
-    except termios.error:
-        return lambda: None
-
-    def restore() -> None:
-        """Junieを起動する前の端末設定に戻す。"""
-        termios.tcsetattr(fd, termios.TCSANOW, mode)
-
-    return restore
 
 
 def _stage_migration_materials(
@@ -1089,7 +818,7 @@ def _stage_migration_materials(
             source = Path(part["path"]).resolve()
             if not source.is_relative_to(capsule) or not source.is_file():
                 raise ValueError("saved repair source is missing or outside the capsule directory")
-            if part.get("sha256") and _sha256_file(source) != part["sha256"]:
+            if part.get("sha256") and sha256_file(source) != part["sha256"]:
                 raise ValueError(f"capsule {part['index']}: saved repair source changed")
             destination = _safe_target(agent_root, Path(".migration-materials") / f"source-{part['index']:04d}.md")
             destination.parent.mkdir(exist_ok=True)
@@ -1259,11 +988,8 @@ def _run_prepared_with_junie(
             "If interrupted, preserve the edits and report what remains. "
             "Claim the entire migration is complete only after the final capsule."
         )
-        command = ["junie", "--project", str(agent_root)]
         max_steps = record.get("junie_max_steps", config["junie_max_steps"])
-        if max_steps is not None:
-            command.extend(["--max-steps", str(max_steps)])
-        command.extend(["--prompt", prompt])
+        command = junie_cli.build_command(agent_root, prompt, max_steps)
         record["current_capsule"] = index
         _write_run_record(record_path, record)
         allowed = {*relative_targets, completion_path.relative_to(agent_root)}
@@ -1271,10 +997,10 @@ def _run_prepared_with_junie(
         interrupted = False
         try:
             try:
-                with _track_junie_usage(run_path, "migration", index):
-                    exit_code = _run_interactive_junie(
-                        command, completion_path, completion_token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
-                    )
+                exit_code = junie_cli.run_interactive(
+                    command, completion_path, completion_token, agent_targets,
+                    report_usage=junie_usage_recorder(run_path, "migration", index),
+                )
             except KeyboardInterrupt:
                 interrupted = True
             if _unlisted_workspace_files(agent_root, allowed) != other_files:
@@ -1294,7 +1020,7 @@ def _run_prepared_with_junie(
 
         record["junie_exit_code"] = exit_code
         missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
-        if missing or not _has_completion_record(completion_path, completion_token):
+        if missing or not junie_cli.has_completion_record(completion_path, completion_token):
             record["status"] = "interrupted" if len(missing) < len(agent_targets) else "junie_failed"
             record["error"] = (
                 f"Junie did not produce configured targets: {', '.join(missing)}" if missing
@@ -1441,9 +1167,9 @@ _CHECKER_FINDING = re.compile(
 def _review_target_hash(worktree: Path, relative_target: Path) -> str | None:
     """worktree内の通常ファイルだけをレビュー対象として照合する。"""
     target = worktree / relative_target
-    if _has_symlink_component(worktree, relative_target) or not target.resolve().is_relative_to(worktree.resolve()):
+    if has_symlink_component(worktree, relative_target) or not target.resolve().is_relative_to(worktree.resolve()):
         return None
-    return _sha256_file(target) if target.is_file() else None
+    return sha256_file(target) if target.is_file() else None
 
 
 @dataclass(frozen=True)
@@ -1527,7 +1253,7 @@ def _attempt_repair(
     _write_run_record(record_path, record)
     try:
         _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
-    except JunieConnectionError:
+    except junie_cli.JunieConnectionError:
         raise
     except (OSError, RuntimeError, ValueError):
         _charge_repair(record)
@@ -1541,7 +1267,7 @@ def _repair_target(
     worktree: Path, run_path: Path, findings: str, record: dict[str, Any],
 ) -> None:
     """全移行先の現行版を渡し、指摘があるファイルの修正だけを反映する。"""
-    _validate_junie_execution()
+    junie_cli.require_interactive_cli()
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.is_dir():
         raise ValueError("saved Junie workspace is missing or unsafe")
@@ -1552,7 +1278,7 @@ def _repair_target(
     with worktree_source_lock:
         source_files = {path: _safe_target(worktree, path) for path in targets}
         agent_files = {path: _safe_target(agent_root, path) for path in targets}
-        before = {path.as_posix(): _sha256_file(source) for path, source in source_files.items()}
+        before = {path.as_posix(): sha256_file(source) for path, source in source_files.items()}
         resume_draft = draft.get("base") == before and all(
             _target_hash(agent_files[path]) == draft.get("targets", {}).get(path.as_posix())
             for path in repair_targets
@@ -1563,7 +1289,7 @@ def _repair_target(
             destination = agent_files[path]
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
-            if _sha256_file(destination) != before[path.as_posix()]:
+            if sha256_file(destination) != before[path.as_posix()]:
                 raise ValueError(f"worktree target changed while synchronizing repair inputs: {path}")
     agent_targets = tuple(agent_files[path] for path in repair_targets)
     token = uuid.uuid4().hex
@@ -1592,20 +1318,17 @@ def _repair_target(
         f"After saving the completed repair, write exactly `{token}` as plain text to "
         f"`{completion_path.name}` as your final file action. Leave the record absent if blocked or incomplete."
     )
-    command = ["junie", "--project", str(agent_root)]
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
-    if max_steps is not None:
-        command.extend(["--max-steps", str(max_steps)])
-    command.extend(["--prompt", prompt])
+    command = junie_cli.build_command(agent_root, prompt, max_steps)
     allowed = {*repair_targets, completion_path.relative_to(agent_root)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     try:
         phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
-        with _track_junie_usage(run_path, phase):
-            exit_code = _run_interactive_junie(
-                command, completion_path, token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
-            )
-    except (KeyboardInterrupt, JunieConnectionError):
+        exit_code = junie_cli.run_interactive(
+            command, completion_path, token, agent_targets,
+            report_usage=junie_usage_recorder(run_path, phase),
+        )
+    except (KeyboardInterrupt, junie_cli.JunieConnectionError):
         attempt.pop("draft", None)
         try:
             if _unlisted_workspace_files(agent_root, allowed) == other_files:
@@ -1621,9 +1344,9 @@ def _repair_target(
     if _unlisted_workspace_files(agent_root, allowed) != other_files:
         raise ValueError("Junie changed files outside the repair targets; inspect the agent workspace")
     agent_targets = tuple(_safe_target(agent_root, path) for path in repair_targets)
-    if not _has_completion_record(completion_path, token) or not all(path.is_file() for path in agent_targets):
+    if not junie_cli.has_completion_record(completion_path, token) or not all(path.is_file() for path in agent_targets):
         raise ValueError("Junie did not record a completed repair; inspect its workspace for partial edits")
-    if all(_sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)):
+    if all(sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)):
         raise ValueError("Junie left the repair targets unchanged")
     attempt["details"]["junie_exit_code"] = exit_code
     _charge_repair(record)
@@ -1663,7 +1386,7 @@ def _verification_fingerprint(
         if previous is not None and previous[0] == key:
             content = previous[1]
         else:
-            content = _sha256_file(path)
+            content = sha256_file(path)
             if signature(path.lstat()) != key:
                 raise ValueError(f"verification input changed while reading: {path}")
         scanned[path] = (key, content)
@@ -1823,7 +1546,7 @@ def _repair_build_failure(
     }
     if any(fingerprints.intersection(attempt["findings"]) for attempt in history):
         return False
-    _validate_junie_execution()
+    junie_cli.require_interactive_cli()
     saved_log = run_path / f"build-before-repair-{len(history) + 1}.log"
     shutil.copyfile(log, saved_log)
     affected = {key[0] for key in findings}
@@ -1862,8 +1585,6 @@ def _verify_worktree(
     while True:
         fingerprint = current_fingerprint()
         _run_script_phase(config, "before_build", worktree, run_path, record)
-        if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():
-            fingerprint = None
         if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():
             fingerprint = None
         record["verification"] = {
@@ -1937,7 +1658,7 @@ def _verify_worktree(
                 raise ValueError("a previous checker finding is still present")
             if len(history) >= limit:
                 raise ValueError(f"automatic repair limit reached ({limit})")
-            _validate_junie_execution()
+            junie_cli.require_interactive_cli()
             attempt = len(history) + 1
             checker_log = run_path / f"checker-before-repair-{attempt}.log"
             shutil.copyfile(run_path / "checker.log", checker_log)
@@ -1959,20 +1680,12 @@ def _verify_worktree(
 
 def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     """新規Runを準備し、移行から検証まで実行する。"""
-    _validate_junie_execution()
+    junie_cli.require_interactive_cli()
     result = prepare_run(config, unit_id)
-    unit = _unit(config, unit_id)
+    unit = _find_unit(config, unit_id)
     record_path = Path(result["run_path"]) / "run.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
-
-
-def _validate_junie_execution() -> None:
-    """実行前に対話端末とJunie CLIが利用できることを確認する。"""
-    if not sys.stdin.isatty():
-        raise RuntimeError("Junie run requires an interactive terminal")
-    if shutil.which("junie") is None:
-        raise RuntimeError("Junie CLI was not found on PATH")
 
 
 def _load_saved_run(
@@ -2001,7 +1714,7 @@ def _load_saved_run(
     unit_id = record.get("unit_id")
     if not isinstance(unit_id, str):
         raise ValueError("run record is missing its migration unit ID")
-    unit = _unit(config, unit_id)
+    unit = _find_unit(config, unit_id)
     saved_targets = record.get("targets", [record.get("target")])
     if not isinstance(saved_targets, list) or any(not isinstance(path, str) for path in saved_targets) or (
         tuple(Path(path) for path in saved_targets) != _target_paths(unit)
@@ -2440,7 +2153,7 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             record.pop("error", None)
             record.pop("script_phase", None)
         return _verify_worktree(config, unit, result, record)
-    _validate_junie_execution()
+    junie_cli.require_interactive_cli()
     record.pop("error", None)
     if script_retry:
         record["status"] = "prepared"

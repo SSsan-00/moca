@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import cli, review_anchors, workflow
+from migration_harness import cli, junie_cli, review_anchors, workflow
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace
 
@@ -71,7 +71,7 @@ class CapsulePreparationTests(HarnessCase):
         )
         observed_lines = []
 
-        def junie(command, completion, token, agent_targets):
+        def junie(command, completion, token, agent_targets, *, report_usage=None):
             self.assertIn("`メニュー`", command[-1])
             context = (completion.parent / ".migration-context.md").read_bytes().decode("utf-8")
             observed_lines.extend(re.findall(r"^ *([0-9]+) \| ([^\r\n]*)", context, re.MULTILINE))
@@ -90,8 +90,8 @@ class CapsulePreparationTests(HarnessCase):
         args = ["php-to-csharp-harness", "run", "--config", str(path), "--unit", "メニュー"]
         with (
             patch("sys.argv", args), redirect_stdout(io.StringIO()),
-            patch.object(workflow, "_validate_junie_execution"),
-            patch.object(workflow, "_run_interactive_junie", side_effect=junie) as agent,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie) as agent,
             patch.object(workflow.subprocess, "run", side_effect=build_or_run_git),
         ):
             cli.main()
@@ -209,15 +209,16 @@ class CapsulePreparationTests(HarnessCase):
                 return subprocess.CompletedProcess(args, 0)
             return subprocess_run(args, **kwargs)
 
-        def migrate(args, completion, token, target):
+        def migrate(args, completion, token, targets, *, report_usage=None):
+            target, = targets
             calls.append("junie")
             target.write_text("class Migrated {}", encoding="utf-8")
             completion.write_text(token, encoding="ascii")
             return 0
 
         with (
-            patch.object(workflow, "_validate_junie_execution"),
-            patch.object(workflow, "_run_interactive_junie", side_effect=migrate),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=migrate),
             patch.object(workflow.subprocess, "run", side_effect=run_process),
             redirect_stdout(io.StringIO()),
         ):
@@ -255,14 +256,15 @@ class CapsulePreparationTests(HarnessCase):
         run_id = failure.exception.run_id
         config["scripts"]["after_prepare"][1] = [sys.executable, "-c", "pass"]
 
-        def migrate(args, completion, token, target):
+        def migrate(args, completion, token, targets, *, report_usage=None):
+            target, = targets
             target.write_text("class Migrated {}")
             completion.write_text(token)
             return 0
 
         with (
-            patch.object(workflow, "_validate_junie_execution"),
-            patch.object(workflow, "_run_interactive_junie", side_effect=migrate),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=migrate),
             patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result),
         ):
             result = workflow.resume_with_junie(config, run_id)
@@ -280,8 +282,9 @@ class CapsulePreparationTests(HarnessCase):
         config = load_config(self.config_path({**PHP, "end_line": 3}, CONSTRAINT, RULES))
         observed_contexts = []
 
-        def junie(command, completion, token, target):
+        def junie(command, completion, token, targets, *, report_usage=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
+            target, = targets
             observed_contexts.append((target.parent / ".migration-context.md").read_bytes())
             if len(observed_contexts) == 2:
                 target.write_bytes(b"class Partial {}\n")
@@ -293,8 +296,8 @@ class CapsulePreparationTests(HarnessCase):
             return 0
 
         with (
-            patch.object(workflow, "_validate_junie_execution"),
-            patch.object(workflow, "_run_interactive_junie", side_effect=junie),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie),
             patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result),
         ):
             with self.assertRaises(workflow.RunInterrupted) as interrupted:
@@ -422,8 +425,9 @@ class CapsulePreparationTests(HarnessCase):
         reference.write_text(json.dumps(edited), encoding="utf-8")
         config["diff_viewer_html"] = "viewer.html"
 
-        def junie(command, completion, token, proposal):
+        def junie(command, completion, token, targets, *, report_usage=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
+            proposal, = targets
             numbered_php = (proposal.parent / "left.txt").read_text(encoding="utf-8")
             self.assertIn('2\techo "日本語";\n', numbered_php)
             self.assertIn("5\techo 200;\n", numbered_php)
@@ -431,8 +435,8 @@ class CapsulePreparationTests(HarnessCase):
             completion.write_text(token, encoding="ascii")
 
         with (
-            patch.object(review_anchors, "_validate_junie_execution"),
-            patch.object(review_anchors, "_run_interactive_junie", side_effect=junie),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie),
         ):
             snapshot, count = review_anchors.generate_anchors(config, run_id, reference)
         self.assertEqual(count, 1)
@@ -447,15 +451,16 @@ class CapsulePreparationTests(HarnessCase):
         record_path.write_text(json.dumps(record), encoding="utf-8")
         observed = []
 
-        def junie(command, completion, token, proposal):
+        def junie(command, completion, token, targets, *, report_usage=None):
+            proposal, = targets
             guide = self.read_json(proposal.parent / "guide.json")
             observed.append(guide["examples"])
             proposal.write_text('[{"leftLineNo": 2, "rightLineNo": 1}]', encoding="utf-8")
             completion.write_text(token, encoding="ascii")
 
         with (
-            patch.object(review_anchors, "_validate_junie_execution") as validate,
-            patch.object(review_anchors, "_run_interactive_junie", side_effect=junie),
+            patch.object(junie_cli, "require_interactive_cli") as validate,
+            patch.object(junie_cli, "run_interactive", side_effect=junie),
         ):
             with self.assertRaisesRegex(ValueError, "差分ビューアーを有効に"):
                 review_anchors.generate_anchors(config, run_id)
@@ -496,14 +501,15 @@ class CapsulePreparationTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "Source.php"):
             capture_workspace(config, result["run_id"])
 
-        def junie(command, completion, token, target):
+        def junie(command, completion, token, targets, *, report_usage=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
+            target, = targets
             self.assertEqual((target.parent / ".migration-context.md").read_bytes(), expected_context)
             return 0
 
         with (
-            patch.object(workflow, "_validate_junie_execution"),
-            patch.object(workflow, "_run_interactive_junie", side_effect=junie) as invocation,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie) as invocation,
         ):
             resumed = workflow.resume_with_junie(config, result["run_id"])
         invocation.assert_called_once()

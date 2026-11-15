@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, review_anchors, workflow
+from migration_harness import dashboard, junie_cli, workflow
 from migration_harness.config import load_config
 
 
@@ -110,13 +110,14 @@ html = "viewer.html"
         record.update(status="build_succeeded", completed_capsules=run_a["capsule_count"], build_exit_code=0)
         record_path.write_text(json.dumps(record), encoding="utf-8")
 
-        def junie(command, completion, token, proposal):
+        def junie(command, completion, token, targets, *, report_usage=None):
+            proposal, = targets
             proposal.write_text('[{"leftLineNo": 1, "rightLineNo": 1}]', encoding="utf-8")
             completion.write_text(token, encoding="ascii")
 
         with (
-            patch.object(review_anchors, "_validate_junie_execution"),
-            patch.object(review_anchors, "_run_interactive_junie", side_effect=junie),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie),
             self.live_dashboard(config, run_a_id) as url,
         ):
             revision, state = self.ready_event(url)

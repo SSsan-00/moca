@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import workflow
+from migration_harness import junie_cli, workflow
 from migration_harness.diff_viewer import capture_workspace
 
 
@@ -50,7 +50,7 @@ class MultipleTargetsTest(HarnessCase):
 
     def edit_with_junie(self, *, complete=True, outside=False):
         """Junieの編集結果と完了記録を、テストの条件に合わせて用意する。"""
-        def run(args, completion, token, targets):
+        def run(args, completion, token, targets, *, report_usage=None):
             """Junieに相当する処理として、両方の移行先へ変更を保存する。"""
             self.assertEqual(tuple(path.name for path in targets), self.targets)
             self.assertIn("extract the exact ordered data mechanically from the assigned PHP lines", args[-1])
@@ -69,7 +69,7 @@ class MultipleTargetsTest(HarnessCase):
 
     def resume(self, run):
         """対話端末だけを差し替えて通常の再開経路を呼ぶ。"""
-        with patch.object(workflow, "_validate_junie_execution"), patch.object(workflow, "_run_interactive_junie", run):
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", run):
             return workflow.resume_with_junie(self.settings, self.prepared["run_id"])
 
     # 中断時の編集が残り、再開後に両方のファイルを比較できることを検証する。
@@ -116,7 +116,7 @@ class MultipleTargetsTest(HarnessCase):
         self.assertEqual(self.record()["completed_capsules"], 0)
         self.assertEqual((self.worktree / self.targets[1]).read_text(encoding="utf-8"), f"original {self.targets[1]}")
 
-        def resume_junie(args, completion, token, targets):
+        def resume_junie(args, completion, token, targets, *, report_usage=None):
             """Junieの再開前に二つ目まで復旧していることを確認する。"""
             self.assertEqual((self.worktree / self.targets[1]).read_text(encoding="utf-8"), f"migrated {self.targets[1]}")
             return self.edit_with_junie()(args, completion, token, targets)
@@ -173,7 +173,7 @@ class MultipleTargetsTest(HarnessCase):
         duplicate = f"{generator / 'Page_cshtml.g.cs'}{diagnostic}"
         unrelated = f"{generator / 'Other_cshtml.g.cs'}{diagnostic}"
         record = {"build_exit_code": 1, "repair_history": []}
-        with patch.object(workflow, "_validate_junie_execution"), patch.object(workflow, "_attempt_repair") as repair:
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(workflow, "_attempt_repair") as repair:
             log = self.run_path / "build.log"
             for contents in (duplicate, unrelated + actual):
                 log.write_text(contents, encoding="utf-8")
@@ -205,7 +205,7 @@ class MultipleTargetsTest(HarnessCase):
             source = f"{self.worktree / page}{diagnostic}"
             generated = f"{generator / generated_name}{diagnostic}"
             log.write_text(source + generated, encoding="utf-8")
-            with self.subTest(page=page), patch.object(workflow, "_validate_junie_execution"), patch.object(
+            with self.subTest(page=page), patch.object(junie_cli, "require_interactive_cli"), patch.object(
                 workflow, "_attempt_repair",
             ) as repair:
                 repair_build = workflow._repair_build_failure
@@ -251,8 +251,9 @@ class MultipleTargetsTest(HarnessCase):
                 if case == "missing_reference":
                     model.unlink()
 
-                def repair(command, completion, token, target):
+                def repair(command, completion, token, targets, *, report_usage=None):
                     """Junieの起動直前に参照用の内容と、実際に編集するファイルを確認する。"""
+                    target, = targets
                     self.assertEqual(target, agent / page_name)
                     self.assertIn(f"repair only `{page_name}`", command[-1])
                     self.assertIn("all saved `.migration-materials/source-*.md` files in capsule order", command[-1])
@@ -306,11 +307,13 @@ class MultipleTargetsTest(HarnessCase):
                 return subprocess.CompletedProcess(command, 1)
             return subprocess.CompletedProcess(command, 0)
 
-        def interrupt(command, completion, token, target):
+        def interrupt(command, completion, token, targets, *, report_usage=None):
+            target, = targets
             target.write_text("draft")
             raise KeyboardInterrupt
 
-        def complete(command, completion, token, target):
+        def complete(command, completion, token, targets, *, report_usage=None):
+            target, = targets
             self.assertIn("partial edits from an interrupted repair", command[-1])
             self.assertEqual(target.read_text(), "draft")
             target.write_text("ready")
