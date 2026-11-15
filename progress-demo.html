@@ -292,6 +292,18 @@
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
     }
+    [data-live]:not([data-live-ready]) .shell { visibility: hidden; }
+    [data-live] [hidden] { display: none !important; }
+    [data-live] .run-detail, [data-live] .ledger-name { overflow-wrap: anywhere; }
+    [data-live] .review-finding { margin-block: 12px; }
+    [data-live] .review-finding select { width: 100%; min-height: 36px; margin-bottom: 8px; background: var(--paper); color: var(--ink); }
+    [data-live] .review-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+    [data-live] .review-caveat { overflow-wrap: anywhere; }
+    [data-live] .review-action:disabled { opacity: .55; cursor: default; }
+    [data-live] #state-label { white-space: normal; }
+    @media (max-width: 620px) {
+      [data-live] .review-action.primary { grid-column: auto; grid-row: auto; }
+    }
   </style>
 </head>
 <body>
@@ -416,6 +428,7 @@
     </div>
   </dialog>
 </main>
+<!-- dashboard-script -->
 <script>
   const steps = [...document.querySelectorAll(".step")];
   const activity = document.querySelector("#activity");

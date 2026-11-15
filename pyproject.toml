@@ -17,3 +17,9 @@ php-to-csharp-harness = "migration_harness.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+migration_harness = ["dashboard.js"]
+
+[tool.setuptools.data-files]
+"share/php-to-csharp-harness" = ["progress-demo.html"]

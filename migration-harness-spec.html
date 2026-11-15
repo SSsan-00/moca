@@ -212,7 +212,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>進捗画面の通信方式（設計方針・未実装）</h2>
+    <h2>ローカル進捗画面の通信方式</h2>
     <p class="diagram-note">追加インストールを増やさず、ローカルのブラウザーで実行状況を確認します。</p>
     <div class="diagram">
       <pre class="mermaid">
@@ -221,10 +221,10 @@ sequenceDiagram
     participant H as Pythonハーネス
     participant S as localhostサーバー（標準ライブラリ）
     participant B as ブラウザー画面
-    H->>S: 進捗イベントを保存
+    H->>S: 実行状態の更新を通知
     B->>S: GET /events（SSE接続）
-    S-->>B: 状態・ログをイベント配信
-    B->>S: POST /control（一時停止など）
+    S-->>B: 進捗と確認待ちを配信
+    B->>S: POST /control（理由の記録・再開）
     S->>H: 操作要求を通知
     Note over H,S: 受信IDの続きから再送
       </pre>
@@ -236,15 +236,15 @@ sequenceDiagram
       </article>
       <article class="card">
         <h3>画面からの操作</h3>
-        <p>一時停止・再開などの頻度が低い操作はHTTP POSTで送ります。WebSocket用ライブラリなど、追加のPythonパッケージは導入しません。</p>
+        <p>モーダルから判断理由の記録と再開をHTTP POSTで送ります。再開時は同じrun IDを使い、Junieはハーネスを起動した端末で対話します。</p>
       </article>
       <article class="card">
         <h3>再接続と履歴</h3>
-        <p>イベントは画面に送る前に実行記録へ保存し、連番IDを付けます。接続が切れても、再接続時に最後に受信したID以降を再送できるようにします。</p>
+        <p>サーバーは直近100件のイベントに連番IDを付け、再接続時に未受信分を再送します。実行結果と判断理由はrun.jsonに保存します。</p>
       </article>
       <article class="card">
         <h3>公開デモとの違い</h3>
-        <p>公開中の進捗画面は模擬データを表示するHTMLです。実際のハーネス、Junie、ビルド、チェッカーとの接続は今後の実装です。</p>
+        <p>公開デモは模擬データで操作を試せます。ハーネスを --dashboard 付きで起動すると、同じ画面で実際の進捗と指摘を確認できます。</p>
       </article>
     </div>
   </section>

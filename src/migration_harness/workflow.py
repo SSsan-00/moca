@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 import codecs
 import hashlib
@@ -21,6 +22,8 @@ os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+
+run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
 
 
 class PrepareState(TypedDict, total=False):
@@ -110,7 +113,7 @@ def _create_worktree(state: PrepareState) -> dict[str, Any]:
         "completed_capsules": 0,
         "current_capsule": 1,
     }
-    (run_path / "run.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    _write_run_record(run_path / "run.json", record)
     return {"worktree_path": str(worktree)}
 
 
@@ -458,6 +461,9 @@ def _write_run_record(path: Path, record: dict[str, Any]) -> None:
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+    observer = run_observer.get()
+    if observer is not None:
+        observer(record)
 
 
 def _apply_agent_target(

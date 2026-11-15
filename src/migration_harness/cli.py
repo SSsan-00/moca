@@ -27,6 +27,7 @@ def main() -> None:
     review.add_argument("--accept", metavar="FINDING_ID", help="Finding ID shown by review")
     review.add_argument("--reason", help="Why the finding can be accepted")
     for command in (run, resume):
+        command.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
         command.add_argument(
             "--checker-command", nargs=argparse.REMAINDER, metavar="EXECUTABLE",
             help="Checker executable and its arguments. Put this option last.",
@@ -49,6 +50,10 @@ def main() -> None:
             return
         if args.command == "prepare":
             result = prepare_run(config, args.unit)
+        elif args.dashboard:
+            from migration_harness.dashboard import run_dashboard
+
+            result = run_dashboard(config, unit_id=getattr(args, "unit", None), run_id=getattr(args, "run_id", None))
         elif args.command == "run":
             result = run_with_junie(config, args.unit)
         else:
