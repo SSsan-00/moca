@@ -99,12 +99,45 @@
     #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
     .workspace-feedback { margin-bottom: 0; white-space: pre-wrap; color: var(--muted); }
     .workspace-feedback:empty { display: none; }
-    .token-panel { display: grid; gap: 20px; max-width: 880px; padding: 22px; }
+    .token-panel { display: grid; gap: 16px 20px; padding: 22px; }
+    .token-run-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .token-run-heading span { color: var(--muted); font-size: 12px; }
+    .token-runs, .token-details { min-width: 0; min-height: 0; }
+    .token-details { display: grid; align-content: start; gap: 14px; }
+    @media (min-width: 761px) {
+      .token-panel { height: 100%; grid-template: auto minmax(0, 1fr) / minmax(0, 2fr) minmax(0, 3fr); }
+      .token-panel > header { grid-column: 1 / -1; }
+      .token-runs { display: flex; flex-direction: column; }
+      .token-runs > .token-run-list { max-height: none; min-height: 0; }
+      .token-details { display: flex; flex-direction: column; border-inline-start: 1px solid var(--line); padding-inline-start: 20px; }
+      .token-details > :not(.token-capsules) { flex: none; }
+      .token-capsules { display: flex; flex-direction: column; min-height: 0; }
+      .token-capsules h2 { flex: none; }
+      .token-capsules .token-calls { min-height: 0; overflow: auto; }
+    }
     .token-panel .run-titleline { flex-wrap: wrap; gap: 6px 10px; }
     .token-panel h1 { margin: 0; font-size: 20px; }
     .token-panel h2 { margin: 0; font-size: 15px; }
     :root:not([data-live]) #token-status { display: none; }
     .token-panel .run-detail { overflow-wrap: anywhere; }
+    .token-run-controls { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 8px 0; }
+    .token-run-controls label { display: grid; gap: 3px; font-weight: 650; }
+    .token-run-controls label:first-child { flex: 1 1 230px; }
+    .token-run-controls input, .token-run-controls select { min-width: 0; min-height: 36px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit; }
+    .token-run-controls input:focus-visible, .token-run-controls select:focus-visible, .token-run-table button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .token-run-list { max-height: 190px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+    .token-run-table { width: 100%; table-layout: fixed; border-spacing: 0; text-align: left; font-size: 12px; }
+    .token-run-table th, .token-run-table td { padding: 7px 9px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    .token-run-table th { position: sticky; top: 0; background: var(--surface-soft); }
+    .token-run-table th:nth-child(2) { width: 24%; }
+    .token-run-table th:last-child { width: 23%; }
+    .token-run-table :is(th, td):last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    .token-run-table tbody tr:last-child td { border-bottom: 0; }
+    .token-run-table tbody tr { cursor: pointer; }
+    .token-run-table tbody tr:hover { background: var(--surface-hover); }
+    .token-run-table tr:has([aria-pressed="true"]) { background: var(--blue-soft); }
+    .token-run-table button { display: block; width: 100%; padding: 0; border: 0; background: none; color: var(--blue); text-align: left; font-weight: 650; overflow-wrap: anywhere; cursor: pointer; }
+    .token-run-table button small { display: block; color: var(--muted); font-weight: normal; }
     .token-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
     .token-summary > div { padding: 12px; min-width: 0; }
     .token-summary > div + div { border-inline-start: 1px solid var(--line); }
@@ -740,8 +773,27 @@
     <div class="panel token-panel">
       <header>
         <div class="run-titleline"><h1>Junieのトークン使用量</h1><span class="demo-badge" data-demo-only>完了時のサンプル</span></div>
-        <p class="run-detail"><span id="token-run-id"></span></p>
       </header>
+      <section class="token-runs" aria-labelledby="token-runs-title">
+        <div class="token-run-heading"><h2 id="token-runs-title">Run一覧</h2><span id="token-run-count"></span></div>
+        <div class="token-run-controls">
+          <label>絞り込み<input id="token-run-filter" type="search" placeholder="Run IDまたは移行単位"></label>
+          <label>並び替え<select id="token-run-sort">
+            <option value="newest">開始日時が新しい順</option>
+            <option value="oldest">開始日時が古い順</option>
+            <option value="usage">トークン合計が多い順</option>
+          </select></label>
+        </div>
+        <div class="token-run-list" id="token-run-list">
+          <table class="token-run-table" aria-labelledby="token-runs-title">
+            <thead><tr><th scope="col">移行単位・Run ID</th><th scope="col">開始日時</th><th scope="col">合計トークン</th></tr></thead>
+            <tbody id="token-run-rows"></tbody>
+          </table>
+        </div>
+        <p class="workspace-feedback" id="token-run-message" role="status"></p>
+      </section>
+      <div class="token-details">
+      <p class="run-detail" id="token-run-id"></p>
       <p class="run-detail" id="token-status"></p>
       <dl class="token-summary" aria-label="Run全体の集計（トークン）">
         <div><dt>合計</dt><dd id="token-total"></dd></div>
@@ -752,10 +804,11 @@
         <h2 id="token-input-title">入力の内訳</h2>
         <div class="token-breakdown" id="token-input-breakdown"></div>
       </section>
-      <section aria-labelledby="token-calls-title">
+      <section class="token-capsules" aria-labelledby="token-calls-title">
         <h2 id="token-calls-title">工程・カプセル別</h2>
         <ul class="token-calls" id="token-calls"></ul>
       </section>
+      </div>
     </div>
   </section>
   </div>
@@ -837,6 +890,79 @@
   </div>
 </template>
 <script>
+function bindTokenRuns(renderRun) {
+  const filter = document.querySelector("#token-run-filter");
+  const sort = document.querySelector("#token-run-sort");
+  const list = document.querySelector("#token-run-list");
+  const body = document.querySelector("#token-run-rows");
+  const countLabel = document.querySelector("#token-run-count");
+  const message = document.querySelector("#token-run-message");
+  const dates = new Intl.DateTimeFormat("ja-JP", {dateStyle: "short", timeStyle: "short"});
+  let runs = [];
+  let active;
+  let preferredId;
+  let displayedId;
+  let error = "";
+
+  function render() {
+    const query = filter.value.trim().toLocaleLowerCase();
+    const records = runs.filter(run => run.run_id !== active?.run_id);
+    if (active) records.push(active);
+    const date = run => Date.parse(run.created_at) || 0;
+    const total = run => {
+      const rows = run.token_usage || [];
+      return rows.some(row => row.responses) ? rows.reduce((sum, row) => sum + row.input + row.output, 0) : -1;
+    };
+    const matching = records.filter(run => [run.run_id, run.unit_id].some(text => text.toLocaleLowerCase().includes(query)));
+    matching.sort((a, b) => sort.value === "oldest" ? date(a) - date(b)
+      : (sort.value === "usage" ? total(b) - total(a) : 0) || date(b) - date(a));
+    const selected = matching.find(run => run.run_id === (preferredId || active?.run_id)) || matching[0];
+    const focused = document.activeElement.closest("#token-run-rows button")?.dataset.runId;
+    const rows = matching.map(run => {
+      const row = document.createElement("tr");
+      const name = row.insertCell();
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.runId = run.run_id;
+      button.setAttribute("aria-pressed", String(run === selected));
+      const id = document.createElement("small");
+      id.textContent = run.run_id;
+      button.append(run.unit_id, id);
+      row.addEventListener("click", () => {
+        preferredId = run.run_id;
+        button.focus({preventScroll: true});
+        render();
+      });
+      name.append(button);
+      row.insertCell().textContent = date(run) ? dates.format(date(run)) : "—";
+      const count = total(run);
+      row.insertCell().textContent = count < 0 ? "未記録" : count.toLocaleString("ja-JP");
+      return row;
+    });
+    body.replaceChildren(...rows);
+    if (focused) [...body.querySelectorAll("button")].find(button => button.dataset.runId === focused)?.focus({preventScroll: true});
+    list.hidden = !matching.length;
+    countLabel.textContent = query ? `${matching.length} / ${records.length} 件` : `${records.length} 件`;
+    message.textContent = error || (matching.length ? "" : query ? "条件に一致するRunがありません。" : "表示できるRunがありません。");
+    if (displayedId !== selected?.run_id) {
+      displayedId = selected?.run_id;
+      document.querySelector("#token-calls").scrollTop = 0;
+    }
+    renderRun(selected);
+  }
+
+  filter.addEventListener("input", render);
+  sort.addEventListener("change", render);
+  return {
+    setRuns(records, reason = "") { runs = records; error = reason; render(); },
+    setActive(run) {
+      if (JSON.stringify(run) === JSON.stringify(active)) return;
+      active = run;
+      render();
+    },
+  };
+}
+
 function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
   const tokenNumber = new Intl.NumberFormat("ja-JP");
   const inputTokens = rows.reduce((sum, call) => sum + call.input, 0);
@@ -1691,10 +1817,39 @@ function showMigrationLedger(ledger, snapshot, compare) {
   const demoMappings = new Map();
   const demoMigrationTargets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"];
   const demoRunID = "run-2026-11-14-001";
-  renderTokenUsage(capsuleCalls.map((call, index) => ({
+  const sampleUsage = capsuleCalls.map((call, index) => ({
     label: `${index + 1}. ${call.unit}`, input: call.inputTokens, output: call.outputTokens, responses: 1,
     cache_read: call.cacheRead, cache_write: call.cacheWrite,
-  })), `注文履歴ページの移行 · ${demoRunID}`);
+  }));
+  const sampleUnits = ["注文履歴", "商品検索", "在庫照会", "会員情報", "請求明細", "売上集計", "配送状況"];
+  const olderSamples = Array.from({length: 21}, (_, index) => {
+    const day = 11 - Math.floor(index / 3);
+    const runDate = `2026-11-${String(day).padStart(2, "0")}`;
+    const sequence = index % 3 + 1;
+    const runId = `run-${runDate}-00${sequence}`;
+    const capsuleCount = runId === "run-2026-11-07-001" ? 12 : 1;
+    return {
+      run_id: runId,
+      unit_id: `${sampleUnits[index % sampleUnits.length]}ページの移行`,
+      created_at: `${runDate}T${["16:20", "13:10", "09:40"][sequence - 1]}:00+09:00`,
+      token_usage: Array.from({length: capsuleCount}, (_, capsule) => {
+        const input = 12900 + (index * 2740 + capsule * 6310) % 52000;
+        return {
+          label: `カプセル ${capsule + 1}`, input, output: 920 + (index * 330 + capsule * 470) % 4300,
+          responses: 1, cache_read: Math.round(input * (capsule === 0 ? 0.65 : 0.82)),
+          cache_write: (index + capsule) % 3 === 0 ? 320 : 0,
+        };
+      }),
+    };
+  });
+  bindTokenRuns(run => renderTokenUsage(run?.token_usage || [], run ? `${run.unit_id} · ${run.run_id}` : "")).setRuns([
+    {run_id: demoRunID, unit_id: "注文履歴ページの移行", created_at: "2026-11-14T10:42:00+09:00", token_usage: sampleUsage},
+    {run_id: "run-2026-11-13-002", unit_id: "商品検索ページの移行", created_at: "2026-11-13T14:16:00+09:00",
+      token_usage: [{label: "カプセル 1", input: 78120, output: 6150, cache_read: 63400, cache_write: 2150, responses: 1}]},
+    {run_id: "run-2026-11-12-001", unit_id: "注文履歴ページの移行", created_at: "2026-11-12T09:05:00+09:00",
+      token_usage: [{label: "カプセル 1", input: 15380, output: 2210, cache_read: 8800, cache_write: 420, responses: 1}]},
+    ...olderSamples,
+  ]);
   let demoSettings = '[project]\nroot = "C:/apps/orders"\nworktree_root = "C:/migration/worktrees"\nrun_root = "C:/migration/runs"\n\n[[units]]\nid = "注文履歴"\nsource = "php/orders.php"\ntargets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]\n';
   const demoUnits = () => [...demoSettings.matchAll(/^\s*id\s*=\s*"([^"\r\n]+)"/gm)].map(match => match[1]);
   // デモでは設定例とフォームから生成するTOMLを取り扱う。

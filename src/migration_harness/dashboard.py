@@ -479,6 +479,8 @@ class Dashboard:
                     self.send_events()
                 elif self.path == prefix + "workspace":
                     self.send_workspace()
+                elif self.path == prefix + "token-runs":
+                    self.send_workspace(include_usage=True)
                 elif self.path == prefix + "settings":
                     self.send_settings()
                 elif self.path == prefix + "migration-ledger":
@@ -497,22 +499,24 @@ class Dashboard:
                 else:
                     self.send_error(404)
 
-            def send_workspace(self) -> None:
+            def send_workspace(self, *, include_usage: bool = False) -> None:
                 try:
                     with dashboard.condition:
-                        units = [unit["id"] for unit in config.get("units", [])]
-                        records = Path(config["run_root"]).glob("*/run.json") if units else ()
-                        newest = sorted(records, key=lambda path: path.stat().st_mtime, reverse=True)
-                        runs = []
-                        for record_path in newest:
-                            try:
-                                _, _, record, _ = _load_saved_run(config, record_path.parent.name)
-                            except (OSError, ValueError, TypeError):
-                                continue
-                            runs.append({key: record[key] for key in ("run_id", "unit_id")})
-                            if len(runs) == 30:
-                                break
-                        body = json.dumps({"units": units, "runs": runs}).encode()
+                        workspace_config = config.copy()
+                    units = [unit["id"] for unit in workspace_config.get("units", [])]
+                    records = Path(workspace_config["run_root"]).glob("*/run.json") if units else ()
+                    newest = sorted(records, key=lambda path: path.stat().st_mtime, reverse=True)
+                    runs = []
+                    for record_path in newest:
+                        try:
+                            _, _, record, _ = _load_saved_run(workspace_config, record_path.parent.name)
+                        except (OSError, ValueError, TypeError):
+                            continue
+                        keys = ("run_id", "unit_id", "created_at", "token_usage") if include_usage else ("run_id", "unit_id")
+                        runs.append({key: record[key] for key in keys if key in record})
+                        if not include_usage and len(runs) == 30:
+                            break
+                    body = json.dumps({"units": units, "runs": runs}).encode()
                 except OSError:
                     message = "保存済みの実行を読み込めませんでした。保存先を確認して、実行タブを開き直してください。"
                     self.send_body(409, "text/plain; charset=utf-8", message.encode())

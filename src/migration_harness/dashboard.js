@@ -244,21 +244,38 @@ bindHarnessWorkspace({
   execute: (action, payload) => workspaceRequest("control", {action, revision: rev, ...payload}),
   canAct: () => connected && snapshot.ready && !submitting,
 });
-workspaceTabs.addEventListener("harnesstab", render);
+const tokenRuns = bindTokenRuns(run => {
+  const phases = {build_repair: "ビルドの自動修正", checker_repair: "チェッカーの自動修正", anchors: "アンカー生成"};
+  const rows = (run?.token_usage || []).map(row => ({
+    ...row, label: row.phase === "migration" ? `カプセル ${row.capsule}` : phases[row.phase],
+  }));
+  renderTokenUsage(rows, run ? `${run.unit_id} の移行 · Run ID ${run.run_id}` : "",
+    run?.running ? "Junieからの使用量の報告を待っています。" :
+      run ? "このRunには使用量の記録がありません。" : "", run?.running);
+});
+let tokenListRequest = 0;
+workspaceTabs.addEventListener("harnesstab", async () => {
+  render();
+  if (element("#tab-tokens").getAttribute("aria-selected") !== "true") return;
+  const request = ++tokenListRequest;
+  try {
+    const {runs} = await workspaceRequest("token-runs");
+    if (request === tokenListRequest) tokenRuns.setRuns(runs);
+  } catch {
+    if (request === tokenListRequest) tokenRuns.setRuns([], "Run一覧を読み込めませんでした。タブを開き直してください。");
+  }
+});
 if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1);
 
 // 最新のSSE状態を工程・入力・指摘に反映し、確認待ちを案内する。
 function render() {
   const data = snapshot;
   if (element("#tab-tokens").getAttribute("aria-selected") === "true") {
-    const tokenPhases = {build_repair: "ビルドの自動修正", checker_repair: "チェッカーの自動修正", anchors: "アンカー生成"};
-    const tokenRows = (data.token_usage || []).map(row => ({
-      ...row, label: row.phase === "migration" ? `カプセル ${row.capsule}` : tokenPhases[row.phase],
-    }));
     const usingJunie = !data.ready && (["junie_running", "repairing"].includes(data.status) || data.generating_anchors);
-    renderTokenUsage(tokenRows, data.run_id ? `${data.unit_id} の移行 · Run ID ${data.run_id}` : "",
-      usingJunie ? "Junieからの使用量の報告を待っています。" :
-        data.run_id ? "このRunには使用量の記録がありません。" : "「実行」タブからRunを選択してください。", usingJunie);
+    tokenRuns.setActive(data.run_id ? {
+      run_id: data.run_id, unit_id: data.unit_id, created_at: data.created_at,
+      token_usage: data.token_usage, running: Boolean(usingJunie),
+    } : undefined);
   }
   document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
