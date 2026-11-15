@@ -253,8 +253,8 @@ def _append_context_record(
     return True
 
 
-def _render_context(unit: dict[str, Any], groups: list[dict[str, Any]]) -> str:
-    parts = [_context_header(unit)]
+def _render_groups(groups: list[dict[str, Any]]) -> str:
+    parts = []
     for group in groups:
         item = group["item"]
         fence = "`" * max(3, group["max_backticks"] + 1)
@@ -268,6 +268,61 @@ def _render_context(unit: dict[str, Any], groups: list[dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def _manifest_source(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "role": group["item"]["role"],
+        "path": group["item"]["path"],
+        **({"symbol": group["item"]["symbol"]} if "symbol" in group["item"] else {}),
+        "encoding": group["item"]["resolved_encoding"],
+        "start_line": group["start_line"],
+        "end_line": group["end_line"],
+        "character_slices": [
+            {
+                "line": int(match[1]),
+                "focus_start_column": int(match[2]),
+                "focus_end_column": int(match[3]),
+                "context_start_column": int(match[4]),
+                "context_end_column": int(match[5]),
+            }
+            for record in group["records"]
+            if (match := re.match(r"\s*(\d+) focus chars (\d+)-(\d+) context chars (\d+)-(\d+) \|", record))
+        ],
+    }
+
+
+def _prepare_inputs(
+    root: Path, capsule: Path, inputs: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], Path]], list[dict[str, str]]]:
+    prepared = []
+    php_sources: dict[str, dict[str, str]] = {}
+    for item in inputs:
+        name = item["path"]
+        source_path = (root / name).resolve()
+        if not source_path.is_relative_to(root):
+            raise ValueError(f"input escapes project root: {name}")
+        pin = None
+        if Path(name).suffix.lower() == ".php":
+            pin = php_sources.get(name)
+            if pin is None:
+                relative = f"php-sources/{len(php_sources) + 1:04d}.php"
+                snapshot = capsule / relative
+                snapshot.parent.mkdir(exist_ok=True)
+                before = source_path.stat()
+                shutil.copyfile(source_path, snapshot)
+                after = (root / name).stat()
+                if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                    raise ValueError(f"PHP input changed while preparing its snapshot: {name}")
+                pin = {"path": name, "snapshot": relative, "sha256": _sha256_file(snapshot)}
+                php_sources[name] = pin
+            # カプセルと比較に同じPHPバイト列を使う。
+            source_path = capsule / pin["snapshot"]
+        encoding = _input_encoding(source_path, item["encoding"])
+        if pin is not None:
+            pin.setdefault("encoding", encoding)
+        prepared.append(({**item, "resolved_encoding": encoding}, source_path))
+    return prepared, list(php_sources.values())
+
+
 def _prepare_context(state: PrepareState) -> dict[str, Any]:
     config = state["config"]
     unit = _unit(config, state["unit_id"])
@@ -277,7 +332,36 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     capsule.mkdir(parents=True, exist_ok=False)
 
     max_chars = config["max_context_chars"]
-    base_chars = len(_context_header(unit))
+    inputs, php_sources = _prepare_inputs(root, capsule, unit["inputs"])
+    header = _context_header(unit)
+    shared_groups: list[dict[str, Any]] = []
+    segment_inputs = []
+    shared_intro = (
+        "# Shared context\n\n"
+        "Apply the shared rules and constraints to every segment. Read these excerpts as reference.\n\n"
+    )
+    segment_intro = "# Segment inputs\n\n"
+    shared_base_chars = len(header) + len(shared_intro) + len(segment_intro)
+    for input_index, (item, source_path) in enumerate(inputs):
+        if item["role"] != "migration_rules" and not item.get("shared", False):
+            segment_inputs.append((input_index, item, source_path))
+            continue
+        lines = _selected_lines(source_path, item["start_line"], item["end_line"], item["resolved_encoding"])
+        for number, line in lines:
+            if not _append_context_record(
+                shared_groups, input_index, item, number, f"{number:>6} | {line}", shared_base_chars, max_chars,
+            ):
+                raise ValueError(f"shared context exceeds max_context_chars ({max_chars}): {item['path']}")
+    if not segment_inputs:
+        raise ValueError("migration unit requires at least one input outside shared context")
+    shared_context = shared_intro + _render_groups(shared_groups) + segment_intro if shared_groups else ""
+    prefix = header + shared_context
+    base_chars = len(prefix)
+    overlap_chars = min(512, (max_chars - len(shared_context)) // 20)
+    budget_error = (
+        "max_context_chars is too small for a segment input after including shared context"
+        if shared_groups else "max_context_chars is too small for the context headers"
+    )
     groups: list[dict[str, Any]] = []
     context_paths: list[str] = []
     context_part_chars: list[int] = []
@@ -287,69 +371,43 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     def flush_capsule() -> None:
         if not groups:
             return
-        context = _render_context(unit, groups)
+        context = prefix + _render_groups(groups)
         if len(context) > max_chars:
             raise RuntimeError("internal error: generated context capsule exceeds its configured limit")
         part_number = len(context_paths) + 1
         part_dir = capsule / f"part-{part_number:04d}"
         part_dir.mkdir()
         context_path = part_dir / "context.md"
-        context_path.write_text(context, encoding="utf-8")
+        # 原文の改行と文字数をWindowsでも保持する。
+        context_path.write_text(context, encoding="utf-8", newline="")
         context_paths.append(str(context_path))
         context_part_chars.append(len(context))
         manifest_parts.append({
             "index": part_number,
             "path": str(context_path),
             "chars": len(context),
-            "sources": [
-                {
-                    "role": group["item"]["role"],
-                    "path": group["item"]["path"],
-                    **({"symbol": group["item"]["symbol"]} if "symbol" in group["item"] else {}),
-                    "encoding": group["item"]["resolved_encoding"],
-                    "start_line": group["start_line"],
-                    "end_line": group["end_line"],
-                    "character_slices": [
-                        {
-                            "line": int(match[1]),
-                            "focus_start_column": int(match[2]),
-                            "focus_end_column": int(match[3]),
-                            "context_start_column": int(match[4]),
-                            "context_end_column": int(match[5]),
-                        }
-                        for record in group["records"]
-                        if (match := re.match(r"\s*(\d+) focus chars (\d+)-(\d+) context chars (\d+)-(\d+) \|", record))
-                    ],
-                }
-                for group in groups
-            ],
+            "sources": [_manifest_source(group) for group in groups],
         })
         groups.clear()
 
-    for input_index, item in enumerate(unit["inputs"]):
-        source_path = (root / item["path"]).resolve()
-        encoding = _input_encoding(source_path, item["encoding"])
-        context_item = {**item, "resolved_encoding": encoding}
-        lines = _selected_lines(source_path, item["start_line"], item["end_line"], encoding)
+    for input_index, item, source_path in segment_inputs:
+        lines = _selected_lines(source_path, item["start_line"], item["end_line"], item["resolved_encoding"])
         for number, line in lines:
             record = f"{number:>6} | {line}"
-            if _append_context_record(groups, input_index, context_item, number, record, base_chars, max_chars):
+            if _append_context_record(groups, input_index, item, number, record, base_chars, max_chars):
                 continue
             if groups:
                 flush_capsule()
-                if _append_context_record(groups, input_index, context_item, number, record, base_chars, max_chars):
+                if _append_context_record(groups, input_index, item, number, record, base_chars, max_chars):
                     continue
 
             line_body = line.rstrip("\r\n")
             line_ending = line[len(line_body):]
-            record = f"{number:>6} | {line}"
-            if _append_context_record(groups, input_index, context_item, number, record, base_chars, max_chars):
-                continue
             if not line_body:
-                raise ValueError("max_context_chars is too small for the context headers")
+                raise ValueError(budget_error)
 
             offset = 0
-            overlap_chars = min(512, max_chars // 20)
+            line_overlap = overlap_chars
             focus_ranges: list[tuple[int, int]] = []
             while offset < len(line_body):
                 low = 1
@@ -359,27 +417,28 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
                 while low <= high:
                     piece_length = (low + high) // 2
                     end_column = offset + piece_length
-                    context_start = max(0, offset - overlap_chars)
-                    context_end = min(len(line_body), end_column + overlap_chars)
-                    suffix = line_ending if end_column == len(line_body) else ""
-                    if not suffix.endswith("\n"):
-                        suffix += "\n"
+                    context_start = max(0, offset - line_overlap)
+                    context_end = min(len(line_body), end_column + line_overlap)
+                    suffix = (line_ending or "\n") if end_column == len(line_body) else "\n"
                     candidate_record = (
                         f"{number:>6} focus chars {offset + 1}-{end_column} "
                         f"context chars {context_start + 1}-{context_end} | "
                         f"{line_body[context_start:context_end]}{suffix}"
                     )
-                    if _append_context_record([], input_index, context_item, number, candidate_record, base_chars, max_chars):
+                    if _append_context_record([], input_index, item, number, candidate_record, base_chars, max_chars):
                         best_length = piece_length
                         best_record = candidate_record
                         low = piece_length + 1
                     else:
                         high = piece_length - 1
                 if best_length == 0:
-                    raise ValueError("max_context_chars is too small for the context headers")
-                if not _append_context_record(groups, input_index, context_item, number, best_record, base_chars, max_chars):
+                    if line_overlap:
+                        line_overlap = 0
+                        continue
+                    raise ValueError(budget_error)
+                if not _append_context_record(groups, input_index, item, number, best_record, base_chars, max_chars):
                     flush_capsule()
-                    if not _append_context_record(groups, input_index, context_item, number, best_record, base_chars, max_chars):
+                    if not _append_context_record(groups, input_index, item, number, best_record, base_chars, max_chars):
                         raise RuntimeError("internal error: could not fit a split source line")
                 focus_ranges.append((offset + 1, offset + best_length))
                 offset += best_length
@@ -405,6 +464,8 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
         "syntax_boundaries_analyzed": False,
         "split_line_coverage": split_line_coverage,
         "total_context_chars": sum(context_part_chars),
+        "shared_sources": [_manifest_source(group) for group in shared_groups],
+        "php_sources": php_sources,
         "parts": manifest_parts,
     }
     (capsule / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -438,7 +499,7 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     run_root = Path(config["run_root"])
     run_root.mkdir(parents=True, exist_ok=True)
     checkpoint_db = run_root / "checkpoints.sqlite"
-    with closing(sqlite3.connect(checkpoint_db, check_same_thread=False)) as connection:
+    with closing(sqlite3.connect(checkpoint_db, check_same_thread=False)) as connection, connection:
         checkpointer = SqliteSaver(connection)
         app = _graph().compile(checkpointer=checkpointer)
         result = app.invoke(

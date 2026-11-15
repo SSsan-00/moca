@@ -43,15 +43,31 @@ def capture_workspace(
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     if record.get("target_apply_pending"):
         raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
-    project = Path(config["project_root"])
     manifest_path = _inside_file(run_path, "capsule/manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    sources: dict[str, str] = {}
-    for part in manifest["parts"]:
-        for source in part["sources"]:
-            if Path(source["path"]).suffix.lower() == ".php":
-                sources.setdefault(source["path"], source["encoding"])
-    if not sources:
+    pinned = "php_sources" in manifest
+    if pinned:
+        sources = manifest["php_sources"]
+        if not isinstance(sources, list) or any(
+            not isinstance(source, dict) or not all(
+                isinstance(source.get(key), str) and source[key] for key in ("path", "snapshot", "encoding", "sha256")
+            )
+            for source in sources
+        ):
+            raise ValueError("保存済みPHPのmanifestが無効です。")
+        left_paths = [(source, _inside_file(manifest_path.parent, source["snapshot"])) for source in sources]
+    else:
+        # 保存済みPHPを持たない旧Runでは、manifestのパスと文字コードで現在の入力を読む。
+        project = Path(config["project_root"])
+        encodings: dict[str, str] = {}
+        for part in manifest["parts"]:
+            for source in part["sources"]:
+                if Path(source["path"]).suffix.lower() == ".php":
+                    encodings.setdefault(source["path"], source["encoding"])
+        left_paths = [
+            ({"path": name, "encoding": encoding}, _inside_file(project, name)) for name, encoding in encodings.items()
+        ]
+    if not left_paths:
         raise ValueError("この実行の入力に参照PHPがありません。")
     target = Path(unit["target"]).as_posix()
     if "targets" in unit:
@@ -62,15 +78,21 @@ def capture_workspace(
         targets = [target + ".cs", target]
     else:
         targets = [target]
-    left_paths = {name: _inside_file(project, name) for name in sources}
     right_paths = {name: _inside_file(worktree, name) for name in targets}
-    paths = [*left_paths.values(), *right_paths.values()]
+    paths = [path for _, path in left_paths] + list(right_paths.values())
     with worktree_source_lock:
         before = [path.stat() for path in paths]
-        left_files = [
-            (Path(name).as_posix(), path.read_text(encoding=_input_encoding(path, sources[name])))
-            for name, path in left_paths.items()
-        ]
+        left_files = []
+        for source, path in left_paths:
+            encoding = source["encoding"]
+            if pinned:
+                content = path.read_bytes()
+                if hashlib.sha256(content).hexdigest() != source["sha256"]:
+                    raise ValueError(f"保存済みPHPのハッシュが一致しません: {source['path']}")
+                text = content.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+            else:
+                text = path.read_text(encoding=_input_encoding(path, encoding))
+            left_files.append((Path(source["path"]).as_posix(), text))
         right_files = []
         for name, path in right_paths.items():
             content = path.read_bytes()

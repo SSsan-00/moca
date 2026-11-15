@@ -134,6 +134,7 @@ def load_config(path: Path) -> dict[str, Any]:
             role = item.get("role")
             encoding = item.get("encoding", "auto")
             symbol = item.get("symbol")
+            shared = item.get("shared", False)
             start = item.get("start_line")
             end = item.get("end_line")
             if not isinstance(item_path, str) or Path(item_path).is_absolute() or ".." in Path(item_path).parts:
@@ -144,12 +145,15 @@ def load_config(path: Path) -> dict[str, Any]:
                 raise ValueError(f"unit {unit['id']}: input symbol must be a non-empty string")
             if not isinstance(encoding, str) or encoding not in {"auto", "utf-8", "utf-8-sig", "euc-jp"}:
                 raise ValueError(f"unit {unit['id']}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
+            if not isinstance(shared, bool):
+                raise ValueError(f"unit {unit['id']}: input shared must be a boolean")
             if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
                 raise ValueError(f"unit {unit['id']}: input line ranges must be positive and ordered")
             normalized_inputs.append({
                 "role": role,
                 "path": item_path,
                 "encoding": encoding,
+                "shared": shared,
                 "start_line": start,
                 "end_line": end,
             })
