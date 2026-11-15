@@ -2,6 +2,8 @@
 
 PythonとLangGraphで、PHPからASP.NET Core Razor Pages（現状.NET 9）への移行を支援するローカル実行用ハーネスです。コード移行はJunieに依頼し、ハーネスが対象範囲、作業場所、実行記録を管理します。
 
+Windowsで実案件を試す手順は、[Windowsユーザーマニュアル](docs/windows-user-guide.md)を参照してください。
+
 ## 現在の実装
 
 - 移行単位ごとに、移行元PHPと移行先をTOMLで指定する
