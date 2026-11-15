@@ -96,8 +96,7 @@ class Dashboard:
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Referrer-Policy", "no-referrer")
-                self.send_header("X-Frame-Options", "DENY")
-                for name, value in (headers or {}).items():
+                for name, value in {"X-Frame-Options": "DENY", **(headers or {})}.items():
                     self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(body)
@@ -130,14 +129,17 @@ class Dashboard:
                     else:
                         # Viewerにはスナップショットだけを渡し、進捗画面や制御APIから隔離する。
                         self.send_body(200, "text/html; charset=utf-8", review_html(config, workspace), {
+                            "X-Frame-Options": "SAMEORIGIN",
                             "Content-Security-Policy": (
                                 "sandbox allow-scripts allow-downloads; default-src 'none'; "
                                 "script-src 'unsafe-inline' blob:; style-src 'unsafe-inline' blob:; "
-                                "img-src data: blob:; font-src data: blob:; worker-src blob:; base-uri 'none'"
+                                "img-src data: blob:; font-src data: blob:; worker-src blob:; "
+                                "base-uri 'none'; frame-ancestors 'self'"
                             ),
                         })
                 except (OSError, RuntimeError, ValueError) as exc:
-                    self.send_body(409, "text/plain; charset=utf-8", f"比較ツールを開けませんでした。\n{exc}".encode("utf-8"))
+                    headers = {"X-Frame-Options": "SAMEORIGIN"} if match[2] == "html" else None
+                    self.send_body(409, "text/plain; charset=utf-8", f"比較ツールを開けませんでした。\n{exc}".encode("utf-8"), headers)
 
             def send_events(self) -> None:
                 try:

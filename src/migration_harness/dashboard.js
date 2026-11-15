@@ -8,6 +8,10 @@ const resume = element("#review-fix");
 const viewer = element("#open-diff-viewer");
 const dashboardViewer = element(".runbar [data-compare]");
 const reviewButton = element("#toggle");
+const viewerPreview = element("#viewer-preview");
+const viewerPreviewBody = viewerPreview.querySelector(".viewer-preview-body");
+element("#viewer-preview-title").textContent = "移行ソースの差分比較";
+viewerPreview.addEventListener("close", () => viewerPreviewBody.replaceChildren());
 const notice = document.createElement("p");
 notice.id = "viewer-status";
 notice.className = "review-caveat";
@@ -331,20 +335,47 @@ function showComparisonStatus(...content) {
   modalComparisonStatus.hidden = !content.length;
 }
 
+function reserveComparisonTab(progress) {
+  try {
+    const popup = window.open("about:blank", "_blank");
+    if (!popup || popup.closed) return null;
+    popup.opener = null;
+    popup.document.title = "差分比較の準備中";
+    popup.document.body.textContent = progress;
+    return popup;
+  } catch {
+    return null;
+  }
+}
+
+function displayComparison(url, popup) {
+  try {
+    if (popup && !popup.closed) {
+      popup.location.replace(url);
+      return;
+    }
+  } catch {
+    // アプリ内ブラウザーでは別タブのハンドルが使えないことがある。
+  }
+  const frame = document.createElement("iframe");
+  frame.title = "Diff Viewer";
+  frame.setAttribute("sandbox", "allow-scripts allow-downloads");
+  frame.style.cssText = "display:block;width:100%;height:100%;border:0";
+  frame.src = url;
+  viewerPreviewBody.replaceChildren(frame);
+  viewerPreview.showModal();
+}
+
 async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   if (snapshotting) return;
-  const reported = fromReview ? snapshot.review?.locations?.[findings.selectedIndex] : null;
+  const index = fromReview ? findings.selectedIndex : snapshot.review?.findings.findIndex(item => !item[2]);
+  const reported = snapshot.status === "checker_needs_review" ? snapshot.review?.locations?.[index] : null;
   const line = Number(reported?.line);
   const focus = Number.isSafeInteger(line) && line > 0 ? {path: reported.path, line} : undefined;
   const progress = withAnchors
     ? "Junieでアンカーを生成中です。確認が表示されたら起動元の端末で操作してください。"
     : "スナップショットを取得中";
-  const popup = window.open("about:blank", "_blank");
-  if (popup) {
-    popup.opener = null;
-    popup.document.title = "差分比較の準備中";
-    popup.document.body.textContent = progress;
-  }
+  const popup = reserveComparisonTab(progress);
   snapshotting = true;
   syncActions();
   showComparisonStatus(progress);
@@ -366,7 +397,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
     download.textContent = "ワークスペースJSONを保存";
     showComparisonStatus(...(withAnchors && count === 0 ? ["対応行の候補はありませんでした。 "] : []), open, " · ", download);
     download.click();
-    if (popup && !popup.closed) popup.location.replace(open.href);
+    displayComparison(open.href, popup);
   } catch (error) {
     popup?.close();
     showComparisonStatus(`比較を開けませんでした。${error.message}`);
