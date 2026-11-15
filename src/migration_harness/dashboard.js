@@ -5,8 +5,15 @@ const dialog = element("#review-dialog");
 const note = element("#review-note");
 const accept = element("#review-accept");
 const resume = element("#review-fix");
+const viewer = element("#open-diff-viewer");
+const dashboardViewer = element("#restart");
 const reviewButton = element("#toggle");
-const notice = element("#viewer-status");
+const notice = document.createElement("p");
+notice.id = "viewer-status";
+notice.className = "review-caveat";
+notice.setAttribute("aria-live", "polite");
+notice.hidden = true;
+element(".review-actions").before(notice);
 const activity = element("#activity");
 const ledger = element("#ledger-list");
 const steps = [...document.querySelectorAll(".step")];
@@ -33,12 +40,17 @@ let connected = false;
 let prompted = false;
 let previousLog = "";
 let lastObserved = 0;
+let snapshotting = false;
 
 document.title = "移行ハーネスの進捗";
 element(".brand").href = "./";
 element(".top-links").hidden = true;
 element(".demo-badge").textContent = "実行中のデータ";
-element("#restart").hidden = true;
+dashboardViewer.textContent = "比較ツールを開く";
+const snapshotStatus = document.createElement("div");
+snapshotStatus.className = "run-detail";
+snapshotStatus.setAttribute("role", "status");
+element(".run-detail").after(snapshotStatus);
 element(".controls").setAttribute("aria-label", "実行操作");
 element(".ledger-controls").hidden = true;
 element("#ledger-title").textContent = "チェッカーの指摘";
@@ -53,7 +65,6 @@ note.placeholder = "例：共通関数へ委譲していることを差分で確
 note.required = true;
 note.maxLength = 2000;
 element(".review-context").hidden = true;
-element("#open-diff-viewer").hidden = true;
 element("#review-later").hidden = true;
 accept.textContent = "問題なしとして記録";
 resume.textContent = "同じ実行を再開";
@@ -79,6 +90,7 @@ function syncActions() {
   accept.disabled = !canAct || !selected || selected[2] || !note.value.trim();
   resume.disabled = !canAct;
   reviewButton.disabled = !canAct;
+  dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || snapshotting;
 }
 
 function selectFinding() {
@@ -242,6 +254,45 @@ findings.addEventListener("change", () => {
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
 resume.addEventListener("click", () => send("resume"));
+async function openSnapshot() {
+  if (snapshotting) return;
+  const popup = window.open("about:blank", "_blank");
+  if (popup) {
+    popup.opener = null;
+    popup.document.body.textContent = "比較用のスナップショットを取得しています。";
+  }
+  snapshotting = true;
+  syncActions();
+  snapshotStatus.textContent = "スナップショットを取得中";
+  try {
+    const response = await fetch("comparison", {method: "POST"});
+    if (!response.ok) throw new Error(await response.text());
+    const {id} = await response.json();
+    const open = document.createElement("a");
+    open.href = `review/${id}.html`;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.textContent = "今回の比較を開く";
+    const download = document.createElement("a");
+    download.href = `review/${id}.json`;
+    download.download = "";
+    download.textContent = "ワークスペースJSONを保存";
+    snapshotStatus.replaceChildren(open, " · ", download);
+    download.click();
+    if (popup) popup.location.replace(open.href);
+  } catch (error) {
+    popup?.close();
+    const message = `比較を開けませんでした。${error.message}`;
+    snapshotStatus.textContent = message;
+    if (dialog.open) showNotice(message);
+  } finally {
+    snapshotting = false;
+    syncActions();
+  }
+}
+
+viewer.addEventListener("click", openSnapshot);
+dashboardViewer.addEventListener("click", openSnapshot);
 reviewButton.addEventListener("click", () => snapshot.status === "checker_needs_review" ? openReview() : send("resume"));
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
 element("#theme-toggle").addEventListener("click", () => {

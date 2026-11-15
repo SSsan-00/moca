@@ -211,15 +211,10 @@
     .review-note { width: 100%; min-height: 66px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; }
     .review-note:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
     .review-note::placeholder { color: var(--soft); }
-    .review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-    .review-action { min-height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); cursor: pointer; font: inherit; font-size: 12px; font-weight: 680; }
-    .review-action:hover { border-color: var(--border-hover); background: var(--surface-hover); }
-    .review-action.primary { border-color: var(--blue); background: var(--blue); color: var(--blue-ink); }
-    .review-action.primary:hover { background: var(--blue-hover); }
-    .review-action.viewer { border-color: var(--blue); color: var(--blue); }
-    .review-action.viewer:hover { background: var(--surface-hover); }
-    .review-action.quiet { margin-right: auto; border-color: transparent; color: var(--muted); }
-    .review-action.quiet:hover { border-color: var(--line); color: var(--ink); }
+    .review-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 8px; margin-top: 16px; }
+    .review-action { min-height: 40px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); cursor: pointer; font: inherit; font-size: 12px; font-weight: 680; }
+    .review-action:not(:disabled):hover { border-color: var(--border-hover); background: var(--surface-hover); }
+    .review-action:disabled { opacity: .55; cursor: default; }
     @keyframes review-dialog-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
     @keyframes review-dialog-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
     @keyframes review-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
@@ -285,9 +280,6 @@
       .review-dialog-inner { padding: 17px; }
       .review-heading h2 { font-size: 17px; }
       .review-location { grid-template-columns: 1fr; }
-      .review-actions { display: grid; grid-template-columns: 1fr 1fr; }
-      .review-action.primary { grid-column: 1 / -1; grid-row: 1; }
-      .review-action.quiet { margin: 0; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -299,11 +291,9 @@
     [data-live] .review-finding select { width: 100%; min-height: 36px; margin-bottom: 8px; background: var(--paper); color: var(--ink); }
     [data-live] .review-code { white-space: pre-wrap; overflow-wrap: anywhere; }
     [data-live] .review-caveat { overflow-wrap: anywhere; }
-    [data-live] .review-action:disabled { opacity: .55; cursor: default; }
+    [data-live] #demo-compare { display: none; }
+    [data-live] #restart { width: auto; }
     [data-live] #state-label { white-space: normal; }
-    @media (max-width: 620px) {
-      [data-live] .review-action.primary { grid-column: auto; grid-row: auto; }
-    }
   </style>
 </head>
 <body>
@@ -324,6 +314,7 @@
     <div class="controls" aria-label="デモ操作">
       <button class="button" id="toggle" type="button">一時停止</button>
       <button class="button" id="restart" type="button">最初から</button>
+      <button class="button" id="demo-compare" type="button">比較ツールを開く</button>
     </div>
   </section>
 
@@ -418,12 +409,11 @@
       </details>
       <label class="review-note-label" for="review-note">判断メモ（任意）</label>
       <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
-      <p class="review-caveat" id="viewer-status" aria-live="polite" hidden></p>
       <div class="review-actions">
-        <button class="review-action quiet" id="review-later" type="button">あとで確認</button>
-        <button class="review-action viewer" id="open-diff-viewer" type="button">比較ツールを開く</button>
+        <button class="review-action" id="review-later" type="button">あとで確認</button>
+        <button class="review-action" id="open-diff-viewer" type="button">比較ツールを開く</button>
         <button class="review-action" id="review-accept" type="button">問題なしとして記録</button>
-        <button class="review-action primary" id="review-fix" type="button">Junieに修正を依頼</button>
+        <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
       </div>
     </div>
   </dialog>
@@ -447,7 +437,6 @@
   const capsulePercent = document.querySelector("#capsule-percent");
   const reviewDialog = document.querySelector("#review-dialog");
   const reviewHeading = document.querySelector("#review-title");
-  const viewerStatus = document.querySelector("#viewer-status");
   const reviewNote = document.querySelector("#review-note");
   const reviewRow = document.querySelector('.ledger-row[data-status="judgment"]');
   const capsuleCalls = [
@@ -555,8 +544,11 @@
     const php = `function get_status_label($status) {
     return $statusLabels[$status] ?? 'Unknown';
 }`;
-    const pageModel = `public void OnGet() {
-    ViewData["StatusText"] = OrderStatusMap.ToLabel(row.Status);
+    const pageModel = current < 4 ? `public void OnGet() {
+    // 移行前の仮実装
+    ViewData["StatusText"] = "Unknown";
+}` : `public void OnGet() {
+    ViewData["StatusText"] = ${correctionRequested ? "OrderStatusMap.ToLabel(row.Status)" : "GetStatusText(row.Status)"};
 }`;
     const razorPage = `<span>@ViewData["StatusText"]</span>`;
     const lines = text => text.split("\n").length;
@@ -564,6 +556,7 @@
     return {
       kind: "diff-viewer-workspace",
       version: 1,
+      snapshot: { capturedAt: new Date().toISOString(), demoStep: current + 1 },
       workspace: {
         name: "LegacyStatusMap",
         leftText: php,
@@ -585,25 +578,53 @@
     };
   }
 
-  function saveReviewWorkspace() {
-    const blob = new Blob([JSON.stringify(createReviewWorkspace(), null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "LegacyStatusMap.workspace.json";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  }
-
-  function openDiffViewer() {
-    viewerStatus.hidden = false;
-    saveReviewWorkspace();
+  async function openDiffViewer() {
+    // 画面を開くのを待つ間にデモが進んでも、クリックした時点の内容を保持する。
+    const payload = JSON.stringify(createReviewWorkspace(), null, 2);
     const viewerUrl = new URL("tools/dist/index.min.html", location.href);
-    if (!window.open(viewerUrl.href, "_blank")) {
-      viewerStatus.textContent = "デモ用workspace JSONを保存しました。ポップアップを許可し、tools/dist/index.min.html を開いてください。";
+    const popup = window.open("about:blank", "_blank");
+    if (popup) {
+      popup.opener = null;
+      popup.document.body.textContent = "比較用のスナップショットを開いています。";
+    }
+    const downloadUrl = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+    const download = document.createElement("a");
+    download.href = downloadUrl;
+    download.download = "LegacyStatusMap.workspace.json";
+    download.click();
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
+    if (location.protocol === "file:" || !popup) {
+      popup?.location.replace(viewerUrl.href);
       return;
     }
-    viewerStatus.textContent = "デモ用workspace JSONを保存しました。Viewerの「インポート」から読み込んでください。";
+    try {
+      const response = await fetch(viewerUrl);
+      if (!response.ok) throw new Error();
+      const html = await response.text();
+      const offset = html.toLowerCase().lastIndexOf("</body");
+      if (offset < 0 || !html.includes("workspace-import-file")) throw new Error();
+      const bootstrap = `<script id="demo-workspace" type="application/json">${payload.replaceAll("<", "\\u003c")}<\/script>
+<script>const demoImportTimer = setInterval(() => {
+  const input = document.querySelector("#workspace-import-file");
+  if (!input || !document.querySelector("#left-editor .monaco-editor")) return;
+  clearInterval(demoImportTimer);
+  const files = new DataTransfer();
+  files.items.add(new File([document.querySelector("#demo-workspace").textContent], "demo.workspace.json", {type:"application/json"}));
+  input.files = files.files;
+  input.dispatchEvent(new Event("change", {bubbles: true}));
+}, 50);
+setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
+      const frame = popup.document.createElement("iframe");
+      frame.title = "Diff Viewer";
+      frame.setAttribute("sandbox", "allow-scripts allow-downloads");
+      frame.style.cssText = "display:block;width:100vw;height:100vh;border:0";
+      frame.srcdoc = html.slice(0, offset) + bootstrap + html.slice(offset);
+      popup.document.title = "注文履歴の差分比較";
+      popup.document.body.style.margin = "0";
+      popup.document.body.replaceChildren(frame);
+    } catch {
+      popup.location.replace(viewerUrl.href);
+    }
   }
 
   function requestHumanReview() {
@@ -878,6 +899,7 @@
   document.querySelector("#review-accept").addEventListener("click", acceptReview);
   document.querySelector("#review-fix").addEventListener("click", resumeForCorrection);
   document.querySelector("#open-diff-viewer").addEventListener("click", openDiffViewer);
+  document.querySelector("#demo-compare").addEventListener("click", openDiffViewer);
   reviewDialog.addEventListener("cancel", event => {
     event.preventDefault();
     closeReviewDialog();

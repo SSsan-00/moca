@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from threading import RLock
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
+worktree_source_lock = RLock()
 
 
 class PrepareState(TypedDict, total=False):
@@ -482,7 +484,9 @@ def _apply_agent_target(
     if not agent_target.is_file():
         return
     worktree_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(agent_target, worktree_target)
+    # 差分レビューが書きかけの移行先を読まないよう、ファイルの反映とスナップショット取得を順番に行う。
+    with worktree_source_lock:
+        shutil.copyfile(agent_target, worktree_target)
     record["target_applied"] = True
     record["target_sha256"] = _sha256_file(worktree_target)
     _write_run_record(record_path, record)

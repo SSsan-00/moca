@@ -365,7 +365,8 @@ flowchart TB
   </section>
 
   <section>
-    <h2>4. 今後追加するアンカーJSONレビュー（未実装）</h2>
+    <h2>4. 差分レビューと今後のアンカー連携</h2>
+    <p class="diagram-note">進捗ダッシュボード上部の「比較ツールを開く」を押すと、その時点の参照PHPとworktreeの移行先をDiff Viewerで表示し、同じ内容のJSONを自動でダウンロードします。Razorページの右ペインには .cshtml.cs と .cshtml を並べます。</p>
     <div class="steps">
       <article class="step">
         <h3>既存JSONから対応情報を読む</h3>
@@ -386,7 +387,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>Viewerではソースを変更しない</h3>
-      <p>Diff Viewerはソース参照とレビュー補助に限定します。保存なしで開き、エディタ本文は編集・保存しません。変更してよいのはアンカー設定だけです。出力はレビュー済みアンカーJSONとレビュー判定・理由に限ります。</p>
+      <p>Diff Viewerは保存済みJSONのコピーを表示します。比較画面やJSONを操作しても、PHPやworktreeのソースには書き戻しません。</p>
     </div>
     <div class="callout green">
       <h3>レビュー後に保存するもの</h3>

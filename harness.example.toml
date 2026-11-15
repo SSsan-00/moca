@@ -21,6 +21,10 @@ max_context_chars = 100000
 # 0は確認のみ。正の整数を設定すると対応形式の指摘をJunieで修正する。
 # max_repair_attempts = 2
 
+[diff_viewer]
+# 移行プロジェクトのルートから、配置済みの単一HTMLへの相対パスを指定する。
+# html = "tools/dist/index.min.html"
+
 [[units]]
 id = "example-page"
 target = "Pages/Example.cshtml"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import sys
 import time
@@ -11,6 +12,7 @@ from queue import Empty, Queue
 from threading import Condition, Thread
 from typing import Any
 
+from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
 from migration_harness.workflow import resume_with_junie, review_checker, run_observer, run_with_junie
 
 
@@ -70,7 +72,7 @@ class Dashboard:
             self.publish({**self.state, "ready": False, "message": ""})
             return True
 
-    def server(self, html: bytes, script: bytes) -> ThreadingHTTPServer:
+    def server(self, config: dict[str, Any], html: bytes, script: bytes) -> ThreadingHTTPServer:
         dashboard = self
         # ポート番号だけで操作できないようにし、他サイトからのPOSTも拒否する。
         prefix = "/" + secrets.token_urlsafe(24) + "/"
@@ -79,13 +81,17 @@ class Dashboard:
             def log_message(self, format: str, *args: Any) -> None:
                 pass
 
-            def send_body(self, status: int, content_type: str, body: bytes) -> None:
+            def send_body(
+                self, status: int, content_type: str, body: bytes, headers: dict[str, str] | None = None,
+            ) -> None:
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Referrer-Policy", "no-referrer")
                 self.send_header("X-Frame-Options", "DENY")
+                for name, value in (headers or {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -98,8 +104,33 @@ class Dashboard:
                     self.send_body(200, "text/javascript; charset=utf-8", script)
                 elif self.path == prefix + "events":
                     self.send_events()
+                elif self.path.startswith(prefix + "review/"):
+                    self.send_comparison()
                 else:
                     self.send_error(404)
+
+            def send_comparison(self) -> None:
+                match = re.fullmatch(r"([a-f0-9]{32})\.(html|json)", self.path.removeprefix(prefix + "review/"))
+                if not match or not (run_id := dashboard.state.get("run_id")):
+                    self.send_error(404)
+                    return
+                try:
+                    workspace = snapshot_bytes(config, run_id, match[1])
+                    if match[2] == "json":
+                        self.send_body(200, "application/json", workspace, {
+                            "Content-Disposition": f'attachment; filename="review-{match[1]}.json"',
+                        })
+                    else:
+                        # Viewerにはスナップショットだけを渡し、進捗画面や制御APIから隔離する。
+                        self.send_body(200, "text/html; charset=utf-8", review_html(config, workspace), {
+                            "Content-Security-Policy": (
+                                "sandbox allow-scripts allow-downloads; default-src 'none'; "
+                                "script-src 'unsafe-inline' blob:; style-src 'unsafe-inline' blob:; "
+                                "img-src data: blob:; font-src data: blob:; worker-src blob:; base-uri 'none'"
+                            ),
+                        })
+                except (OSError, RuntimeError, ValueError) as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", f"比較ツールを開けませんでした。\n{exc}".encode("utf-8"))
 
             def send_events(self) -> None:
                 try:
@@ -130,11 +161,21 @@ class Dashboard:
                     return
 
             def do_POST(self) -> None:
-                if self.path != prefix + "control":
+                if self.path not in (prefix + "control", prefix + "comparison"):
                     self.send_error(404)
                     return
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
                     self.send_error(403)
+                    return
+                if self.path == prefix + "comparison":
+                    try:
+                        run_id = dashboard.state.get("run_id")
+                        if not run_id or not dashboard.state.get("worktree_path"):
+                            raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
+                        response = json.dumps({"id": create_snapshot(config, run_id)}).encode("utf-8")
+                        self.send_body(201, "application/json", response)
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -180,7 +221,7 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
     html += '<script src="dashboard.js" defer></script></body></html>'
     view = Dashboard()
     view.publish({"status": "preparing", "unit_id": unit_id, "run_id": run_id})
-    with view.server(html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
+    with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         token = run_observer.set(view.observe)

@@ -74,6 +74,16 @@ def load_config(path: Path) -> dict[str, Any]:
     if type(max_repair_attempts) is not int or max_repair_attempts < 0:
         raise ValueError("[checker].max_repair_attempts must be a non-negative integer")
 
+    viewer = raw.get("diff_viewer", {})
+    if not isinstance(viewer, dict):
+        raise ValueError("[diff_viewer] must be a table")
+    viewer_html = viewer.get("html", "tools/dist/index.min.html")
+    if not isinstance(viewer_html, str) or not viewer_html.strip():
+        raise ValueError("[diff_viewer].html must be a path inside the application repository")
+    viewer_path = Path(viewer_html)
+    if viewer_path.anchor or ".." in viewer_path.parts or viewer_path.suffix.lower() != ".html":
+        raise ValueError("[diff_viewer].html must name a relative .html file inside the application repository")
+
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
         raise ValueError("[junie] must be a table")
@@ -136,6 +146,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "max_context_chars": max_context_chars,
         "build_project": build_project,
         "checker_command": checker_command,
+        "diff_viewer_html": viewer_html,
         "max_repair_attempts": max_repair_attempts,
         "junie_max_steps": junie_max_steps,
         "units": normalized_units,
