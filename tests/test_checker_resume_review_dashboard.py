@@ -62,10 +62,10 @@ class JunieConnectionTests(unittest.TestCase):
             handle = workflow.run_observer.set(view.observe)
             record = {"run_id": "run", "status": "checker_succeeded"}
             try:
-                view.observe(record)
+                workflow._write_run_record(run_path / "run.json", record)
                 view.publish({**view.state, "ready": False, "generating_anchors": True})
                 for delta in ([18, 4, 5, 3, 1], [2, 1, 0, 0, 1]):
-                    with workflow._track_junie_usage(run_path, record, "anchors"):
+                    with workflow._track_junie_usage(run_path, "anchors"):
                         report = workflow._junie_usage_reporter.get()
                         report([0, 0, 0, 0, 0])
                         report(delta)
@@ -594,6 +594,7 @@ class SavedDashboardTests(SavedRunFixture):
         (project / ".git").mkdir()
         config_path = project.parent / "settings.toml"
         self.config["config_path"] = str(config_path)
+        self.config.update(checker_from_cli=True, toml_checker_command=None, checker_command=["cli-checker"])
         valid = '[project]\nroot = "project"\nworktree_root = "trees"\nrun_root = "runs"\n'
         valid += '\n[[units]]\nid = "メニュー"\nsource = "example.php"\ntarget = "Example.cs"\n'
 
@@ -611,6 +612,9 @@ class SavedDashboardTests(SavedRunFixture):
             with self.post(url, "settings", {**request, "content": valid}) as response:
                 saved = json.load(response)
             revision, _ = self.get_ready_event(url, after=revision)
+            self.assertIsNone(self.config["checker_command"])
+            self.assertNotIn("checker_from_cli", self.config)
+            self.assertNotIn("toml_checker_command", self.config)
             incomplete = valid.replace('target = "Example.cs"', 'target = "Pages/Example.cshtml"')
             with self.assertRaises(HTTPError) as invalid:
                 self.post(url, "settings", {"revision": revision, "version": saved["version"], "content": incomplete})

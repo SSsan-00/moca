@@ -574,32 +574,82 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _write_run_record(path: Path, record: dict[str, Any]) -> None:
-    """Run記録を置き換えてから、進捗の購読側へ状態を通知する。"""
+@contextmanager
+def _lock_run_record(path: Path) -> Iterator[None]:
+    """Run単位で、ダッシュボードと別CLIの読み取り・更新を直列化する。"""
+    # 置き換わるrun.jsonとは別のファイルを、全プロセスで共有する。
+    with path.with_suffix(".lock").open("ab") as lock:
+        if os.name == "nt":
+            import msvcrt
+
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            yield
+
+
+def _replace_run_record(path: Path, record: dict[str, Any]) -> None:
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def _notify_run_observer(record: dict[str, Any]) -> None:
     observer = run_observer.get()
     if observer is not None:
         observer(record)
 
 
+def _write_run_record(path: Path, record: dict[str, Any]) -> None:
+    """工程の進捗を保存し、独立して更新された使用量と台帳を引き継ぐ。"""
+    with _lock_run_record(path):
+        if path.is_file():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            for field in ("token_usage", "migration_reviews", "migration_mappings"):
+                if field in saved:
+                    record[field] = saved[field]
+        _replace_run_record(path, record)
+    _notify_run_observer(record)
+
+
+@contextmanager
+def _edit_run_record(path: Path) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
+    """最新のRun記録を読み、指定された項目だけを同じロック内で更新する。"""
+    with _lock_run_record(path):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        changes: dict[str, Any] = {}
+        yield record, changes
+        if not changes:
+            return
+        record.update(changes)
+        _replace_run_record(path, record)
+    _notify_run_observer(record)
+
+
 @contextmanager
 def _track_junie_usage(
-    run_path: Path, record: dict[str, Any], phase: str, capsule: int | None = None,
+    run_path: Path, phase: str, capsule: int | None = None,
 ) -> Iterator[None]:
     """同じ工程・カプセルの再試行や再開分をRunに加算する。"""
     def report(delta: list[int]) -> None:
-        rows = record.setdefault("token_usage", [])
-        row = next((row for row in rows if row["phase"] == phase and row.get("capsule") == capsule), None)
-        if row is None:
-            row = {"phase": phase, "capsule": capsule, **dict.fromkeys(_USAGE_FIELDS, 0)}
-            rows.append(row)
-        elif not any(delta):
-            return
-        for field, value in zip(_USAGE_FIELDS, delta, strict=True):
-            row[field] += value
-        _write_run_record(run_path / "run.json", record)
+        with _edit_run_record(run_path / "run.json") as (record, changes):
+            rows = record.get("token_usage", [])
+            row = next((row for row in rows if row["phase"] == phase and row.get("capsule") == capsule), None)
+            if row is None:
+                row = {"phase": phase, "capsule": capsule, **dict.fromkeys(_USAGE_FIELDS, 0)}
+                rows.append(row)
+            elif not any(delta):
+                return
+            for field, value in zip(_USAGE_FIELDS, delta, strict=True):
+                row[field] += value
+            changes["token_usage"] = rows
 
     handle = _junie_usage_reporter.set(report)
     try:
@@ -1221,7 +1271,7 @@ def _run_prepared_with_junie(
         interrupted = False
         try:
             try:
-                with _track_junie_usage(run_path, record, "migration", index):
+                with _track_junie_usage(run_path, "migration", index):
                     exit_code = _run_interactive_junie(
                         command, completion_path, completion_token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
                     )
@@ -1551,7 +1601,7 @@ def _repair_target(
     other_files = _unlisted_workspace_files(agent_root, allowed)
     try:
         phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
-        with _track_junie_usage(run_path, record, phase):
+        with _track_junie_usage(run_path, phase):
             exit_code = _run_interactive_junie(
                 command, completion_path, token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
             )
@@ -2141,12 +2191,8 @@ def review_migration_ranges(
         raise ValueError("choose range IDs, a review state and a non-empty reason")
     if confirmed_targets and state != "confirmed":
         raise ValueError("--target is only available with --state confirmed")
-    run_path, worktree, record, unit = _load_saved_run(config, run_id)
+    run_path, worktree, _, unit = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
-    if record.get("target_apply_pending") or record.get("status") in {
-        "junie_running", "repairing", "building", "checking", "script_running",
-    }:
-        raise ValueError("wait for migration, build or verification to finish before recording a range review")
     target_paths = _target_paths(unit)
     entries = {
         f"{part['index']}:{index + 1}": (part["index"], index)
@@ -2164,39 +2210,43 @@ def review_migration_ranges(
         if digest is None:
             raise ValueError(f"review target is missing or unsafe: {name}")
         manual_hashes[path.as_posix()] = digest
-    decisions = record.setdefault("migration_reviews", {})
-    for identifier in range_ids:
-        if identifier not in entries:
-            raise ValueError(f"PHP range not found in this Run: {identifier}")
-        capsule, index = entries[identifier]
-        key = f"{capsule}:{index}"
-        decision = {"state": state, "reason": reason.strip(), "target_hashes": {}}
-        if state == "confirmed":
-            mapping = record.get("migration_mappings", {}).get(key)
-            if capsule > record["completed_capsules"]:
-                raise ValueError(f"range {identifier} has not been processed")
-            if manual_hashes:
-                decision["target_hashes"] = manual_hashes
-            else:
-                if not mapping:
-                    raise ValueError(f"range {identifier} has no mapping candidate; specify the reviewed --target paths")
-                digest = _review_target_hash(worktree, Path(mapping["path"]))
-                if digest is None or digest != mapping["sha256"]:
-                    raise ValueError(f"range {identifier} changed after its comparison; generate a new candidate")
-                decision["target_hashes"] = {mapping["path"]: digest}
-                decision["mapping"] = mapping
-        decisions[key] = decision
-    _write_run_record(run_path / "run.json", record)
+    with _edit_run_record(run_path / "run.json") as (record, changes):
+        if record.get("target_apply_pending") or record.get("status") in {
+            "junie_running", "repairing", "building", "checking", "script_running",
+        }:
+            raise ValueError("wait for migration, build or verification to finish before recording a range review")
+        decisions = record.get("migration_reviews", {})
+        for identifier in range_ids:
+            if identifier not in entries:
+                raise ValueError(f"PHP range not found in this Run: {identifier}")
+            capsule, index = entries[identifier]
+            key = f"{capsule}:{index}"
+            decision = {"state": state, "reason": reason.strip(), "target_hashes": {}}
+            if state == "confirmed":
+                mapping = record.get("migration_mappings", {}).get(key)
+                if capsule > record["completed_capsules"]:
+                    raise ValueError(f"range {identifier} has not been processed")
+                if manual_hashes:
+                    decision["target_hashes"] = manual_hashes
+                else:
+                    if not mapping:
+                        raise ValueError(f"range {identifier} has no mapping candidate; specify the reviewed --target paths")
+                    digest = _review_target_hash(worktree, Path(mapping["path"]))
+                    if digest is None or digest != mapping["sha256"]:
+                        raise ValueError(f"range {identifier} changed after its comparison; generate a new candidate")
+                    decision["target_hashes"] = {mapping["path"]: digest}
+                    decision["mapping"] = mapping
+            decisions[key] = decision
+        changes["migration_reviews"] = decisions
 
 
 def record_migration_candidates(
     config: dict[str, Any], run_id: str, snapshot_id: str, workspace: dict[str, Any], target_hashes: dict[str, str],
 ) -> None:
     """確認できるアンカーを、処理済みPHP範囲の候補として保存する。"""
-    run_path, _, record, _ = _load_saved_run(config, run_id)
+    run_path, _, _, _ = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
-    if not record.get("completed_capsules") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
-        return
+
     def file_line(segments: list[dict[str, Any]], index: int) -> tuple[str, int]:
         """0始まりのペイン座標を1始まりのファイル内行番号に戻す。"""
         for segment in segments:
@@ -2210,32 +2260,34 @@ def record_migration_candidates(
         source, line = file_line(workspace["leftSegments"], anchor["leftLineNo"])
         target, target_line = file_line(workspace["rightSegments"], anchor["rightLineNo"])
         by_source.setdefault(source, []).append((line, target, target_line))
-    mappings = {
-        key: mapping for key, mapping in record.get("migration_mappings", {}).items()
-        if "candidate_snapshot" not in mapping
-    }
-    for part in manifest["parts"][:record["completed_capsules"]]:
-        for index, source in enumerate(part.get("sources", [])):
-            key = f"{part['index']}:{index}"
-            prior = mappings.get(key)
-            if (prior and target_hashes.get(prior["path"]) == prior["sha256"]) or source.get("character_slices"):
-                continue
-            matches = [
-                (target, line) for source_line, target, line in by_source.get(Path(source["path"]).as_posix(), [])
-                if source["start_line"] <= source_line <= source["end_line"]
-            ]
-            # アンカーがない範囲や、対応先が複数ファイルにまたがる範囲は個別の確認に回す。
-            if len({target for target, _ in matches}) != 1:
-                continue
-            target = matches[0][0]
-            lines = [line for _, line in matches]
-            mappings[key] = {
-                "path": target, "start_line": min(lines), "end_line": max(lines),
-                "sha256": target_hashes[target], "candidate_snapshot": snapshot_id, "anchors": len(lines),
-            }
-    if mappings or "migration_mappings" in record:
-        record["migration_mappings"] = mappings
-        _write_run_record(run_path / "run.json", record)
+    with _edit_run_record(run_path / "run.json") as (record, changes):
+        if not record.get("completed_capsules") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
+            return
+        mappings = {
+            key: mapping for key, mapping in record.get("migration_mappings", {}).items()
+            if "candidate_snapshot" not in mapping
+        }
+        for part in manifest["parts"][:record["completed_capsules"]]:
+            for index, source in enumerate(part.get("sources", [])):
+                key = f"{part['index']}:{index}"
+                prior = mappings.get(key)
+                if (prior and target_hashes.get(prior["path"]) == prior["sha256"]) or source.get("character_slices"):
+                    continue
+                matches = [
+                    (target, line) for source_line, target, line in by_source.get(Path(source["path"]).as_posix(), [])
+                    if source["start_line"] <= source_line <= source["end_line"]
+                ]
+                # アンカーがない範囲や、対応先が複数ファイルにまたがる範囲は個別の確認に回す。
+                if len({target for target, _ in matches}) != 1:
+                    continue
+                target = matches[0][0]
+                lines = [line for _, line in matches]
+                mappings[key] = {
+                    "path": target, "start_line": min(lines), "end_line": max(lines),
+                    "sha256": target_hashes[target], "candidate_snapshot": snapshot_id, "anchors": len(lines),
+                }
+        if mappings or "migration_mappings" in record:
+            changes["migration_mappings"] = mappings
 
 
 def review_checker(

@@ -91,6 +91,49 @@ class LedgerReviewTest(HarnessCase):
         workflow.review_migration_ranges(self.settings, self.run_id, ["1:1"], "needs_review", "Check call sites")
         self.assertEqual(self.source()["review"], {"state": "needs_review", "reason": "Check call sites"})
 
+    def test_anchor_usage_keeps_reviews_written_by_another_cli(self):
+        self.prepare_for_verification()
+        self.verify()
+        run_path = self.record_path.parent
+        stale_record = json.loads(self.record_path.read_bytes())
+        review_command = [
+            sys.executable, "-m", "migration_harness.cli", "ledger-review",
+            "--config", self.settings["config_path"], "--run-id", self.run_id, "--range", "1:1",
+        ]
+        with workflow._track_junie_usage(run_path, "anchors"):
+            report = workflow._junie_usage_reporter.get()
+            report([18, 4, 5, 3, 1])
+            subprocess.run([
+                *review_command, "--state", "confirmed", "--reason", "Confirmed again", "--target", self.target.name,
+            ], check=True, capture_output=True)
+            report([1, 0, 0, 0, 1])
+            self.assertEqual(self.source()["review"], {
+                "state": "confirmed", "reason": "Confirmed again", "targets": [self.target.name],
+            })
+            self.assertTrue(self.completion()["complete"])
+            subprocess.run([
+                *review_command, "--state", "needs_review", "--reason", "Different result",
+            ], check=True, capture_output=True)
+            report([2, 1, 0, 0, 1])
+
+        hashes = {}
+        _, payload = capture_workspace(self.settings, self.run_id, target_hashes=hashes)
+        workspace = payload["workspace"]
+        workspace["anchors"]["manualAnchors"] = [{"leftLineNo": 0, "rightLineNo": 0}]
+        snapshot = save_workspace(run_path, payload)
+        workflow.record_migration_candidates(self.settings, self.run_id, snapshot, workspace, hashes)
+        workflow._write_run_record(self.record_path, stale_record)
+
+        source = self.source()
+        self.assertEqual(source["review"], {"state": "needs_review", "reason": "Different result"})
+        self.assertEqual(source["mapping"]["snapshot_id"], snapshot)
+        self.assertFalse(self.completion()["complete"])
+        saved = json.loads(self.record_path.read_bytes())
+        self.assertEqual(saved["token_usage"], [{
+            "phase": "anchors", "capsule": None, "input": 21, "output": 5,
+            "cache_read": 5, "cache_write": 3, "responses": 3,
+        }])
+
     def test_non_target_build_input_changes_expire_completion_before_resume(self):
         self.prepare_for_verification()
         self.verify()

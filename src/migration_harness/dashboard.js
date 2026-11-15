@@ -188,13 +188,12 @@ function describe(state) {
 
 // 台帳と完了判定を、同じRunの最新情報から更新する。
 async function loadMigrationLedger() {
-  const requestedState = snapshot;
   const request = ++migrationLedgerRequest;
   try {
     const response = await fetch("migration-ledger", {cache: "no-store"});
     if (!response.ok) throw new Error();
     const ledger = await response.json();
-    if (snapshot !== requestedState || request !== migrationLedgerRequest) return;
+    if (request !== migrationLedgerRequest || ledger.run_id !== snapshot.run_id) return;
     migrationCompletion = ledger.completion;
     render();
     if (!migrationLedgerDialog.open) return;
@@ -203,7 +202,7 @@ async function loadMigrationLedger() {
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
     });
   } catch {
-    if (snapshot !== requestedState || request !== migrationLedgerRequest) return;
+    if (request !== migrationLedgerRequest) return;
     migrationCompletion = undefined;
     render();
     if (!migrationLedgerDialog.open) return;
@@ -575,7 +574,10 @@ stream.onmessage = event => {
   const {token_usage: usage, observed_at: time, ...current} = data;
   const progressChanged = JSON.stringify(previous) !== JSON.stringify(current);
   snapshot = data;
-  if (progressChanged) migrationCompletion = undefined;
+  if (progressChanged) {
+    migrationLedgerRequest++;
+    migrationCompletion = undefined;
+  }
   rev = Number(event.lastEventId);
   lastObserved = snapshot.observed_at * 1000;
   submitting = false;

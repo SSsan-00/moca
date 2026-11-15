@@ -681,6 +681,8 @@ class Dashboard:
                             raise ValueError("実行中の処理が終わってから設定を保存してください。")
                         path = Path(config["config_path"])
                         updated = _save_settings(path, action["content"], action["version"])
+                        config.pop("checker_from_cli", None)
+                        config.pop("toml_checker_command", None)
                         config.update(updated)
                         dashboard.publish({"status": "idle", "ready": True, "settings_revision": dashboard.revision + 1})
                 except (KeyError, OSError, ValueError) as exc:
