@@ -10,9 +10,10 @@ PythonとLangGraphで、PHPからASP.NET Core Razor Pages（現状.NET 9）へ�
 - `run`では、対象ファイルとカプセルを1つずつ渡し、Junie CLIを順番に起動する
 - 各Junie呼び出し後に対象ファイルをworktreeへ反映し、実行記録を保存する
 - 全カプセルの反映後にworktreeで `dotnet build` を実行し、結果を `run.json`、出力を `build.log` に保存する
+- ビルド成功後に設定した独自チェッカーを実行し、終了コードを `run.json`、標準出力と標準エラーを `checker.log` に保存する
 - `resume`では、既存の実行記録・worktree・agent workspaceを使い、未完了カプセルから再開する
 
-テスト、独自チェッカー、修正ループ、Diff Viewer用アンカーJSONは未実装です。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
+テスト、チェッカーの指摘解析、修正ループ、Diff Viewer用アンカーJSONは未実装です。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
 
 Junieへ渡す情報と作業フォルダはハーネスで絞りますが、別の絶対パスへのアクセスをOSレベルで遮断するものではありません。Junieを使うと、選択したコンテキストがJunieのサービスへ送られます。生成後は`run.json`とworktreeの差分を人が確認してください。
 
@@ -71,7 +72,26 @@ Junieはカプセルの作業を終えると、作業フォルダに今回の起
 
 全カプセルが完了すると、worktreeのルートを作業ディレクトリとしてビルドします。`[build].project` にworktreeからの相対パスで `.csproj`、`.sln`、`.slnx` を指定できます。省略時はルートで `dotnet build` を実行します。
 
-保留した実行や失敗したビルドは、表示されたRun IDを使って `.\h.cmd s` で再開できます。ビルドで失敗した場合は、`build.log` を確認し、原因を直してから再開するとビルドだけをやり直します。ログは直近の試行の内容に更新されます。通常のCLIから再開する場合は次のコマンドを使います。
+### 独自チェッカーを指定する
+
+ビルド成功後、チェッカーをworktreeのルートで実行します。`--checker-command` はコマンドの最後に置き、実行ファイル名と引数を続けて指定します。たとえば、アプリ側の `tools/check_migration.py` をWindowsで呼ぶ場合は次のようにします。
+
+```powershell
+php-to-csharp-harness run --config harness.local.toml --unit example-page --checker-command py -3.11 tools/check_migration.py
+```
+
+`.\h.cmd r` や `.\h.cmd s` から使う場合は、`harness.local.toml` に設定します。CLIに指定したコマンドがTOMLより優先されます。指定を省略するとビルドで終了します。
+
+```toml
+[checker]
+command = ["py", "-3.11", "tools/check_migration.py"]
+```
+
+終了コードが非ゼロの場合は要確認として扱い、`checker.log` に出力を保存します。指摘の妥当性はログで確認してください。チェッカーを再実行する場合は、同じRun IDで `resume` を実行します。CLIでのみ指定した場合は、`resume` にも `--checker-command` を指定します。ログは直近の試行の内容に更新されます。
+
+### 中断・失敗から再開する
+
+保留した実行や失敗したビルドは、表示されたRun IDを使って `.\h.cmd s` で再開できます。ビルドが失敗した場合は、`build.log` を確認して原因を直し、ビルドから再開します。ログは直近の試行の内容に更新されます。通常のCLIから再開する場合は次のコマンドを使います。
 
 ```powershell
 $runId = Read-Host "Run ID"

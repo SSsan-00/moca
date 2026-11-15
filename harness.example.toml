@@ -15,6 +15,10 @@ max_context_chars = 100000
 # worktreeからの相対パス。省略時はworktree直下でdotnet buildを実行する。
 # project = "src/Application/Application.csproj"
 
+[checker]
+# 実行ファイル名と引数を個別に並べる。相対パスの基準はworktreeのルート。
+# command = ["py", "-3.11", "tools/check_migration.py"]
+
 [[units]]
 id = "example-page"
 target = "Pages/Example.cshtml"

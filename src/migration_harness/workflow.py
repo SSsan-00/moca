@@ -790,7 +790,7 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
 
     record["status"] = "build_failed" if "error" in record else "build_succeeded"
     _write_run_record(record_path, record)
-    return {
+    result = {
         **result,
         "junie_exit_code": record.get("junie_exit_code"),
         "agent_workspace_path": record.get("agent_workspace_path"),
@@ -799,6 +799,51 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
         "error": record.get("error"),
         "build_exit_code": record["build_exit_code"],
         "build_log_path": str(log_path) if log_path.is_file() else None,
+    }
+    if record["status"] == "build_succeeded" and config["checker_command"] is not None:
+        return _run_checker(config["checker_command"], result, record)
+    return result
+
+
+def _run_checker(command: list[str], result: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    run_path = Path(result["run_path"])
+    record_path = run_path / "run.json"
+    log_path = run_path / "checker.log"
+    record.update(status="checking", checker_exit_code=None, checker_log_path=str(log_path))
+    record.pop("error", None)
+    _write_run_record(record_path, record)
+    print(f"Running checker in {result['worktree_path']} (log: {log_path})", flush=True)
+    try:
+        # stdoutとstderrをそのまま保存し、利用者のチェッカー固有の出力形式を保つ。
+        with log_path.open("wb") as log:
+            try:
+                completed = subprocess.run(
+                    command, cwd=result["worktree_path"], stdout=log, stderr=subprocess.STDOUT, check=False,
+                )
+            except OSError as exc:
+                log.write(f"{exc}\n".encode("utf-8"))
+                raise
+        record["checker_exit_code"] = completed.returncode
+        record["status"] = "checker_succeeded" if completed.returncode == 0 else "checker_needs_review"
+    except OSError as exc:
+        record.update(status="checker_failed", error=str(exc))
+    except KeyboardInterrupt:
+        record.update(status="checker_failed", error="checker interrupted by user")
+        _write_run_record(record_path, record)
+        raise RunInterrupted(record["run_id"]) from None
+
+    _write_run_record(record_path, record)
+    return {
+        **result,
+        "junie_exit_code": record.get("junie_exit_code"),
+        "agent_workspace_path": record.get("agent_workspace_path"),
+        "completed_capsules": record["completed_capsules"],
+        "status": record["status"],
+        "error": record.get("error"),
+        "build_exit_code": record["build_exit_code"],
+        "build_log_path": record.get("build_log_path"),
+        "checker_exit_code": record["checker_exit_code"],
+        "checker_log_path": str(log_path) if log_path.is_file() else None,
     }
 
 
@@ -839,7 +884,10 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     if record.get("run_id") != run_id or record.get("project_root") != config["project_root"]:
         raise ValueError("run record does not match the configured project")
     build_only = record.get("status") in {"junie_finished", "building", "build_failed"}
-    if not build_only and record.get("status") not in {"prepared", "junie_running", "junie_failed", "interrupted"}:
+    checker_only = record.get("status") in {"build_succeeded", "checking", "checker_needs_review", "checker_failed"}
+    if checker_only and (config["checker_command"] is None or record.get("build_exit_code") != 0):
+        raise ValueError("resuming the checker requires a successful build and a checker command")
+    if not (build_only or checker_only) and record.get("status") not in {"prepared", "junie_running", "junie_failed", "interrupted"}:
         raise ValueError(f"run is not resumable from status {record.get('status')!r}")
 
     unit_id = record.get("unit_id")
@@ -887,12 +935,13 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         context_paths.append(str(context_path))
 
     completed_capsules = record.get("completed_capsules", 0)
+    migration_complete = build_only or checker_only
     if (
         not isinstance(completed_capsules, int)
-        or (completed_capsules != len(context_paths) if build_only else not 0 <= completed_capsules < len(context_paths))
+        or (completed_capsules != len(context_paths) if migration_complete else not 0 <= completed_capsules < len(context_paths))
     ):
         raise ValueError("run record has inconsistent capsule completion")
-    if not build_only and record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
+    if not migration_complete and record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
         raise ValueError("run record has inconsistent capsule progress; inspect it before resuming")
 
     result = {
@@ -908,6 +957,8 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "source_boundary_review_required": record["source_boundary_review_required"],
         "max_context_chars": record["max_context_chars"],
     }
+    if checker_only:
+        return _run_checker(config["checker_command"], result, record)
     if build_only:
         return _build_worktree(config, result, record)
     _validate_junie_execution()

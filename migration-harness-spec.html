@@ -133,7 +133,7 @@
       </button>
     </div>
     <h1>PHP → C# 移行ハーネス</h1>
-    <p class="lead">Windows上でローカル実行するPython + LangGraphのハーネス。移行対象を準備し、指定範囲を分割してJunieに順次渡します。全カプセルの完了後にworktreeでdotnet buildを実行します。チェッカー、修正ループ、アンカーJSONレビューは今後の設計です。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
+    <p class="lead">Windows上でローカル実行するPython + LangGraphのハーネス。移行対象を準備し、指定範囲を分割してJunieに順次渡します。全カプセルの完了後にworktreeでビルドし、成功した場合は設定したチェッカーを実行します。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
   </header>
 
   <section>
@@ -166,7 +166,7 @@
 
   <section>
     <h2>1. 現在の実装フロー</h2>
-    <p class="diagram-note">prepareはworktreeとコンテキストカプセルを作成します。runはJunieで移行し、全カプセルを反映してからビルドします。移行の中断やビルド失敗の後は、run IDを指定すると同じworktreeで該当の工程から再開できます。</p>
+    <p class="diagram-note">prepareはworktreeとコンテキストカプセルを作成します。runはJunieで移行し、ビルド成功後に設定済みのチェッカーを実行します。終了コードはrun.json、出力はchecker.logに保存します。</p>
     <div class="diagram">
       <pre class="mermaid">
 flowchart TB
@@ -182,15 +182,18 @@ flowchart TB
     J --> K{未処理カプセルがある?}
     K -- はい --> H
     K -- いいえ --> M[worktreeでdotnet buildを実行]
-    M --> L[人がログとworktreeの差分を確認]
+    M --> N{ビルド成功かつチェッカー設定済み?}
+    N -- はい --> O[チェッカーを実行して結果を保存]
+    O --> L[人がログとworktreeの差分を確認]
+    N -- いいえ --> L
 
     classDef start fill:#e8f6ef,stroke:#176b4b,color:#123c2c,stroke-width:2px
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
     classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
     class A start
-    class B,C,D,E,H,I,J,M action
-    class F,K decision
+    class B,C,D,E,H,I,J,M,O action
+    class F,K,N decision
     class G,L pending
       </pre>
     </div>
@@ -328,7 +331,7 @@ flowchart TB
       </article>
       <article class="diagram-card">
         <h3>ビルドとチェッカーの修正</h3>
-        <p>ビルド成功後にチェッカーを実行し、修正回数を制限する設計案です。</p>
+        <p>ビルド成功後のチェッカー実行まで実装済みです。指摘を使った自動修正と、修正回数の制限は設計案です。</p>
         <div class="diagram">
           <pre class="mermaid">
 flowchart TB
@@ -392,7 +395,7 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、全カプセル完了後のビルド。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
+  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、全カプセル完了後のビルドとチェッカー実行。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、ビルド・チェッカーの修正ループ、アンカーJSONを使った人のレビュー。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>

@@ -64,6 +64,13 @@ def load_config(path: Path) -> dict[str, Any]:
         if build_path.anchor or ".." in build_path.parts or build_path.suffix.lower() not in {".csproj", ".sln", ".slnx"}:
             raise ValueError("[build].project must name a .csproj, .sln or .slnx inside the worktree")
 
+    checker = raw.get("checker", {})
+    if not isinstance(checker, dict):
+        raise ValueError("[checker] must be a table")
+    checker_command = checker.get("command")
+    if "command" in checker:
+        validate_checker_command(checker_command)
+
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
         raise ValueError("[junie] must be a table")
@@ -125,6 +132,17 @@ def load_config(path: Path) -> dict[str, Any]:
         "run_root": str(run_root),
         "max_context_chars": max_context_chars,
         "build_project": build_project,
+        "checker_command": checker_command,
         "junie_max_steps": junie_max_steps,
         "units": normalized_units,
     }
+
+
+def validate_checker_command(command: Any) -> None:
+    if (
+        not isinstance(command, list)
+        or not command
+        or any(not isinstance(arg, str) or "\0" in arg for arg in command)
+        or not command[0].strip()
+    ):
+        raise ValueError("checker command must be a non-empty array with an executable followed by arguments")
