@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from contextlib import closing
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 from fixtures import HarnessCase
 from migration_harness import review_anchors, workflow
+from migration_harness.behavior import behavior_status, verify
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace
 
@@ -165,8 +167,8 @@ class CapsulePreparationTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "input shared must be a boolean"):
             load_config(self.config_path({**PHP, "shared": "true"}))
 
-    # 元PHPを変更・削除しても、アンカーと通常比較で同じ固定版を使うことを検証する。
-    def test_viewer_and_anchors_share_original_php_after_edit_and_delete(self):
+    # 元PHPを変更・削除しても、アンカー・通常比較・振る舞い比較で同じ固定版を使うことを検証する。
+    def test_review_and_behavior_share_original_php_after_edit_and_delete(self):
         source_text = '<?php\r\necho "日本語";\r\n// Last line\r\n'
         raw = source_text.encode("euc-jp")
         self.php.write_bytes(raw)
@@ -221,6 +223,31 @@ class CapsulePreparationTests(HarnessCase):
             snapshot, count = review_anchors.generate_anchors(config, run_id, reference)
         self.assertEqual(count, 1)
         self.assertEqual(self.read_json(snapshot)["workspace"], edited["workspace"])
+
+        worktree_php = target.parent / self.php.name
+        self.assertEqual(worktree_php.read_bytes(), b"<?php\necho 100;\n")
+        fixture = self.root / "cases.json"
+        fixture.write_text(json.dumps({
+            "php_source": self.php.name, "ignored_fields": [],
+            "cases": [{"id": "reviewed", "input": {}, "expected": {"value": 100}}],
+        }), encoding="utf-8")
+
+        def run_fixture(argv, *, cwd, **kwargs):
+            """実際にPHP用の作業領域へ置かれたバイト列を照合して、観測値を返す。"""
+            output = b'[{"value":100}]'
+            if argv[-1] == "Reference.php":
+                self.assertEqual((cwd / argv[-1]).read_bytes(), raw)
+                output = json.dumps([{"value": "日本語"}]).encode("utf-8")
+            return subprocess.CompletedProcess(argv, 0, output, b"")
+
+        for bytes_in_worktree in (b"<?php\necho 100;\n", b"<?php\necho 999;\n"):
+            worktree_php.write_bytes(bytes_in_worktree)
+            with patch("migration_harness.behavior.subprocess.run", side_effect=run_fixture):
+                report = verify(config, run_id, fixture)
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["result"]["identity"]["php"], pins[0])
+            self.assertEqual(report["result"]["cases"][0]["php"], {"value": "日本語"})
+            self.assertEqual(behavior_status(config, run_id)["status"], "failed")
 
     # 固定版が欠落したときに現在のPHPへ黙って切り替えないことを検証する。
     def test_missing_or_changed_pin_fails_even_if_live_php_exists(self):

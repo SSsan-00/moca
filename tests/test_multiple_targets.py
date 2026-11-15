@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -139,3 +140,63 @@ class MultipleTargetsTest(HarnessCase):
         (self.worktree / self.targets[1]).write_text("external edit", encoding="utf-8")
         report = workflow.review_checker(self.settings, run_id, None, None)
         self.assertEqual(sum(accepted for _, _, accepted in report["findings"]), 1)
+
+    # 手修正後の再開で両ファイルを同期し、参照専用の変更は反映前に検出する。
+    def test_repair_syncs_both_files_and_rejects_reference_changes(self):
+        self.resume(self.edit_with_junie(complete=False))
+        model_name, page_name = self.targets
+        case_record = self.record()
+        case_record.update(status="checker_needs_review", build_exit_code=0, completed_capsules=1)
+        self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
+        model, page = self.worktree / model_name, self.worktree / page_name
+        agent = self.run_path / "agent-workspace"
+
+        def run_checker(command, *, cwd, stdout, **kwargs):
+            """ビューが未修正のときだけ、そのファイルに指摘を出す。"""
+            if command[0] == "fixture-checker" and page.read_bytes() != b"repaired using NewName":
+                stdout.write(f"RZ1 {page_name}:1 warning: use NewName\n".encode())
+                return subprocess.CompletedProcess(command, 1)
+            return subprocess.CompletedProcess(command, 0)
+
+        for case in ("success", "junie_edits_reference", "worktree_reference_changes", "missing_reference"):
+            with self.subTest(case=case):
+                workflow._write_run_record(self.record_path, case_record)
+                model.write_bytes(b"latest model with NewName")
+                page.write_bytes(b"latest view before repair")
+                (agent / model_name).write_bytes(b"stale model with OldName")
+                (agent / page_name).write_bytes(b"stale view")
+                if case == "missing_reference":
+                    model.unlink()
+
+                def repair(command, completion, token, target):
+                    """Junieの起動直前に参照用の内容と、実際に編集するファイルを確認する。"""
+                    self.assertEqual(target, agent / page_name)
+                    self.assertIn(f"repair only `{page_name}`", command[-1])
+                    self.assertEqual(target.read_bytes(), b"latest view before repair")
+                    self.assertEqual((agent / model_name).read_bytes(), b"latest model with NewName")
+                    target.write_bytes(b"repaired using NewName")
+                    if case == "junie_edits_reference":
+                        (agent / model_name).write_bytes(b"unexpected agent edit")
+                    if case == "worktree_reference_changes":
+                        model.write_bytes(b"external edit during repair")
+                    completion.write_text(token, encoding="ascii")
+                    return 0
+
+                with patch.object(workflow.subprocess, "run", side_effect=run_checker):
+                    result = self.resume(repair)
+                if case == "success":
+                    self.assertEqual(result["status"], "checker_succeeded")
+                    self.assertEqual(page.read_bytes(), b"repaired using NewName")
+                    self.assertEqual(model.read_bytes(), b"latest model with NewName")
+                else:
+                    self.assertEqual(result["status"], "checker_needs_review")
+                    self.assertEqual(page.read_bytes(), b"latest view before repair")
+                    if case == "junie_edits_reference":
+                        self.assertIn("outside the repair targets", result["error"])
+                        self.assertEqual(model.read_bytes(), b"latest model with NewName")
+                    elif case == "worktree_reference_changes":
+                        self.assertIn("worktree target changed during Junie execution", result["error"])
+                        self.assertEqual(model.read_bytes(), b"external edit during repair")
+                    else:
+                        self.assertIn(model_name, result["error"])
+                        self.assertFalse(model.exists())

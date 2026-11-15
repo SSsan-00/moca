@@ -186,7 +186,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             )
         self.assertEqual(result["status"], "checker_succeeded")
         repair.assert_called_once()
-        self.assertEqual(repair.call_args.args[4], self.diagnostic.decode().strip())
+        self.assertEqual(repair.call_args.args[5], self.diagnostic.decode().strip())
         self.assertEqual(len(self.record()["repair_history"]), 1)
         self.assertEqual((self.run_path / "checker-before-repair-1.log").read_bytes(), self.diagnostic)
 

@@ -14,9 +14,12 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any, BinaryIO
 
-from migration_harness.workflow import _has_symlink_component, _load_saved_run, worktree_source_lock
+from migration_harness.workflow import (
+    _has_symlink_component, _load_capsule_manifest, _load_saved_run, _pinned_php_sources, _read_pinned_php,
+    worktree_source_lock,
+)
 
-_RESULT_VERSION = 1  # 実行や照合の契約が変わるときに更新する。
+_RESULT_VERSION = 2  # バージョン1はworktree側のPHPを実行していた。
 _RESULT_FILE = "behavior.json"
 _FRAMEWORK = "net10.0"
 _PROJECT = f"""<Project Sdk="Microsoft.NET.Sdk">
@@ -57,7 +60,7 @@ def _source_path(worktree: Path, name: str) -> Path:
 
 
 def _read_inputs(
-    worktree: Path, unit: dict[str, Any], fixture_path: Path,
+    run_path: Path, worktree: Path, unit: dict[str, Any], fixture_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes, dict[str, bytes]]:
     """ケースとソースを検証し、実行するバイト列の版を記録する。"""
     if not fixture_path.is_file():
@@ -67,11 +70,7 @@ def _read_inputs(
     if not isinstance(fixture, dict):
         raise ValueError("behavior fixture must be a JSON object")
     php_source = fixture.get("php_source")
-    if (
-        not isinstance(php_source, str)
-        or Path(php_source).suffix.lower() != ".php"
-        or all(Path(item["path"]) != Path(php_source) for item in unit["inputs"])
-    ):
+    if not isinstance(php_source, str) or Path(php_source).suffix.lower() != ".php":
         raise ValueError("php_source must name a PHP input of the saved Run's unit")
     ignored = fixture.get("ignored_fields")
     if (
@@ -100,12 +99,19 @@ def _read_inputs(
             )
         case_ids.add(case["id"])
 
+    capsule_path, manifest = _load_capsule_manifest(run_path)
+    pinned_sources = _pinned_php_sources(manifest)
+    if pinned_sources is None:
+        raise ValueError("this Run has no fixed PHP snapshot; prepare a new Run before verifying behavior")
+    php_path = Path(php_source)
+    pinned_php = next((source for source in pinned_sources if Path(source["path"]) == php_path), None)
+    if pinned_php is None:
+        raise ValueError("php_source must name a PHP input recorded in the saved Run's manifest")
+    php_bytes = _read_pinned_php(capsule_path, pinned_php)
     targets = {}
     csharp_sources = {}
     target_names = {unit["target"], *unit.get("targets", [])}
     with worktree_source_lock:
-        php_path = _source_path(worktree, php_source)
-        php_bytes = php_path.read_bytes()
         for name in sorted(target_names):
             path = _source_path(worktree, name)
             relative = path.relative_to(worktree).as_posix()
@@ -117,7 +123,7 @@ def _read_inputs(
         raise ValueError("behavior verification requires a declared .cs target")
     identity = {
         "fixture": {"path": str(fixture_path), "sha256": hashlib.sha256(fixture_bytes).hexdigest()},
-        "php": {"path": php_path.relative_to(worktree).as_posix(), "sha256": hashlib.sha256(php_bytes).hexdigest()},
+        "php": {**pinned_php, "path": Path(pinned_php["path"]).as_posix()},
         "targets": targets,
     }
     return identity, fixture, php_bytes, csharp_sources
@@ -174,13 +180,15 @@ def _matches(actual: dict[str, Any], expected: dict[str, Any], ignored: list[str
     return json.dumps(compared, sort_keys=True) == json.dumps(expected, sort_keys=True)
 
 
-def _check_result_freshness(report: dict[str, Any], worktree: Path, unit: dict[str, Any]) -> dict[str, Any]:
+def _check_result_freshness(
+    report: dict[str, Any], run_path: Path, worktree: Path, unit: dict[str, Any],
+) -> dict[str, Any]:
     """保存時から入力やソースが変わった場合は再検証を求める状態にする。"""
     try:
         fixture_path = Path(report["identity"]["fixture"]["path"])
         if not fixture_path.is_absolute():
             raise ValueError("recorded fixture path is not absolute")
-        current, _, _, _ = _read_inputs(worktree, unit, fixture_path)
+        current, _, _, _ = _read_inputs(run_path, worktree, unit, fixture_path)
         if current == report["identity"]:
             return {"status": report["status"], "result": report}
         reason = "behavior source or fixture changed"
@@ -203,7 +211,7 @@ def behavior_status(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         report = _decode_json(path.read_bytes())
         if (
             not isinstance(report, dict)
-            or report.get("version") != _RESULT_VERSION
+            or report.get("version") not in (1, _RESULT_VERSION)
             or report.get("run_id") != run_id
             or report.get("status") not in ("passed", "failed")
             or not isinstance(report.get("cases"), list)
@@ -212,9 +220,11 @@ def behavior_status(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             raise ValueError("invalid or unsupported behavior result")
     except (OSError, ValueError, RecursionError) as exc:
         return {"status": "stale", "result": None, "reason": str(exc)}
+    if report["version"] == 1:
+        return {"status": "stale", "result": report, "reason": "saved result did not verify the Run's fixed PHP snapshot"}
     if record.get("target_apply_pending"):
         return {"status": "stale", "result": report, "reason": "migration files are being applied"}
-    return _check_result_freshness(report, worktree, unit)
+    return _check_result_freshness(report, run_path, worktree, unit)
 
 
 def verify(config: dict[str, Any], run_id: str, fixture_path: Path) -> dict[str, Any]:
@@ -223,7 +233,7 @@ def verify(config: dict[str, Any], run_id: str, fixture_path: Path) -> dict[str,
     if record.get("target_apply_pending") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
         raise ValueError("finish or pause the current migration operation before verifying behavior")
     fixture_path = Path(os.path.abspath(fixture_path.expanduser()))
-    identity, fixture, php_source, csharp_sources = _read_inputs(worktree, unit, fixture_path)
+    identity, fixture, php_source, csharp_sources = _read_inputs(run_path, worktree, unit, fixture_path)
     cases = [
         {"id": case["id"], "input": case["input"], "expected": case["expected"], "php": None, "csharp": None}
         for case in fixture["cases"]
@@ -314,4 +324,4 @@ def verify(config: dict[str, Any], run_id: str, fixture_path: Path) -> dict[str,
         temporary.unlink(missing_ok=True)
     if interrupted:
         raise KeyboardInterrupt
-    return _check_result_freshness(report, worktree, unit)
+    return _check_result_freshness(report, run_path, worktree, unit)

@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from migration_harness.workflow import _input_encoding, _load_saved_run, worktree_source_lock
+from migration_harness.workflow import (
+    _input_encoding, _load_capsule_manifest, _load_saved_run, _pinned_php_sources, _read_pinned_php,
+    worktree_source_lock,
+)
 
 
 def _inside_file(root: Path, relative: str) -> Path:
@@ -46,20 +49,10 @@ def capture_workspace(
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     if record.get("target_apply_pending"):
         raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
-    manifest_path = _inside_file(run_path, "capsule/manifest.json")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    pinned = "php_sources" in manifest
-    if pinned:
-        sources = manifest["php_sources"]
-        if not isinstance(sources, list) or any(
-            not isinstance(source, dict) or not all(
-                isinstance(source.get(key), str) and source[key] for key in ("path", "snapshot", "encoding", "sha256")
-            )
-            for source in sources
-        ):
-            raise ValueError("保存済みPHPのmanifestが無効です。")
-        left_paths = [(source, _inside_file(manifest_path.parent, source["snapshot"])) for source in sources]
-    else:
+    capsule_path, manifest = _load_capsule_manifest(run_path)
+    sources = _pinned_php_sources(manifest)
+    legacy_paths = []
+    if sources is None:
         # 保存済みPHPを持たない旧Runでは、manifestのパスと文字コードで現在の入力を読む。
         project = Path(config["project_root"])
         encodings: dict[str, str] = {}
@@ -67,10 +60,8 @@ def capture_workspace(
             for source in part["sources"]:
                 if Path(source["path"]).suffix.lower() == ".php":
                     encodings.setdefault(source["path"], source["encoding"])
-        left_paths = [
-            ({"path": name, "encoding": encoding}, _inside_file(project, name)) for name, encoding in encodings.items()
-        ]
-    if not left_paths:
+        legacy_paths = [(_inside_file(project, name), name, encoding) for name, encoding in encodings.items()]
+    if not (sources or legacy_paths):
         raise ValueError("この実行の入力に参照PHPがありません。")
     target = Path(unit["target"]).as_posix()
     if "targets" in unit:
@@ -82,20 +73,16 @@ def capture_workspace(
     else:
         targets = [target]
     right_paths = {name: _inside_file(worktree, name) for name in targets}
-    paths = [path for _, path in left_paths] + list(right_paths.values())
+    paths = [path for path, _, _ in legacy_paths] + list(right_paths.values())
     with worktree_source_lock:
         before = [path.stat() for path in paths]
-        left_files = []
-        for source, path in left_paths:
-            encoding = source["encoding"]
-            if pinned:
-                content = path.read_bytes()
-                if hashlib.sha256(content).hexdigest() != source["sha256"]:
-                    raise ValueError(f"保存済みPHPのハッシュが一致しません: {source['path']}")
-                text = content.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
-            else:
-                text = path.read_text(encoding=_input_encoding(path, encoding))
-            left_files.append((Path(source["path"]).as_posix(), text))
+        left_files = [
+            (Path(name).as_posix(), path.read_text(encoding=_input_encoding(path, encoding)))
+            for path, name, encoding in legacy_paths
+        ]
+        for source in sources or []:
+            text = _read_pinned_php(capsule_path, source).decode(source["encoding"])
+            left_files.append((Path(source["path"]).as_posix(), text.replace("\r\n", "\n").replace("\r", "\n")))
         right_files = []
         for name, path in right_paths.items():
             content = path.read_bytes()

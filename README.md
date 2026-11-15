@@ -82,7 +82,7 @@ php-to-csharp-harness ledger-review --config harness.local.toml --run-id RUN_ID 
 
 ## 代表処理の振る舞い比較
 
-PHP 8以上と.NET 10 SDKを使う任意の検証です。`examples/behavior-search` の3ファイルを隔離したサンプルアプリのGitリポジトリに置き、`Search.cs` を移行先、`search.php` をPHP入力として `prepare` します。比較するPHPとC#は同じRunのworktreeから読み、検証用の一時フォルダで実行します。
+PHP 8以上と.NET 10 SDKを使う任意の検証です。`examples/behavior-search` の3ファイルを隔離したサンプルアプリのGitリポジトリに置き、`Search.cs` を移行先、`search.php` をPHP入力として `prepare` します。PHPは準備時にRunへ保存した固定スナップショット、C#は同じRunのworktreeから読み、検証用の一時フォルダで実行します。
 
 ```powershell
 php-to-csharp-harness verify --config harness.local.toml --run-id RUN_ID --fixture PATH_TO_CASES_JSON
@@ -91,7 +91,7 @@ php-to-csharp-harness verify --config harness.local.toml --run-id RUN_ID
 
 ケースは入力と期待結果をJSONで定義します。PHPとC#の両方が標準入力でケースの配列を受け取り、同じ順番で結果オブジェクトを返します。サンプルは検索の必須条件、文字列の `0`、件数の境界、並び順、日本語の表示値を検証します。動的な `generated_at` は `ignored_fields` に指定し、他の値と配列の順序を照合します。
 
-Run配下の `behavior.json` とログに、実行コマンド、PHP・.NETの情報、対象ファイルとケースのハッシュ、期待値・実測値を残します。`--fixture` を省くと保存結果を表示します。台帳ではRun単位で未実行・サンプル検証済み・失敗・要再検証を表示します。対象ファイルやケースが変わった場合は同じRun IDと `--fixture` を指定して再検証します。このサンプルは独立した処理用の契約です。
+Run配下の `behavior.json` とログに、実行コマンド、PHP・.NETの情報、対象ファイルとケースのハッシュ、期待値・実測値を残します。`--fixture` を省くと保存結果を表示します。台帳ではRun単位で未実行・サンプル検証済み・失敗・要再検証を表示します。対象ファイルやケースが変わった場合は同じRun IDと `--fixture` を指定して再検証します。固定PHPの欠損やハッシュ不一致がある場合は、以前の結果を **要再検証** と表示します。旧方式で保存した結果も要再検証になります。固定PHPを持たないRunは、元の版で作り直してから比較します。このサンプルは独立した処理用の契約です。
 
 ## 実行
 
@@ -145,7 +145,7 @@ max_repair_attempts = 2
 
 自動修正する場合、チェッカーは指摘があるときに非ゼロで終了し、指摘をUTF-8の `ルールID ファイル:行 warning: メッセージ` または `ルールID ファイル:行 error: メッセージ` で出力します。たとえば `MIG101 Pages/Example.cshtml:12 warning: 共通関数を使用してください` の形式です。既存のチェッカーが違う形式を使う場合は、利用者側のラッパーで整形できます。
 
-Junieは設定済みの移行先ファイルだけを修正します。修正前のチェッカー出力は `checker-before-repair-N.log`、直近の結果は `checker.log`、試行履歴は `run.json` に残ります。過去に修正した指摘が残るか再発した場合は、行番号が変わっていてもルールID・対象ファイル・メッセージで照合し、人の確認に回します。上限、対象外のファイル、解析できない出力、Junieの未完了や変更なしでも、その理由を記録します。
+自動修正の前に、移行単位で指定した全ファイルを最新のworktreeからJunie用フォルダへ同期します。Junieが編集できるのは指摘のあったファイルです。その他の移行先は参照資料として渡します。修正前のチェッカー出力は `checker-before-repair-N.log`、直近の結果は `checker.log`、試行履歴は `run.json` に残ります。過去に修正した指摘が残るか再発した場合は、行番号が変わっていてもルールID・対象ファイル・メッセージで照合し、人の確認に回します。上限、対象外のファイル、解析できない出力、Junieの未完了や変更なしでも、その理由を記録します。
 
 人が確認した後は、同じRun IDで `resume` を実行できます。チェッカーの段階から再開する場合も先にビルドし、現在のビルドが成功してからチェッカーを実行します。修正回数と指摘の履歴は維持します。CLIでのみチェッカーを指定した場合は、`resume` にも `--checker-command` を指定します。
 

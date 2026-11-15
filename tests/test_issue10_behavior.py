@@ -35,6 +35,18 @@ class BehaviorVerificationTests(unittest.TestCase):
         self.php = self.worktree / "search.php"
         shutil.copyfile(EXAMPLE / self.target.name, self.target)
         shutil.copyfile(EXAMPLE / self.php.name, self.php)
+        capsule = self.run_path / "capsule"
+        self.pin = capsule / "php-sources" / "0001.php"
+        self.pin.parent.mkdir(parents=True)
+        shutil.copyfile(self.php, self.pin)
+        self.manifest = capsule / "manifest.json"
+        self.manifest.write_text(json.dumps({
+            "parts": [{"index": 1}],
+            "php_sources": [{
+                "path": self.php.name, "snapshot": self.pin.relative_to(capsule).as_posix(),
+                "encoding": "utf-8", "sha256": hashlib.sha256(self.pin.read_bytes()).hexdigest(),
+            }],
+        }), encoding="utf-8")
         self.unit = {"id": "search", "target": self.target.name, "inputs": [{"path": self.php.name}]}
         self.config = {
             "project_root": str(root / "project"),
@@ -65,8 +77,11 @@ class BehaviorVerificationTests(unittest.TestCase):
 
     # 結果のないRunを未実行として表示することを検証する。
     def test_legacy_run_without_result_is_not_run(self):
+        self.manifest.write_text('{"parts": [{"index": 1}]}', encoding="utf-8")
         with patch("migration_harness.behavior.subprocess.run") as execute:
             self.assertEqual(behavior_status(self.config, self.run_id), {"status": "not_run", "result": None})
+            with self.assertRaisesRegex(ValueError, "no fixed PHP snapshot"):
+                verify(self.config, self.run_id, self.fixture)
         execute.assert_not_called()
 
     # ケース、PHP、移行先のいずれが変わっても以前の成功が失効することを検証する。
@@ -79,7 +94,7 @@ class BehaviorVerificationTests(unittest.TestCase):
         self.assertEqual(identity["php"]["sha256"], hashlib.sha256(self.php.read_bytes()).hexdigest())
         self.assertEqual(identity["fixture"]["sha256"], hashlib.sha256(self.fixture.read_bytes()).hexdigest())
         with patch("migration_harness.behavior.subprocess.run") as execute:
-            for path in (self.fixture, self.php, self.target):
+            for path in (self.fixture, self.pin, self.target):
                 with self.subTest(path=path.name):
                     original = path.read_bytes()
                     path.write_bytes(original + b"\n")
@@ -91,6 +106,22 @@ class BehaviorVerificationTests(unittest.TestCase):
             self.target.unlink()
             self.assertEqual(behavior_status(self.config, self.run_id)["status"], "stale")
         execute.assert_not_called()
+
+    # 固定元が欠けた場合は成功を失効させ、旧方式の結果も要再検証にする。
+    def test_missing_snapshot_and_old_result_are_not_current(self):
+        with patch("migration_harness.behavior.subprocess.run", side_effect=self.stub_process):
+            result = verify(self.config, self.run_id, self.fixture)["result"]
+        self.pin.unlink()
+        self.assertEqual(behavior_status(self.config, self.run_id)["status"], "stale")
+        with patch("migration_harness.behavior.subprocess.run") as execute:
+            with self.assertRaisesRegex(ValueError, "0001.php"):
+                verify(self.config, self.run_id, self.fixture)
+        execute.assert_not_called()
+        result["version"] = 1
+        (self.run_path / "behavior.json").write_text(json.dumps(result), encoding="utf-8")
+        status = behavior_status(self.config, self.run_id)
+        self.assertEqual(status["status"], "stale")
+        self.assertEqual(status["result"]["status"], "passed")
 
     # 比較コードと同じRunのRazorファイルを変更検知の対象に含めることを検証する。
     def test_multi_target_identity_covers_primary_and_noncompiled_target(self):
