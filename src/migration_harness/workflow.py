@@ -1030,7 +1030,7 @@ def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFindi
                 if not line:
                     continue
                 match = _CHECKER_FINDING.fullmatch(line)
-                if match is None:
+                if match is None or "\0" in match["path"]:
                     unrecognized = True
                     continue
                 path = Path(match["path"].replace("\\", "/"))
