@@ -55,6 +55,9 @@ class MultipleTargetsTest(HarnessCase):
             self.assertEqual(tuple(path.name for path in targets), self.targets)
             self.assertIn("extract the exact ordered data mechanically from the assigned PHP lines", args[-1])
             self.assertIn("including both values and order", args[-1])
+            self.assertIn("Never add an explicit route to a bare @page", args[-1])
+            self.assertIn("fully qualified type in @model", args[-1])
+            self.assertIn("Razor encodes that expression once", args[-1])
             for path in targets:
                 path.write_text(f"migrated {path.name}", encoding="utf-8")
             if outside:
@@ -161,6 +164,31 @@ class MultipleTargetsTest(HarnessCase):
         report = workflow.review_checker(self.settings, run_id, None, None)
         self.assertEqual(sum(accepted for _, _, accepted in report["findings"]), 1)
 
+    def test_razor_model_error_repairs_only_the_matching_source_page(self):
+        model, page = map(Path, self.targets)
+        project = self.worktree / "App.csproj"
+        generator = self.worktree / "obj" / "Debug" / workflow._RAZOR_GENERATOR
+        diagnostic = f"(2,8): error CS0246: Missing PageModel [{project}]\n"
+        actual = f"{self.worktree / page}{diagnostic}"
+        duplicate = f"{generator / 'Page_cshtml.g.cs'}{diagnostic}"
+        unrelated = f"{generator / 'Other_cshtml.g.cs'}{diagnostic}"
+        record = {"build_exit_code": 1, "repair_history": []}
+        with patch.object(workflow, "_validate_junie_execution"), patch.object(workflow, "_attempt_repair") as repair:
+            log = self.run_path / "build.log"
+            for contents in (duplicate, unrelated + actual):
+                log.write_text(contents, encoding="utf-8")
+                self.assertFalse(workflow._repair_build_failure(
+                    self.settings, (model, page), self.worktree, self.run_path, record,
+                ))
+            repair.assert_not_called()
+            log.write_text(duplicate + actual, encoding="utf-8")
+            self.assertTrue(workflow._repair_build_failure(
+                self.settings, (model, page), self.worktree, self.run_path, record,
+            ))
+            repair.assert_called_once()
+            self.assertEqual(repair.call_args.args[2], (page,))
+            self.assertEqual(repair.call_args.args[5], f"{page}(2,8): CS0246: Missing PageModel")
+
     # 手修正後の再開で両ファイルを同期し、参照専用の変更は反映前に検出する。
     def test_repair_syncs_both_files_and_rejects_reference_changes(self):
         self.resume(self.edit_with_junie(complete=False))
@@ -197,6 +225,8 @@ class MultipleTargetsTest(HarnessCase):
                     self.assertIn(f"repair only `{page_name}`", command[-1])
                     self.assertIn("all saved `.migration-materials/source-*.md` files in capsule order", command[-1])
                     self.assertIn("extract the exact ordered data mechanically", command[-1])
+                    self.assertIn("fully qualified type in @model", command[-1])
+                    self.assertIn("Razor encodes that expression once", command[-1])
                     self.assertEqual(target.read_bytes(), b"latest view before repair")
                     self.assertEqual((agent / model_name).read_bytes(), b"latest model with NewName")
                     target.write_bytes(b"repaired using NewName")

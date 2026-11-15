@@ -1003,6 +1003,29 @@ _EXACT_SOURCE_DATA = (
 )
 
 
+def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> str:
+    if not any(path.suffix.lower() == ".cshtml" for path in targets):
+        return ""
+    route = (
+        "Preserve the @page directive unless the diagnostic is about routing. "
+        if repair else
+        "Copy every existing @page line verbatim. If it is just @page, leave it as just @page: "
+        "it already routes by file path. Never add an explicit route to a bare @page. "
+    )
+    return (
+        "Check the .cshtml and .cshtml.cs together. "
+        f"{route}"
+        "Preserve the existing PageModel namespace. "
+        "If the PageModel is in the global namespace, keep the class global and use its class name in @model. "
+        "For a namespaced PageModel, use its fully qualified type in @model and verify the class and namespace match "
+        "the code-behind before writing the completion record. Do not rely on unstaged Razor imports. "
+        "For PHP htmlspecialchars or htmlentities used to output plain text, keep the original unencoded value in C# "
+        "and output it with an ordinary Razor @ expression. Razor encodes that expression once. "
+        "Do not call Html.Encode, HtmlEncoder.Encode or WebUtility.HtmlEncode before that expression, "
+        "and do not use Html.Raw to bypass Razor encoding for this text. "
+    )
+
+
 def _run_prepared_with_junie(
     config: dict[str, Any],
     unit: dict[str, Any],
@@ -1113,7 +1136,7 @@ def _run_prepared_with_junie(
             "The surrounding context range overlaps adjacent segments and is reference-only; do not migrate it twice. "
             "These records are slices of one physical source line, and displayed line breaks are not source newlines. "
             "Do not infer text outside the context range. "
-            f"{_EXACT_SOURCE_DATA}"
+            f"{_EXACT_SOURCE_DATA}{_razor_instructions(relative_targets)}"
             "Do not access files outside this workspace. Do not run builds, tests, or external checkers. "
             "After verifying that all required changes for this capsule are saved, write exactly "
             f"`{completion_token}` as plain text to `{completion_path}` as your final file action. "
@@ -1449,7 +1472,7 @@ def _repair_target(
         "and collect the whole affected operation sequence, even when the diagnostic shows only the first difference. "
         "Compare it with the entire corresponding sequence in the current target. If there are differences in "
         "several places, generate the replacement data directly from the extracted sequence in one pass. "
-        f"{_EXACT_SOURCE_DATA}"
+        f"{_EXACT_SOURCE_DATA}{_razor_instructions(targets, repair=True)}"
         "Do not edit project settings or checkers, read outside the workspace, or run builds or checkers. "
         f"After saving the completed repair, write exactly `{token}` as plain text to "
         f"`{completion_path.name}` as your final file action. Leave the record absent if blocked or incomplete."
@@ -1610,6 +1633,7 @@ _BUILD_DIAGNOSTIC = re.compile(
     r"(?:error|エラー)\s+(?P<code>(?:CS|RZ)\d+)\s*:\s*(?P<message>.+)",
     re.IGNORECASE,
 )
+_RAZOR_GENERATOR = "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerator"
 
 
 def _repair_build_failure(
@@ -1622,6 +1646,8 @@ def _repair_build_failure(
     if len(history) >= limit or not record.get("build_exit_code") or log.stat().st_size > 65_536:
         return False
     findings = {}
+    generated_model_errors = set()
+    source_model_errors = set()
     for line in log.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = line.strip()
         match = _BUILD_DIAGNOSTIC.fullmatch(line)
@@ -1629,12 +1655,32 @@ def _repair_build_failure(
             if re.search(r"(?:^|:\s*)(?:error|エラー)\s+[A-Z]+\d+\s*:", line, re.IGNORECASE):
                 return False
             continue
-        path = (worktree / match["path"]).resolve().relative_to(worktree)
-        if path not in targets:
+        resolved = (worktree / match["path"]).resolve()
+        if not resolved.is_relative_to(worktree):
             return False
+        path = resolved.relative_to(worktree)
+        code = match["code"].upper()
         message = match["message"].rsplit(" [", 1)[0]
-        key = path.as_posix(), match["code"], message
-        findings.setdefault(key, f"{path.as_posix()}({match['location']}): {match['code']}: {message}")
+        project_suffix = match["message"][len(message):]
+        if path not in targets:
+            if code != "CS0246" or _RAZOR_GENERATOR not in path.parts:
+                return False
+            generator_index = path.parts.index(_RAZOR_GENERATOR)
+            if "obj" not in path.parts[:generator_index] or not path.name.endswith("_cshtml.g.cs"):
+                return False
+            generated_model_errors.add((Path(*path.parts[generator_index + 1:]), message, project_suffix))
+            continue
+        if code == "CS0246" and path.suffix.lower() == ".cshtml" and project_suffix.lower().endswith(".csproj]"):
+            project_dir = (worktree / project_suffix[2:-1]).resolve().parent
+            if project_dir.is_relative_to(worktree) and resolved.is_relative_to(project_dir):
+                page = resolved.relative_to(project_dir)
+                generated = page.with_name(f"{page.stem}_cshtml.g.cs")
+                source_model_errors.add((generated, message, project_suffix))
+        key = path.as_posix(), code, message
+        findings.setdefault(key, f"{path.as_posix()}({match['location']}): {code}: {message}")
+    # Only suppress generated copies that also have a diagnostic on an editable Razor source file.
+    if not generated_model_errors.issubset(source_model_errors):
+        return False
     diagnostics = "\n".join(findings.values())
     if not diagnostics or len(diagnostics) > 8000:
         return False
