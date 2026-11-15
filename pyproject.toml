@@ -8,8 +8,6 @@ version = "0.1.0"
 description = "A bounded-context harness for PHP to C# migration with Junie CLI"
 requires-python = ">=3.11"
 dependencies = [
-  "langgraph>=1.0,<2",
-  "langgraph-checkpoint-sqlite>=3.1,<4",
   "tomlkit>=0.13,<1",
 ]
 

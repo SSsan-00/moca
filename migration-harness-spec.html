@@ -113,7 +113,7 @@
       </button>
     </div>
     <h1>PHP → C# 移行ハーネス</h1>
-    <p class="lead">Windows上でローカル実行するPython + LangGraphのハーネス。移行対象を準備し、指定範囲を分割してJunieに順次渡します。全カプセルの完了後にworktreeでビルドし、成功した場合は設定したチェッカーを実行します。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
+    <p class="lead">Windows上でローカル実行するPythonのハーネス。移行対象を準備し、指定範囲を分割してJunieに順次渡します。全カプセルの完了後にworktreeでビルドし、成功した場合は設定したチェッカーを実行します。<a href="./progress-demo.html">進捗画面のデモ</a>も確認できます。</p>
   </header>
 
   <section>
@@ -121,8 +121,8 @@
     <div class="grid">
       <article class="card">
         <h3>構成と移行先</h3>
-        <p><span class="tag">Python</span><span class="tag">LangGraph</span><span class="tag">Junie</span><span class="tag">.NET 9</span></p>
-        <p>現在、LangGraphが設定検証・コンテキスト作成・worktree作成を管理し、その後PythonからJunie CLIをカプセルごとに順次起動します。JunieはdotUltimateなどで利用するエージェントです。移行先は既存のASP.NET Core Razor Pages（現状.NET 9）で、共通関数などは.csに配置します。</p>
+        <p><span class="tag">Python</span><span class="tag">Junie</span><span class="tag">.NET 9</span></p>
+        <p>Pythonで入力を検証し、カプセルの作成が成功してからworktreeを作成します。その後、Junie CLIをカプセルごとに順次起動します。JunieはdotUltimateなどで利用するエージェントです。移行先は既存のASP.NET Core Razor Pages（現状.NET 9）で、共通関数などは.csに配置します。</p>
       </article>
       <article class="card">
         <h3>移行材料</h3>
@@ -178,8 +178,8 @@ flowchart TB
       </pre>
     </div>
     <div class="callout">
-      <h3>LangGraphとチェックポイント</h3>
-      <p>LangGraphは現在、準備フローを管理します。SQLiteチェックポイントも準備グラフの状態保存に使いますが、保存した状態から再開する機能はまだありません。Junie実行以降は現在LangGraphのグラフ外で動きます。</p>
+      <h3>実行記録と再開</h3>
+      <p>同じRun IDを指定すると、既存の実行記録（run.json）、カプセル、作業ツリーを使って未完了のカプセルから再開します。</p>
     </div>
     <div class="callout amber">
       <h3>参照範囲の制限</h3>
@@ -283,7 +283,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>現在実装した上限超過対応</h3>
-      <p>PHPの全文または明示した行範囲を、上限に応じて行境界で分割し、カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。比較メニューでJunieがアンカーを生成すると、ハーネスは処理済みのPHP範囲に対応する移行先の候補を割り出し、Run IDごとに保存します。移行台帳では差分と記録済みの判断・理由を閲覧できます。判断はCLIで記録します。移行先の内容が変わった範囲は「要再確認」と表示します。依存情報の追加取得、論理境界での分割、対応の自動検証は今後の設計です。</p>
+      <p>PHPの全文または明示した行範囲を、上限に応じて行境界で分割し、カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。同じ入力のカプセル間では、前後の行を読み取り用に添えます。比較メニューでJunieがアンカーを生成すると、ハーネスは処理済みのPHP範囲に対応する移行先の候補を割り出し、Run IDごとに保存します。移行台帳では差分と記録済みの判断・理由を閲覧できます。判断はCLIで記録します。移行先の内容が変わった範囲は「要再確認」と表示します。依存情報の追加取得、論理境界での分割、対応の自動検証は今後の設計です。</p>
     </div>
   </section>
 
@@ -316,20 +316,20 @@ flowchart TB
       </article>
       <article class="diagram-card">
         <h3>ビルドとチェッカーの修正</h3>
-        <p>Junieは対象ファイルの指摘を既定で1つのRunにつき最大2回修正し、ビルド、チェッカーの順で確認します。自動修正を0回に設定した場合や、過去の指摘が残るか再発した場合は人の確認に回します。</p>
+        <p>Junieは移行先のC#・Razorのコンパイラエラーと独自チェッカーの指摘を、既定で1つのRunにつき合計2回まで修正します。準備時のルールと参考実装を使い、修正後はビルド、チェッカーの順で確認します。自動修正を0回に設定した場合や、過去の指摘が残るか再発した場合は人の確認に回します。</p>
         <p>準備、Junie移行、ビルド、チェッカーの前後に自作スクリプトを設定できます。準備前はアプリのリポジトリ、それ以降はRunのworktreeで工程ごとに設定順に実行します。非ゼロで終了した場合は、その工程のログを保存して停止します。</p>
         <div class="diagram">
           <pre class="mermaid">
 flowchart TB
     A[ビルド] --> B{成功?}
-    B -- いいえ --> G[ログを保存して人の確認へ]
+    B -- いいえ --> I
     I -- はい --> D[Junieが対象ファイルを修正]
     D --> A
     B -- はい --> E[独自チェッカー]
     E --> F{終了コードは0?}
     F -- はい --> H[レビュー準備完了]
     F -- いいえ --> I{修正可能で、上限内かつ再発なし?}
-    I -- いいえ --> G
+    I -- いいえ --> G[ログを保存して人の確認へ]
     G -- 問題なしを記録してresume --> A
 
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033

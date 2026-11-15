@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
-from contextlib import closing
 from contextvars import ContextVar
 from dataclasses import dataclass
 import codecs
@@ -11,7 +10,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 from threading import RLock
@@ -19,32 +17,12 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Iterator, TypedDict
+from typing import Any, Iterator
 
-# チェックポイントの読込に使う型を制限する設定は、LangGraphのimport前に適用する。
-os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
-
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph import END, START, StateGraph
+from .config import REFERENCE_ROLES
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
 worktree_source_lock = RLock()
-
-
-class PrepareState(TypedDict, total=False):
-    """準備グラフのノード間で受け渡す項目を定義する。"""
-    config: dict[str, Any]
-    unit_id: str
-    run_id: str
-    worktree_path: str
-    run_path: str
-    context_path: str
-    context_paths: list[str]
-    context_part_chars: list[int]
-    context_chars: int
-    capsule_path: str
-    capsule_count: int
-    source_boundary_review_required: bool
 
 
 class RunInterrupted(KeyboardInterrupt):
@@ -85,25 +63,23 @@ def _has_symlink_component(root: Path, relative_path: Path) -> bool:
     return False
 
 
-def _validate(state: PrepareState) -> dict[str, Any]:
+def _validate_inputs(root: Path, unit: dict[str, Any]) -> None:
     """作業場所を作る前に入力ファイルがアプリ内にあることを確認する。"""
-    config = state["config"]
-    unit = _unit(config, state["unit_id"])
-    root = Path(config["project_root"])
     for source in unit["inputs"]:
         path = (root / source["path"]).resolve()
         if not path.is_relative_to(root):
             raise ValueError(f"input escapes project root: {source['path']}")
         if not path.is_file():
             raise ValueError(f"input file not found: {source['path']}")
-    return {}
 
 
-def _create_worktree(state: PrepareState) -> dict[str, Any]:
+def _create_worktree(
+    config: dict[str, Any], unit: dict[str, Any], run_path: Path, context: dict[str, Any],
+) -> Path:
     """指定リビジョンの分離したworktreeと初期Run記録を用意する。"""
-    config = state["config"]
     root = Path(config["project_root"])
-    worktree = Path(config["worktree_root"]) / state["run_id"]
+    run_id = run_path.name
+    worktree = Path(config["worktree_root"]) / run_id
     worktree.parent.mkdir(parents=True, exist_ok=True)
     if worktree.exists():
         raise FileExistsError(f"worktree path already exists: {worktree}")
@@ -113,24 +89,22 @@ def _create_worktree(state: PrepareState) -> dict[str, Any]:
         capture_output=True,
         text=True,
     )
-    unit = _unit(config, state["unit_id"])
-    run_path = Path(state["run_path"])
     record = {
-        "run_id": state["run_id"],
+        "run_id": run_id,
         "unit_id": unit["id"],
         "status": "prepared",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "project_root": config["project_root"],
         "worktree_path": str(worktree),
-        "capsule_path": str(run_path / "capsule"),
-        "context_chars": state["context_chars"],
-        "context_part_chars": state["context_part_chars"],
-        "context_capsules": state["capsule_count"],
+        "capsule_path": context["capsule_path"],
+        "context_chars": context["context_chars"],
+        "context_part_chars": context["context_part_chars"],
+        "context_capsules": context["capsule_count"],
         "max_context_chars": config["max_context_chars"],
         "junie_max_steps": config["junie_max_steps"],
         "resume_attempts": 0,
         "segmentation_policy": "line_with_character_fallback_and_overlap",
-        "source_boundary_review_required": state["capsule_count"] > 1,
+        "source_boundary_review_required": context["source_boundary_review_required"],
         "target": unit["target"],
         "completed_capsules": 0,
         "current_capsule": 1,
@@ -140,7 +114,7 @@ def _create_worktree(state: PrepareState) -> dict[str, Any]:
     if (log_path := run_path / "before_prepare.log").is_file():
         record["script_logs"] = {"before_prepare": str(log_path)}
     _write_run_record(run_path / "run.json", record)
-    return {"worktree_path": str(worktree)}
+    return worktree
 
 
 def _text_fingerprint(path: Path, encoding: str) -> bytes | None:
@@ -347,12 +321,9 @@ def _prepare_inputs(
     return prepared, list(php_sources.values())
 
 
-def _prepare_context(state: PrepareState) -> dict[str, Any]:
+def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path) -> dict[str, Any]:
     """共通資料の予算を先に取り、残りに移行対象を詰める。"""
-    config = state["config"]
-    unit = _unit(config, state["unit_id"])
     root = Path(config["project_root"])
-    run_path = Path(config["run_root"]) / state["run_id"]
     capsule = run_path / "capsule"
     capsule.mkdir(parents=True, exist_ok=False)
 
@@ -361,6 +332,9 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     header = _context_header(unit)
     shared_groups: list[dict[str, Any]] = []
     segment_inputs = []
+    materials: dict[str, str] = {}
+    reference_index = []
+    material_dir = capsule / "materials"
     shared_intro = (
         "# Shared context\n\n"
         "Apply the shared rules and constraints to every segment. Read these excerpts as reference.\n\n"
@@ -368,6 +342,21 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     segment_intro = "# Segment inputs\n\n"
     shared_base_chars = len(header) + len(shared_intro) + len(segment_intro)
     for input_index, (item, source_path) in enumerate(inputs):
+        if item["role"] in REFERENCE_ROLES and item.get("shared", False):
+            material_dir.mkdir(exist_ok=True)
+            name = f"reference-{len(reference_index) + 1:04d}.txt"
+            snapshot = material_dir / name
+            with snapshot.open("w", encoding="utf-8", newline="") as stream:
+                for number, line in _selected_lines(
+                    source_path, item["start_line"], item["end_line"], item["resolved_encoding"],
+                ):
+                    stream.write(f"{number:>6} | {line}")
+            materials[name] = _sha256_file(snapshot)
+            reference_index.append({
+                "role": item["role"], "path": item["path"], "file": name,
+                "start_line": item["start_line"], "end_line": number,
+            })
+            continue
         if item["role"] != "migration_rules" and not item.get("shared", False):
             segment_inputs.append((input_index, item, source_path))
             continue
@@ -380,6 +369,15 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     if not segment_inputs:
         raise ValueError("migration unit requires at least one input outside shared context")
     shared_context = shared_intro + _render_groups(shared_groups) + segment_intro if shared_groups else ""
+    if shared_groups:
+        material_dir.mkdir(exist_ok=True)
+        rules = material_dir / "shared.md"
+        rules.write_text(_render_groups(shared_groups), encoding="utf-8", newline="")
+        materials[rules.name] = _sha256_file(rules)
+    if reference_index:
+        index = material_dir / "references.json"
+        index.write_text(json.dumps(reference_index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        materials[index.name] = _sha256_file(index)
     prefix = header + shared_context
     base_chars = len(prefix)
     overlap_chars = min(512, (max_chars - len(shared_context)) // 20)
@@ -392,9 +390,12 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     context_part_chars: list[int] = []
     manifest_parts: list[dict[str, Any]] = []
     split_line_coverage: list[dict[str, Any]] = []
+    previous_tail: tuple[int, str] | None = None
+    boundary_chars = min(1200, max_chars // 10)
 
     def flush_capsule() -> None:
         """確定した抜粋と実際の文字数を保存して、次のカプセルを空にする。"""
+        nonlocal previous_tail
         if not groups:
             return
         context = prefix + _render_groups(groups)
@@ -412,8 +413,24 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
             "index": part_number,
             "path": str(context_path),
             "chars": len(context),
+            "sha256": _sha256_file(context_path),
             "sources": [_manifest_source(group) for group in groups],
         })
+        first, last = groups[0], groups[-1]
+        if previous_tail and previous_tail[0] == first["input_index"]:
+            previous_dir = Path(context_paths[-2]).parent
+            next_lines = "".join(record[:boundary_chars] for record in first["records"][:12])[:boundary_chars]
+            with (previous_dir / "boundary.md").open("a", encoding="utf-8", newline="") as stream:
+                stream.write(f"\nFollowing excerpt (read-only)\n\n{next_lines}\n")
+            (part_dir / "boundary.md").write_text(
+                f"Previous excerpt (read-only)\n\n{previous_tail[1]}\n", encoding="utf-8", newline="",
+            )
+        tail = ""
+        for line in reversed(last["records"][-12:]):
+            if tail and len(line) + len(tail) > boundary_chars:
+                break
+            tail = line[:boundary_chars] + tail
+        previous_tail = last["input_index"], tail
         groups.clear()
 
     for input_index, item, source_path in segment_inputs:
@@ -483,6 +500,10 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
             })
 
     flush_capsule()
+    for part in manifest_parts:
+        boundary = Path(part["path"]).with_name("boundary.md")
+        if boundary.is_file():
+            part["boundary_sha256"] = _sha256_file(boundary)
     manifest = {
         "unit_id": unit["id"],
         "max_context_chars": max_chars,
@@ -491,12 +512,14 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
         "split_line_coverage": split_line_coverage,
         "total_context_chars": sum(context_part_chars),
         "shared_sources": [_manifest_source(group) for group in shared_groups],
+        "segment_offset": len(prefix),
+        "materials": materials,
+        "reference_sources": reference_index,
         "php_sources": php_sources,
         "parts": manifest_parts,
     }
     (capsule / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return {
-        "run_path": str(run_path),
         "context_path": context_paths[0],
         "context_paths": context_paths,
         "context_part_chars": context_part_chars,
@@ -507,51 +530,26 @@ def _prepare_context(state: PrepareState) -> dict[str, Any]:
     }
 
 
-def _graph():
-    """入力と上限の検証を終えてからworktreeを作る準備グラフを構成する。"""
-    builder = StateGraph(PrepareState)
-    builder.add_node("validate", _validate)
-    builder.add_node("create_worktree", _create_worktree)
-    builder.add_node("prepare_context", _prepare_context)
-    builder.add_edge(START, "validate")
-    # コンテキスト作成と上限確認が成功してからworktreeを作る。
-    builder.add_edge("validate", "prepare_context")
-    builder.add_edge("prepare_context", "create_worktree")
-    builder.add_edge("create_worktree", END)
-    return builder
-
-
 def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
-    """Run IDを発行し、準備グラフとチェックポイントの寿命を管理する。"""
+    """入力を検証し、カプセルの作成が成功してから作業ツリーを作る。"""
     run_id = str(uuid.uuid4())
-    run_root = Path(config["run_root"])
-    run_root.mkdir(parents=True, exist_ok=True)
-    run_path = run_root / run_id
-    _unit(config, unit_id)
+    run_path = Path(config["run_root"]) / run_id
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    unit = _unit(config, unit_id)
+    project_root = Path(config["project_root"])
     if config.get("scripts", {}).get("before_prepare") and (observer := run_observer.get()) is not None:
         observer({"status": "script_running", "script_phase": "before_prepare", "unit_id": unit_id, "run_id": run_id})
-    _run_script_phase(config, "before_prepare", Path(config["project_root"]), run_path)
-    checkpoint_db = run_root / "checkpoints.sqlite"
-    with closing(sqlite3.connect(checkpoint_db, check_same_thread=False)) as connection, connection:
-        checkpointer = SqliteSaver(connection)
-        app = _graph().compile(checkpointer=checkpointer)
-        result = app.invoke(
-            {"config": config, "unit_id": unit_id, "run_id": run_id},
-            {"configurable": {"thread_id": run_id}},
-        )
+    _run_script_phase(config, "before_prepare", project_root, run_path)
+    _validate_inputs(project_root, unit)
+    context = _prepare_context(config, unit, run_path)
+    worktree = _create_worktree(config, unit, run_path, context)
     if config.get("scripts", {}).get("after_prepare"):
         record = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
-        _run_script_phase(config, "after_prepare", Path(result["worktree_path"]), run_path, record, once=True)
+        _run_script_phase(config, "after_prepare", worktree, run_path, record, once=True)
     return {
         "run_id": run_id,
-        "worktree_path": result["worktree_path"],
-        "context_path": result["context_path"],
-        "context_paths": result["context_paths"],
-        "context_part_chars": result["context_part_chars"],
-        "context_chars": result["context_chars"],
-        "capsule_path": result["capsule_path"],
-        "capsule_count": result["capsule_count"],
-        "source_boundary_review_required": result["source_boundary_review_required"],
+        "worktree_path": str(worktree),
+        **context,
         "max_context_chars": config["max_context_chars"],
         "run_path": str(run_path),
     }
@@ -588,20 +586,32 @@ def _run_script_phase(
     log_path = run_path / f"{phase}.log"
     record_path = run_path / "run.json"
     previous_status = record["status"] if record is not None else "preparing"
+    command_ids = []
+    start = 0
+    if record is not None and once:
+        command_ids = [hashlib.sha256(json.dumps(command).encode("utf-8")).hexdigest() for command in commands]
+        completed_ids = record.get("script_command_progress", {}).get(phase, [])
+        for saved, current in zip(completed_ids, command_ids):
+            if saved != current:
+                break
+            start += 1
     if record is not None:
         record.setdefault("script_logs", {})[phase] = str(log_path)
         record.update(status="script_running", script_phase=phase)
         _write_run_record(record_path, record)
     print(f"Running {phase} scripts in {cwd} (log: {log_path})", flush=True)
-    number = 1
+    number = start + 1
     try:
         with log_path.open("ab") as log:
-            for number, command in enumerate(commands, 1):
+            for number, command in enumerate(commands[start:], start + 1):
                 log.write(f"\n[{phase} {number}] {command[0]}\n".encode("utf-8"))
                 log.flush()
                 completed = subprocess.run(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
+                if record is not None and once:
+                    record.setdefault("script_command_progress", {})[phase] = command_ids[:number]
+                    _write_run_record(record_path, record)
     except (KeyboardInterrupt, OSError, ValueError) as exc:
         reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else str(exc)
         message = f"スクリプト {phase} の {number} 番目で停止しました（{reason}）。ログ {log_path}"
@@ -614,6 +624,7 @@ def _run_script_phase(
     if record is not None:
         if once:
             record.setdefault("completed_script_phases", []).append(phase)
+            record.get("script_command_progress", {}).pop(phase, None)
         record["status"] = previous_status
         record.pop("script_phase", None)
         _write_run_record(record_path, record)
@@ -818,6 +829,72 @@ def _save_terminal_mode() -> Callable[[], None]:
     return restore
 
 
+def _stage_migration_materials(
+    capsule: Path, manifest: dict[str, Any], agent_root: Path, *, repair: bool = False,
+) -> str:
+    """準備時の資料を照合して、今回のJunieに読む順番を伝える。"""
+    materials = manifest.get("materials", {})
+    for name, digest in materials.items():
+        if not re.fullmatch(r"shared\.md|references\.json|reference-\d+\.txt", name):
+            raise ValueError("invalid migration material filename")
+        source = _safe_target(capsule, Path("materials") / name)
+        destination = _safe_target(agent_root, Path(".migration-materials") / name)
+        if _target_hash(source) != digest or not source.is_file():
+            raise ValueError(f"saved migration material changed or is missing: {name}")
+        if _target_hash(destination) != digest:
+            destination.parent.mkdir(exist_ok=True)
+            shutil.copyfile(source, destination)
+    instructions = ""
+    if repair and "shared.md" in materials:
+        instructions += 'Before editing, read `.migration-materials/shared.md` and apply all mandatory rules. '
+    if "references.json" in materials:
+        instructions += (
+            'Before editing, read `.migration-materials/references.json`. Each PHP example and its following '
+            'C#/Razor files form a pair through the next PHP entry. Identify the applicable pair and read the '
+            'relevant lines on both sides in small ranges. Follow their implementation patterns. '
+            'Keep the migrated literals and behavior from the actual PHP, including when examples use different data. '
+        )
+    if repair and "materials" not in manifest and manifest.get("shared_sources"):
+        source = Path(manifest["parts"][0]["path"]).resolve()
+        if not source.is_relative_to(capsule) or not source.is_file():
+            raise ValueError("saved shared context is missing or outside the capsule directory")
+        destination = _safe_target(agent_root, Path(".migration-materials/legacy.md"))
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copyfile(source, destination)
+        instructions += 'Before editing, read the Shared context section in `.migration-materials/legacy.md` and apply its rules and examples. '
+    if repair:
+        for part in manifest["parts"]:
+            source = Path(part["path"]).resolve()
+            if not source.is_relative_to(capsule) or not source.is_file():
+                raise ValueError("saved repair source is missing or outside the capsule directory")
+            if part.get("sha256") and _sha256_file(source) != part["sha256"]:
+                raise ValueError(f"capsule {part['index']}: saved repair source changed")
+            destination = _safe_target(agent_root, Path(".migration-materials") / f"source-{part['index']:04d}.md")
+            destination.parent.mkdir(exist_ok=True)
+            with source.open(encoding="utf-8", newline="") as stream:
+                original = stream.read()[manifest.get("segment_offset", 0):]
+            destination.write_text(original, encoding="utf-8", newline="")
+        instructions += (
+            'Use the numbered original PHP excerpts in `.migration-materials/source-*.md` to verify the '
+            'behavior around the diagnostic. Search and read relevant lines in small ranges. Preserve existing '
+            'values and output unless the actual PHP requires a change. '
+        )
+    return instructions
+
+
+_EXACT_SOURCE_DATA = (
+    "For repeated statements with data, literal tables, or other long sequences, use the workspace shell to "
+    "extract the exact ordered data mechanically from the assigned PHP lines. A short Python command is fine. "
+    "Read the file on disk, select the original numbered source rows in scope, and match the complete statements "
+    "or use a tokenizer as needed. Exclude examples, shared rules, and read-only boundary rows from the data. "
+    "Keep the same values, order, duplicates, and exceptions. Never derive the sequence or its length from "
+    "sampled lines or the current C# output. Prefer a compact lossless representation generated by the extraction "
+    "command so that you do not have to print or retype thousands of values. Before submitting, compare the decoded "
+    "data or expanded sequence with the extracted source sequence, including both values and order. A matching "
+    "count alone is insufficient. "
+)
+
+
 def _run_prepared_with_junie(
     config: dict[str, Any],
     unit: dict[str, Any],
@@ -834,7 +911,7 @@ def _run_prepared_with_junie(
     relative_targets = _target_paths(unit)
     for relative in relative_targets:
         first = relative.parts[0].lower()
-        if first == ".migration-context.md" or first.startswith(("migration-complete-", "checker-findings-")):
+        if first in {".migration-context.md", ".migration-materials", ".migration-boundary.md"} or first.startswith(("migration-complete-", "checker-findings-")):
             raise ValueError("target path conflicts with a reserved file in the agent workspace")
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
@@ -855,6 +932,8 @@ def _run_prepared_with_junie(
     _finish_pending_targets(agent_root, worktree_root, relative_targets, record, record_path)
     worktree_targets = tuple(_safe_target(worktree_root, path) for path in relative_targets)
     agent_targets = tuple(_safe_target(agent_root, path) for path in relative_targets)
+    capsule, manifest = _load_capsule_manifest(run_path)
+    material_instructions = _stage_migration_materials(capsule, manifest, agent_root)
     hashes = {path.as_posix(): _target_hash(file) for path, file in zip(relative_targets, worktree_targets, strict=True)}
     if resuming:
         prior_hashes = record.get("target_hashes", {relative_targets[0].as_posix(): record.get("target_sha256")})
@@ -881,7 +960,25 @@ def _run_prepared_with_junie(
     exit_code = None
     start_index = record["completed_capsules"] + 1
     for index, context_path in enumerate(result["context_paths"][start_index - 1 :], start=start_index):
-        shutil.copyfile(context_path, agent_context)
+        part = manifest["parts"][index - 1]
+        if part.get("sha256") and _target_hash(Path(context_path)) != part["sha256"]:
+            raise ValueError(f"capsule {index}: saved context changed or is missing")
+        shutil.copyfile(context_path, _safe_target(agent_root, Path(agent_context.name)))
+        boundary_instruction = ""
+        boundary = _safe_target(agent_root, Path(".migration-boundary.md"))
+        boundary_digest = part.get("boundary_sha256")
+        if boundary_digest:
+            boundary_source = Path(context_path).with_name("boundary.md")
+            if not boundary_source.resolve().is_relative_to(capsule) or boundary_source.is_symlink() or _target_hash(boundary_source) != boundary_digest:
+                raise ValueError(f"capsule {index}: boundary context changed or is missing")
+            shutil.copyfile(boundary_source, boundary)
+            boundary_instruction = (
+                'Read `.migration-boundary.md` before editing. Use its neighboring lines and the changes '
+                'already in the targets to carry declarations, values, and control flow across this boundary. '
+                'Migrate only the range assigned in the current capsule. '
+            )
+        else:
+            boundary.unlink(missing_ok=True)
         completion_token = uuid.uuid4().hex
         # 隠しファイルはJunieが書き込み前に承認を求めるため、通常の名前を使う。
         completion_path = agent_root / f"migration-complete-{completion_token}.txt"
@@ -892,12 +989,15 @@ def _run_prepared_with_junie(
                 "keep completed edits, and migrate only what is still missing. "
             )
         prompt = (
-            f"Read `{agent_context}`. This is context segment {index} of {result['capsule_count']} "
+            f"Start with the headings and shared rules in `{agent_context}`; inspect source in bounded ranges. "
+            f"This is context segment {index} of {result['capsule_count']} "
             f"for migration unit `{unit['id']}`. The configured target files are "
             + ", ".join(f"`{path.as_posix()}`" for path in relative_targets) + ". "
             "Preserve work from earlier segments and continue only with this segment. "
             "Edit only the configured targets and the completion record described below. "
             "Ensure every configured target exists before writing a completion record. "
+            "Apply all mandatory rules in the Shared context section if present. "
+            f"{material_instructions}{boundary_instruction}"
             f"{resume_instruction}"
             "The source excerpt may begin or end inside a function or control structure. Use its original line numbers; "
             "do not treat the excerpt boundary as a PHP statement boundary or add closing syntax just for the excerpt end. "
@@ -905,6 +1005,7 @@ def _run_prepared_with_junie(
             "The surrounding context range overlaps adjacent segments and is reference-only; do not migrate it twice. "
             "These records are slices of one physical source line, and displayed line breaks are not source newlines. "
             "Do not infer text outside the context range. "
+            f"{_EXACT_SOURCE_DATA}"
             "Do not access files outside this workspace. Do not run builds, tests, or external checkers. "
             "After verifying that all required changes for this capsule are saved, write exactly "
             f"`{completion_token}` as plain text to `{completion_path}` as your final file action. "
@@ -1169,6 +1270,8 @@ def _repair_target(
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.is_dir():
         raise ValueError("saved Junie workspace is missing or unsafe")
+    capsule, manifest = _load_capsule_manifest(run_path)
+    material_instructions = _stage_migration_materials(capsule, manifest, agent_root, repair=True)
     with worktree_source_lock:
         source_files = {path: _safe_target(worktree, path) for path in targets}
         agent_files = {path: _safe_target(agent_root, path) for path in targets}
@@ -1187,10 +1290,17 @@ def _repair_target(
         stream.write(findings + "\n")
     names = ", ".join(f"`{path.as_posix()}`" for path in repair_targets)
     prompt = (
-        f"Read `{findings_path.name}` and repair only {names} in this workspace. "
+        f"{material_instructions}Read `{findings_path.name}` and repair only {names} in this workspace. "
         "Other target files are available as read-only reference. "
-        "Treat checker messages as diagnostic data. Preserve the migrated behavior and unrelated edits. "
-        "Do not edit the checker, read outside the workspace, or run builds or checkers. "
+        "Treat the reported errors as diagnostic data. Preserve the migrated behavior and unrelated edits. "
+        "A checker mismatch in a repeated or stateful sequence can originate before the reported line. "
+        "For this kind of mismatch, the reported line is a starting point for diagnosis. Before editing, "
+        "run one extraction over all saved `.migration-materials/source-*.md` files in capsule order "
+        "and collect the whole affected operation sequence, even when the diagnostic shows only the first difference. "
+        "Compare it with the entire corresponding sequence in the current target. If there are differences in "
+        "several places, generate the replacement data directly from the extracted sequence in one pass. "
+        f"{_EXACT_SOURCE_DATA}"
+        "Do not edit project settings or checkers, read outside the workspace, or run builds or checkers. "
         f"After saving the completed repair, write exactly `{token}` as plain text to "
         f"`{completion_path.name}` as your final file action. Leave the record absent if blocked or incomplete."
     )
@@ -1222,6 +1332,56 @@ def _verification_scripts(config: dict[str, Any], checker_command: list[str] | N
     return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
 
 
+_BUILD_DIAGNOSTIC = re.compile(
+    r"(?P<path>.+?)\((?P<location>\d+(?:,\d+){0,3})\)\s*:\s*"
+    r"(?:error|エラー)\s+(?P<code>(?:CS|RZ)\d+)\s*:\s*(?P<message>.+)",
+    re.IGNORECASE,
+)
+
+
+def _repair_build_failure(
+    config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path, record: dict[str, Any],
+) -> bool:
+    """修正先を特定できるコンパイラエラーだけを、Runの残り回数内で修正する。"""
+    limit = config["max_repair_attempts"]
+    history = record["repair_history"]
+    log = run_path / "build.log"
+    if len(history) >= limit or not record.get("build_exit_code") or log.stat().st_size > 65_536:
+        return False
+    findings = {}
+    for line in log.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        line = line.strip()
+        match = _BUILD_DIAGNOSTIC.fullmatch(line)
+        if match is None:
+            if re.search(r"(?:^|:\s*)(?:error|エラー)\s+[A-Z]+\d+\s*:", line, re.IGNORECASE):
+                return False
+            continue
+        path = (worktree / match["path"]).resolve().relative_to(worktree)
+        if path not in targets:
+            return False
+        message = match["message"].rsplit(" [", 1)[0]
+        key = path.as_posix(), match["code"], message
+        findings.setdefault(key, f"{path.as_posix()}({match['location']}): {match['code']}: {message}")
+    diagnostics = "\n".join(findings.values())
+    if not diagnostics or len(diagnostics) > 8000:
+        return False
+    fingerprints = {
+        hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest() for key in findings
+    }
+    if any(fingerprints.intersection(attempt["findings"]) for attempt in history):
+        return False
+    _validate_junie_execution()
+    saved_log = run_path / f"build-before-repair-{len(history) + 1}.log"
+    shutil.copyfile(log, saved_log)
+    history.append({"kind": "build", "findings": sorted(fingerprints), "build_log_path": str(saved_log)})
+    record["status"] = "repairing"
+    _write_run_record(run_path / "run.json", record)
+    affected = {key[0] for key in findings}
+    repair_targets = tuple(path for path in targets if path.as_posix() in affected)
+    _repair_target(config, targets, repair_targets, worktree, run_path, diagnostics, record)
+    return True
+
+
 def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1247,6 +1407,17 @@ def _verify_worktree(
         }
         verified = _build_worktree(config, result, record)
         if record["status"] == "build_failed":
+            try:
+                if _repair_build_failure(config, targets, worktree, run_path, record):
+                    continue
+            except (OSError, RuntimeError, ValueError) as exc:
+                record.update(status="build_failed", error=str(exc))
+                _write_run_record(record_path, record)
+                return {**verified, "error": str(exc)}
+            except KeyboardInterrupt:
+                record.update(status="build_failed", error="repair interrupted; inspect Junie's workspace")
+                _write_run_record(record_path, record)
+                raise RunInterrupted(record["run_id"]) from None
             return verified
         _run_script_phase(config, "after_build", worktree, run_path, record)
         if command is None:

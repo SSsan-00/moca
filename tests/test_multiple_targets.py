@@ -32,9 +32,11 @@ class MultipleTargetsTest(HarnessCase):
 
     def edit_with_junie(self, *, complete=True, outside=False):
         """Junieの編集結果と完了記録を、テストの条件に合わせて用意する。"""
-        def run(_args, completion, token, targets):
+        def run(args, completion, token, targets):
             """Junieに相当する処理として、両方の移行先へ変更を保存する。"""
             self.assertEqual(tuple(path.name for path in targets), self.targets)
+            self.assertIn("extract the exact ordered data mechanically from the assigned PHP lines", args[-1])
+            self.assertIn("including both values and order", args[-1])
             for path in targets:
                 path.write_text(f"migrated {path.name}", encoding="utf-8")
             if outside:
@@ -172,6 +174,8 @@ class MultipleTargetsTest(HarnessCase):
                     """Junieの起動直前に参照用の内容と、実際に編集するファイルを確認する。"""
                     self.assertEqual(target, agent / page_name)
                     self.assertIn(f"repair only `{page_name}`", command[-1])
+                    self.assertIn("all saved `.migration-materials/source-*.md` files in capsule order", command[-1])
+                    self.assertIn("extract the exact ordered data mechanically", command[-1])
                     self.assertEqual(target.read_bytes(), b"latest view before repair")
                     self.assertEqual((agent / model_name).read_bytes(), b"latest model with NewName")
                     target.write_bytes(b"repaired using NewName")

@@ -192,6 +192,25 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(self.build_log.read_bytes(), b"edited target does not build\n")
         self.assertEqual(self.checker_log.read_bytes(), old_checker_log)
 
+    def test_build_diagnostic_repairs_target_and_stops_if_error_repeats(self):
+        self.config["max_repair_attempts"] = 2
+        error = f"{self.target}(5,3): error CS1002: ; expected\n".encode()
+        with (
+            patch.object(workflow, "_validate_junie_execution"),
+            patch.object(workflow, "_repair_target") as repair,
+        ):
+            result = self.resume(("dotnet", 1, error), ("dotnet", 1, error.replace(b"(5,3)", b"(6,3)")))
+            self.assertEqual(result["status"], "build_failed")
+            repair.assert_called_once()
+            self.assertEqual(repair.call_args.args[2], (Path(self.target.name),))
+            self.assertEqual((self.run_path / "build-before-repair-1.log").read_bytes(), error)
+            repair.reset_mock()
+            error = error.replace(b"CS1002: ; expected", b"CS1513: } expected")
+            result = self.resume(("dotnet", 1, error), self.build, ("fixture-checker", 0, b"fixed\n"))
+            self.assertEqual(result["status"], "checker_succeeded")
+            repair.assert_called_once()
+            self.assertEqual([entry["kind"] for entry in self.record()["repair_history"]], ["build", "build"])
+
     # 不正な出力が混じった場合に、修正枠を消費せず元ログを残すことを検証する。
     def test_mixed_and_invalid_checker_output_stop_before_automatic_repair(self):
         self.config["max_repair_attempts"] = 2

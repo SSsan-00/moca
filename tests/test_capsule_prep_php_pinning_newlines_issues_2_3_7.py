@@ -3,12 +3,11 @@ import io
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing, redirect_stdout
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -117,7 +116,7 @@ class CapsulePreparationTests(HarnessCase):
         ]
         self.assertEqual(covered_lines, list(range(1, len(source_lines) + 1)))
 
-    def test_multiple_rules_and_reference_pairs_include_complete_files_in_each_capsule(self):
+    def test_all_capsules_keep_rules_and_can_access_pinned_reference_pairs(self):
         self.php.write_bytes(b"<?php\n" + b"echo 100;\n" * 100)
         shared_inputs = [
             {"path": "common.md", "role": "migration_rules"},
@@ -148,19 +147,37 @@ class CapsulePreparationTests(HarnessCase):
         ]), encoding="utf-8")
         config = load_config(path)
         self.assertEqual(config["max_repair_attempts"], 2)
+        large_example = self.project / shared_inputs[-1]["path"]
+        large_example.write_text("first 5\n" + "x" * 1200 + "\nlast 5", encoding="utf-8")
         for unit_id in ("example", "second"):
             result = workflow.prepare_run(config, unit_id)
-            manifest = self.read_json(Path(result["capsule_path"]) / "manifest.json")
+            capsule = Path(result["capsule_path"])
+            manifest = self.read_json(capsule / "manifest.json")
             self.assertGreater(result["capsule_count"], 1)
             self.assertEqual(
                 [(entry["path"], entry["start_line"], entry["end_line"]) for entry in manifest["shared_sources"]],
-                [(item["path"], 1, 2) for item in shared_inputs],
+                [(item["path"], 1, 2) for item in shared_inputs[:2]],
             )
+            references = manifest["reference_sources"]
+            self.assertEqual([entry["path"] for entry in references], [item["path"] for item in shared_inputs[2:]])
+            self.assertEqual(references[-1]["end_line"], 3)
+            agent = self.root / f"agent-{unit_id}"
+            agent.mkdir()
+            prompt = workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
+            self.assertIn("shared.md", prompt)
+            self.assertIn("references.json", prompt)
+            self.assertIn("last 5", (agent / ".migration-materials" / references[-1]["file"]).read_text())
             for part in manifest["parts"]:
                 self.assertEqual([entry["path"] for entry in part["sources"]], [PHP["path"]])
                 context = Path(part["path"]).read_text(encoding="utf-8")
-                for index in range(len(shared_inputs)):
+                for index in range(2):
                     self.assertIn(f"     1 | first {index}\n     2 | last {index}", context)
+                self.assertNotIn("last 5", context)
+            first, second = manifest["parts"][:2]
+            following = Path(first["path"]).with_name("boundary.md").read_text()
+            previous = Path(second["path"]).with_name("boundary.md").read_text()
+            self.assertIn(f"{second['sources'][0]['start_line']:>6} |", following)
+            self.assertIn(f"{first['sources'][0]['end_line']:>6} |", previous)
 
     def test_scripts_run_in_phase_order_and_resume_verification_after_failure(self):
         log = self.root / "script-order.txt"
@@ -225,6 +242,32 @@ class CapsulePreparationTests(HarnessCase):
         self.assertEqual(calls, ["junie", "dotnet", "dotnet", "fixture-checker"])
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertTrue(workflow.migration_ledger(config, run_id)["completion"]["verification_passed"])
+
+    def test_preparation_resume_skips_successful_commands_within_the_same_phase(self):
+        path = self.config_path(PHP)
+        config = load_config(path)
+        counter = self.root / "command-results.txt"
+        append = [sys.executable, "-c",
+                  "import sys; open(sys.argv[1], 'a').write('done\\n')", str(counter)]
+        config["scripts"] = {"after_prepare": [append, [sys.executable, "-c", "raise SystemExit(9)"]]}
+        with self.assertRaises(workflow.RunScriptError) as failure:
+            workflow.prepare_run(config, "example")
+        run_id = failure.exception.run_id
+        config["scripts"]["after_prepare"][1] = [sys.executable, "-c", "pass"]
+
+        def migrate(args, completion, token, target):
+            target.write_text("class Migrated {}")
+            completion.write_text(token)
+            return 0
+
+        with (
+            patch.object(workflow, "_validate_junie_execution"),
+            patch.object(workflow, "_run_interactive_junie", side_effect=migrate),
+            patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result),
+        ):
+            result = workflow.resume_with_junie(config, run_id)
+        self.assertEqual(result["completed_capsules"], 1)
+        self.assertEqual(counter.read_text().splitlines(), ["done"])
 
     # 中断と再開をまたいで、各カプセルに同じ共通資料が含まれることを検証する。
     def test_shared_rules_and_constraints_survive_interruption_and_resume(self):
@@ -293,17 +336,17 @@ class CapsulePreparationTests(HarnessCase):
         worktrees = self.git("worktree", "list", "--porcelain", "-z").stdout.decode("utf-8").split("\0")
         worktree_paths = [Path(entry.removeprefix("worktree ")) for entry in worktrees if entry.startswith("worktree ")]
         self.assertIn(Path(result["worktree_path"]), worktree_paths)
-        with closing(sqlite3.connect(Path(config["run_root"]) / "checkpoints.sqlite")) as db:
-            count = db.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)).fetchone()[0]
-        self.assertGreater(count, 0)
+        self.assertFalse((Path(config["run_root"]) / "checkpoints.sqlite").exists())
 
     # 共通資料が上限を超えた場合にworktreeが残らないことを検証する。
     def test_excess_shared_rules_fail_before_creating_a_worktree(self):
         (self.project / RULES["path"]).write_bytes(b"x" * 1001 + b"\n")
         config = load_config(self.config_path(PHP, RULES))
+        original_worktrees = self.git("worktree", "list", "--porcelain", "-z").stdout
         with self.assertRaisesRegex(ValueError, r"shared context exceeds max_context_chars \(1000\): rules.md"):
             workflow.prepare_run(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())
+        self.assertEqual(self.git("worktree", "list", "--porcelain", "-z").stdout, original_worktrees)
         self.assertEqual(list(Path(config["run_root"]).glob("*/run.json")), [])
 
     # 共通資料で余裕が少ない場合も、必須範囲を欠落させないことを検証する。
