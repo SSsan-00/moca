@@ -868,7 +868,7 @@ def _run_checker(command: list[str], result: dict[str, Any], record: dict[str, A
 
 
 _CHECKER_FINDING = re.compile(
-    r"(?P<rule>[\w.-]+)\s+(?P<path>.+?):\d+(?::\d+)?\s+(?P<severity>warning|error):\s*(?P<message>.+)",
+    r"(?P<rule>[\w.-]+)\s+(?P<path>.+?):(?P<line>\d+)(?::\d+)?\s+(?P<severity>warning|error):\s*(?P<message>.+)",
     re.IGNORECASE,
 )
 
@@ -886,6 +886,7 @@ class CheckerFinding:
     repair_fingerprint: str
     path: str
     diagnostic: str
+    line: str
 
 
 def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFinding], bool]:
@@ -914,7 +915,7 @@ def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFindi
         repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
         review_key = (*key, relative, match["severity"].lower())
         finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
-        findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, line.strip()))
+        findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, line.strip(), match["line"]))
     if not findings or sum(len(finding.diagnostic) + 1 for finding in findings) > 8_000:
         raise ValueError("checker output contains no supported findings or too much text for automatic repair")
     return findings, unrecognized
@@ -1135,6 +1136,7 @@ def review_checker(
             (finding.finding_id[:12], finding.diagnostic, finding.finding_id in accepted)
             for finding in findings
         ],
+        "locations": [{"path": finding.path, "line": finding.line} for finding in findings],
         "unrecognized": unrecognized,
         "log_path": str(log_path),
     }

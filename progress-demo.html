@@ -108,6 +108,8 @@
     .button.primary { border-color: var(--blue); background: var(--blue); color: var(--blue-ink); }
     .button.primary:hover { background: var(--blue-hover); }
     .button:disabled { cursor: default; opacity: .55; }
+    #toggle[aria-haspopup="dialog"] { border-color: var(--amber); background: var(--amber); color: var(--amber-soft); font-weight: 700; }
+    #toggle[aria-haspopup="dialog"]:hover { background: color-mix(in srgb, var(--amber) 88%, var(--ink)); }
     .layout { display: grid; min-height: 0; grid-template-columns: minmax(0, 1.14fr) minmax(340px, .86fr); gap: 16px; align-items: stretch; }
     .layout > .panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
     .panel { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
@@ -166,6 +168,9 @@
     .filter-button[aria-pressed="true"] { border-color: var(--line); background: var(--blue-soft); color: var(--blue); font-weight: 700; }
     .filter-button[data-filter="all"] { position: sticky; left: 0; z-index: 1; background: var(--paper); }
     .filter-button[data-filter="all"][aria-pressed="true"] { background: var(--blue-soft); }
+    .filter-button.has-pending { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); font-weight: 700; }
+    .filter-button.has-pending:hover { border-color: var(--amber); }
+    .filter-button.has-pending[aria-pressed="true"] { border-color: var(--amber); background: var(--amber); color: var(--amber-soft); }
     .filter-button:focus-visible { outline: 2px solid #7da5df; outline-offset: 1px; }
     .ledger-list { min-height: 0; flex: 1; margin: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 0 18px 10px; list-style: none; }
     .ledger-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 42px; border-top: 1px solid var(--line-soft); }
@@ -178,6 +183,9 @@
     .ledger-review-trigger { padding: 0; border: 0; background: none; cursor: pointer; text-align: left; }
     .ledger-review-trigger:hover { color: var(--blue); text-decoration: underline; }
     .ledger-review-trigger:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 2px; }
+    .ledger-row:has(.ledger-review-trigger) { cursor: pointer; }
+    .ledger-row:has(.ledger-review-trigger):hover { background: var(--surface-hover); }
+    .ledger-row:hover .ledger-review-trigger { color: var(--blue); text-decoration: underline; }
     .review-dialog { width: min(620px, calc(100vw - 32px)); max-width: none; max-height: min(86dvh, 760px); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); color: var(--ink); box-shadow: 0 24px 72px #080f1c40; transform-origin: center; }
     .review-dialog[open] { animation: review-dialog-in 320ms cubic-bezier(.22, 1, .36, 1) both; }
     .review-dialog::backdrop { background: #12141c6b; backdrop-filter: blur(2px); animation: review-backdrop-in 320ms cubic-bezier(.22, 1, .36, 1) both; }
@@ -202,6 +210,7 @@
     .review-location div { min-width: 0; padding: 9px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); }
     .review-location small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
     .review-location code { display: block; overflow-wrap: anywhere; color: var(--ink); font: 11px/1.45 var(--mono); }
+    .review-location code + small { margin: 4px 0 0; color: var(--amber); font-weight: 700; }
     .review-code { margin: 0; padding: 11px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); font: 12px/1.65 var(--mono); }
     .review-caveat { margin-top: 9px !important; font-size: 11px !important; }
     .review-context { margin-top: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
@@ -211,10 +220,32 @@
     .review-note { width: 100%; min-height: 66px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; }
     .review-note:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
     .review-note::placeholder { color: var(--soft); }
-    .review-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 8px; margin-top: 16px; }
+    .review-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+    @media (min-width: 650px) {
+      :root:not([data-live]) .review-actions { grid-template-columns: minmax(0, 1fr) minmax(154px, 1fr) repeat(2, minmax(0, 1fr)); }
+      [data-live] .review-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
     .review-action { min-height: 40px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); cursor: pointer; font: inherit; font-size: 12px; font-weight: 680; }
     .review-action:not(:disabled):hover { border-color: var(--border-hover); background: var(--surface-hover); }
     .review-action:disabled { opacity: .55; cursor: default; }
+    .comparison-control { display: inline-flex; position: relative; }
+    .comparison-control > button { flex: 1; white-space: nowrap; }
+    .comparison-control:has(.comparison-options:not([hidden])) > button { border-start-end-radius: 0; border-end-end-radius: 0; }
+    .review-actions .comparison-control > button { min-width: 0; white-space: normal; }
+    .comparison-options { display: flex; }
+    .comparison-options summary { display: grid; width: 34px; min-height: 100%; place-items: center; padding: 0; border-inline-start: 0; border-start-start-radius: 0; border-end-start-radius: 0; list-style: none; }
+    .comparison-options summary::-webkit-details-marker { display: none; }
+    .comparison-options summary::after { width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; content: ""; transform: translateY(-2px) rotate(45deg); }
+    .comparison-options[open] summary { background: var(--blue-soft); color: var(--blue); }
+    .comparison-option-panel { position: absolute; z-index: 3; inset-inline-end: 0; inset-block-start: calc(100% + 6px); width: max-content; max-width: calc(100vw - 48px); padding: 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); box-shadow: 0 8px 24px #0b121d30; }
+    .review-actions .comparison-option-panel { inset-block: auto calc(100% + 6px); }
+    .comparison-option-panel button { width: 100%; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--ink); cursor: pointer; font-size: 12px; text-align: start; }
+    .comparison-option-panel button:hover, .comparison-option-panel button:focus-visible { background: var(--blue-soft); color: var(--blue); }
+    .comparison-option-panel button:disabled { cursor: default; opacity: .55; }
+    .comparison-options summary:focus-visible { position: relative; z-index: 1; }
+    .demo-comparison-status { margin-block: 5px 0; color: var(--muted); }
+    .demo-comparison-status:empty { margin: 0; }
+    [data-live] [data-demo-only] { display: none; }
     @keyframes review-dialog-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
     @keyframes review-dialog-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
     @keyframes review-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
@@ -238,6 +269,8 @@
     :root[data-wipe="star"] { --wipe-animation: reveal-star; }
     ::view-transition-new(root) { z-index: 2; filter: drop-shadow(0 0 3px #fff); animation: var(--wipe-animation) 1.15s cubic-bezier(.65,0,.35,1) both; }
     @media (max-width: 820px) {
+      :root:not([data-live]) .runbar { flex-wrap: wrap; }
+      :root:not([data-live]) .run-meta { flex-basis: 100%; }
       .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
       .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
       .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
@@ -255,6 +288,7 @@
       .elapsed { width: 92px; height: 34px; flex-basis: 92px; padding-inline: 7px; }
       .state { width: 114px; height: 34px; flex-basis: 114px; margin-left: 0; }
       .controls { margin-left: auto; }
+      .controls { flex-wrap: wrap; justify-content: flex-end; }
       .button { padding-inline: 9px; font-size: 12px; }
       #toggle { width: 106px; }
       #restart { width: 68px; }
@@ -291,9 +325,15 @@
     [data-live] .review-finding select { width: 100%; min-height: 36px; margin-bottom: 8px; background: var(--paper); color: var(--ink); }
     [data-live] .review-code { white-space: pre-wrap; overflow-wrap: anywhere; }
     [data-live] .review-caveat { overflow-wrap: anywhere; }
-    [data-live] #demo-compare { display: none; }
-    [data-live] #restart { width: auto; }
+    [data-live] #restart { display: none; }
+    [data-live] .review-location { grid-template-columns: 1fr; margin-top: 0; }
+    [data-live] .review-actions .comparison-option-panel { inset-inline: 0 auto; }
     [data-live] #state-label { white-space: normal; }
+    [data-anchor-reference] .controls { flex-wrap: wrap; }
+    @media (max-width: 820px) {
+      [data-anchor-reference] .runbar { flex-wrap: wrap; }
+      [data-anchor-reference] .run-meta { flex-basis: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -308,13 +348,19 @@
     </div>
   </nav>
   <section class="runbar" aria-label="実行情報">
-    <div class="run-meta"><div class="run-titleline"><h1 class="run-name">注文履歴ページの移行</h1><span class="demo-badge">模擬進捗</span></div><div class="run-detail">run-2026-11-14-001 · worktree: migration/order-history</div></div>
+    <div class="run-meta"><div class="run-titleline"><h1 class="run-name">注文履歴ページの移行</h1><span class="demo-badge">模擬進捗</span></div><div class="run-detail">run-2026-11-14-001 · worktree: migration/order-history</div><p class="run-detail demo-comparison-status" id="demo-anchor-status" role="status" data-demo-only></p></div>
     <time class="elapsed" id="elapsed" datetime="PT0S" aria-label="実行経過時間"><span>経過時間</span><strong id="elapsed-value">00:00:00</strong></time>
     <span class="state is-running" id="run-state" data-state="running" aria-live="polite"><span class="state-orb" aria-hidden="true"></span><span id="state-label">Junieが実行中</span></span>
     <div class="controls" aria-label="デモ操作">
       <button class="button" id="toggle" type="button">一時停止</button>
       <button class="button" id="restart" type="button">最初から</button>
-      <button class="button" id="demo-compare" type="button">比較ツールを開く</button>
+      <div class="comparison-control">
+        <button class="button" type="button" data-compare>比較ツールを開く</button>
+        <details class="comparison-options">
+          <summary class="button" aria-label="比較オプション"></summary>
+          <div class="comparison-option-panel"><button type="button" data-propose-anchors>Junieで対応行を提案して開く</button></div>
+        </details>
+      </div>
     </div>
   </section>
 
@@ -398,9 +444,9 @@
         <p>ページ固有でない変換処理は、共通の .cs 関数へ切り出すルールです。チェッカーはページ内での実装を検出しました。</p>
         <div class="review-location">
           <div><small>移行元</small><code>php/orders.php · get_status_label()</code></div>
-          <div><small>移行先候補</small><code>Pages/Orders/Index.cshtml.cs + Index.cshtml</code></div>
+          <div><small>指摘箇所</small><code>Pages/Orders/Index.cshtml.cs</code><small>チェッカー報告 · 2行目</small></div>
         </div>
-        <pre class="review-code"><code>ViewData["StatusText"] = OrderStatusMap.ToLabel(row.Status);</code></pre>
+        <pre class="review-code"><code>ViewData["StatusText"] = GetStatusText(row.Status);</code></pre>
         <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
       </section>
       <details class="review-context">
@@ -409,9 +455,16 @@
       </details>
       <label class="review-note-label" for="review-note">判断メモ（任意）</label>
       <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
+      <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
       <div class="review-actions">
         <button class="review-action" id="review-later" type="button">あとで確認</button>
-        <button class="review-action" id="open-diff-viewer" type="button">比較ツールを開く</button>
+        <div class="comparison-control">
+          <button class="review-action" id="open-diff-viewer" type="button" data-compare>比較ツールを開く</button>
+          <details class="comparison-options">
+            <summary class="review-action" aria-label="比較オプション"></summary>
+            <div class="comparison-option-panel"><button type="button" data-propose-anchors>Junieで対応行を提案して開く</button></div>
+          </details>
+        </div>
         <button class="review-action" id="review-accept" type="button">問題なしとして記録</button>
         <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
       </div>
@@ -469,6 +522,7 @@
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function updateStep(index) {
+    toggle.removeAttribute("aria-haspopup");
     const now = performance.now();
     if (index !== current) {
       if (stepStartedAt && current < steps.length) stepElapsed[current] += now - stepStartedAt;
@@ -503,8 +557,7 @@
     }
     const checked = Math.min(4 + Math.max(0, index - 3) * 2, 10);
     document.querySelector("#checked-count").innerHTML = `${checked} <span>/ 12</span>`;
-    const pendingJudgments = document.querySelectorAll('.ledger-row[data-status="judgment"]').length;
-    document.querySelector("#pending-count").innerHTML = `${pendingJudgments} <span>件</span>`;
+    updateReviewCount();
     renderStepElapsed();
     const activeItem = document.querySelector(".ledger-row .ledger-state[data-current]");
     if (activeItem) {
@@ -540,7 +593,7 @@
     }, 220);
   }
 
-  function createReviewWorkspace() {
+  function createReviewWorkspace(withAnchors) {
     const php = `function get_status_label($status) {
     return $statusLabels[$status] ?? 'Unknown';
 }`;
@@ -570,7 +623,8 @@
         rightActiveFile: "Pages/Orders/Index.cshtml.cs",
         leftCursor: null, rightCursor: null, leftScrollTop: null, rightScrollTop: null,
         anchors: {
-          manualAnchors: [], staleManualAnchors: [], autoAnchor: null,
+          manualAnchors: withAnchors && current >= 4 ? [{ leftLineNo: 1, rightLineNo: 1 }] : [],
+          staleManualAnchors: [], autoAnchor: null,
           suppressedAutoAnchorKey: null, pendingLeftLineNo: null,
           pendingRightLineNo: null, selectedAnchorKey: null,
         },
@@ -578,23 +632,32 @@
     };
   }
 
-  async function openDiffViewer() {
+  async function openDiffViewer(status, withAnchors = false) {
     // 画面を開くのを待つ間にデモが進んでも、クリックした時点の内容を保持する。
-    const payload = JSON.stringify(createReviewWorkspace(), null, 2);
+    const workspace = createReviewWorkspace(withAnchors);
+    const payload = JSON.stringify(workspace, null, 2);
     const viewerUrl = new URL("tools/dist/index.min.html", location.href);
     const popup = window.open("about:blank", "_blank");
+    const progress = withAnchors ? "対応行の候補を生成中（デモ）" : "";
+    status.textContent = progress;
     if (popup) {
       popup.opener = null;
-      popup.document.body.textContent = "比較用のスナップショットを開いています。";
+      popup.document.body.textContent = progress || "比較用のスナップショットを開いています。";
+    }
+    if (withAnchors) {
+      await new Promise(resolve => setTimeout(resolve, 650));
+      const count = workspace.workspace.anchors.manualAnchors.length;
+      status.textContent = count ? `対応行の候補 ${count}件` : "対応行の候補はありませんでした。";
     }
     const downloadUrl = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const download = document.createElement("a");
     download.href = downloadUrl;
-    download.download = "LegacyStatusMap.workspace.json";
+    download.download = withAnchors ? "LegacyStatusMap.anchors.workspace.json" : "LegacyStatusMap.workspace.json";
     download.click();
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
-    if (location.protocol === "file:" || !popup) {
-      popup?.location.replace(viewerUrl.href);
+    if (!popup || popup.closed) return;
+    if (location.protocol === "file:") {
+      popup.location.replace(viewerUrl.href);
       return;
     }
     try {
@@ -623,7 +686,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
       popup.document.body.style.margin = "0";
       popup.document.body.replaceChildren(frame);
     } catch {
-      popup.location.replace(viewerUrl.href);
+      if (!popup.closed) popup.location.replace(viewerUrl.href);
     }
   }
 
@@ -639,13 +702,14 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     state.classList.remove("is-running");
     stateLabel.textContent = "人の確認待ち";
     toggle.textContent = "判断が必要です";
-    toggle.disabled = true;
+    toggle.setAttribute("aria-haspopup", "dialog");
     openReviewDialog();
   }
 
   function updateReviewCount() {
     const count = document.querySelectorAll('.ledger-row[data-status="judgment"]').length;
     document.querySelector("#pending-count").innerHTML = `${count} <span>件</span>`;
+    document.querySelector('[data-filter="judgment"]').classList.toggle("has-pending", count > 0);
   }
 
   function setReviewRow(status, label, canOpen) {
@@ -678,7 +742,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateReviewCount();
     closeReviewDialog();
     logHumanAction("Junieに修正を依頼", "RZ-017 · 対象項目に戻して再確認");
-    toggle.disabled = false;
     current = 3;
     stepStartedAt = 0;
     updateStep(current);
@@ -700,7 +763,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateReviewCount();
     closeReviewDialog();
     logHumanAction("人が指摘を確認", reviewNote.value.trim() || "問題なしとして記録");
-    toggle.disabled = false;
     playing = false;
     updateStep(steps.length);
   }
@@ -819,7 +881,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     elapsedTimer = undefined;
     elapsedTotal = 0;
     elapsedStarted = 0;
-    toggle.disabled = false;
     resetReview();
     resetCapsuleCalls();
     stepElapsed.fill(0);
@@ -889,17 +950,45 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateElapsed();
   }
 
-  toggle.addEventListener("click", () => playing ? stop() : play());
+  toggle.addEventListener("click", () => {
+    if (state.dataset.state === "waiting") openReviewDialog();
+    else if (playing) stop();
+    else play();
+  });
   document.querySelector("#restart").addEventListener("click", reset);
   document.querySelector("#ledger-list").addEventListener("click", event => {
-    if (event.target.closest("[data-review-open]")) requestHumanReview();
+    if (event.target.closest(".ledger-row")?.querySelector("[data-review-open]")) requestHumanReview();
   });
   document.querySelector("#review-close").addEventListener("click", closeReviewDialog);
   document.querySelector("#review-later").addEventListener("click", closeReviewDialog);
   document.querySelector("#review-accept").addEventListener("click", acceptReview);
   document.querySelector("#review-fix").addEventListener("click", resumeForCorrection);
-  document.querySelector("#open-diff-viewer").addEventListener("click", openDiffViewer);
-  document.querySelector("#demo-compare").addEventListener("click", openDiffViewer);
+  for (const comparison of document.querySelectorAll(".comparison-control")) {
+    const options = comparison.querySelector(".comparison-options");
+    const summary = options.querySelector("summary");
+    const status = document.querySelector(comparison.closest("dialog") ? "#review-anchor-status" : "#demo-anchor-status");
+    const propose = options.querySelector("[data-propose-anchors]");
+    comparison.querySelector("[data-compare]").addEventListener("click", () => openDiffViewer(status));
+    propose.addEventListener("click", async () => {
+      options.open = false;
+      summary.focus();
+      propose.disabled = true;
+      try {
+        await openDiffViewer(status, true);
+      } finally {
+        propose.disabled = false;
+      }
+    });
+    document.addEventListener("click", event => {
+      if (options.open && !options.contains(event.target)) options.open = false;
+    });
+    options.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || !options.open) return;
+      event.preventDefault();
+      options.open = false;
+      summary.focus();
+    });
+  }
   reviewDialog.addEventListener("cancel", event => {
     event.preventDefault();
     closeReviewDialog();
@@ -950,7 +1039,10 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
       delete root.dataset.wipe;
     });
   });
-  if (reducedMotion) stop();
+  if (reducedMotion) {
+    updateReviewCount();
+    stop();
+  }
   else {
     updateStep(current);
     startElapsed();

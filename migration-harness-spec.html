@@ -370,7 +370,7 @@ flowchart TB
     <div class="steps">
       <article class="step">
         <h3>既存JSONから対応情報を読む</h3>
-        <p>CLIの anchors に既存のワークスペースJSONを渡します。ハーネスは手動アンカーの左右の行を抽出し、対応の例としてJunieに渡します。</p>
+        <p>既存のワークスペースJSONを設定ファイルの anchor_reference で指定すると、進捗画面と確認モーダルの比較オプションから「Junieで対応行を提案して開く」を選べます。CLIの anchors からも生成できます。ハーネスは既存アンカーの左右の行を抽出し、対応の例としてJunieに渡します。</p>
       </article>
       <article class="step">
         <h3>Junieがアンカー案を作る</h3>
@@ -382,7 +382,7 @@ flowchart TB
       </article>
       <article class="step">
         <h3>Diff Viewerで人が確認する</h3>
-        <p>コマンドが表示するJSONをViewerにインポートし、提案された対応行を確認してアンカーを調整します。</p>
+        <p>画面から生成した場合はDiff Viewerが別タブで開き、同じJSONがダウンロードされます。CLIの場合は表示されたJSONをインポートします。Viewerで提案された対応行を確認し、必要に応じてアンカーを調整します。</p>
       </article>
     </div>
     <div class="callout amber">

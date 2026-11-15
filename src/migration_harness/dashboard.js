@@ -6,7 +6,7 @@ const note = element("#review-note");
 const accept = element("#review-accept");
 const resume = element("#review-fix");
 const viewer = element("#open-diff-viewer");
-const dashboardViewer = element("#restart");
+const dashboardViewer = element(".runbar [data-compare]");
 const reviewButton = element("#toggle");
 const notice = document.createElement("p");
 notice.id = "viewer-status";
@@ -41,18 +41,48 @@ let prompted = false;
 let previousLog = "";
 let lastObserved = 0;
 let snapshotting = false;
+let pendingOnly = false;
 
 document.title = "移行ハーネスの進捗";
 element(".brand").href = "./";
 element(".top-links").hidden = true;
 element(".demo-badge").textContent = "実行中のデータ";
-dashboardViewer.textContent = "比較ツールを開く";
 const snapshotStatus = document.createElement("div");
 snapshotStatus.className = "run-detail";
 snapshotStatus.setAttribute("role", "status");
 element(".run-detail").after(snapshotStatus);
+const modalComparisonStatus = document.createElement("p");
+modalComparisonStatus.className = "review-caveat";
+modalComparisonStatus.setAttribute("role", "status");
+modalComparisonStatus.hidden = true;
+element(".review-actions").before(modalComparisonStatus);
+const anchorButtons = document.querySelectorAll("[data-propose-anchors]");
+for (const button of anchorButtons) {
+  const options = button.closest("details");
+  const summary = options.querySelector("summary");
+  options.hidden = !document.documentElement.hasAttribute("data-anchor-reference");
+  button.addEventListener("click", () => {
+    options.open = false;
+    summary.focus();
+    openSnapshot(true);
+  });
+  document.addEventListener("click", event => {
+    if (options.open && !options.contains(event.target)) options.open = false;
+  });
+  options.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || !options.open) return;
+    event.preventDefault();
+    options.open = false;
+    summary.focus();
+  });
+}
 element(".controls").setAttribute("aria-label", "実行操作");
-element(".ledger-controls").hidden = true;
+const allFilter = element('[data-filter="all"]');
+const pendingFilter = element('[data-filter="judgment"]');
+for (const button of element(".ledger-controls").children) {
+  button.hidden = button !== allFilter && button !== pendingFilter;
+}
+const emptyFinding = element("#ledger-empty");
 element("#ledger-title").textContent = "チェッカーの指摘";
 element("#activity").replaceChildren();
 element("#ledger-list").replaceChildren();
@@ -72,9 +102,18 @@ const findings = document.createElement("select");
 findings.setAttribute("aria-label", "レビューする指摘");
 const diagnostic = document.createElement("pre");
 diagnostic.className = "review-code";
+const findingLocation = document.createElement("div");
+findingLocation.className = "review-location";
+const locationCard = document.createElement("div");
+const locationTitle = document.createElement("small");
+locationTitle.textContent = "指摘箇所";
+const locationPath = document.createElement("code");
+const locationLine = document.createElement("small");
+locationCard.append(locationTitle, locationPath, locationLine);
+findingLocation.append(locationCard);
 const reviewFiles = document.createElement("p");
 reviewFiles.className = "review-caveat";
-element(".review-finding").replaceChildren(findings, diagnostic, reviewFiles);
+element(".review-finding").replaceChildren(findings, findingLocation, diagnostic, reviewFiles);
 const connection = document.createElement("span");
 connection.setAttribute("role", "status");
 element("#activity-title").after(connection);
@@ -86,21 +125,31 @@ function showNotice(message) {
 
 function syncActions() {
   const canAct = connected && snapshot.ready && !submitting && resumable.has(snapshot.status);
-  const selected = (snapshot.review?.findings || []).find(([id]) => id === findings.value);
+  const selected = snapshot.review?.findings[findings.selectedIndex];
   accept.disabled = !canAct || !selected || selected[2] || !note.value.trim();
   resume.disabled = !canAct;
   reviewButton.disabled = !canAct;
   dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || snapshotting;
+  for (const button of anchorButtons) {
+    button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
+  }
 }
 
 function selectFinding() {
-  const selected = (snapshot.review?.findings || []).find(([id]) => id === findings.value);
+  const selected = snapshot.review?.findings[findings.selectedIndex];
   diagnostic.textContent = selected?.[1] || snapshot.review_error || "選択できる指摘はありません。";
+  const reported = snapshot.review?.locations?.[findings.selectedIndex];
+  findingLocation.hidden = !reported || Number(reported.line) < 1;
+  locationPath.textContent = reported?.path || "";
+  locationLine.textContent = reported ? `チェッカー報告 · ${reported.line}行目` : "";
   syncActions();
 }
 
-function openReview(id) {
-  if (id) findings.value = id;
+function openReview(index = findings.selectedIndex) {
+  if (index !== findings.selectedIndex) {
+    findings.selectedIndex = index;
+    note.value = "";
+  }
   selectFinding();
   if (!dialog.open) {
     dialog.showModal();
@@ -108,7 +157,19 @@ function openReview(id) {
   }
 }
 
+function applyFindingFilter() {
+  allFilter.setAttribute("aria-pressed", String(!pendingOnly));
+  pendingFilter.setAttribute("aria-pressed", String(pendingOnly));
+  let visible = 0;
+  for (const row of ledger.querySelectorAll("[data-status]")) {
+    row.hidden = pendingOnly && row.dataset.status !== "judgment";
+    if (!row.hidden) visible++;
+  }
+  emptyFinding.hidden = visible > 0;
+}
+
 function describe(state) {
+  if (state.generating_anchors) return "Junieでアンカー生成中";
   const label = statusNames[state.status] || state.status;
   if (state.status === "checker_needs_review" && !state.ready) return "チェッカー結果を処理中";
   if (state.status === "junie_running") return `${label} (${state.current_capsule ?? 1}/${state.context_capsules ?? "?"})`;
@@ -118,7 +179,7 @@ function describe(state) {
 
 function render() {
   const data = snapshot;
-  const showReview = data.status === "checker_needs_review" && (data.ready || dialog.open);
+  const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
   const done = data.ready && complete.has(data.status);
   const stopped = data.ready && resumable.has(data.status);
   element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : "移行を準備中";
@@ -128,8 +189,10 @@ function render() {
   const state = element("#run-state");
   state.classList.toggle("is-running", !stopped && !done);
   state.dataset.state = done ? "complete" : stopped ? (showReview ? "waiting" : "paused") : "running";
-  reviewButton.textContent = showReview ? "指摘を確認" : "同じ実行を再開";
-  reviewButton.hidden = !stopped;
+  reviewButton.textContent = showReview ? "判断が必要です" : "同じ実行を再開";
+  if (showReview) reviewButton.setAttribute("aria-haspopup", "dialog");
+  else reviewButton.removeAttribute("aria-haspopup");
+  reviewButton.hidden = !stopped && !(data.generating_anchors && resumable.has(data.status));
   const current = data.status === "checker_needs_review" && !showReview ? 5 : stage[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
   const completed = data.completed_capsules ?? 0;
@@ -159,38 +222,38 @@ function render() {
   const items = data.review?.findings || [];
   element(".work-summary .metric-value").textContent = String(total);
   element("#checked-count").textContent = `${completed} / ${total}`;
-  element("#pending-count").textContent = String(items.filter(item => !item[2]).length);
-  const previousId = findings.value;
+  const pendingCount = items.filter(item => !item[2]).length;
+  element("#pending-count").textContent = String(pendingCount);
+  pendingFilter.classList.toggle("has-pending", pendingCount > 0);
+  const previousText = findings.options[findings.selectedIndex]?.text;
   findings.replaceChildren();
   ledger.replaceChildren();
-  for (const [id, text, accepted] of items) {
+  for (const [index, [id, text, accepted]] of items.entries()) {
     findings.add(new Option(`${accepted ? "記録済み · " : ""}${text}`, id));
     const row = document.createElement("li");
     row.className = "ledger-row";
+    row.dataset.status = accepted ? "done" : "judgment";
     const button = document.createElement("button");
     button.className = "ledger-name ledger-review-trigger";
     button.type = "button";
     button.textContent = text;
     button.setAttribute("aria-haspopup", "dialog");
-    button.addEventListener("click", () => openReview(id));
+    row.addEventListener("click", () => openReview(index));
     const label = document.createElement("span");
     label.className = "ledger-state";
     label.textContent = accepted ? "記録済み" : "判断待ち";
     row.append(button, label);
     ledger.append(row);
   }
-  if (!items.length) {
-    const empty = document.createElement("li");
-    empty.className = "ledger-row";
-    empty.textContent = showReview ? "ログで確認が必要です。" : "確認待ちの指摘はありません。";
-    ledger.append(empty);
-  }
+  emptyFinding.textContent = showReview && !items.length ? "ログで確認が必要です。" : "表示する指摘はありません。";
+  ledger.append(emptyFinding);
+  applyFindingFilter();
   findings.hidden = !items.length;
   reviewFiles.textContent = data.checker_log_path ? `チェッカーログ：${data.checker_log_path}` : "";
-  const selected = items.find(([id]) => id === previousId);
-  const nextPending = items.find(item => !item[2]);
-  if (data.message === "判断理由を記録しました。" && nextPending) findings.value = nextPending[0];
-  else if (selected) findings.value = selected[0];
+  const selected = [...findings.options].findIndex(option => option.text === previousText);
+  const nextPending = items.findIndex(item => !item[2]);
+  if (data.message === "判断理由を記録しました。" && nextPending !== -1) findings.selectedIndex = nextPending;
+  else if (selected !== -1) findings.selectedIndex = selected;
   selectFinding();
   showNotice(data.message || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
   if (showReview && data.ready && !prompted) {
@@ -251,48 +314,69 @@ findings.addEventListener("change", () => {
   note.value = "";
   selectFinding();
 });
+allFilter.addEventListener("click", () => {
+  pendingOnly = false;
+  applyFindingFilter();
+});
+pendingFilter.addEventListener("click", () => {
+  pendingOnly = !pendingOnly;
+  applyFindingFilter();
+});
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
 resume.addEventListener("click", () => send("resume"));
-async function openSnapshot() {
+function showComparisonStatus(...content) {
+  snapshotStatus.replaceChildren(...content);
+  modalComparisonStatus.replaceChildren(...Array.from(snapshotStatus.childNodes, node => node.cloneNode(true)));
+  modalComparisonStatus.hidden = !content.length;
+}
+
+async function openSnapshot(withAnchors = false) {
   if (snapshotting) return;
+  const progress = withAnchors
+    ? "Junieでアンカーを生成中です。確認が表示されたら起動元の端末で操作してください。"
+    : "スナップショットを取得中";
   const popup = window.open("about:blank", "_blank");
   if (popup) {
     popup.opener = null;
-    popup.document.body.textContent = "比較用のスナップショットを取得しています。";
+    popup.document.title = "差分比較の準備中";
+    popup.document.body.textContent = progress;
   }
   snapshotting = true;
   syncActions();
-  snapshotStatus.textContent = "スナップショットを取得中";
+  showComparisonStatus(progress);
   try {
-    const response = await fetch("comparison", {method: "POST"});
+    const response = withAnchors
+      ? await fetch("control", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "anchors", revision: rev}),
+        })
+      : await fetch("comparison", {method: "POST"});
     if (!response.ok) throw new Error(await response.text());
-    const {id} = await response.json();
+    const {id, count} = await response.json();
     const open = document.createElement("a");
     open.href = `review/${id}.html`;
     open.target = "_blank";
     open.rel = "noopener";
-    open.textContent = "今回の比較を開く";
+    open.textContent = withAnchors && count ? `今回の比較を開く（対応行の候補 ${count}件）` : "今回の比較を開く";
     const download = document.createElement("a");
     download.href = `review/${id}.json`;
     download.download = "";
     download.textContent = "ワークスペースJSONを保存";
-    snapshotStatus.replaceChildren(open, " · ", download);
+    showComparisonStatus(...(withAnchors && count === 0 ? ["対応行の候補はありませんでした。 "] : []), open, " · ", download);
     download.click();
-    if (popup) popup.location.replace(open.href);
+    if (popup && !popup.closed) popup.location.replace(open.href);
   } catch (error) {
     popup?.close();
-    const message = `比較を開けませんでした。${error.message}`;
-    snapshotStatus.textContent = message;
-    if (dialog.open) showNotice(message);
+    showComparisonStatus(`比較を開けませんでした。${error.message}`);
   } finally {
     snapshotting = false;
     syncActions();
   }
 }
 
-viewer.addEventListener("click", openSnapshot);
-dashboardViewer.addEventListener("click", openSnapshot);
+viewer.addEventListener("click", () => openSnapshot());
+dashboardViewer.addEventListener("click", () => openSnapshot());
 reviewButton.addEventListener("click", () => snapshot.status === "checker_needs_review" ? openReview() : send("resume"));
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
 element("#theme-toggle").addEventListener("click", () => {

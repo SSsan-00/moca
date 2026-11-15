@@ -83,6 +83,11 @@ def load_config(path: Path) -> dict[str, Any]:
     viewer_path = Path(viewer_html)
     if viewer_path.anchor or ".." in viewer_path.parts or viewer_path.suffix.lower() != ".html":
         raise ValueError("[diff_viewer].html must name a relative .html file inside the application repository")
+    anchor_reference = viewer.get("anchor_reference")
+    if anchor_reference is not None and (
+        not isinstance(anchor_reference, str) or not anchor_reference.strip()
+    ):
+        raise ValueError("[diff_viewer].anchor_reference must name a workspace JSON file")
 
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
@@ -147,6 +152,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "build_project": build_project,
         "checker_command": checker_command,
         "diff_viewer_html": viewer_html,
+        "diff_viewer_anchor_reference": resolve_output(anchor_reference) if anchor_reference is not None else None,
         "max_repair_attempts": max_repair_attempts,
         "junie_max_steps": junie_max_steps,
         "units": normalized_units,

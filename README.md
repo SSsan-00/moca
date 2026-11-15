@@ -126,6 +126,8 @@ php-to-csharp-harness run --config harness.local.toml --unit example-page --dash
 
 画面はPython標準ライブラリのHTTPサーバーで配信し、進捗の受信にはSSEを使います。URLは起動した端末で利用できます。ブラウザーが再接続すると、同じサーバーの直近100件の範囲で未受信のイベントを再送します。実行結果と判断理由は `run.json` に残ります。画面を終了するときは、ハーネスのターミナルで Ctrl+C を押します。
 
+指摘が残ったら、**判断が必要です** または指摘の行を押すと確認モーダルが開きます。**判断待ち** で未判断の指摘だけを表示できます。チェッカーの出力から取得できたファイル名と行番号は、モーダルの **指摘箇所** に表示されます。
+
 ### Diff Viewerで差分を確認する
 
 移行プロジェクトの `tools/dist/index.min.html` にDiff Viewerの単一HTMLを置きます。配置が異なる場合は、`[diff_viewer].html` に移行プロジェクトのルートからの相対パスを指定します。
@@ -138,7 +140,16 @@ worktreeと対象ファイルがそろったら、進捗ダッシュボード上
 
 ### Junieでアンカー付きの比較JSONを作る
 
-手動アンカーを含む既存のワークスペースJSONをDiff Viewerからエクスポートし、参照ファイルに指定します。対象のRun IDを指定して、対話端末から実行します。
+手動アンカーを含む既存のワークスペースJSONをDiff Viewerからエクスポートします。ダッシュボードから使う場合は、設定ファイルに参照先を追加します。相対パスの基準は設定ファイルのあるフォルダーです。
+
+```toml
+[diff_viewer]
+anchor_reference = "previous.workspace.json"
+```
+
+移行処理や検証が一区切りついたら、ダッシュボード上部または指摘の確認モーダルで **比較ツールを開く** の右にある `▾` から **Junieで対応行を提案して開く** を選びます。Junieが確認を求めたら、ハーネスを起動した端末で操作します。生成が完了すると、別タブのDiff Viewerに結果が表示され、同じJSONがダウンロードされます。
+
+コマンドだけで生成する場合は、対象のRun IDと参照ファイルを指定して対話端末で実行します。
 
 ```powershell
 php-to-csharp-harness anchors --config harness.local.toml --run-id $runId --reference .\previous.workspace.json

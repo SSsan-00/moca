@@ -6,6 +6,7 @@ import secrets
 import sys
 import time
 from collections import deque
+from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Empty, Queue
@@ -13,6 +14,7 @@ from threading import Condition, Thread
 from typing import Any
 
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
+from migration_harness.review_anchors import generate_anchors
 from migration_harness.workflow import resume_with_junie, review_checker, run_observer, run_with_junie
 
 
@@ -62,14 +64,19 @@ class Dashboard:
 
     def submit(self, action: dict[str, Any]) -> bool:
         with self.condition:
+            generating_anchors = action["action"] == "anchors"
             if (
-                not self.state.get("ready") or self.state.get("status") not in RESUMABLE
+                not self.state.get("ready")
                 or action.get("revision") != self.revision
+                or (generating_anchors and not self.state.get("worktree_path"))
+                or (not generating_anchors and self.state.get("status") not in RESUMABLE)
                 or (action["action"] == "accept" and self.state.get("status") != "checker_needs_review")
             ):
                 return False
             self.actions.put_nowait(action)
-            self.publish({**self.state, "ready": False, "message": ""})
+            self.publish({
+                **self.state, "ready": False, "message": "", "generating_anchors": generating_anchors,
+            })
             return True
 
     def server(self, config: dict[str, Any], html: bytes, script: bytes) -> ThreadingHTTPServer:
@@ -185,7 +192,7 @@ class Dashboard:
                     action = json.loads(self.rfile.read(length))
                     if not isinstance(action, dict) or type(action.get("revision")) is not int:
                         raise ValueError
-                    if action.get("action") not in ("accept", "resume"):
+                    if action.get("action") not in ("accept", "resume", "anchors"):
                         raise ValueError
                     if action["action"] == "accept" and (
                         not isinstance(action.get("finding_id"), str) or len(action["finding_id"]) != 12
@@ -195,10 +202,28 @@ class Dashboard:
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
-                if dashboard.submit(action):
+                if action["action"] == "anchors":
+                    self.send_anchored_comparison(action)
+                elif dashboard.submit(action):
                     self.send_body(202, "application/json", b"{}")
                 else:
                     self.send_error(409)
+
+            def send_anchored_comparison(self, action: dict[str, Any]) -> None:
+                if config.get("diff_viewer_anchor_reference") is None:
+                    self.send_body(409, "text/plain; charset=utf-8", "設定ファイルで参照ワークスペースJSONを指定してください。".encode())
+                    return
+                # ブラウザーを閉じても端末側は結果を保存できる。応答は要求元だけに返す。
+                reply: Future[tuple[str, int]] = Future()
+                if not dashboard.submit({**action, "reply": reply}):
+                    self.send_body(409, "text/plain; charset=utf-8", "実行中の処理が終わってから、もう一度お試しください。".encode())
+                    return
+                try:
+                    snapshot_id, count = reply.result()
+                except (OSError, ValueError, RuntimeError) as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", str(exc).encode())
+                    return
+                self.send_body(201, "application/json", json.dumps({"id": snapshot_id, "count": count}).encode())
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         host = f"127.0.0.1:{server.server_port}"
@@ -217,7 +242,9 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
     html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
     if not marker:
         raise ValueError("progress dashboard template is missing its script marker")
-    html = html.replace('<html lang="ja">', '<html lang="ja" data-live>')
+    anchor_reference = config.get("diff_viewer_anchor_reference")
+    anchor_option = " data-anchor-reference" if anchor_reference is not None else ""
+    html = html.replace('<html lang="ja">', f'<html lang="ja" data-live{anchor_option}>')
     html += '<script src="dashboard.js" defer></script></body></html>'
     view = Dashboard()
     view.publish({"status": "preparing", "unit_id": unit_id, "run_id": run_id})
@@ -239,6 +266,19 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                 except KeyboardInterrupt:
                     return result
                 except Empty:
+                    continue
+                if action["action"] == "anchors":
+                    reply = action["reply"]
+                    try:
+                        path, count = generate_anchors(config, result["run_id"], anchor_reference)
+                    except KeyboardInterrupt:
+                        reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        reply.set_exception(exc)
+                    else:
+                        reply.set_result((path.stem, count))
+                    finally:
+                        view.publish({**view.state, "ready": True, "generating_anchors": False})
                     continue
                 try:
                     if action["action"] == "accept":

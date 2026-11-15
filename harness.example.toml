@@ -24,6 +24,8 @@ max_context_chars = 100000
 [diff_viewer]
 # 移行プロジェクトのルートから、配置済みの単一HTMLへの相対パスを指定する。
 # html = "tools/dist/index.min.html"
+# ダッシュボードでアンカーを生成する場合は、設定ファイルからの相対パスか絶対パスで指定する。
+# anchor_reference = "previous.workspace.json"
 
 [[units]]
 id = "example-page"
