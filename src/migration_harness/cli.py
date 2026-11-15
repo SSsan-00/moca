@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 
 from migration_harness.config import load_config, validate_checker_command
-from migration_harness.workflow import prepare_run, resume_with_junie, review_checker, run_with_junie
+from migration_harness.workflow import (
+    prepare_run, resume_with_junie, review_checker, review_migration_ranges, run_with_junie,
+)
 
 
 def main() -> None:
@@ -26,6 +28,12 @@ def main() -> None:
     review.add_argument("--run-id", required=True, help="Run ID awaiting review")
     review.add_argument("--accept", metavar="FINDING_ID", help="Finding ID shown by review")
     review.add_argument("--reason", help="Why the finding can be accepted")
+    ledger_review = subparsers.add_parser("ledger-review", help="Record a decision for PHP ranges shown in the migration ledger")
+    ledger_review.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    ledger_review.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
+    ledger_review.add_argument("--range", dest="ranges", action="append", required=True, help="Range ID from the ledger; repeat to record multiple")
+    ledger_review.add_argument("--state", choices=("confirmed", "excluded", "needs_review"), required=True)
+    ledger_review.add_argument("--reason", required=True)
     anchors = subparsers.add_parser("anchors", help="Generate Diff Viewer anchors with Junie")
     anchors.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     anchors.add_argument("--run-id", required=True, help="Run ID with PHP and migration target files")
@@ -44,6 +52,10 @@ def main() -> None:
         if checker_command is not None:
             validate_checker_command(checker_command)
             config["checker_command"] = checker_command
+        if args.command == "ledger-review":
+            review_migration_ranges(config, args.run_id, args.ranges, args.state, args.reason)
+            print(f"Migration ledger updated for {args.run_id}")
+            return
         if args.command == "anchors":
             from migration_harness.review_anchors import generate_anchors
 

@@ -266,7 +266,7 @@
     .migration-ledger-state[data-state="running"] { color: var(--blue); }
     .migration-ledger-state[data-state="paused"] { color: var(--amber); }
     .migration-mapping { margin: 5px 0 10px; }
-    .migration-ledger-row:not([data-state="complete"]) .migration-mapping { display: none; }
+    .migration-ledger-row:not([data-state="complete"]) .migration-mapping:not([data-reviewed]) { display: none; }
     .migration-mapping-status { color: var(--amber); font-weight: 700; }
     .migration-mapping-status[data-confirmation="confirmed"] { color: var(--green); }
     .migration-mapping-status[data-confirmation="candidate"] { color: var(--blue); }
@@ -560,17 +560,21 @@ function updateMigrationLedgerStatuses(snapshot) {
   }
 }
 
-function migrationMapping(mapping) {
+function migrationMapping({mapping, review}) {
   const entry = document.querySelector("#migration-mapping-template").content.firstElementChild.cloneNode(true);
   const status = entry.querySelector(".migration-mapping-status");
   const location = entry.querySelector(".migration-mapping-location");
-  const confirmation = mapping?.confirmed ? "confirmed" : mapping?.snapshot_id ? "candidate" : "unconfirmed";
+  const confirmation = review?.state || (mapping?.confirmed ? "confirmed" : mapping?.snapshot_id ? "candidate" : mapping ? "stale" : "needs_review");
   status.dataset.confirmation = confirmation;
-  status.textContent = {confirmed: "確認済み", candidate: "候補あり", unconfirmed: mapping ? "要再確認" : "要確認"}[confirmation];
+  status.textContent = {confirmed: "人の確認済み", candidate: "候補あり", excluded: "対象外", needs_review: "要確認", stale: "要再確認"}[confirmation];
   if (mapping) {
     const lines = mapping.start_line === mapping.end_line ? `${mapping.start_line}行目` : `${mapping.start_line}–${mapping.end_line}行`;
     location.textContent = ` · ${mapping.path} ${lines}`;
     if (mapping.snapshot_id) location.append(`（アンカー ${mapping.anchors}件）`);
+  }
+  if (review) {
+    entry.dataset.reviewed = "";
+    location.append(` · 理由 ${review.reason}`);
   }
   return entry;
 }
@@ -594,10 +598,12 @@ function migrationLedgerRow(capsule) {
       ? `${source.start_line}行目`
       : `${source.start_line}–${source.end_line}行`;
     range.append(path, ` · ${lines}`);
+    if (source.symbol) range.append(` · ${source.symbol}`);
+    if (source.id) range.append(` [${source.id}]`);
     for (const slice of source.character_slices || []) {
       range.append(`（${slice.line}行目の${slice.focus_start_column}–${slice.focus_end_column}文字目）`);
     }
-    range.append(migrationMapping(source.mapping));
+    range.append(migrationMapping(source));
     ranges.append(range);
   }
   if (!capsule.sources.length) {
@@ -621,7 +627,7 @@ function openMigrationLedger(message = "") {
 
 function showMigrationLedger(ledger, snapshot, compare) {
   document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
-  document.querySelector("#migration-ledger-target").textContent = ledger.target;
+  document.querySelector("#migration-ledger-target").textContent = (ledger.targets || [ledger.target]).join(" / ");
   migrationLedgerList.replaceChildren(...ledger.capsules.map(migrationLedgerRow));
   migrationLedgerDetails.hidden = false;
   migrationLedgerMessage.hidden = true;
@@ -707,11 +713,14 @@ function showMigrationLedger(ledger, snapshot, compare) {
     showMigrationLedger({
       run_id: "run-2026-11-14-001",
       target: "Pages/Orders/Index.cshtml.cs",
+      targets: ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"],
       capsules: capsuleCalls.map(({lines}, index) => ({
         index: index + 1,
         sources: [{
           path: "php/orders.php", start_line: lines[0], end_line: lines[1],
+          id: `${index + 1}:1`, symbol: index === 0 ? "get_status_label" : undefined,
           mapping: demoMappings.get(index + 1),
+          review: index === 2 && demoMappings.size ? {state: "needs_review", reason: "対応先を特定できるアンカーがありません。"} : undefined,
         }],
       })),
     }, demoMigrationLedgerState(), () => openDiffViewer(

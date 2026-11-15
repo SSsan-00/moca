@@ -109,9 +109,20 @@ def load_config(path: Path) -> dict[str, Any]:
 
     normalized_units = []
     for unit in units:
-        target = unit.get("target")
-        if not isinstance(target, str) or not target.strip() or Path(target).is_absolute() or ".." in Path(target).parts:
-            raise ValueError(f"unit {unit['id']}: target must be a safe repository-relative path")
+        targets = unit.get("targets", [unit.get("target")])
+        if "targets" in unit and "target" in unit:
+            raise ValueError(f"unit {unit['id']}: specify target or targets")
+        if not isinstance(targets, list) or not targets or any(
+            not isinstance(target, str) or not target.strip() or not Path(target).parts
+            or Path(target).anchor or ".." in Path(target).parts
+            for target in targets
+        ):
+            raise ValueError(f"unit {unit['id']}: targets must be safe repository-relative paths")
+        target_paths = [Path(target) for target in targets]
+        if len(set(target_paths)) != len(target_paths) or any(
+            parent in target_paths for target in target_paths for parent in target.parents
+        ):
+            raise ValueError(f"unit {unit['id']}: target paths must be distinct files")
 
         inputs = unit.get("inputs")
         if not isinstance(inputs, list) or not inputs:
@@ -122,12 +133,15 @@ def load_config(path: Path) -> dict[str, Any]:
             item_path = item.get("path")
             role = item.get("role")
             encoding = item.get("encoding", "auto")
+            symbol = item.get("symbol")
             start = item.get("start_line")
             end = item.get("end_line")
             if not isinstance(item_path, str) or Path(item_path).is_absolute() or ".." in Path(item_path).parts:
                 raise ValueError(f"unit {unit['id']}: input path must be repository-relative")
             if not isinstance(role, str) or not role.strip():
                 raise ValueError(f"unit {unit['id']}: each input needs a role")
+            if symbol is not None and (not isinstance(symbol, str) or not symbol.strip()):
+                raise ValueError(f"unit {unit['id']}: input symbol must be a non-empty string")
             if not isinstance(encoding, str) or encoding not in {"auto", "utf-8", "utf-8-sig", "euc-jp"}:
                 raise ValueError(f"unit {unit['id']}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
             if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
@@ -139,8 +153,14 @@ def load_config(path: Path) -> dict[str, Any]:
                 "start_line": start,
                 "end_line": end,
             })
+            if symbol is not None:
+                normalized_inputs[-1]["symbol"] = symbol.strip()
 
-        normalized_units.append({"id": unit["id"], "target": target, "inputs": normalized_inputs})
+        normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
+        if "targets" in unit:
+            normalized["targets"] = [target.as_posix() for target in target_paths]
+            normalized["target"] = normalized["targets"][0]
+        normalized_units.append(normalized)
 
     return {
         "config_path": str(config_path),

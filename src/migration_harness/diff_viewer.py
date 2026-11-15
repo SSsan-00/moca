@@ -40,7 +40,9 @@ def capture_workspace(
     config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None,
     target_hashes: dict[str, str] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    run_path, worktree, _, unit = _load_saved_run(config, run_id)
+    run_path, worktree, record, unit = _load_saved_run(config, run_id)
+    if record.get("target_apply_pending"):
+        raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
     project = Path(config["project_root"])
     manifest_path = _inside_file(run_path, "capsule/manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -52,7 +54,9 @@ def capture_workspace(
     if not sources:
         raise ValueError("この実行の入力に参照PHPがありません。")
     target = Path(unit["target"]).as_posix()
-    if target.lower().endswith(".cshtml.cs"):
+    if "targets" in unit:
+        targets = unit["targets"]
+    elif target.lower().endswith(".cshtml.cs"):
         targets = [target, target[:-3]]
     elif target.lower().endswith(".cshtml"):
         targets = [target + ".cs", target]
