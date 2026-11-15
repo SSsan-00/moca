@@ -40,10 +40,10 @@ max_context_chars = 100000
 # after_build = [["py", "-3.11", "tools/export_results.py"]]
 
 [diff_viewer]
-# 移行プロジェクトのルートから、配置済みの単一HTMLへの相対パスを指定する。
+# 単一HTMLの相対パスを指定すると、比較とアンカー生成が有効になる。
 # html = "tools/dist/index.min.html"
-# ダッシュボードでアンカーを生成する場合は、設定ファイルからの相対パスか絶対パスで指定する。
-# anchor_reference = "previous.workspace.json"
+# HTMLのパスを保存したまま無効にする場合に指定する。
+# enabled = false
 
 [[units]]
 id = "メニュー"

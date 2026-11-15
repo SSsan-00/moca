@@ -49,16 +49,40 @@ def _read_settings(path: Path) -> tuple[bytes, str]:
     return data, hashlib.sha256(data).hexdigest()
 
 
-_PROJECT_SETTINGS = ("root", "worktree_root", "run_root")
+_TABLE_FIELDS = {
+    "project": ("root", "worktree_root", "run_root", "base_ref", "max_context_chars"),
+    "build": ("project",),
+    "checker": ("command", "max_repair_attempts"),
+    "junie": ("max_steps",),
+    "diff_viewer": ("html", "enabled"),
+}
+_NUMERIC_FIELDS = {
+    "max_repair_attempts": (0, "自動修正回数"),
+    "max_context_chars": (1000, "カプセルの文字数上限"),
+    "max_steps": (1, "Junieのステップ数上限"),
+    "start_line": (1, "開始行"),
+    "end_line": (1, "終了行"),
+}
+_INPUT_FIELDS = ("path", "start_line", "end_line", "encoding", "symbol")
 _UNIT_SETTINGS = ("id", "source", "targets")
 _REFERENCE_TARGET_ROLES = ("reference_csharp", "reference_razor")
 
 
-def _form_input(item: Any, index: int, *, common: bool = False) -> dict[str, Any]:
+def _settings_integer(value: Any, key: str) -> int:
+    minimum, label = _NUMERIC_FIELDS[key]
+    if type(value) is not int and (not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value)):
+        raise ValueError(f"{label}は{minimum}以上の整数で入力してください。")
+    number = int(value)
+    if number < minimum:
+        raise ValueError(f"{label}は{minimum}以上の整数で入力してください。")
+    return number
+
+
+def _form_input(item: Any, index: int, key: str) -> dict[str, Any]:
     if isinstance(item, Mapping) and isinstance(item.get("path"), str):
-        role = "migration_rules" if common else item.get("role")
-        if common or role in REFERENCE_ROLES:
-            return {"index": index, "role": role, **{key: item[key] for key in ("path", "start_line", "end_line") if key in item}}
+        role = "migration_rules" if key == "migration_rules" else item.get("role")
+        if key != "references" or role in REFERENCE_ROLES:
+            return {"index": index, "role": role or "", **{name: item[name] for name in _INPUT_FIELDS if name in item}}
     return {"index": index}
 
 
@@ -82,8 +106,8 @@ def _edit_inputs(container: Mapping, key: str, edits: Any) -> None:
                 raise ValueError(error)
             previous_index = index
             retained.add(index)
-            item = _form_input(inputs[index], index, common=common)
-            if "role" not in item:
+            item = _form_input(inputs[index], index, key)
+            if "path" not in item:
                 if set(edit) != {"index"}:
                     raise ValueError(error)
                 ordered.append((index, None))
@@ -93,13 +117,25 @@ def _edit_inputs(container: Mapping, key: str, edits: Any) -> None:
             ):
                 raise ValueError(error)
         role, path = edit.get("role"), edit.get("path")
-        if role not in roles or not isinstance(path, str):
+        if not isinstance(path, str) or role not in roles:
             raise ValueError(error)
-        ordered.append((index, (role, path)))
+        values = {"path": path}
+        if not common:
+            values["role"] = role
+        for name in _INPUT_FIELDS[1:]:
+            if name not in edit:
+                continue
+            value = edit[name]
+            if name in ("start_line", "end_line"):
+                value = _settings_integer(value, name) if value != "" else None
+            elif not isinstance(value, str):
+                raise ValueError(error)
+            values[name] = value if value != "" else None
+        ordered.append((index, values))
 
     for index in reversed(range(len(inputs))):
         if index not in retained:
-            if "role" not in _form_input(inputs[index], index, common=common):
+            if "path" not in _form_input(inputs[index], index, key):
                 raise ValueError(error)
             del inputs[index]
     if not ordered:
@@ -109,19 +145,16 @@ def _edit_inputs(container: Mapping, key: str, edits: Any) -> None:
     for position, (index, values) in enumerate(ordered):
         if values is None:
             continue
-        role, path = values
         if index is None:
             item = tomlkit.inline_table() if isinstance(inputs, tomlkit.items.Array) else tomlkit.table()
-            if not common:
-                item["role"] = role
-            item["path"] = path
             inputs.insert(position, item)
         else:
             item = inputs[position]
-            if item["path"] != path:
-                item["path"] = path
-            if not common and item["role"] != role:
-                item["role"] = role
+        for name, value in values.items():
+            if value is None:
+                item.pop(name, None)
+            elif item.get(name) != value:
+                item[name] = value
 
 
 def _promote_legacy_materials(document: Any, units: list) -> bool:
@@ -177,6 +210,7 @@ def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict
             not isinstance(project, Mapping) or not isinstance(units, list)
             or any(not isinstance(unit, Mapping) for unit in units)
             or not isinstance(scripts, Mapping)
+            or any(not isinstance(document.get(section, {}), Mapping) for section in _TABLE_FIELDS)
             or not isinstance(project.get("migration_rules", []), list)
             or not isinstance(project.get("references", []), list)
         ):
@@ -190,16 +224,30 @@ def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict
     if promoted:
         project = document["project"]
     if changes:
-        project_changes = changes.get("project", {})
         unit_changes = changes.get("units", {})
-        if not isinstance(project_changes, dict) or not isinstance(unit_changes, dict):
+        if not isinstance(unit_changes, dict):
             raise ValueError("フォームの入力内容を確認してください。")
-        if project_changes:
-            project = document.setdefault("project", tomlkit.table())
-            for key, value in project_changes.items():
-                if key not in _PROJECT_SETTINGS or not isinstance(value, str):
-                    raise ValueError("プロジェクト設定を確認してください。")
-                project[key] = value
+        for section, keys in _TABLE_FIELDS.items():
+            edits = changes.get(section, {})
+            if not isinstance(edits, dict) or edits.keys() - set(keys):
+                raise ValueError("設定フォームの入力内容を確認してください。")
+            for key, value in edits.items():
+                if key == "command":
+                    if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
+                        raise ValueError("チェッカーのコマンドと引数を確認してください。")
+                elif not isinstance(value, str):
+                    raise ValueError("設定フォームの入力内容を確認してください。")
+                if key in _NUMERIC_FIELDS and value:
+                    value = _settings_integer(value, key)
+                if section == "diff_viewer" and key == "enabled" and value:
+                    if value != "false":
+                        raise ValueError("差分ビューアーの使用設定を確認してください。")
+                    value = False
+                if value in ("", []) and key not in {"root", "worktree_root", "run_root"}:
+                    if section in document:
+                        document[section].pop(key, None)
+                else:
+                    document.setdefault(section, tomlkit.table())[key] = value
         for field, key in (("migrationRules", "migration_rules"), ("references", "references")):
             if field in changes:
                 project = document.setdefault("project", tomlkit.table())
@@ -276,12 +324,23 @@ def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict
     if changes or promoted:
         content = tomlkit.dumps(document)
 
+    project = document.get("project", {})
     return {"content": content, "form": {
-        "project": {key: value for key in _PROJECT_SETTINGS if isinstance(value := project.get(key), str)},
+        **{
+            section: {
+                key: (
+                    str(value) if key in _NUMERIC_FIELDS else
+                    ("false" if value is False else "") if key == "enabled" else value
+                )
+                for key in keys
+                if (value := document.get(section, {}).get(key, [] if key == "command" else "")) is not None
+            }
+            for section, keys in _TABLE_FIELDS.items()
+        },
         "migrationRules": [
-            _form_input(item, index, common=True) for index, item in enumerate(project.get("migration_rules", []))
+            _form_input(item, index, "migration_rules") for index, item in enumerate(project.get("migration_rules", []))
         ],
-        "references": [_form_input(item, index) for index, item in enumerate(project.get("references", []))],
+        "references": [_form_input(item, index, "references") for index, item in enumerate(project.get("references", []))],
         "scripts": [
             {"phase": phase, "command": command}
             for phase in SCRIPT_PHASES if isinstance(commands := scripts.get(phase), list)
@@ -347,7 +406,7 @@ class Dashboard:
         state = {
             **self.state, "ready": True, "status": result["status"], "message": message,
             "resumable": can_resume_run(config, result),
-            "anchor_reference": config.get("diff_viewer_anchor_reference") is not None,
+            "diff_viewer_enabled": bool(config.get("diff_viewer_html")),
         }
         if result["status"] == "checker_needs_review":
             try:
@@ -551,6 +610,8 @@ class Dashboard:
                     return
                 if comparison:
                     try:
+                        if not config.get("diff_viewer_html"):
+                            raise ValueError("設定の差分ビューアーのHTMLを指定してください。")
                         run_id = dashboard.state.get("run_id")
                         if not run_id or not dashboard.state.get("worktree_path"):
                             raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
@@ -616,8 +677,8 @@ class Dashboard:
 
             def send_anchored_comparison(self, action: dict[str, Any]) -> None:
                 """端末側でアンカー生成が終わるまで待ち、保存した比較のIDを返す。"""
-                if config.get("diff_viewer_anchor_reference") is None:
-                    self.send_body(409, "text/plain; charset=utf-8", "設定ファイルで参照ワークスペースJSONを指定してください。".encode())
+                if not config.get("diff_viewer_html"):
+                    self.send_body(409, "text/plain; charset=utf-8", "設定の差分ビューアーのHTMLを指定してください。".encode())
                     return
                 # ブラウザーを閉じても端末側は結果を保存できる。応答は要求元だけに返す。
                 reply: Future[tuple[str, int]] = Future()
@@ -648,7 +709,6 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
     if not marker:
         raise ValueError("progress dashboard template is missing its script marker")
     view = Dashboard()
-    anchor_reference = config.get("diff_viewer_anchor_reference")
     options = " data-live"
     saved = None
     if run_id is None and unit_id is not None:
@@ -658,11 +718,11 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
         view.observe(saved)
         view.ready(config, saved)
         options += " data-saved"
+        if config.get("diff_viewer_html"):
+            options += " data-viewer-enabled"
     else:
         view.publish({"status": "idle", "ready": True})
         options += " data-workspace"
-    if anchor_reference is not None:
-        options += " data-anchor-reference"
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
     html += '<script src="dashboard.js" defer></script></body></html>'
     with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
@@ -701,7 +761,7 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                     reply = action["reply"]
                     try:
                         path, count = generate_anchors(
-                            config, result["run_id"], config.get("diff_viewer_anchor_reference"), focus=action.get("focus"),
+                            config, result["run_id"], focus=action.get("focus"),
                         )
                     except KeyboardInterrupt:
                         reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))

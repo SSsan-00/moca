@@ -118,12 +118,16 @@
     .settings-materials > p, .settings-material-range { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
     .settings-material { min-inline-size: 0; margin: 8px 0; padding: 8px 10px 10px; border: 1px solid var(--line); border-radius: 8px; }
     .settings-material legend { margin: 0; padding-inline: 4px; }
+    .settings-details { margin: 8px 0 12px; }
+    .settings-details > summary { cursor: pointer; color: var(--blue); padding-block: 5px; }
+    .settings-details[open] > summary { margin-bottom: 8px; }
+    .settings-details > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
     .settings-material .button { min-height: 32px; height: auto; font-size: 12px; }
     .settings-field-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px 8px; margin-bottom: 10px; }
     .settings-field-row:last-child, .settings-field-row > label, .settings-field-row :is(input, textarea) { margin-bottom: 0; }
     .settings-field-row > .settings-remove { grid-area: 1 / 2; margin-bottom: 2px; }
     .settings-field-row > .settings-material-range { grid-column: 1 / -1; margin-bottom: 0; }
-    .workspace-tools textarea.settings-script-command { min-height: calc(3lh + 22px); height: calc(3lh + 22px); overflow-y: auto; }
+    .workspace-tools textarea.settings-command { min-height: calc(3lh + 22px); height: calc(3lh + 22px); overflow-y: auto; }
     #workspace-config { height: 100%; min-height: 0; margin: 0; padding: 12px; resize: none; }
     #workspace-config[hidden] { display: none; }
     .settings-footer { padding-top: 10px; border-top: 1px solid var(--line); }
@@ -441,10 +445,11 @@
     [data-live] .review-location { grid-template-columns: 1fr; margin-top: 0; }
     [data-live] .review-actions .comparison-option-panel { inset-inline: 0 auto; }
     [data-live] #state-label { white-space: normal; }
-    [data-anchor-reference] .controls { flex-wrap: wrap; }
+    html:not([data-viewer-enabled]) :is(.comparison-control, .migration-ledger-comparisons) { display: none; }
+    [data-viewer-enabled] .controls { flex-wrap: wrap; }
     @media (max-width: 820px) {
-      [data-anchor-reference] .runbar { flex-wrap: wrap; }
-      [data-anchor-reference] .run-meta { flex-basis: 100%; }
+      [data-viewer-enabled] .runbar { flex-wrap: wrap; }
+      [data-viewer-enabled] .run-meta { flex-basis: 100%; }
     }
   </style>
 </head>
@@ -583,21 +588,57 @@
       <div class="settings-body">
         <div class="settings-columns" id="workspace-settings-fields" hidden>
           <div class="settings-field-pane">
-            <fieldset class="settings-fields" id="settings-project-fields">
-              <legend>プロジェクト</legend>
-              <label for="settings-root">アプリのリポジトリ</label>
-              <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp">
-              <div class="settings-pair">
-                <div>
-                  <label for="settings-worktree-root">作業ツリーの保存先</label>
-                  <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees">
+            <details class="settings-details" id="settings-project-details">
+              <summary>プロジェクトの詳細設定</summary>
+              <fieldset class="settings-fields" id="settings-project-fields">
+                <legend>プロジェクト</legend>
+                <label for="settings-root">アプリのリポジトリ</label>
+                <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp">
+                <div class="settings-pair">
+                  <div>
+                    <label for="settings-worktree-root">作業ツリーの保存先</label>
+                    <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees">
+                  </div>
+                  <div>
+                    <label for="settings-run-root">実行データの保存先</label>
+                    <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs">
+                  </div>
                 </div>
-                <div>
-                  <label for="settings-run-root">実行データの保存先</label>
-                  <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs">
+                <label for="settings-base-ref">作業ツリーの基準リビジョン</label>
+                <input id="settings-base-ref" data-section="project" data-setting="base_ref" placeholder="HEAD（既定）" autocomplete="off">
+                <p class="settings-material-range">必要に応じてブランチ名、タグ名、コミットIDを指定します。</p>
+                <div class="settings-pair">
+                  <div>
+                    <label for="settings-context-limit">カプセルの文字数上限</label>
+                    <input id="settings-context-limit" data-section="project" data-setting="max_context_chars" inputmode="numeric" placeholder="100000（既定）">
+                  </div>
+                  <div>
+                    <label for="settings-junie-steps">Junieのステップ数上限</label>
+                    <input id="settings-junie-steps" data-section="junie" data-setting="max_steps" inputmode="numeric" placeholder="空欄ならJunieの既定値">
+                  </div>
                 </div>
-              </div>
-            </fieldset>
+                <label for="settings-viewer-enabled">差分ビューアー</label>
+                <select id="settings-viewer-enabled" class="workspace-select" data-section="diff_viewer" data-setting="enabled">
+                  <option value="">使用する</option>
+                  <option value="false">使用しない</option>
+                </select>
+                <label for="settings-viewer-html">差分ビューアーのHTML</label>
+                <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off">
+                <p class="settings-material-range">アプリのリポジトリからの相対パスです。空欄なら差分ビューアーは無効です。</p>
+              </fieldset>
+              <fieldset class="settings-fields" id="settings-verification-fields">
+                <legend>ビルド・独自チェッカー</legend>
+                <label for="settings-build-project">ビルド対象</label>
+                <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj" aria-describedby="settings-build-help">
+                <p class="settings-material-range" id="settings-build-help">作業ツリーからの相対パス（.csproj、.sln、.slnx）。空欄ならルートでビルドします。</p>
+                <label for="settings-checker-command">チェッカーの実行ファイルと引数</label>
+                <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" aria-describedby="settings-checker-help" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
+                <p class="settings-material-range" id="settings-checker-help">1行目に実行ファイル、2行目以降に引数を1つずつ入力します。空欄なら実行しません。</p>
+                <label for="settings-checker-repairs">自動修正回数</label>
+                <input id="settings-checker-repairs" data-section="checker" data-setting="max_repair_attempts" inputmode="numeric" autocomplete="off" placeholder="2（既定）" aria-describedby="settings-repairs-help">
+                <p class="settings-material-range" id="settings-repairs-help">1回の移行実行でJunieが修正を試みる上限です。0を指定すると自動修正を行いません。</p>
+              </fieldset>
+            </details>
             <fieldset class="settings-fields" id="settings-unit-fields">
               <legend>移行単位</legend>
               <div class="settings-unit-picker">
@@ -804,6 +845,12 @@ const scriptPhases = {
   before_build: "ビルド前", after_build: "ビルド成功後",
   before_checker: "チェッカー実行前", after_checker: "チェッカー実行後",
 };
+const inputEncodings = {"": "自動判定", "utf-8": "UTF-8", "utf-8-sig": "UTF-8（BOM付き）", "euc-jp": "EUC-JP"};
+const numericSettings = {
+  max_repair_attempts: [0, "自動修正回数"], max_context_chars: [1000, "カプセルの文字数上限"],
+  max_steps: [1, "Junieのステップ数上限"], start_line: [1, "開始行"], end_line: [1, "終了行"],
+};
+const hasInputContent = item => Boolean(item.path?.trim() || item.encoding || item.start_line || item.end_line || item.symbol || item.shared);
 
 function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct}) {
   const newRun = document.querySelector("#workspace-new-run");
@@ -812,7 +859,8 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   const reload = document.querySelector("#workspace-config-reload");
   const editToggle = document.querySelector("#workspace-config-toggle");
   const fields = document.querySelector("#workspace-settings-fields");
-  const projectFields = [...fields.querySelectorAll("#settings-project-fields [data-setting]")];
+  const projectFields = [...fields.querySelectorAll("#settings-project-fields [data-setting]:not([data-section])")];
+  const tableFields = [...fields.querySelectorAll("[data-section][data-setting]")];
   const unitFields = [...fields.querySelectorAll("#settings-unit-inputs [data-setting]")];
   const unit = document.querySelector("#settings-unit");
   const rules = document.querySelector("#settings-rules");
@@ -863,8 +911,17 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   }
 
   function planSave() {
+    const command = settingsForm.checker.command;
+    if (Array.isArray(command) && command.length && !command[0]?.trim()) {
+      throw new Error("チェッカーの1行目に実行ファイルを入力してください。");
+    }
     const cleanup = {};
     const removeEmptyUnits = [];
+    function checkRange(input) {
+      const {start_line: start, end_line: end} = input;
+      if ((!start && !end) || (start && end && Number(end) >= Number(start))) return;
+      throw new Error("行範囲は、開始行とそれ以降の終了行を指定してください。");
+    }
     for (const [index, entry] of settingsForm.units.entries()) {
       if (!added.has(entry)) continue;
       const {id, source, targets} = entry;
@@ -875,22 +932,24 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     }
     if (removeEmptyUnits.length) cleanup.removeEmptyUnits = removeEmptyUnits;
 
-    const rules = settingsForm.migrationRules.filter(item => !added.has(item) || item.path.trim());
+    const rules = settingsForm.migrationRules.filter(item => !added.has(item) || hasInputContent(item));
     if (rules.some(item => item.role && !item.path.trim())) {
       throw new Error("移行ルールのファイルパスを指定してください。");
     }
+    for (const rule of rules) checkRange(rule);
     if (rules.length !== settingsForm.migrationRules.length) cleanup.migrationRules = rules;
 
     const references = [];
     for (const group of materialGroups(settingsForm.references)) {
       const [source, ...targets] = group;
-      const filled = group.filter(item => !added.has(item) || item.path.trim());
+      const filled = group.filter(item => !added.has(item) || hasInputContent(item));
       if (!filled.length) continue;
       if (filled.some(item => item.role && !item.path.trim()) ||
           (source.role === "reference_php" && added.has(source)
             && (!source.path.trim() || !targets.some(item => item.path.trim())))) {
         throw new Error("入力途中の参考実装ペアに、元PHPと移行済みC#／Razorのパスを指定してください。");
       }
+      for (const item of filled) checkRange(item);
       references.push(...filled);
     }
     if (references.length !== settingsForm.references.length) cleanup.references = references;
@@ -916,6 +975,12 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   function changeScripts() {
     changes.scripts = settingsForm.scripts.filter(script => script.phase);
     schedulePreview();
+  }
+
+  function commandLines(text) {
+    const lines = text.split("\n");
+    lines[0] = lines[0].trim();
+    return lines;
   }
 
   function removeButton(label, action) {
@@ -949,13 +1014,12 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       phase.value = script.phase;
       phase.addEventListener("change", () => { script.phase = phase.value; changeScripts(); });
       const command = document.createElement("textarea");
-      command.className = "settings-script-command";
+      command.className = "settings-command settings-script-command";
       command.spellcheck = false;
       command.placeholder = "py\n-3.11\ntools/export_results.py";
       command.value = script.command.join("\n");
       command.addEventListener("input", () => {
-        script.command = command.value.split("\n");
-        script.command[0] = script.command[0].trim();
+        script.command = commandLines(command.value);
         changeScripts();
       });
       const remove = removeButton(`${title.textContent}を削除`, () => {
@@ -979,10 +1043,11 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     changeScripts();
   });
 
-  function showMaterials(inputs, common = false) {
+  function showMaterials(inputs, kind = "references") {
+    const common = kind === "migrationRules";
     const list = common ? rules : references;
     list.replaceChildren();
-    const change = () => changeMaterials(common ? "migrationRules" : "references");
+    const change = () => changeMaterials(kind);
     const rendered = new Map();
     function addCard(list, title) {
       const card = document.createElement("fieldset");
@@ -1000,6 +1065,38 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       control.textContent = label;
       control.addEventListener("click", action);
       return control;
+    }
+    function materialDetails(item) {
+      const details = document.createElement("details");
+      details.className = "settings-details";
+      const summary = document.createElement("summary");
+      summary.textContent = "ファイルの詳細設定";
+      details.append(summary);
+      function addField(parent, labelText, key, placeholder = "") {
+        const label = document.createElement("label");
+        label.textContent = labelText;
+        const field = document.createElement(key === "encoding" ? "select" : "input");
+        if (key === "encoding") {
+          field.className = "workspace-select";
+          field.setAttribute("aria-label", labelText);
+          field.append(...Object.entries(inputEncodings).map(([value, name]) => new Option(name, value)));
+        } else {
+          field.placeholder = placeholder;
+          if (key in numericSettings) field.inputMode = "numeric";
+        }
+        field.value = key === "encoding" && item[key] === "auto" ? "" : item[key] ?? "";
+        field.addEventListener("input", () => { item[key] = field.value.trim(); change(); });
+        label.append(field);
+        parent.append(label);
+      }
+      addField(details, "文字コード", "encoding");
+      const range = document.createElement("div");
+      range.className = "settings-pair";
+      addField(range, "開始行", "start_line", "空欄なら全文");
+      addField(range, "終了行", "end_line", "空欄なら全文");
+      details.append(range);
+      addField(details, "シンボル名", "symbol", "例：get_status_label");
+      return details;
     }
     function inputField(container, item, title, removal) {
       const label = document.createElement("label");
@@ -1025,16 +1122,10 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       if (removal) container = container.appendChild(fieldWithRemove(label, removal));
       else container.append(label);
       rendered.set(item, input);
-      if (Number.isInteger(item.start_line) && Number.isInteger(item.end_line)) {
-        const range = document.createElement("p");
-        range.className = "settings-material-range";
-        range.textContent = `${item.start_line}〜${item.end_line}行を使用`;
-        container.append(range);
-      }
     }
     function remove(items, focusTarget) {
       for (const item of items) inputs.splice(inputs.indexOf(item), 1);
-      const remaining = showMaterials(inputs, common);
+      const remaining = showMaterials(inputs, kind);
       (remaining.get(focusTarget) || focusTarget || addReference).focus();
       change();
     }
@@ -1047,6 +1138,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
         const title = `移行ルール ${++ruleNumber}`;
         const card = addCard(rules, title);
         inputField(card, item, "ルールファイル", removeButton(`${title}を削除`, () => remove([item], addRule)));
+        card.append(materialDetails(item));
         continue;
       }
 
@@ -1059,6 +1151,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
           ? removeButton(`${title}の移行済みファイル ${position}を削除`, () => remove([entry], item))
           : undefined;
         inputField(card, entry, label, removal);
+        card.append(materialDetails(entry));
       }
       const actions = document.createElement("div");
       actions.className = "workspace-actions";
@@ -1078,7 +1171,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     const inputs = settingsForm.migrationRules;
     const entry = newDraft({role: "migration_rules", path: ""});
     inputs.push(entry);
-    showMaterials(inputs, true).get(entry).focus();
+    showMaterials(inputs, "migrationRules").get(entry).focus();
     changeMaterials("migrationRules");
   });
   addReference.addEventListener("click", () => {
@@ -1088,7 +1181,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     showMaterials(inputs).get(source).focus();
     changeMaterials("references");
   });
-
   function showUnit() {
     const current = settingsForm.units[Number(unit.value)];
     document.querySelector("#settings-unit-inputs").hidden = !current;
@@ -1123,7 +1215,11 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     fields.hidden = !settingsForm || !workspaceConfig.hidden;
     if (settingsForm) {
       for (const field of projectFields) field.value = settingsForm.project[field.dataset.setting] ?? "";
-      showMaterials(settingsForm.migrationRules, true);
+      for (const field of tableFields) {
+        const value = settingsForm[field.dataset.section][field.dataset.setting];
+        field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+      }
+      showMaterials(settingsForm.migrationRules, "migrationRules");
       showMaterials(settingsForm.references);
       showUnitOptions(unitIndex);
       showScripts();
@@ -1191,6 +1287,9 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     workspaceControls();
     try {
       const data = await readSettings();
+      if (!settingsVersion && data.version === "missing") {
+        document.querySelector("#settings-project-details").open = true;
+      }
       settingsVersion = data.version;
       showSettingsDraft(data, true);
       changes = emptyChanges();
@@ -1251,6 +1350,13 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   for (const field of projectFields) field.addEventListener("input", () => {
     const key = field.dataset.setting;
     changes.project[key] = settingsForm.project[key] = field.value;
+    schedulePreview();
+  });
+  for (const field of tableFields) field.addEventListener("input", () => {
+    const {section, setting} = field.dataset;
+    const value = setting === "command" ? (field.value.trim() ? commandLines(field.value) : []) : field.value.trim();
+    changes[section] ??= {};
+    changes[section][setting] = settingsForm[section][setting] = value;
     schedulePreview();
   });
   for (const field of unitFields) field.addEventListener("input", () => {
@@ -1497,7 +1603,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
   // デモでは設定例とフォームから生成するTOMLを取り扱う。
   function demoSettingsDraft(content, changes = {}) {
     const blocks = content.split(/(?=^[\t ]*\[)/m);
-    let project = blocks.findIndex(block => /^\s*\[project\]/.test(block));
     const unitBlocks = () => blocks.flatMap((block, index) => /^\s*\[\[units\]\]/.test(block) ? [index] : []);
     const materialBlocks = table => blocks.flatMap((block, index) =>
       block.trimStart().startsWith(`[[project.${table}]]`) ? [index] : []);
@@ -1505,7 +1610,16 @@ function showMigrationLedger(ledger, snapshot, compare) {
     const fieldPattern = key => new RegExp(`^\\s*${key}\\s*=([^\\r\\n]*)`, "m");
     function patchBlock(block, fields) {
       for (const [key, value] of Object.entries(fields)) {
-        const assignment = `${key} = ${JSON.stringify(value)}`;
+        if (value === undefined) continue;
+        let literal = key === "enabled" ? "false" : JSON.stringify(value);
+        if (key in numericSettings) {
+          const [minimum, label] = numericSettings[key];
+          if (!/^[0-9]+$/.test(value) || BigInt(value) < BigInt(minimum)) {
+            throw new Error(`${label}は${minimum}以上の整数で入力してください。`);
+          }
+          literal = BigInt(value).toString();
+        }
+        const assignment = `${key} = ${literal}`;
         const pattern = fieldPattern(key);
         block = pattern.test(block)
           ? block.replace(pattern, match => match.replace(/\S.*$/, () => assignment))
@@ -1513,9 +1627,17 @@ function showMigrationLedger(ledger, snapshot, compare) {
       }
       return block;
     }
-    if (changes.project && Object.keys(changes.project).length) {
-      if (project < 0) project = blocks.push("\n[project]\n") - 1;
-      blocks[project] = patchBlock(blocks[project], changes.project);
+    const findTable = section => blocks.findIndex(block => block.trimStart().startsWith(`[${section}]`));
+    for (const section of ["project", "build", "checker", "junie", "diff_viewer"]) {
+      for (const [key, value] of Object.entries(changes[section] || {})) {
+        let index = findTable(section);
+        if (!value.length && !["root", "worktree_root", "run_root"].includes(key)) {
+          if (index >= 0) blocks[index] = blocks[index].replace(fieldPattern(key), "");
+          continue;
+        }
+        if (index < 0) index = blocks.push(`\n[${section}]\n`) - 1;
+        blocks[index] = patchBlock(blocks[index], {[key]: value});
+      }
     }
     if (changes.scripts) {
       let scripts = blocks.findIndex(block => /^\s*\[scripts\]/.test(block));
@@ -1528,6 +1650,21 @@ function showMigrationLedger(ledger, snapshot, compare) {
         }
       }
     }
+    function replaceInputBlocks(previous, inputs, heading, insertion, commonRule = false) {
+      const updated = inputs.map(({index, ...fields}) => {
+        let block = index === undefined ? `\n${heading}\n` : blocks[previous[index]];
+        if (commonRule) delete fields.role;
+        for (const key of ["start_line", "end_line", "encoding", "symbol"]) {
+          if (fields[key] === "") {
+            block = block.replace(fieldPattern(key), "");
+            delete fields[key];
+          }
+        }
+        return patchBlock(block, fields);
+      });
+      for (const position of previous.reverse()) blocks.splice(position, 1);
+      blocks.splice(insertion, 0, ...updated);
+    }
     for (const [index, fields] of Object.entries(changes.units || {})) {
       units[index] ??= blocks.push("\n[[units]]\n") - 1;
       if ("targets" in fields) blocks[units[index]] = blocks[units[index]].replace(/^\s*target\s*=.*$/m, "");
@@ -1539,36 +1676,44 @@ function showMigrationLedger(ledger, snapshot, compare) {
     for (const [field, table] of [["migrationRules", "migration_rules"], ["references", "references"]]) {
       if (!changes[field]) continue;
       const previous = materialBlocks(table);
-      const updated = changes[field].map(({index, role, path}) => {
-        const section = index === undefined ? `\n[[project.${table}]]\n` : blocks[previous[index]];
-        if (!role) return section;
-        return patchBlock(section, field === "references" ? {role, path} : {path});
-      });
-      const insertion = previous[0] ?? project + 1;
-      for (const position of previous.reverse()) blocks.splice(position, 1);
-      blocks.splice(insertion, 0, ...updated);
+      replaceInputBlocks(previous, changes[field], `[[project.${table}]]`, previous[0] ?? findTable("project") + 1, table === "migration_rules");
     }
     const read = (index, key) => {
       const value = blocks[index]?.match(fieldPattern(key))?.[1];
-      return value === undefined ? undefined : JSON.parse(value.trim());
+      if (value === undefined) return undefined;
+      if (key in numericSettings) return value.split("#")[0].trim().replaceAll("_", "");
+      return JSON.parse(value.trim());
     };
-    function readMaterials(table) {
-      return materialBlocks(table).map((block, index) => {
-        const role = table === "migration_rules" ? "migration_rules" : read(block, "role");
+    function readMaterials(positions, commonRule = false) {
+      return positions.map((block, index) => {
+        const role = commonRule ? "migration_rules" : read(block, "role");
         const path = read(block, "path");
-        return typeof path === "string" && role
-          ? {index, role, path, start_line: read(block, "start_line"), end_line: read(block, "end_line")}
+        return typeof path === "string"
+          ? {index, role: role ?? "", path, ...Object.fromEntries(
+            ["start_line", "end_line", "encoding", "symbol"].map(key => [key, read(block, key)]),
+          )}
           : {index};
       });
     }
     const updated = blocks.join("");
     try {
       const scripts = blocks.findIndex(block => /^\s*\[scripts\]/.test(block));
+      const checker = findTable("checker");
       return {content: updated, form: {
-        project: Object.fromEntries(["root", "worktree_root", "run_root"].map(key =>
-          [key, read(blocks.findIndex(block => /^\s*\[project\]/.test(block)), key)])),
-        migrationRules: readMaterials("migration_rules"),
-        references: readMaterials("references"),
+        project: Object.fromEntries(["root", "worktree_root", "run_root", "base_ref", "max_context_chars"].map(key =>
+          [key, read(findTable("project"), key)])),
+        build: {project: read(findTable("build"), "project") ?? ""},
+        checker: {
+          command: read(checker, "command") ?? [],
+          max_repair_attempts: read(checker, "max_repair_attempts") ?? "",
+        },
+        junie: {max_steps: read(findTable("junie"), "max_steps")},
+        diff_viewer: {
+          html: read(findTable("diff_viewer"), "html"),
+          enabled: read(findTable("diff_viewer"), "enabled") === false ? "false" : "",
+        },
+        migrationRules: readMaterials(materialBlocks("migration_rules"), true),
+        references: readMaterials(materialBlocks("references")),
         scripts: Object.keys(scriptPhases).flatMap(phase => (read(scripts, phase) || []).map(command => ({phase, command}))),
         units: unitBlocks().map(index => ({id: read(index, "id"), source: read(index, "source"),
           targets: read(index, "targets") || [read(index, "target")].filter(Boolean)})),
@@ -1581,7 +1726,12 @@ function showMigrationLedger(ledger, snapshot, compare) {
     readRuns: async () => ({units: demoUnits(), runs: [{run_id: demoRunID, unit_id: "注文履歴"}]}),
     readSettings: async () => ({path: "harness.local.toml（デモ内）", version: "demo", ...demoSettingsDraft(demoSettings)}),
     previewSettings: async (content, changes) => demoSettingsDraft(content, changes),
-    saveSettings: async content => { demoSettings = content; return {version: "demo"}; },
+    saveSettings: async content => {
+      demoSettings = content;
+      const viewer = demoSettingsDraft(content).form?.diff_viewer;
+      document.documentElement.toggleAttribute("data-viewer-enabled", !!viewer?.html?.trim() && viewer.enabled !== "false");
+      return {version: "demo"};
+    },
     execute: async (action, data) => {
       if (action === "open-run" || action === "resume-run") {
         if (data.run_id !== demoRunID) throw new Error("保存済みの候補からデモのRun IDを選択してください。");

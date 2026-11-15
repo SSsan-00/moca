@@ -358,6 +358,7 @@ class SavedDashboardTests(SavedRunFixture):
 
     # 完了状態で外部コマンドを起動せず、記録と比較を閲覧できることを検証する。
     def test_complete_runs_show_saved_results_ledger_and_diff_without_running_commands(self):
+        self.config["diff_viewer_anchor_reference"] = None
         original = self.record()
         for status, checker_exit in (("checker_succeeded", 0), ("checker_accepted", 1), ("build_succeeded", None)):
             with self.subTest(status=status):
@@ -382,7 +383,7 @@ class SavedDashboardTests(SavedRunFixture):
                         response.readline()
                         root_tag = response.readline()
                     self.assertIn(b"data-saved", root_tag)
-                    self.assertIn(b"data-anchor-reference", root_tag)
+                    self.assertIn(b"data-viewer-enabled", root_tag)
                     with urlopen(url + "migration-ledger", timeout=3) as response:
                         ledger = json.load(response)
                         self.assertEqual(ledger["capsules"][0]["sources"][0]["path"], "example.php")
@@ -543,6 +544,67 @@ target = "Search.cs"
         with self.assertRaisesRegex(ValueError, "入力済み"):
             dashboard._settings_draft(content, {"removeEmptyUnits": [0]})
 
+    def test_settings_form_updates_build_and_checker_and_can_restore_defaults(self):
+        content = (
+            '[build]\nproject = "App.sln" # Build this project\n'
+            '[checker]\ncommand = ["py", "check.py"]\nmax_repair_attempts = 2\n'
+            '[project]\nbase_ref = "stable"\n'
+        )
+        form = dashboard._settings_draft(content)["form"]
+        self.assertEqual(form["build"]["project"], "App.sln")
+        self.assertEqual(form["checker"], {"command": ["py", "check.py"], "max_repair_attempts": "2"})
+        command = ["powershell.exe", "-File", "tools/check migration.ps1", ""]
+        draft = dashboard._settings_draft(content, {
+            "build": {"project": "src/App.csproj"},
+            "checker": {"command": command, "max_repair_attempts": "0"},
+        })
+        self.assertIn('project = "src/App.csproj" # Build this project', draft["content"])
+        self.assertIn('base_ref = "stable"', draft["content"])
+        self.assertIn("max_repair_attempts = 0", draft["content"])
+        self.assertEqual(draft["form"]["checker"], {"command": command, "max_repair_attempts": "0"})
+
+        cleared = dashboard._settings_draft(draft["content"], {
+            "build": {"project": ""},
+            "checker": {"command": [], "max_repair_attempts": ""},
+        })
+        self.assertNotIn("max_repair_attempts =", cleared["content"])
+        self.assertEqual(cleared["form"]["build"]["project"], "")
+        self.assertEqual(cleared["form"]["checker"], {"command": [], "max_repair_attempts": ""})
+        with self.assertRaisesRegex(ValueError, "0以上の整数"):
+            dashboard._settings_draft(draft["content"], {"checker": {"max_repair_attempts": "-1"}})
+
+    def test_settings_form_edits_project_options_and_preserves_legacy_inputs(self):
+        content = (
+            '[project]\nroot = "app"\nbase_ref = "stable" # Keep base reference note\n'
+            '[diff_viewer]\nanchor_reference = "old.workspace.json"\n'
+            '[[units]]\nid = "legacy"\ntarget = "Legacy.cs"\nsource_encoding = "auto"\n'
+            '[[units.inputs]]\nrole = "php"\npath = "legacy.php"\nstart_line = 1\nend_line = 2\ncustom = "keep"\n'
+        )
+        form = dashboard._settings_draft(content)["form"]
+        self.assertEqual(form["project"]["base_ref"], "stable")
+        self.assertNotIn("inputs", form["units"][0])
+        self.assertNotIn("source_encoding", form["units"][0])
+        self.assertNotIn("anchor_reference", form["diff_viewer"])
+        draft = dashboard._settings_draft(content, {
+            "project": {"base_ref": "main", "max_context_chars": "25000"},
+            "junie": {"max_steps": "20"},
+            "diff_viewer": {"html": "viewer.html", "enabled": "false"},
+            "migrationRules": [{"role": "migration_rules", "path": "rules.md", "encoding": "utf-8"}],
+            "units": {"0": {"id": "renamed"}},
+        })
+        self.assertIn('base_ref = "main" # Keep base reference note', draft["content"])
+        self.assertIn('custom = "keep"', draft["content"])
+        self.assertIn('source_encoding = "auto"', draft["content"])
+        self.assertIn('anchor_reference = "old.workspace.json"', draft["content"])
+        self.assertIn("enabled = false", draft["content"])
+        self.assertEqual(draft["form"]["diff_viewer"]["html"], "viewer.html")
+        self.assertEqual(draft["form"]["diff_viewer"]["enabled"], "false")
+        self.assertIn('end_line = 2', draft["content"])
+        self.assertEqual(draft["form"]["junie"]["max_steps"], "20")
+        self.assertEqual(draft["form"]["migrationRules"][0]["encoding"], "utf-8")
+        with self.assertRaisesRegex(ValueError, "1000以上"):
+            dashboard._settings_draft(content, {"project": {"max_context_chars": "999"}})
+
     # 保存済みRunを開くだけでは再開せず、操作を受けてから実行することを検証する。
     def test_saved_resumable_run_waits_for_explicit_resume(self):
         mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b"clean\n"))
@@ -564,10 +626,20 @@ target = "Search.cs"
         self.assertEqual(result["status"], "checker_succeeded")
 
     def test_resume_from_run_selection_rechecks_the_selected_run(self):
+        self.config["diff_viewer_html"] = None
         mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b"clean\n"))
 
         def inspect(url):
-            revision, _ = self.get_ready_event(url)
+            revision, state = self.get_ready_event(url)
+            self.assertFalse(state["diff_viewer_enabled"])
+            for endpoint, payload in (
+                ("comparison", {}),
+                ("control", {"action": "anchors", "revision": revision}),
+            ):
+                with self.assertRaises(HTTPError) as rejected:
+                    self.post(url, endpoint, payload)
+                with rejected.exception as response:
+                    self.assertEqual(response.code, 409)
             with self.post(url, "control", {"action": "resume-run", "run_id": self.run_id, "revision": revision}) as response:
                 self.assertEqual(response.status, 202)
 

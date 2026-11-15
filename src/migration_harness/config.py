@@ -95,12 +95,17 @@ def load_config(path: Path) -> dict[str, Any]:
     viewer = raw.get("diff_viewer", {})
     if not isinstance(viewer, dict):
         raise ValueError("[diff_viewer] must be a table")
-    viewer_html = viewer.get("html", "tools/dist/index.min.html")
-    if not isinstance(viewer_html, str) or not viewer_html.strip():
+    viewer_enabled = viewer.get("enabled", True)
+    if type(viewer_enabled) is not bool:
+        raise ValueError("[diff_viewer].enabled must be a boolean")
+    viewer_html = viewer.get("html", "")
+    if not isinstance(viewer_html, str):
         raise ValueError("[diff_viewer].html must be a path inside the application repository")
-    viewer_path = Path(viewer_html)
-    if viewer_path.anchor or ".." in viewer_path.parts or viewer_path.suffix.lower() != ".html":
-        raise ValueError("[diff_viewer].html must name a relative .html file inside the application repository")
+    viewer_html = viewer_html.strip() or None
+    if viewer_enabled and viewer_html:
+        viewer_path = Path(viewer_html)
+        if viewer_path.anchor or ".." in viewer_path.parts or viewer_path.suffix.lower() != ".html":
+            raise ValueError("[diff_viewer].html must name a relative .html file inside the application repository")
     anchor_reference = viewer.get("anchor_reference")
     if anchor_reference is not None and (
         not isinstance(anchor_reference, str) or not anchor_reference.strip()
@@ -206,7 +211,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "build_project": build_project,
         "checker_command": checker_command,
         "scripts": scripts,
-        "diff_viewer_html": viewer_html,
+        "diff_viewer_html": viewer_html if viewer_enabled else None,
         "diff_viewer_anchor_reference": resolve_output(anchor_reference) if anchor_reference is not None else None,
         "max_repair_attempts": max_repair_attempts,
         "junie_max_steps": junie_max_steps,

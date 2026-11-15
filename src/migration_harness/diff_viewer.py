@@ -151,7 +151,9 @@ def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> byt
 
 def review_html(config: dict[str, Any], workspace: bytes) -> bytes:
     """既存ViewerのJSON取込に比較データと初期表示位置を渡す。"""
-    path = _inside_file(Path(config["project_root"]), config["diff_viewer_html"])
+    if not (viewer_html := config.get("diff_viewer_html")):
+        raise ValueError("設定の差分ビューアーのHTMLを指定してください。")
+    path = _inside_file(Path(config["project_root"]), viewer_html)
     html = path.read_bytes()
     closing = list(re.finditer(rb"</body\s*>", html, flags=re.IGNORECASE))
     if not closing or b"workspace-import-file" not in html:

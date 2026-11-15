@@ -377,6 +377,7 @@ class CapsulePreparationTests(HarnessCase):
         edited["workspace"]["anchors"]["manualAnchors"] = [{"leftLineNo": 1, "rightLineNo": 0}]
         reference = self.root / "reference.json"
         reference.write_text(json.dumps(edited), encoding="utf-8")
+        config["diff_viewer_html"] = "viewer.html"
 
         def junie(command, completion, token, proposal):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
@@ -393,6 +394,36 @@ class CapsulePreparationTests(HarnessCase):
             snapshot, count = review_anchors.generate_anchors(config, run_id, reference)
         self.assertEqual(count, 1)
         self.assertEqual(self.read_json(snapshot)["workspace"], edited["workspace"])
+
+    def test_anchors_work_without_a_reference_and_reuse_reviewed_examples(self):
+        config, run, _ = self.prepare(PHP)
+        run_id = run["run_id"]
+        record_path = Path(run["run_path"]) / "run.json"
+        record = self.read_json(record_path)
+        record.update(status="build_succeeded", completed_capsules=1)
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        observed = []
+
+        def junie(command, completion, token, proposal):
+            guide = self.read_json(proposal.parent / "guide.json")
+            observed.append(guide["examples"])
+            proposal.write_text('[{"leftLineNo": 2, "rightLineNo": 1}]', encoding="utf-8")
+            completion.write_text(token, encoding="ascii")
+
+        with (
+            patch.object(review_anchors, "_validate_junie_execution") as validate,
+            patch.object(review_anchors, "_run_interactive_junie", side_effect=junie),
+        ):
+            with self.assertRaisesRegex(ValueError, "差分ビューアーを有効に"):
+                review_anchors.generate_anchors(config, run_id)
+            validate.assert_not_called()
+            config["diff_viewer_html"] = "viewer.html"
+            review_anchors.generate_anchors(config, run_id)
+            workflow.review_migration_ranges(config, run_id, ["1:1"], "confirmed", "行の対応を確認")
+            review_anchors.generate_anchors(config, run_id)
+            (Path(run["worktree_path"]) / "Target.cs").write_text("class Changed {}\n", encoding="utf-8")
+            review_anchors.generate_anchors(config, run_id)
+        self.assertEqual(observed, [[], [{"left": "echo 100;", "right": "class Target {}"}], []])
 
     # 固定版が欠落したときに現在のPHPへ黙って切り替えないことを検証する。
     def test_missing_or_changed_pin_fails_even_if_live_php_exists(self):

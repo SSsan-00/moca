@@ -107,7 +107,7 @@ php-to-csharp-harness ledger-review --config harness.local.toml --run-id RUN_ID 
 
 WindowsのPowerShellで `.\h.cmd d` を実行し、端末に表示されたローカルURLを開きます。通常のCLIでは `php-to-csharp-harness dashboard --config harness.local.toml` を使います。
 
-- **設定** のフォームでプロジェクト、移行単位、移行ルール、参考実装のペア、自作スクリプトを編集して保存します。作業ツリーは既定で現在の `HEAD` から作ります。別のGitリビジョンが必要な場合は **TOMLを直接編集** で `base_ref` を指定します。初回は設定例を表示し、内容を検証してから保存します。
+- **設定** のフォームでプロジェクト、移行単位、移行ルール、参考実装のペア、自作スクリプト、ビルド対象、独自チェッカーを編集して保存します。リポジトリと保存先、ビルド対象、チェッカー、基準リビジョン、Junieの上限、差分ビューアーは **プロジェクトの詳細設定** にあります。初回は設定例を表示し、内容を検証してから保存します。
 - **実行** で移行単位を選んで準備や移行を開始します。保存済みのRunは **移行を再開** または **進捗を表示** で操作します。
 - **進捗** でログ、差分、移行台帳を確認し、必要に応じて同じRunを再開します。Junieが対話を求めたときは、ダッシュボードを起動した端末で応答します。
 
@@ -207,7 +207,7 @@ php-to-csharp-harness view --config harness.local.toml --run-id RUN_ID
 
 ### Diff Viewerで差分を確認する
 
-移行プロジェクトの `tools/dist/index.min.html` にDiff Viewerの単一HTMLを置きます。配置が異なる場合は、`[diff_viewer].html` に移行プロジェクトのルートからの相対パスを指定します。
+ダッシュボードでDiff Viewerを使う場合は、移行プロジェクトに単一HTMLを置き、**プロジェクトの詳細設定** の **差分ビューアーのHTML** に相対パスを指定します。たとえば `tools/dist/index.min.html` を指定します。HTMLの空欄や **使用しない** の選択で比較とアンカー生成が無効になり、移行と検証は実行できます。
 
 worktreeと対象ファイルがそろったら、進捗ダッシュボード上部の **比較ツールを開く** をいつでも押せます。確認待ちのモーダルからも同じ操作ができます。左ペインにはこのRunの入力に指定したPHPファイル、右ペインにはworktreeの移行先を表示します。Razorページは `.cshtml.cs`、`.cshtml` の順です。
 
@@ -235,16 +235,9 @@ MIG402 Pages/Review.cshtml:3 warning: Confirm rendered result.
 
 ### Junieでアンカー付きの比較JSONを作る
 
-手動アンカーを含む既存のワークスペースJSONをDiff Viewerからエクスポートします。ダッシュボードから使う場合は、設定ファイルに参照先を追加します。相対パスの基準は設定ファイルのあるフォルダーです。
+差分ビューアーを有効にして、ダッシュボード上部または指摘の確認モーダルで **比較ツールを開く** の右にある `▾` から **Junieで対応行を提案して開く** を選びます。今回の比較と、同じRunに保存されている確認済みの対応例を使います。Junieが確認を求めたら、ハーネスを起動した端末で操作します。生成が完了すると、別タブのDiff Viewerに結果が表示され、同じJSONがダウンロードされます。
 
-```toml
-[diff_viewer]
-anchor_reference = "previous.workspace.json"
-```
-
-移行処理や検証が一区切りついたら、ダッシュボード上部または指摘の確認モーダルで **比較ツールを開く** の右にある `▾` から **Junieで対応行を提案して開く** を選びます。Junieが確認を求めたら、ハーネスを起動した端末で操作します。生成が完了すると、別タブのDiff Viewerに結果が表示され、同じJSONがダウンロードされます。
-
-コマンドだけで生成する場合は、対象のRun IDと参照ファイルを指定して対話端末で実行します。
+コマンドから生成する場合はRun IDを指定します。手動アンカー付きのワークスペースJSONを明示して使う場合は、任意の `--reference` を追加します。
 
 ```powershell
 php-to-csharp-harness anchors --config harness.local.toml --run-id $runId --reference .\previous.workspace.json

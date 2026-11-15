@@ -71,7 +71,6 @@ modalComparisonStatus.hidden = true;
 element(".review-actions").before(modalComparisonStatus);
 const anchorButtons = document.querySelectorAll("[data-propose-anchors]");
 for (const button of anchorButtons) {
-  button.closest("details").hidden = !document.documentElement.hasAttribute("data-anchor-reference");
   bindComparisonOptions(button, () => openSnapshot({withAnchors: true, fromReview: dialog.contains(button)}));
 }
 element(".controls").setAttribute("aria-label", "実行操作");
@@ -133,7 +132,7 @@ function syncActions() {
   resume.disabled = !canAct || !snapshot.resumable;
   reviewButton.disabled = !canAct || !(canReview || snapshot.resumable);
   migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
-  dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || snapshotting;
+  dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || !snapshot.diff_viewer_enabled || snapshotting;
   element("#migration-ledger-compare").disabled = dashboardViewer.disabled;
   for (const button of anchorButtons) {
     button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
@@ -251,10 +250,7 @@ if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1)
 // 最新のSSE状態を工程・入力・指摘に反映し、確認待ちを案内する。
 function render() {
   const data = snapshot;
-  if (data.ready) {
-    document.documentElement.toggleAttribute("data-anchor-reference", !!data.anchor_reference);
-    for (const button of anchorButtons) button.closest("details").hidden = !data.anchor_reference;
-  }
+  document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
   const verificationFinished = data.ready && verifiedStatuses.has(data.status);
   const stopped = data.ready && !verificationFinished

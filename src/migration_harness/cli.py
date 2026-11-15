@@ -45,7 +45,7 @@ def _parse_args() -> argparse.Namespace:
     ledger_review.add_argument("--target", dest="review_targets", action="append", help="Reviewed target file; repeat for multiple files")
     anchors = configured_command("anchors", "Generate Diff Viewer anchors with Junie")
     anchors.add_argument("--run-id", required=True, help="Run ID with PHP and migration target files")
-    anchors.add_argument("--reference", type=Path, required=True, help="Existing Diff Viewer workspace JSON with manual anchors")
+    anchors.add_argument("--reference", type=Path, help="Optional Diff Viewer workspace JSON with manual anchors")
     run.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
     resume.add_argument("--dashboard", action="store_true", help="Open the saved run and resume from the dashboard")
     for command in (run, resume, view):
