@@ -528,19 +528,22 @@ class Dashboard:
 
             def send_comparison(self) -> None:
                 """保存済み比較をダウンロード用JSONか隔離されたViewerとして返す。"""
-                match = re.fullmatch(r"([a-f0-9]{32})\.(html|json)", self.path.removeprefix(prefix + "review/"))
-                if not match or not (run_id := dashboard.state.get("run_id")):
+                match = re.fullmatch(r"([^/]+)/([a-f0-9]{32})\.(html|json)", self.path.removeprefix(prefix + "review/"))
+                with dashboard.condition:
+                    comparison_config = config.copy()
+                if not match or not comparison_config.get("run_root"):
                     self.send_error(404)
                     return
+                run_id, snapshot_id, extension = match.groups()
                 try:
-                    workspace = snapshot_bytes(config, run_id, match[1])
-                    if match[2] == "json":
+                    workspace = snapshot_bytes(comparison_config, run_id, snapshot_id)
+                    if extension == "json":
                         self.send_body(200, "application/json", workspace, {
-                            "Content-Disposition": f'attachment; filename="review-{match[1]}.json"',
+                            "Content-Disposition": f'attachment; filename="review-{snapshot_id}.json"',
                         })
                     else:
                         # Viewerにはスナップショットだけを渡し、進捗画面や制御APIから隔離する。
-                        self.send_body(200, "text/html; charset=utf-8", review_html(config, workspace), {
+                        self.send_body(200, "text/html; charset=utf-8", review_html(comparison_config, workspace), {
                             "X-Frame-Options": "SAMEORIGIN",
                             "Content-Security-Policy": (
                                 "sandbox allow-scripts allow-downloads; default-src 'none'; "
@@ -550,7 +553,7 @@ class Dashboard:
                             ),
                         })
                 except (OSError, RuntimeError, ValueError) as exc:
-                    headers = {"X-Frame-Options": "SAMEORIGIN"} if match[2] == "html" else None
+                    headers = {"X-Frame-Options": "SAMEORIGIN"} if extension == "html" else None
                     self.send_body(409, "text/plain; charset=utf-8", f"比較ツールを開けませんでした。\n{exc}".encode("utf-8"), headers)
 
             def send_events(self) -> None:
@@ -611,14 +614,17 @@ class Dashboard:
                     self.save_settings(action)
                     return
                 if comparison:
+                    with dashboard.condition:
+                        comparison_config = config.copy()
+                        state = dashboard.state
                     try:
-                        if not config.get("diff_viewer_html"):
+                        if not comparison_config.get("diff_viewer_html"):
                             raise ValueError("設定の差分ビューアーのHTMLを指定してください。")
-                        run_id = dashboard.state.get("run_id")
-                        if not run_id or not dashboard.state.get("worktree_path"):
+                        run_id = state.get("run_id")
+                        if not run_id or not state.get("worktree_path"):
                             raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
-                        snapshot_id = create_snapshot(config, run_id, focus=action.get("focus"))
-                        response = json.dumps({"id": snapshot_id}).encode("utf-8")
+                        snapshot_id = create_snapshot(comparison_config, run_id, focus=action.get("focus"))
+                        response = json.dumps({"run_id": run_id, "id": snapshot_id}).encode("utf-8")
                         self.send_body(201, "application/json", response)
                     except (OSError, RuntimeError, ValueError) as exc:
                         self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
@@ -678,21 +684,23 @@ class Dashboard:
                     self.send_body(200, "application/json", json.dumps({"version": version}).encode())
 
             def send_anchored_comparison(self, action: dict[str, Any]) -> None:
-                """端末側でアンカー生成が終わるまで待ち、保存した比較のIDを返す。"""
+                """端末側でアンカー生成が終わるまで待ち、作成元Runと比較のIDを返す。"""
                 if not config.get("diff_viewer_html"):
                     self.send_body(409, "text/plain; charset=utf-8", "設定の差分ビューアーのHTMLを指定してください。".encode())
                     return
                 # ブラウザーを閉じても端末側は結果を保存できる。応答は要求元だけに返す。
-                reply: Future[tuple[str, int]] = Future()
+                reply: Future[tuple[str, str, int]] = Future()
                 if not dashboard.submit({**action, "reply": reply}):
                     self.send_body(409, "text/plain; charset=utf-8", "実行中の処理が終わってから、もう一度お試しください。".encode())
                     return
                 try:
-                    snapshot_id, count = reply.result()
+                    run_id, snapshot_id, count = reply.result()
                 except (OSError, ValueError, RuntimeError) as exc:
                     self.send_body(409, "text/plain; charset=utf-8", str(exc).encode())
                     return
-                self.send_body(201, "application/json", json.dumps({"id": snapshot_id, "count": count}).encode())
+                self.send_body(201, "application/json", json.dumps({
+                    "run_id": run_id, "id": snapshot_id, "count": count,
+                }).encode())
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         host = f"127.0.0.1:{server.server_port}"
@@ -761,16 +769,17 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                     continue
                 if action["action"] == "anchors":
                     reply = action["reply"]
+                    source_run_id = result["run_id"]
                     try:
                         path, count = generate_anchors(
-                            config, result["run_id"], focus=action.get("focus"),
+                            config, source_run_id, focus=action.get("focus"),
                         )
                     except KeyboardInterrupt:
                         reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))
                     except (OSError, ValueError, RuntimeError) as exc:
                         reply.set_exception(exc)
                     else:
-                        reply.set_result((path.stem, count))
+                        reply.set_result((source_run_id, path.stem, count))
                     finally:
                         view.publish({**view.state, "ready": True, "generating_anchors": False})
                     continue

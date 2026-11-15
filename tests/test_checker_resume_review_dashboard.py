@@ -60,11 +60,27 @@ class JunieConnectionTests(unittest.TestCase):
             self.assertEqual([call.args[0] for call in delay.call_args_list], [1, 3])
         with (
             patch.object(workflow, "_run_junie_session", side_effect=error) as launch,
-            patch.object(workflow.time, "sleep"),
+            patch.object(workflow.time, "sleep") as delay,
+            io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict") as stdout,
+            redirect_stdout(stdout),
             self.assertRaisesRegex(workflow.JunieConnectionError, "after 2 retries"),
         ):
             workflow._run_interactive_junie(command, path, "token", path)
         self.assertEqual(launch.call_count, 3)
+        self.assertEqual([call.args[0] for call in delay.call_args_list], [1, 3])
+
+    def test_connection_retry_notice_with_cp1252_stdout(self):
+        path = Path("fixture")
+        with (
+            io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict") as stdout,
+            redirect_stdout(stdout),
+            patch.object(workflow, "_run_junie_session", side_effect=[workflow.JunieConnectionError("temporary"), 0]) as launch,
+            patch.object(workflow.time, "sleep") as delay,
+        ):
+            self.assertEqual(workflow._run_interactive_junie(["junie", "--prompt", "task"], path, "token", path), 0)
+            self.assertIn(b"Retrying Junie", stdout.buffer.getvalue())
+        self.assertEqual(launch.call_count, 2)
+        delay.assert_called_once_with(1)
 
 
 class SavedRunFixture(unittest.TestCase):
@@ -135,16 +151,19 @@ class SavedRunFixture(unittest.TestCase):
         """外部コマンドの順序とログを制御する。"""
         expected = iter(responses)
         calls = []
+        run_process = subprocess.run
 
-        def run(command, *, cwd, stdout, stderr, check):
+        def run(command, **kwargs):
             """指定した順序と実行場所で呼ばれたことを確認し、結果を返す。"""
+            if command[0] == "git":
+                return run_process(command, **kwargs)
             calls.append(command)
             name, returncode, log = next(expected)
-            self.assertEqual(command, ["dotnet", "build"] if name == "dotnet" else [name])
-            self.assertEqual(Path(cwd), self.worktree)
-            self.assertEqual(stderr, subprocess.STDOUT)
-            self.assertFalse(check)
-            stdout.write(log)
+            self.assertEqual(command, ["dotnet", "build"] if name == "dotnet" else self.config["checker_command"])
+            self.assertEqual(Path(kwargs["cwd"]), self.worktree)
+            self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
+            self.assertFalse(kwargs["check"])
+            kwargs["stdout"].write(log)
             return subprocess.CompletedProcess(command, returncode)
 
         return patch.object(workflow.subprocess, "run", side_effect=run), calls
@@ -172,6 +191,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         def completion():
             return workflow.migration_ledger(self.config, self.run_id)["completion"]
 
+        subprocess.run(["git", "init", "-q", str(self.worktree)], check=True)
+        self.config["checker_command"] = [sys.executable]
         secondary = self.worktree / "View.cshtml"
         secondary.write_text("<p>View</p>", encoding="utf-8")
         targets = [self.target.name, secondary.name]
@@ -483,8 +504,8 @@ class SavedDashboardTests(SavedRunFixture):
                         self.assertEqual(ledger["capsules"][0]["sources"][0]["path"], "example.php")
                         self.assertFalse(ledger["completion"]["complete"])
                     with self.post(url, "comparison", {}) as response:
-                        snapshot_id = json.load(response)["id"]
-                    with urlopen(f"{url}review/{snapshot_id}.json", timeout=3) as response:
+                        comparison = json.load(response)
+                    with urlopen(f"{url}review/{comparison['run_id']}/{comparison['id']}.json", timeout=3) as response:
                         self.assertIn("class Original", json.load(response)["workspace"]["rightText"])
                     with self.assertRaises(HTTPError) as rejected:
                         self.post(url, "control", {
@@ -529,16 +550,24 @@ class SavedDashboardTests(SavedRunFixture):
             with self.post(url, "settings", {**request, "content": valid}) as response:
                 saved = json.load(response)
             revision, _ = self.get_ready_event(url, after=revision)
+            incomplete = valid.replace('target = "Example.cs"', 'target = "Pages/Example.cshtml"')
+            with self.assertRaises(HTTPError) as invalid:
+                self.post(url, "settings", {"revision": revision, "version": saved["version"], "content": incomplete})
+            with invalid.exception as response:
+                self.assertEqual(response.code, 409)
+                self.assertIn("Pages/Example.cshtml.cs", response.read().decode("utf-8"))
+            self.assertEqual(config_path.read_text(encoding="utf-8"), valid)
             source = valid.replace('target = "Example.cs"', 'target = "Example.cs" # Keep target note')
             source += '\n[checker]\n# Keep this checker\ncommand = ["fixture-checker"]\n'
+            pair = ["Example.cshtml.cs", "Example.cshtml"]
             with self.post(url, "settings", {
                 "mode": "preview", "content": source,
-                "changes": {"units": {"0": {"id": "注文確認", "targets": ["Example.cs", "Example.cshtml"]}}},
+                "changes": {"units": {"0": {"id": "注文確認", "targets": pair}}},
             }) as response:
                 draft = json.load(response)
             self.assertEqual(draft["form"]["units"][0]["id"], "注文確認")
             self.assertIn('# Keep this checker\ncommand = ["fixture-checker"]', draft["content"])
-            self.assertIn('targets = ["Example.cs", "Example.cshtml"] # Keep target note', draft["content"])
+            self.assertIn('targets = ["Example.cshtml.cs", "Example.cshtml"] # Keep target note', draft["content"])
             self.assertEqual(config_path.read_text(encoding="utf-8"), valid)
             with urlopen(url + "workspace", timeout=3) as response:
                 self.assertEqual(json.load(response)["units"], ["メニュー"])

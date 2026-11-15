@@ -162,6 +162,19 @@ def load_config(path: Path) -> dict[str, Any]:
             parent in target_paths for target in target_paths for parent in target.parents
         ):
             raise ValueError(f"unit {unit['id']}: target paths must be distinct files")
+        for target in target_paths:
+            name = target.name.lower()
+            if name.endswith(".cshtml"):
+                counterpart = target.with_name(f"{target.name}.cs")
+            elif name.endswith(".cshtml.cs"):
+                counterpart = target.with_suffix("")
+            else:
+                continue
+            if counterpart not in target_paths:
+                raise ValueError(
+                    f"unit {unit['id']}: {target.as_posix()} の対応ファイル "
+                    f"{counterpart.as_posix()} を targets に指定してください。"
+                )
 
         normalized_inputs = []
         if "source" in unit:

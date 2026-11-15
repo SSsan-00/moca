@@ -1,0 +1,18 @@
+[project]
+root = "app"
+worktree_root = "worktrees"
+run_root = "runs"
+max_context_chars = 1150
+
+[build]
+project = "OrderedItems.csproj"
+
+[checker]
+command = ["python3", "check_ordered_items.py"]
+max_repair_attempts = 0
+
+[[units]]
+id = "ordered-items"
+source = "ordered-items.php"
+source_encoding = "utf-8"
+targets = ["Pages/OrderedItems.cshtml", "Pages/OrderedItems.cshtml.cs"]

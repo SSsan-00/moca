@@ -199,7 +199,7 @@ async function loadMigrationLedger() {
     render();
     if (!migrationLedgerDialog.open) return;
     showMigrationLedger(ledger, snapshot, id => {
-      const url = new URL(`review/${id}.html`, document.baseURI);
+      const url = new URL(`${comparisonPath(ledger.run_id, id)}.html`, document.baseURI);
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
     });
   } catch {
@@ -422,6 +422,11 @@ pendingFilter.addEventListener("click", () => {
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
 resume.addEventListener("click", () => send("resume"));
+
+function comparisonPath(runId, snapshotId) {
+  return `review/${runId}/${snapshotId}`;
+}
+
 // 比較の進捗と保存リンクを上部と確認モーダルに揃えて表示する。
 function showComparisonStatus(...content) {
   snapshotStatus.replaceChildren(...content);
@@ -481,14 +486,15 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request),
     } : {method: "POST"});
     if (!response.ok) throw new Error(await response.text());
-    const {id, count} = await response.json();
+    const {run_id: runId, id, count} = await response.json();
+    const path = comparisonPath(runId, id);
     const open = document.createElement("a");
-    open.href = `review/${id}.html`;
+    open.href = `${path}.html`;
     open.target = "_blank";
     open.rel = "noopener";
     open.textContent = withAnchors && count ? `今回の比較を開く（対応行の候補 ${count}件）` : "今回の比較を開く";
     const download = document.createElement("a");
-    download.href = `review/${id}.json`;
+    download.href = `${path}.json`;
     download.download = "";
     download.textContent = "ワークスペースJSONを保存";
     showComparisonStatus(...(withAnchors && count === 0 ? ["対応行の候補はありませんでした。 "] : []), open, " · ", download);

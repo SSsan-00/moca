@@ -146,7 +146,12 @@ def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> byt
     if re.fullmatch(r"[a-f0-9]{32}", snapshot_id) is None:
         raise ValueError("スナップショットIDが無効です。")
     run_path, _, _, _ = _load_saved_run(config, run_id)
-    return _inside_file(run_path, f"review-snapshots/{snapshot_id}.json").read_bytes()
+    content = _inside_file(run_path, f"review-snapshots/{snapshot_id}.json").read_bytes()
+    payload = json.loads(content)
+    snapshot = payload.get("snapshot") if isinstance(payload, dict) else None
+    if not isinstance(snapshot, dict) or snapshot.get("runId") != run_id:
+        raise ValueError("スナップショットのRun IDが指定されたRunと一致しません。")
+    return content
 
 
 def review_html(config: dict[str, Any], workspace: bytes) -> bytes:

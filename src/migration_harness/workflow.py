@@ -5,11 +5,13 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 import codecs
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from threading import RLock
@@ -851,7 +853,7 @@ def _run_interactive_junie(
                 raise JunieConnectionError(
                     "Junie could not reach the model service after 2 retries. Resume this Run after the connection recovers."
                 ) from None
-            print(f"Junieの通信障害を再試行します（{attempt + 1}/{len(delays)}）", flush=True)
+            print(f"Retrying Junie after a connection failure ({attempt + 1}/{len(delays)})", flush=True)
             time.sleep(delays[attempt])
 
 
@@ -1495,6 +1497,114 @@ def _verification_scripts(config: dict[str, Any], checker_command: list[str] | N
     return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
 
 
+# Cache file hashes for one worktree in memory. Each snapshot still checks the live paths and stats.
+_verification_cache: tuple[Path | None, dict[Path, tuple[tuple[int, ...], str]]] = (None, {})
+
+
+def _verification_fingerprint(
+    worktree: Path, build_project: str | None, checker: list[str] | None, scripts: dict[str, Any],
+) -> str | None:
+    """作業ツリー内のビルド入力と、検証コマンドが直接使うファイルを照合する。"""
+    global _verification_cache
+    cached_root, cached = _verification_cache
+    if cached_root != worktree:
+        cached = {}
+    scanned: dict[Path, tuple[tuple[int, ...], str]] = {}
+    digest = hashlib.sha256(b"verification-inputs-v1\n")
+
+    def signature(info: os.stat_result) -> tuple[int, ...]:
+        return info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def add_file(name: str, path: Path, info: os.stat_result) -> None:
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"verification input is not a regular file: {path}")
+        key = signature(info)
+        previous = scanned.get(path) or cached.get(path)
+        if previous is not None and previous[0] == key:
+            content = previous[1]
+        else:
+            content = _sha256_file(path)
+            if signature(path.lstat()) != key:
+                raise ValueError(f"verification input changed while reading: {path}")
+        scanned[path] = (key, content)
+        digest.update(json.dumps([name, info.st_mode, content]).encode("ascii") + b"\n")
+
+    try:
+        if not (worktree / ".git").exists():
+            return None
+        files = subprocess.run(
+            ["git", "-C", str(worktree), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            check=True, capture_output=True,
+        ).stdout
+        # Gitが無視していても、MSBuildの既定のグロブやインポートが拾うことがある。
+        build_patterns = (
+            "*.cs", "*.fs", "*.vb", "*.cshtml", "*.razor", "*.*proj", "*.props", "*.targets",
+            "*.sln", "*.slnx", "global.json", "nuget.config", ".editorconfig", ".globalconfig",
+        )
+        files += subprocess.run(
+            ["git", "-C", str(worktree), "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
+             *(f":(glob,icase)**/{pattern}" for pattern in build_patterns),
+             ":(exclude,glob,icase)**/bin/**", ":(exclude,glob,icase)**/obj/**"],
+            check=True, capture_output=True,
+        ).stdout
+        checked_dirs = {worktree}
+        for name in sorted(set(os.fsdecode(files).split("\0")) - {""}):
+            path = worktree / name
+            if path.parent not in checked_dirs:
+                if path.parent.resolve() != path.parent:
+                    return None
+                checked_dirs.add(path.parent)
+            try:
+                info = path.lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue  # Git still lists deleted tracked paths.
+            add_file(name, path, info)
+
+        if build_project is not None:
+            path = (worktree / build_project).resolve(strict=True)
+            if not path.is_relative_to(worktree):
+                return None
+            add_file(build_project, path, path.lstat())
+
+        commands = [command for phase_commands in scripts.values() for command in phase_commands]
+        if checker is not None:
+            commands.append(checker)
+        for command in commands:
+            executable = command[0]
+            search_path = None
+            if os.name != "nt":
+                if os.path.dirname(executable):
+                    executable = str(worktree / executable)
+                search_path = os.pathsep.join(
+                    str(worktree / entry) for entry in os.get_exec_path()
+                )
+            found = shutil.which(executable, path=search_path)
+            if found is None:
+                return None
+            path = Path(found).resolve(strict=True)
+            add_file(str(path), path, path.lstat())
+            for arg in command[1:]:
+                if not arg or arg.startswith("-") or arg.splitlines() != [arg]:
+                    continue
+                path = worktree / arg
+                try:
+                    info = path.stat()
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                except OSError as exc:
+                    if exc.errno in (errno.ENAMETOOLONG, errno.EINVAL) or getattr(exc, "winerror", None) == 123:
+                        continue  # Arbitrary arguments need not be valid file paths.
+                    raise
+                if stat.S_ISREG(info.st_mode):
+                    resolved = path.resolve(strict=True)
+                    add_file(str(resolved), resolved, info)
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError):
+        return None
+
+    _verification_cache = (worktree, scanned)
+    return digest.hexdigest()
+
+
 _BUILD_DIAGNOSTIC = re.compile(
     r"(?P<path>.+?)\((?P<location>\d+(?:,\d+){0,3})\)\s*:\s*"
     r"(?:error|エラー)\s+(?P<code>(?:CS|RZ)\d+)\s*:\s*(?P<message>.+)",
@@ -1559,12 +1669,28 @@ def _verify_worktree(
     scripts = _verification_scripts(config, command)
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
+
+    def current_fingerprint() -> str | None:
+        return _verification_fingerprint(worktree, config["build_project"], command, scripts)
+
+    def save_verification() -> None:
+        record["verification"]["scripts_passed"] = True
+        if fingerprint is not None and fingerprint == current_fingerprint():
+            record["verification"]["input_fingerprint"] = fingerprint
+        _write_run_record(record_path, record)
+
     while True:
+        fingerprint = current_fingerprint()
         _run_script_phase(config, "before_build", worktree, run_path, record)
+        if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():
+            fingerprint = None
+        if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():
+            fingerprint = None
         record["verification"] = {
             "target_hashes": {path.as_posix(): _review_target_hash(worktree, path) for path in targets},
             "build_project": config["build_project"],
             "checker_command": command,
+            "checker_from_cli": config.get("checker_from_cli", False),
             "scripts": scripts,
             "scripts_passed": not scripts,
         }
@@ -1584,20 +1710,21 @@ def _verify_worktree(
             return verified
         _run_script_phase(config, "after_build", worktree, run_path, record)
         if command is None:
-            pending_repair = record.pop("repair_pending", None)
-            if scripts:
-                record["verification"]["scripts_passed"] = True
-            if scripts or pending_repair:
-                _write_run_record(record_path, record)
+            record.pop("repair_pending", None)
+            save_verification()
             return verified
         _run_script_phase(config, "before_checker", worktree, run_path, record)
+        if fingerprint is not None and (scripts.get("after_build") or scripts.get("before_checker")):
+            if fingerprint != current_fingerprint():
+                fingerprint = None
         checked, findings = _run_checker(command, verified, record)
         if record.get("checker_exit_code") is not None:
             _run_script_phase(config, "after_checker", worktree, run_path, record)
-        resolved_repair = checked["status"] == "checker_succeeded" and record.pop("repair_pending", None)
-        if scripts:
+        if checked["status"] == "checker_succeeded":
+            record.pop("repair_pending", None)
+            save_verification()
+        elif scripts:
             record["verification"]["scripts_passed"] = True
-        if scripts or resolved_repair:
             _write_run_record(record_path, record)
         if (
             checked["status"] != "checker_needs_review" or checked["error"]
@@ -1610,7 +1737,7 @@ def _verify_worktree(
             if not remaining:
                 record["status"] = "checker_accepted"
                 record.pop("repair_pending", None)
-                _write_run_record(record_path, record)
+                save_verification()
                 return {**checked, "status": record["status"]}
             if not limit:
                 return checked
@@ -1767,7 +1894,10 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     def current_hash(path: str) -> str | None:
         """同じ移行先を複数のPHP範囲が参照する場合に再読込を避ける。"""
         if path not in hashes:
-            hashes[path] = _review_target_hash(worktree, Path(path))
+            try:
+                hashes[path] = _review_target_hash(worktree, Path(path))
+            except OSError:
+                hashes[path] = None
         return hashes[path]
 
     capsules = []
@@ -1821,6 +1951,11 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     verification = record.get("verification") or {}
     saved_checker = verification.get("checker_command")
     configured_checker = config["checker_command"]
+    if configured_checker is None and verification.get("checker_from_cli"):
+        # ledger-review loads TOML without the run's CLI override.
+        configured_checker = saved_checker
+    scripts = _verification_scripts(config, configured_checker)
+    fingerprint = verification.get("input_fingerprint")
     status = record["status"]
     checker_passed = status == "checker_succeeded" and record.get("checker_exit_code") == 0
     if status == "checker_accepted":
@@ -1832,16 +1967,20 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         not record.get("target_apply_pending")
         and record.get("completed_capsules") == len(capsules)
         and record.get("build_exit_code") == 0
-        and bool(verification)
+        and bool(fingerprint)
         and verification.get("build_project") == config["build_project"]
-        and verification.get("scripts", {}) == _verification_scripts(config, configured_checker)
-        and verification.get("scripts_passed", True)
-        and (configured_checker is None or saved_checker == configured_checker)
+        and verification.get("scripts", {}) == scripts
+        and verification.get("scripts_passed") is True
+        and saved_checker == configured_checker
         and (status == "build_succeeded" if saved_checker is None else checker_passed)
     )
     if verification_passed:
         current_targets = {path: current_hash(path) for path in targets}
         verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
+    if verification_passed:
+        verification_passed = fingerprint == _verification_fingerprint(
+            worktree, config["build_project"], configured_checker, scripts,
+        )
 
     return {
         "run_id": run_id,

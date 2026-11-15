@@ -1,5 +1,8 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from fixtures import HarnessCase
 from migration_harness import workflow
@@ -14,6 +17,9 @@ class LedgerReviewTest(HarnessCase):
         super().setUp()
         (self.project / "source.php").write_text("<?php function label() {}\n", encoding="utf-8")
         (self.project / "Page.cs").write_text("public void Label() {}\n", encoding="utf-8")
+        (self.project / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk" />\n', encoding="utf-8")
+        (self.project / "Dependency.cs").write_text("class Dependency {}\n", encoding="utf-8")
+        (self.project / ".gitignore").write_text("bin/\nobj/\nlocal/\n", encoding="utf-8")
         self.commit_project()
         self.settings = self.config()
         self.settings["units"][0]["inputs"][0]["symbol"] = "label"
@@ -21,6 +27,33 @@ class LedgerReviewTest(HarnessCase):
         self.run_id = prepared["run_id"]
         self.record_path = Path(prepared["run_path"]) / "run.json"
         self.target = Path(prepared["worktree_path"]) / "Page.cs"
+
+    def completion(self):
+        return workflow.migration_ledger(self.settings, self.run_id)["completion"]
+
+    def prepare_for_verification(self):
+        record = json.loads(self.record_path.read_bytes())
+        record.update(status="junie_finished", completed_capsules=1)
+        workflow._write_run_record(self.record_path, record)
+        workflow.review_migration_ranges(
+            self.settings, self.run_id, ["1:1"], "confirmed", "Reviewed",
+            confirmed_targets=[self.target.name],
+        )
+
+    def verify(self, exit_code=0):
+        run_process = subprocess.run
+
+        def build_or_run(command, **kwargs):
+            if command[:2] != ["dotnet", "build"]:
+                return run_process(command, **kwargs)
+            output = self.target.parent / "obj" / "build-output"
+            output.parent.mkdir(exist_ok=True)
+            with output.open("ab") as stream:
+                stream.write(b"another build\n")
+            return subprocess.CompletedProcess(command, exit_code)
+
+        with patch.object(workflow.subprocess, "run", side_effect=build_or_run):
+            return workflow.resume_with_junie(self.settings, self.run_id)
 
     def source(self):
         """台帳の対象範囲を、毎回ディスクの最新状態から取得する。"""
@@ -57,3 +90,108 @@ class LedgerReviewTest(HarnessCase):
         self.assertEqual(self.source()["review"], {"state": "excluded", "reason": "Unused"})
         workflow.review_migration_ranges(self.settings, self.run_id, ["1:1"], "needs_review", "Check call sites")
         self.assertEqual(self.source()["review"], {"state": "needs_review", "reason": "Check call sites"})
+
+    def test_non_target_build_input_changes_expire_completion_before_resume(self):
+        self.prepare_for_verification()
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+        worktree = self.target.parent
+        project = worktree / "App.csproj"
+        dependency = worktree / "Dependency.cs"
+        added = worktree / "Untracked.cs"
+        renamed = worktree / "Renamed.cs"
+        ignored_source = worktree / "local" / "Local.cs"
+        ignored_source.parent.mkdir()
+        for edit in (
+            lambda: project.write_text('<Project Sdk="Microsoft.NET.Sdk">\n</Project>\n', encoding="utf-8"),
+            lambda: dependency.write_text("class Dependency { }\n", encoding="utf-8"),
+            lambda: added.write_text("class Untracked {}\n", encoding="utf-8"),
+            lambda: added.rename(renamed),
+            renamed.unlink,
+            dependency.unlink,
+            lambda: ignored_source.write_text("class Local {}\n", encoding="utf-8"),
+            ignored_source.unlink,
+        ):
+            with self.subTest(edit=edit):
+                edit()
+                self.assertEqual(self.completion(), {
+                    "complete": False, "verification_passed": False, "reviewed": 1, "total": 1,
+                })
+                self.verify()
+                self.assertTrue(self.completion()["complete"])
+
+        (worktree / "obj" / "Generated.cs").write_text("ignored change", encoding="utf-8")
+        self.assertTrue(self.completion()["complete"])
+        self.assertEqual(self.source()["review"]["state"], "confirmed")
+
+    def test_checker_and_hook_implementation_changes_expire_completion(self):
+        worktree = self.target.parent
+        ignored = worktree / "obj"
+        ignored.mkdir()
+        checker = ignored / "check.py"
+        checker.write_text("pass\n", encoding="utf-8")
+        hook = self.root / "after_build.py"
+        hook.write_text("pass\n", encoding="utf-8")
+        self.settings.update(
+            checker_command=[sys.executable, "obj/check.py"],
+            scripts={"after_build": [[sys.executable, str(hook)]]},
+        )
+        self.prepare_for_verification()
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+        checker.write_text("raise SystemExit(1)\n", encoding="utf-8")
+        self.assertFalse(self.completion()["verification_passed"])
+        self.assertEqual(self.verify()["status"], "checker_needs_review")
+        self.assertFalse(self.completion()["complete"])
+        checker.write_text("# fixed\n", encoding="utf-8")
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+        hook.write_text("# edited\n", encoding="utf-8")
+        self.assertFalse(self.completion()["verification_passed"])
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+
+        self.settings["build_project"] = "App.csproj"
+        self.assertFalse(self.completion()["verification_passed"])
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+        self.settings["scripts"] = {}
+        self.assertFalse(self.completion()["verification_passed"])
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+        self.settings["checker_command"] = None
+        self.assertFalse(self.completion()["verification_passed"])
+
+    def test_saved_cli_checker_is_used_with_toml_only_when_reading_ledger(self):
+        self.settings.update(checker_from_cli=True, checker_command=[sys.executable, "-c", "pass"])
+        self.prepare_for_verification()
+        self.verify()
+        self.settings.pop("checker_from_cli")
+        self.settings["checker_command"] = None
+        self.assertTrue(self.completion()["complete"])
+        self.settings["checker_command"] = [sys.executable, "-c", "# different command"]
+        self.assertFalse(self.completion()["verification_passed"])
+
+    def test_legacy_or_unreadable_input_snapshot_requires_verification(self):
+        self.prepare_for_verification()
+        self.verify()
+        record = json.loads(self.record_path.read_bytes())
+        self.assertTrue(self.completion()["complete"])
+        del record["verification"]["input_fingerprint"]
+        workflow._write_run_record(self.record_path, record)
+        self.assertFalse(self.completion()["verification_passed"])
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+        with patch.object(workflow.subprocess, "run", side_effect=OSError("Git unavailable")):
+            self.assertFalse(self.completion()["verification_passed"])
+
+    def test_checker_cannot_attest_to_build_inputs_changed_by_hook(self):
+        change = [sys.executable, "-c", "open('Dependency.cs', 'w').write('class HookEdit {}')"]
+        restore = [sys.executable, "-c", "open('Dependency.cs', 'w').write('class Dependency {}\\n')"]
+        self.settings.update(
+            checker_command=[sys.executable, "-c", "pass"],
+            scripts={"before_checker": [change], "after_checker": [restore]},
+        )
+        self.prepare_for_verification()
+        self.assertEqual(self.verify()["status"], "checker_succeeded")
+        self.assertFalse(self.completion()["verification_passed"])

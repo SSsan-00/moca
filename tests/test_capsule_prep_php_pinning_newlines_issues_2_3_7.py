@@ -184,12 +184,12 @@ class CapsulePreparationTests(HarnessCase):
         script = (
             "from pathlib import Path\n"
             "import sys\n"
-            "with Path(sys.argv[1]).open('a', encoding='utf-8') as stream:\n"
-            "    print(sys.argv[2], Path.cwd().name, file=stream)\n"
+            f"with Path({str(log)!r}).open('a', encoding='utf-8') as stream:\n"
+            "    print(sys.argv[1], Path.cwd().name, file=stream)\n"
         )
 
         def command(name):
-            return [sys.executable, "-c", script, str(log), name]
+            return [sys.executable, "-c", script, name]
         phases = ["before_prepare", "after_prepare", "before_migration", "after_migration", "before_build",
                   "after_build", "before_checker", "after_checker"]
         config_path = self.config_path(PHP)
@@ -199,13 +199,13 @@ class CapsulePreparationTests(HarnessCase):
         config = load_config(config_path)
         config["scripts"]["before_prepare"].append(command("second_prepare"))
         config["scripts"]["after_build"].append([sys.executable, "-c", "raise SystemExit(7)"])
-        config["checker_command"] = ["fixture-checker"]
+        config["checker_command"] = [sys.executable, "-c", "pass"]
         subprocess_run = subprocess.run
         calls = []
 
         def run_process(args, **kwargs):
-            if args in (["dotnet", "build"], ["fixture-checker"]):
-                calls.append(args[0])
+            if args in (["dotnet", "build"], config["checker_command"]):
+                calls.append("dotnet" if args[0] == "dotnet" else "fixture-checker")
                 return subprocess.CompletedProcess(args, 0)
             return subprocess_run(args, **kwargs)
 

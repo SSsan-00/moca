@@ -74,6 +74,7 @@ def main() -> None:
         if checker_command is not None:
             validate_checker_command(checker_command)
             config["checker_command"] = checker_command
+            config["checker_from_cli"] = True
         if args.command == "ledger-review":
             review_migration_ranges(
                 config, args.run_id, args.ranges, args.state, args.reason, confirmed_targets=args.review_targets,
@@ -138,7 +139,7 @@ def _print_migration_progress(completion: dict[str, Any]) -> None:
     status = "complete" if completion["complete"] else "incomplete"
     print(f"Migration: {status} ({completion['reviewed']}/{completion['total']} PHP ranges reviewed)")
     if not completion["verification_passed"]:
-        print("The build and any configured verification scripts and checker must pass for the current targets.")
+        print("Run verification again to check the current build, script and checker inputs.")
 
 
 def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:

@@ -8,6 +8,24 @@ from migration_harness import workflow
 from migration_harness.diff_viewer import capture_workspace
 
 
+class RazorTargetConfigTest(HarnessCase):
+    def test_requires_counterpart_in_same_directory(self):
+        for config, missing in [
+            ('target = "Pages/Menu.cshtml"', "Pages/Menu.cshtml.cs"),
+            ('target = "Pages/Menu.cshtml.cs"', "Pages/Menu.cshtml"),
+            ('targets = ["Pages/Menu.cshtml", "Pages/Other.cshtml.cs"]', "Pages/Menu.cshtml.cs"),
+            ('targets = ["Pages/Menu.cshtml", "Other/Menu.cshtml.cs"]', "Pages/Menu.cshtml.cs"),
+        ]:
+            with self.subTest(config=config), self.assertRaises(ValueError) as invalid:
+                self.config(config)
+            self.assertIn(missing, str(invalid.exception))
+        self.assertEqual(self.config('target = "Common.cs"')["units"][0]["target"], "Common.cs")
+        self.assertEqual(
+            self.config('targets = ["Pages/Menu.cshtml", "Pages/Menu.cshtml.cs"]')["units"][0]["targets"],
+            ["Pages/Menu.cshtml", "Pages/Menu.cshtml.cs"],
+        )
+
+
 class MultipleTargetsTest(HarnessCase):
     """複数のRazorファイルの反映、中断、承認を一つのRunで検証する。"""
 
@@ -152,11 +170,14 @@ class MultipleTargetsTest(HarnessCase):
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
         model, page = self.worktree / model_name, self.worktree / page_name
         agent = self.run_path / "agent-workspace"
+        run_process = subprocess.run
 
-        def run_checker(command, *, cwd, stdout, **kwargs):
+        def run_checker(command, **kwargs):
             """ビューが未修正のときだけ、そのファイルに指摘を出す。"""
+            if command[0] == "git":
+                return run_process(command, **kwargs)
             if command[0] == "fixture-checker" and page.read_bytes() != b"repaired using NewName":
-                stdout.write(f"RZ1 {page_name}:1 warning: use NewName\n".encode())
+                kwargs["stdout"].write(f"RZ1 {page_name}:1 warning: use NewName\n".encode())
                 return subprocess.CompletedProcess(command, 1)
             return subprocess.CompletedProcess(command, 0)
 
@@ -213,9 +234,13 @@ class MultipleTargetsTest(HarnessCase):
         workflow._write_run_record(self.record_path, record)
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
 
-        def check(command, *, cwd, stdout, **kwargs):
-            if command[0] == "fixture-checker" and (Path(cwd) / page).read_text() != "ready":
-                stdout.write(f"RZ1 {page}:1 error: fix output\n".encode())
+        run_process = subprocess.run
+
+        def check(command, **kwargs):
+            if command[0] == "git":
+                return run_process(command, **kwargs)
+            if command[0] == "fixture-checker" and (Path(kwargs["cwd"]) / page).read_text() != "ready":
+                kwargs["stdout"].write(f"RZ1 {page}:1 error: fix output\n".encode())
                 return subprocess.CompletedProcess(command, 1)
             return subprocess.CompletedProcess(command, 0)
 
