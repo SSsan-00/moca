@@ -14,7 +14,7 @@ if /I "%ACTION%"=="d" set "ACTION=dashboard"
 
 if not exist "%HARNESS%" (
   echo ハーネスが未インストールです。次を実行してください:
-  echo py -3.11 -m venv .venv
+  echo py -3 -m venv .venv
   echo .venv\Scripts\python -m pip install -e .
   exit /b 2
 )

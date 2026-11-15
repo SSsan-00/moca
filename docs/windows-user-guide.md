@@ -1,22 +1,67 @@
 # WindowsでPHPからC#へ移行する手順
 
-Windowsのダッシュボードから、実アプリのPHPをC#やRazorへ移行します。この手順では、メニュー機能のPHP全体を1つの移行単位にし、既存の移行ルールと独自チェッカーを使います。
+Windowsのダッシュボードから、PHPをC#やRazorへ移行する手順です。まずは小さいPHPファイル1つで **設定保存 → 準備 → 同じRunで移行** を試します。設定はフォームから入力でき、ルール・参考実装・チェッカー・自作スクリプト・差分ビューアーは必要に応じて追加します。
+
+ハーネスを置くフォルダと、移行するアプリのGitリポジトリは分けます。アプリにはPHPと、`dotnet build` でビルドできるC#／Razorプロジェクトが必要です。PHPだけのリポジトリの場合は、先に移行先プロジェクトの雛形を用意してください。Junieには指定した移行先ファイルの編集を依頼します。
 
 ## 1. ダッシュボードを起動する
 
-Windows TerminalなどでPowerShellを開き、`py -3.11 --version`、`git --version`、`junie --version`、`dotnet --list-sdks` を実行します。この手順ではPython 3.11を使います。.NET SDKは移行先プロジェクトに合わせます。Junieは、同じWindowsユーザーでCLIからログインできる状態にします。ログインが必要ならPowerShellで `junie` を起動し、画面の案内に従います。 [Junie CLIのセットアップ](https://junie.jetbrains.com/docs/junie-cli.html)
+開発環境に.NET SDK 9以降が導入済みという前提で、既存SDKを使います。通常はSDKの追加インストールは不要です。
+
+Windows TerminalなどでPowerShellを開き、次を確認します。コマンドが見つからなければ、表の公式サイトから導入し、PowerShellを開き直して再確認します。
+
+| ツール | 確認コマンドと合格条件 | 未導入の場合 |
+| --- | --- | --- |
+| Python | `py -3 --version` が3.11以上を表示する。3.13などでも使えます。 | [Python for Windows](https://www.python.org/downloads/windows/) |
+| Git | `git --version` がバージョンを表示する。 | [Git for Windows](https://git-scm.com/downloads/win) |
+| Junie CLI | `junie --version` がバージョンを表示し、対話起動でログインできる。移行時に必要です。 | [Junie CLIのセットアップ](https://junie.jetbrains.com/docs/junie-cli.html) |
+| .NET SDK | 導入済みの9以降を使用します。アプリの場所で `dotnet --version` が成功することを確認します。 | SDK選択に失敗した場合のみ、以下の指定を確認します。 |
+
+`py`がなくても `python --version` が3.11以上なら、以下の `py -3` を `python` に置き換えられます。複数版がある場合は、確認した版を `py -3.13` のように指定できます。3.11を追加で入れる必要はありません。
+
+JunieのWindows用インストールコマンドは次のとおりです。導入済みなら再実行は不要です。 [公式手順](https://junie.jetbrains.com/docs/junie-cli.html)
+
+```powershell
+powershell -NoProfile -Command "iex (irm 'https://junie.jetbrains.com/install.ps1')"
+```
+
+移行前に同じWindowsユーザーのPowerShellで `junie` を起動し、画面の案内に従ってログインします。バージョン表示だけではログインを確認できません。認証情報は本人の端末で入力します。
+
+SDKの確認は、ハーネスのフォルダから次のように行います。パスは実際のアプリに置き換えます。
+
+```powershell
+Push-Location -LiteralPath 'C:\work\LegacyApp'
+dotnet --version
+Pop-Location
+```
+
+成功すれば、そのSDKを使って進めます。既存の `global.json` がある場合は、指定版と `rollForward` の条件を確認します。指定がなければ通常は導入済みの最新SDKが選ばれます。SDKを固定するために新しい `global.json` を作る必要はありません。 [SDKの選択方法](https://learn.microsoft.com/en-us/dotnet/core/tools/global-json)
+
+選択に失敗した場合だけ、`dotnet --list-sdks` と有効な `global.json` を照合します。指定を満たすSDKが不足していれば [公式サイト](https://dotnet.microsoft.com/en-us/download) から追加します。既存のSDK指定やビルド対象のフレームワークは、セットアップの都合で変更しません。Runtimeだけが導入されている場合はSDKも必要です。
+
+ダッシュボードの設定と **準備** はPythonとGitで試せます。準備用スクリプトを登録した場合は、その実行環境も必要です。
 
 初回は作業フォルダで次を実行します。
 
 ```powershell
 git clone https://github.com/SSsan-00/php-to-csharp-migration-harness.git
 Set-Location .\php-to-csharp-migration-harness
-py -3.11 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\php-to-csharp-harness.exe --help
 .\h.cmd d
 ```
 
-次回以降はハーネスのフォルダで `.\h.cmd d` を実行します。PowerShell側に表示された `http://127.0.0.1:.../` のURL全体をブラウザーで開きます。ブラウザーで操作している間も、起動したPowerShellは開いたままにします。Junieの入力や確認はそこで行います。
+1行ずつ実行し、エラーが出たらその段階を解決してから進みます。既にclone済みならそのフォルダへ移動し、使える `.venv` があれば作り直す必要はありません。`--help` にコマンド一覧が出ればインストール完了です。仮想環境を直接呼ぶため、`Activate.ps1` の実行やPowerShellの実行ポリシー変更は不要です。
+
+次回以降はハーネスのフォルダで `.\h.cmd d` を実行します。端末に表示された `http://127.0.0.1:.../` のURLを、末尾の文字列まで含めてブラウザーで開きます。起動したPowerShellは開いたままにします。Junieの入力や確認はそこで行います。初回は設定ファイルがなくても開けるため、設定例をコピーする必要はありません。
+
+| つまずいた場合 | 確認すること |
+| --- | --- |
+| `py`・`python`が見つからない／3.11未満 | Pythonを導入し、PowerShellを開き直してバージョンを確認します。利用可能な3.11以上の版で仮想環境を作ります。 |
+| `pip install`が失敗する | `pyproject.toml` があるハーネスのフォルダで実行しているか確認します。ダウンロードに失敗した場合は社内プロキシや証明書の設定を確認します。 |
+| `h.cmd`に未インストールと表示される | `.\.venv\Scripts\python.exe --version` と、上の `pip install` の結果を確認します。既存の `.venv` は原因を調べてから修復します。 |
+| ダッシュボードに接続できない | 起動元のPowerShellと、今回表示されたURL全体を確認します。再起動するとURLは変わります。 |
 
 既にセットアップ済みの場合は、実行が一区切りついてからハーネスを終了し、同じフォルダで更新します。保存済みの設定とRunを使ってダッシュボードを起動できます。
 
@@ -28,7 +73,7 @@ git pull --ff-only origin main
 
 ## 2. 移行元と移行先を設定する
 
-ダッシュボードの **設定** タブを開きます。初回は設定例が表示されます。
+ダッシュボードの **設定** タブを開きます。初回は設定例が表示されるので、**プロジェクトの詳細設定** を開いて実際の場所を入力します。表のパスは例です。
 
 | フォームの項目 | 入力例と役割 |
 | --- | --- |
@@ -38,6 +83,7 @@ git pull --ff-only origin main
 | 機能名（ID） | `メニュー` や `menu` など、設定内で一意の名前です。 |
 | 移行元PHP | `legacy/menu.php`。アプリのリポジトリからの相対パスです。ファイル全体が移行範囲になります。 |
 | 移行先（1行に1ファイル） | `src/Web/Pages/Menu.cshtml.cs` と `src/Web/Pages/Menu.cshtml` を別々の行に入力します。Junieが編集するファイルをここで指定します。 |
+| ビルド対象 | **プロジェクトの詳細設定 → ビルド・独自チェッカー** に `src/Web/Web.csproj` などを指定します。アプリルートからの相対パスで、`.csproj`、`.sln`、`.slnx` が使えます。空欄ならルートでビルドします。 |
 
 Razorページは、同じディレクトリと名前の `.cshtml` と `.cshtml.cs` を両方指定します。相方が不足している場合、設定の保存時に必要なパスが表示されます。通常のC#ファイルは1つから指定できます。
 
@@ -45,7 +91,18 @@ Razorページは、同じディレクトリと名前の `.cshtml` と `.cshtml.
 
 左側の **プロジェクトの詳細設定** を開くと、リポジトリ、保存先、ビルドとチェッカーの設定を編集できます。作業ツリーは既定でアプリの現在の `HEAD` から作ります。必要に応じて **作業ツリーの基準リビジョン** にブランチ名、タグ名、コミットIDを指定します。同じ欄でカプセルの文字数上限、Junieのステップ数上限、差分ビューアーも設定できます。
 
-PHP原文と参照資料は準備時点のアプリフォルダから読み取ります。ビルド対象やチェッカースクリプト、既存の移行先ファイルは基準コミットに含めておきます。移行先には新規ファイルも指定できます。
+PHP原文と参照資料は準備時点のアプリフォルダから読み取るため、未コミットの内容も使えます。ビルド対象・依存ソース・チェッカー・準備後以降のスクリプトは基準コミットに含めておきます。これらの未コミットの変更はworktreeに入りません。移行先には新規ファイルも指定できます。
+
+準備の前に、アプリの状態とコミットの有無を確認します。パスに空白がある場合も、このように引用符で囲みます。
+
+```powershell
+git -C 'C:\work\LegacyApp' status --short
+git -C 'C:\work\LegacyApp' rev-parse --verify HEAD
+```
+
+2つ目のコマンドが失敗した場合は、アプリの初回コミットが必要です。必要なビルドファイルなどが `??`（未追跡）や変更ありと表示された場合も、採用する内容を確認してアプリ側でコミットします。関係のない変更までまとめてコミットする必要はありません。別の基準リビジョンを使う場合は、その版に必要なファイルが入っていることを確認します。
+
+**設定を保存** の成功メッセージを確認します。入力した内容は `harness.local.toml` に保存されます。保存は設定形式の検証で、入力ファイルの読み込みやビルドの成功は後の工程で確かめます。
 
 ## 3. 移行ルール、参考実装、独自チェッカーを追加する
 
@@ -57,40 +114,12 @@ PHP原文と参照資料は準備時点のアプリフォルダから読み取�
 
 | 項目 | 入力方法 |
 | --- | --- |
-| ビルド対象 | `src/Web/Web.csproj` など、作業ツリーからの相対パスを指定します。空欄なら作業ツリーのルートでビルドします。 |
-| チェッカーの実行ファイルと引数 | 1行目から順に `py`、`-3.11`、`-X`、`utf8`、`tools/check_migration.py` を入力します。空欄ならチェッカーは実行しません。 |
+| チェッカーの実行ファイルと引数 | 1行目から順に `py`、`-3`、`-X`、`utf8`、`tools/check_migration.py` を入力します。チェッカーに必要なパッケージがあるPythonを使います。空欄なら実行しません。 |
 | 自動修正回数 | 1つのRunでビルドエラーとチェッカー指摘をJunieが修正する合計上限です。空欄は2回、`0` は自動修正なしです。 |
 
-**設定を保存** を押すと、フォームで入力した内容が次の形式で保存されます。
+コマンドを一行にまとめず、実行ファイルと各引数を改行して入力します。パスに空白があっても、フォームでは引用符を付けません。チェッカーはビルド成功後、作業ツリーのルートで実行します。依存パッケージは、チェッカーを起動するPythonなどの実行環境に導入してください。ハーネスのインストールだけでは導入されません。
 
-```toml
-[project]
-root = "C:/work/LegacyApp"
-worktree_root = "C:/migration/worktrees"
-run_root = "C:/migration/runs"
-
-[[project.migration_rules]]
-path = "docs/migration/common.md"
-
-[[project.migration_rules]]
-path = "docs/migration/razor.md"
-
-[build]
-project = "src/Web/Web.csproj"
-
-[checker]
-command = ["py", "-3.11", "-X", "utf8", "tools/check_migration.py"]
-max_repair_attempts = 2
-
-[[units]]
-id = "メニュー"
-source = "legacy/menu.php"
-targets = ["src/Web/Pages/Menu.cshtml.cs", "src/Web/Pages/Menu.cshtml"]
-```
-
-- `[[project.migration_rules]]` は、Junieがすべての移行単位の全カプセルで参照する規約です。各ルールファイルの全文を渡します。
-- `[build].project` は作業ツリーのルートからの相対パスです。`.csproj`、`.sln`、`.slnx` を使えます。省略時はルートで `dotnet build` を実行します。
-- `[checker].command` はアプリ全体の設定です。実行ファイルと引数を配列の別々の要素にします。ビルド成功後に作業ツリーのルートで実行されるため、スクリプトが依存するファイルやランタイムもその環境から利用できるようにします。
+`py` が使えず `python` やPythonの実行ファイルのパスを指定する場合は、`-3` の行を取り除き、`-X`、`utf8`、スクリプトのパスを続けます。`-3` などの版指定は `py` 専用です。
 
 チェッカーは、合格なら終了コード `0`、指摘があれば正の終了コードを返すようにします。ダッシュボードで指摘箇所の表示や判断を使う場合は、UTF-8で次の形式に揃えます。既存チェッカーの形式が異なる場合は、案件側のラッパーで変換できます。
 
@@ -98,7 +127,7 @@ targets = ["src/Web/Pages/Menu.cshtml.cs", "src/Web/Pages/Menu.cshtml"]
 MIG101 src/Web/Pages/Menu.cshtml.cs:12 warning: 共通メソッドを使ってください
 ```
 
-`max_repair_attempts` を省略すると、1つのRunにつき最大2回の自動修正を試み、その都度ビルドとチェッカーを実行します。`0` を指定すると指摘を保存して人の確認を待ちます。自動修正に渡す指摘は設定済みの移行先を指す必要があります。指摘と混ざるサマリーなどの出力は、必要に応じて別ログに分けます。
+**自動修正回数** が空欄なら、1つのRunにつき最大2回の自動修正を試み、その都度ビルドとチェッカーを実行します。`0` を指定すると指摘を保存して人の確認を待ちます。自動修正に渡す指摘は設定済みの移行先を指す必要があります。指摘と混ざるサマリーなどの出力は、必要に応じて別ログに分けます。
 
 移行元PHPの文字コードは既定で自動判定します。既存の設定に `source_encoding` や移行単位の `[[units.inputs]]` がある場合も読み込めます。
 
@@ -106,29 +135,7 @@ MIG101 src/Web/Pages/Menu.cshtml.cs:12 warning: 共通メソッドを使って�
 
 **設定** の **プロジェクト共通の参考実装** で **参考実装ペアを追加** を押し、**参考実装の元PHP** と **移行済みC#／Razor** にそれぞれ相対パスを入力します。元PHPに対応するRazorページ本体（`.cshtml`）とPageModel（`.cshtml.cs`）を登録する場合は、ペア内の **移行済みファイルを追加** で入力欄を増やし、1ファイルずつ指定します。セットごと設定から外す場合は、ペアの末尾にある **×** を押し、**設定を保存** します。設定から外したファイルはリポジトリに残ります。
 
-元PHPと対応する移行済みファイルを例ごとに同じフォルダに置くと、Junieが対応を読み取りやすくなります。下は2ペアを登録したときのTOML設定例です。
-
-```toml
-[[project.references]]
-role = "reference_php"
-path = "docs/migration/examples/orders/orders.php"
-
-[[project.references]]
-role = "reference_razor"
-path = "docs/migration/examples/orders/Orders.cshtml"
-
-[[project.references]]
-role = "reference_csharp"
-path = "docs/migration/examples/orders/Orders.cshtml.cs"
-
-[[project.references]]
-role = "reference_php"
-path = "docs/migration/examples/search/search.php"
-
-[[project.references]]
-role = "reference_razor"
-path = "docs/migration/examples/search/Search.cshtml"
-```
+元PHPと対応する移行済みファイルを例ごとに同じフォルダに置くと、Junieが対応を読み取りやすくなります。たとえば元PHPに `docs/migration/examples/orders/orders.php`、移行済みファイルに同じフォルダの `Orders.cshtml` と `Orders.cshtml.cs` を登録します。別の例は新しいペアとして追加します。
 
 共通ルールと参考実装は、ファイルのパスを指定すると準備時に全行を読み込みます。ルールは文字数上限に含め、参考実装はRunに別途保存します。Junieは移行・自動修正時に、参考実装の関連箇所を読みます。参考用のPHPは移行台帳の対象外です。既存の移行単位に登録した共通資料は、設定画面に引き継がれます。
 
@@ -152,7 +159,7 @@ tools/prepare-legacy.ps1
 | ビルド前、ビルド成功後 | Runの作業ツリーで、再検証や自動修正に伴うビルドでも実行します。 |
 | チェッカー実行前、チェッカー実行後 | チェッカーを設定した場合にRunの作業ツリーで実行します。実行後のスクリプトはチェッカーが指摘を返した場合も実行します。 |
 
-終了コードが非ゼロならその場で停止します。**進捗** の実行ログから工程とログファイルを確認してください。準備前のスクリプトで停止したときは修正後に準備か移行を開始し直します。準備後以降は同じRunを再開できます。準備後とJunie移行の前後で失敗したときは、設定順と引数が一致する成功済みコマンドを飛ばし、残りから再開します。ビルド・チェッカーの前後で失敗したときは、ビルド工程から再検証します。
+スクリプトが失敗すると（終了コードが0以外）、その工程で停止します。**進捗** の実行ログから工程とログファイルを確認してください。準備前のスクリプトで停止したときは修正後に準備か移行を開始し直します。準備後以降は同じRunを再開できます。準備後とJunie移行の前後で失敗したときは、設定順と引数が一致する成功済みコマンドを飛ばし、残りから再開します。ビルド・チェッカーの前後で失敗したときは、ビルド工程から再検証します。
 
 作業ツリーで使うスクリプトは基準コミットに含めます。指摘を画面に表示し、Junieによる自動修正の対象にする検証は、**チェッカーの実行ファイルと引数** に設定します。
 
@@ -168,8 +175,8 @@ tools/check-migration.ps1
 ## 5. ダッシュボードから実行する
 
 1. **設定を保存** を押し、保存できたことを確認します。
-2. **実行** タブで移行単位を選び、**移行を実行** を押します。初回は **準備** を選ぶと、Junieを起動する前に作業ツリーとカプセルを確認できます。そのRunで続けるときは、**進捗** の **同じ実行を再開** か、**保存済みの実行** の **移行を再開** を使います。実行時には、対象のソースと参照資料がJunieのサービスに送られます。
-3. 起動元のPowerShellに初回のプロジェクト確認が出たら、対象がRunの `agent-workspace` であることを確かめて応答します。長い入力は複数カプセルに分かれ、Junieが順番に処理します。
+2. **実行** タブで移行単位を選び、初回は **準備** を押します。準備前・準備後のスクリプトを設定していれば、ここで実行されます。成功したら **進捗** にRun IDとカプセルが表示され、実行データの保存先に `<Run ID>/run.json` と `capsule/manifest.json`、作業ツリーの保存先に `<Run ID>/` ができます。この時点ではJunie・ビルド・チェッカーは未実行です。
+3. Junieのログインと.NET SDKを確認してから、**保存済みの実行** でそのRun IDを選び、**移行を再開** を押します。**進捗** の **同じ実行を再開** でも続けられます。**移行を実行** は準備から新しいRunを作る操作です。Junieの初回プロジェクト確認が出たら、起動元のPowerShellで対象がRunの `agent-workspace` であることを確かめて応答します。対象のソースと参照資料がJunieのサービスに送られ、カプセルごとに移行します。
 4. **進捗** でビルドとチェッカーの結果を確認します。中断した場合は **実行** タブで同じRun IDを指定して **移行を再開** を押します。処理済みのカプセルを飛ばし、未完了のカプセルから続けます。移行元や移行ルールを変えた場合は新しいRunを開始します。再開は準備時に保存したカプセルを使います。
 
 | 止まった場所 | 確認と再開の手順 |
@@ -179,6 +186,8 @@ tools/check-migration.ps1
 | モデルサービスとの通信 | Junieが通信失敗を確定すると、ハーネスが同じ作業場所で最大2回起動し直します。復旧しなかった場合は、接続を確認して同じRunを再開します。 |
 | ビルド・チェッカー | Runの `build.log` または `checker.log` を読み、必要な修正後に同じRunを再開します。移行済みのカプセルは処理済みとして扱い、ビルドから再検証します。 |
 | Junieの自動修正 | 同じRunを再開するとビルドから再検証し、指摘が残っていれば修正を続けます。中断した試行は修正回数に含めません。指摘と移行先が一致する場合は保存した下書きも引き継ぎます。 |
+
+ビルドできない場合は、Runのworktreeに指定したプロジェクトやスクリプトがあるか、SDKが `global.json` の条件に合うかを確認します。アプリ側で後からコミットしても、準備済みのworktreeは更新されません。基準コミットを変えた場合は新しいRunで準備します。
 
 ## 6. 差分を確認して移行を完了する
 
@@ -206,6 +215,20 @@ Copy-Item -LiteralPath .\tools\dist\index.min.html -Destination $viewerDir
 
 ## Junieに設定手順を案内させる
 
-ハーネスのリポジトリに [操作案内スキル](../.junie/skills/harness-setup/SKILL.md) が入っています。ハーネスのフォルダで `junie` を起動し、`/skills` で `harness-setup` を確認します。`/harness-setup` または `$harness-setup` を使い、アプリの場所、移行元、移行先、ルールファイル、チェッカーの起動方法を伝えると、案件に合った設定案と操作手順を案内できます。リポジトリにあるスキルはそのプロジェクトのJunieから使えます。 [JunieのAgent Skills](https://junie.jetbrains.com/docs/agent-skills.html)
+ハーネスのリポジトリに [操作案内スキル](../.junie/skills/harness-setup/SKILL.md) が入っています。Junieを導入・ログインした後、**ハーネスのフォルダ** で `junie` を起動します。`/skills` で `harness-setup` が有効なことを確認し、Junieの入力欄へ次のように送ります。PowerShellのコマンドとして入力するものではありません。 [JunieのAgent Skills](https://junie.jetbrains.com/docs/agent-skills.html)
 
-ハーネスが実際の移行で起動するJunieは、Runごとの `agent-workspace` をプロジェクトとして開きます。案件の移行ルールを各カプセルに渡すときは、このガイドの `[[project.migration_rules]]` を使います。
+```text
+/harness-setup 初めて使います。小さいPHPの準備まで手伝ってください。
+WindowsのPowerShellを使っています。
+アプリ: C:/work/LegacyApp
+移行元: legacy/menu.php
+移行先: src/Web/Pages/Menu.cshtml.cs と src/Web/Pages/Menu.cshtml
+ビルド対象: src/Web/Web.csproj
+ルール・参考実装・チェッカー・スクリプトはまだありません。
+```
+
+既存の設定やエラーがある場合は、その場所とエラー内容を伝えます。スキルが必要な環境確認、設定項目、次の操作を案内します。変更を任せずに確認したい場合は「ファイルは変更せず、案内だけ」と添えます。
+
+一覧に出ない場合は、ハーネスのチェックアウトに `.junie/skills/harness-setup/SKILL.md` があるか確認し、そのフォルダでJunieを起動し直します。`/skills` で無効になっている場合は有効にします。Junie自体がまだ使えない場合は、先にこのマニュアル第1節で導入します。
+
+ハーネスが実際の移行で起動するJunieは、Runごとの `agent-workspace` をプロジェクトとして開きます。案件の移行ルールは、設定フォームの **プロジェクト共通の移行ルール** に登録します。

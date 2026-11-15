@@ -31,7 +31,7 @@ max_context_chars = 100000
 
 [checker]
 # 実行ファイル名と引数を個別に並べる。相対パスの基準はworktreeのルート。
-# command = ["py", "-3.11", "tools/check_migration.py"]
+# command = ["py", "-3", "tools/check_migration.py"]
 # ビルドとチェッカーの修正を合わせて、既定はRunごとに最大2回。中断した試行は数えない。
 # 0は自動修正なし。
 # max_repair_attempts = 2
@@ -39,7 +39,7 @@ max_context_chars = 100000
 [scripts]
 # 各工程に、実行ファイルと引数の配列を実行順で指定する。
 # before_prepare = [["powershell.exe", "-NoProfile", "-File", "tools/prepare-legacy.ps1"]]
-# after_build = [["py", "-3.11", "tools/export_results.py"]]
+# after_build = [["py", "-3", "tools/export_results.py"]]
 
 [diff_viewer]
 # 単一HTMLの相対パスを指定すると、比較とアンカー生成が有効になる。
