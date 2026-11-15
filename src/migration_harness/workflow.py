@@ -1110,24 +1110,84 @@ def _load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
 
 
 def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
-    run_path, _, _, unit = _load_saved_run(config, run_id)
+    run_path, worktree, record, unit = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
-    # 範囲は準備時のマニフェストに固定し、進捗は同じRun IDの実行記録を使う。
+    mappings = record.get("migration_mappings", {})
+    hashes = {}
+    capsules = []
+    for part in manifest["parts"]:
+        sources = []
+        for index, source in enumerate(part.get("sources", [])):
+            if Path(source["path"]).suffix.lower() != ".php":
+                continue
+            entry = {key: source[key] for key in ("path", "start_line", "end_line", "character_slices") if key in source}
+            mapping = mappings.get(f"{part['index']}:{index}")
+            if mapping:
+                path = mapping["path"]
+                if path not in hashes:
+                    hashes[path] = _review_target_hash(worktree, Path(path))
+                valid = hashes[path] == mapping["sha256"]
+                pending = "candidate_snapshot" in mapping
+                entry["mapping"] = {
+                    **{key: mapping[key] for key in ("path", "start_line", "end_line")},
+                    "confirmed": valid and not pending,
+                }
+                if valid and pending:
+                    entry["mapping"].update(snapshot_id=mapping["candidate_snapshot"], anchors=mapping["anchors"])
+            sources.append(entry)
+        capsules.append({"index": part["index"], "sources": sources})
     return {
         "run_id": run_id,
         "target": unit["target"],
-        "capsules": [
-            {
-                "index": part["index"],
-                "sources": [
-                    {key: source[key] for key in ("path", "start_line", "end_line", "character_slices") if key in source}
-                    for source in part.get("sources", [])
-                    if Path(source["path"]).suffix.lower() == ".php"
-                ],
-            }
-            for part in manifest["parts"]
-        ],
+        "capsules": capsules,
     }
+
+
+def record_migration_candidates(
+    config: dict[str, Any], run_id: str, snapshot_id: str, workspace: dict[str, Any], target_hashes: dict[str, str],
+) -> None:
+    run_path, _, record, _ = _load_saved_run(config, run_id)
+    _, manifest = _load_capsule_manifest(run_path)
+    if not record.get("completed_capsules") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
+        return
+    # アンカーのペイン座標から、ファイル内の行番号に戻す。
+    def file_line(segments: list[dict[str, Any]], index: int) -> tuple[str, int]:
+        for segment in segments:
+            local = index + 2 - segment["startLine"]
+            if 1 <= local <= segment["lineCount"]:
+                return segment["fileName"], local
+        raise ValueError("アンカーがスナップショットのファイル範囲外です。")
+
+    by_source: dict[str, list[tuple[int, str, int]]] = {}
+    for anchor in workspace["anchors"]["manualAnchors"]:
+        source, line = file_line(workspace["leftSegments"], anchor["leftLineNo"])
+        target, target_line = file_line(workspace["rightSegments"], anchor["rightLineNo"])
+        by_source.setdefault(source, []).append((line, target, target_line))
+    mappings = {
+        key: mapping for key, mapping in record.get("migration_mappings", {}).items()
+        if "candidate_snapshot" not in mapping
+    }
+    for part in manifest["parts"][:record["completed_capsules"]]:
+        for index, source in enumerate(part.get("sources", [])):
+            key = f"{part['index']}:{index}"
+            if key in mappings or source.get("character_slices"):
+                continue
+            matches = [
+                (target, line) for source_line, target, line in by_source.get(Path(source["path"]).as_posix(), [])
+                if source["start_line"] <= source_line <= source["end_line"]
+            ]
+            # アンカーがない範囲や、対応先が複数ファイルにまたがる範囲は個別の確認に回す。
+            if len({target for target, _ in matches}) != 1:
+                continue
+            target = matches[0][0]
+            lines = [line for _, line in matches]
+            mappings[key] = {
+                "path": target, "start_line": min(lines), "end_line": max(lines),
+                "sha256": target_hashes[target], "candidate_snapshot": snapshot_id, "anchors": len(lines),
+            }
+    if mappings or "migration_mappings" in record:
+        record["migration_mappings"] = mappings
+        _write_run_record(run_path / "run.json", record)
 
 
 def review_checker(

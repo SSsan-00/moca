@@ -15,7 +15,9 @@ from typing import Any
 
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
 from migration_harness.review_anchors import generate_anchors
-from migration_harness.workflow import migration_ledger, resume_with_junie, review_checker, run_observer, run_with_junie
+from migration_harness.workflow import (
+    migration_ledger, resume_with_junie, review_checker, run_observer, run_with_junie,
+)
 
 
 RESUMABLE = {"checker_needs_review", "checker_failed", "build_failed", "junie_failed", "interrupted"}

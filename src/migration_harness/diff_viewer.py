@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -37,6 +38,7 @@ def _pane(files: list[tuple[str, str]]) -> tuple[str, list[dict[str, Any]]]:
 
 def capture_workspace(
     config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None,
+    target_hashes: dict[str, str] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     run_path, worktree, _, unit = _load_saved_run(config, run_id)
     project = Path(config["project_root"])
@@ -65,7 +67,12 @@ def capture_workspace(
             (Path(name).as_posix(), path.read_text(encoding=_input_encoding(path, sources[name])))
             for name, path in left_paths.items()
         ]
-        right_files = [(name, path.read_text(encoding="utf-8-sig")) for name, path in right_paths.items()]
+        right_files = []
+        for name, path in right_paths.items():
+            content = path.read_bytes()
+            right_files.append((name, content.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")))
+            if target_hashes is not None:
+                target_hashes[name] = hashlib.sha256(content).hexdigest()
         # 外部のエディターと競合した場合も、不揃いなスナップショットを保存しない。
         after = [path.stat() for path in paths]
     if any(

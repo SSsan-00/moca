@@ -7,7 +7,9 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from migration_harness.diff_viewer import capture_workspace, save_workspace
-from migration_harness.workflow import _has_completion_record, _run_interactive_junie, _validate_junie_execution
+from migration_harness.workflow import (
+    _has_completion_record, _run_interactive_junie, _validate_junie_execution, record_migration_candidates,
+)
 
 
 def _pane_lines(text: str) -> list[str]:
@@ -68,7 +70,8 @@ def generate_anchors(
 ) -> tuple[Path, int]:
     _validate_junie_execution()
     examples = _reference_examples(reference)
-    run_path, payload = capture_workspace(config, run_id, focus=focus)
+    target_hashes: dict[str, str] = {}
+    run_path, payload = capture_workspace(config, run_id, focus=focus, target_hashes=target_hashes)
     workspace = payload["workspace"]
     left, right = _pane_lines(workspace["leftText"]), _pane_lines(workspace["rightText"])
     with TemporaryDirectory(prefix="migration-review-") as temporary:
@@ -106,4 +109,5 @@ def generate_anchors(
         anchors = _validated_anchors(result, left, right)
     workspace["anchors"]["manualAnchors"] = anchors
     snapshot_id = save_workspace(run_path, payload)
+    record_migration_candidates(config, run_id, snapshot_id, workspace, target_hashes)
     return run_path / "review-snapshots" / f"{snapshot_id}.json", len(anchors)

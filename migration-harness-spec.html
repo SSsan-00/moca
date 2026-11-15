@@ -298,7 +298,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>現在実装した上限超過対応</h3>
-      <p>指定範囲を行境界で分割し、複数カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。ダッシュボードの「移行台帳」では、同じRun IDのmanifestとrun.jsonから、PHPの範囲・移行先ファイル・カプセルの処理状態を確認できます。依存情報の追加取得、関数などの論理境界に基づく分割、移行先の対応箇所を含めた網羅性の確認は今後の設計です。</p>
+      <p>指定範囲を行境界で分割し、複数カプセルを順番にJunieへ渡します。極端に長い1行は文字位置で分割し、各断片のfocus範囲と参照用の重なり範囲をmanifestに残します。比較メニューでJunieがアンカーを生成すると、ハーネスは処理済みのPHP範囲に対応する移行先の候補を割り出し、Run IDごとに保存します。「移行台帳」は閲覧専用で、候補の行範囲と確認が必要な箇所を表示し、Diff Viewerで候補のスナップショットを開けます。移行先の内容が変わった範囲は「要再確認」と表示します。依存情報の追加取得、論理境界での分割、対応の自動検証は今後の設計です。</p>
     </div>
   </section>
 
@@ -395,7 +395,7 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、カプセル単位の移行台帳、ビルドとチェッカーの実行、チェッカー指摘の修正ループ、アンカー付きワークスペースJSONの生成。<br><strong>目標:</strong> 論理項目と移行先の対応付け、依存情報の取得、網羅性確認。</div>
+  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、移行台帳での範囲と対応候補の表示、ビルドとチェッカーの実行、チェッカー指摘の修正ループ、アンカー付きワークスペースJSONの生成。<br><strong>目標:</strong> 論理項目の特定、依存情報の取得、対応の自動検証。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>

@@ -182,15 +182,25 @@ function describe(state) {
   return label;
 }
 
-migrationLedgerButton.addEventListener("click", async () => {
-  openMigrationLedger("移行台帳を読み込み中");
+async function loadMigrationLedger() {
   try {
     const response = await fetch("migration-ledger");
     if (!response.ok) throw new Error();
-    showMigrationLedger(await response.json(), snapshot);
+    const ledger = await response.json();
+    if (!migrationLedgerDialog.open) return;
+    showMigrationLedger(ledger, snapshot, id => {
+      const url = new URL(`review/${id}.html`, document.baseURI);
+      displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
+    });
   } catch {
+    migrationLedgerMessage.hidden = false;
     migrationLedgerMessage.textContent = "移行台帳を読み込めませんでした。画面を閉じてから、もう一度お試しください。";
   }
+}
+
+migrationLedgerButton.addEventListener("click", () => {
+  openMigrationLedger("移行台帳を読み込み中");
+  loadMigrationLedger();
 });
 
 function render() {
@@ -411,9 +421,21 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
     showComparisonStatus(...(withAnchors && count === 0 ? ["対応行の候補はありませんでした。 "] : []), open, " · ", download);
     download.click();
     displayComparison(open.href, popup);
+    if (withAnchors && migrationLedgerDialog.open) {
+      await loadMigrationLedger();
+      if (count === 0) {
+        migrationLedgerMessage.textContent = "対応行の候補はありませんでした。";
+        migrationLedgerMessage.hidden = false;
+      }
+    }
   } catch (error) {
     popup?.close();
-    showComparisonStatus(`比較を開けませんでした。${error.message}`);
+    const message = `比較を開けませんでした。${error.message}`;
+    showComparisonStatus(message);
+    if (migrationLedgerDialog.open) {
+      migrationLedgerMessage.textContent = message;
+      migrationLedgerMessage.hidden = false;
+    }
   } finally {
     snapshotting = false;
     syncActions();

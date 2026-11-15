@@ -265,6 +265,11 @@
     .migration-ledger-state[data-state="complete"] { color: var(--green); }
     .migration-ledger-state[data-state="running"] { color: var(--blue); }
     .migration-ledger-state[data-state="paused"] { color: var(--amber); }
+    .migration-mapping { margin: 5px 0 10px; }
+    .migration-ledger-row:not([data-state="complete"]) .migration-mapping { display: none; }
+    .migration-mapping-status { color: var(--amber); font-weight: 700; }
+    .migration-mapping-status[data-confirmation="confirmed"] { color: var(--green); }
+    .migration-mapping-status[data-confirmation="candidate"] { color: var(--blue); }
     @keyframes review-dialog-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
     @keyframes review-dialog-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
     @keyframes review-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
@@ -508,11 +513,20 @@
     <div id="migration-ledger-details" hidden>
       <p class="run-detail">Run ID <code id="migration-ledger-run-id"></code></p>
       <p class="migration-ledger-target">移行先 <code id="migration-ledger-target"></code></p>
+      <div id="migration-candidate-comparison" hidden>
+        <button class="button" type="button">候補をDiff Viewerで開く</button>
+      </div>
     </div>
     <p class="review-intro" id="migration-ledger-message" role="status" hidden></p>
     <ol class="migration-ledger-list" id="migration-ledger-list" aria-label="カプセルごとの処理状況"></ol>
   </div>
 </dialog>
+<template id="migration-mapping-template">
+  <div class="migration-mapping">
+    <span class="migration-mapping-status"></span>
+    <span class="migration-mapping-location"></span>
+  </div>
+</template>
 <script>
 "use strict";
 
@@ -521,6 +535,7 @@ const migrationLedgerDialog = document.querySelector("#migration-ledger-dialog")
 const migrationLedgerList = document.querySelector("#migration-ledger-list");
 const migrationLedgerMessage = document.querySelector("#migration-ledger-message");
 const migrationLedgerDetails = document.querySelector("#migration-ledger-details");
+const migrationCandidateComparison = document.querySelector("#migration-candidate-comparison");
 
 function updateMigrationLedgerStatuses(snapshot) {
   if (!migrationLedgerDialog.open) return;
@@ -540,8 +555,24 @@ function updateMigrationLedgerStatuses(snapshot) {
       label = snapshot.status === "interrupted" ? "中断" : "失敗";
     }
     badge.dataset.state = status;
+    badge.closest(".migration-ledger-row").dataset.state = status;
     badge.textContent = label;
   }
+}
+
+function migrationMapping(mapping) {
+  const entry = document.querySelector("#migration-mapping-template").content.firstElementChild.cloneNode(true);
+  const status = entry.querySelector(".migration-mapping-status");
+  const location = entry.querySelector(".migration-mapping-location");
+  const confirmation = mapping?.confirmed ? "confirmed" : mapping?.snapshot_id ? "candidate" : "unconfirmed";
+  status.dataset.confirmation = confirmation;
+  status.textContent = {confirmed: "確認済み", candidate: "候補あり", unconfirmed: mapping ? "要再確認" : "要確認"}[confirmation];
+  if (mapping) {
+    const lines = mapping.start_line === mapping.end_line ? `${mapping.start_line}行目` : `${mapping.start_line}–${mapping.end_line}行`;
+    location.textContent = ` · ${mapping.path} ${lines}`;
+    if (mapping.snapshot_id) location.append(`（アンカー ${mapping.anchors}件）`);
+  }
+  return entry;
 }
 
 function migrationLedgerRow(capsule) {
@@ -566,6 +597,7 @@ function migrationLedgerRow(capsule) {
     for (const slice of source.character_slices || []) {
       range.append(`（${slice.line}行目の${slice.focus_start_column}–${slice.focus_end_column}文字目）`);
     }
+    range.append(migrationMapping(source.mapping));
     ranges.append(range);
   }
   if (!capsule.sources.length) {
@@ -587,12 +619,16 @@ function openMigrationLedger(message = "") {
   document.querySelector("#migration-ledger-title").focus();
 }
 
-function showMigrationLedger(ledger, snapshot) {
+function showMigrationLedger(ledger, snapshot, compare) {
   document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
   document.querySelector("#migration-ledger-target").textContent = ledger.target;
   migrationLedgerList.replaceChildren(...ledger.capsules.map(migrationLedgerRow));
   migrationLedgerDetails.hidden = false;
   migrationLedgerMessage.hidden = true;
+  const snapshotId = ledger.capsules.flatMap(capsule => capsule.sources)
+    .find(source => source.mapping?.snapshot_id)?.mapping.snapshot_id;
+  migrationCandidateComparison.hidden = !snapshotId;
+  migrationCandidateComparison.querySelector("button").onclick = snapshotId ? () => compare(snapshotId) : null;
   updateMigrationLedgerStatuses(snapshot);
 }
 </script>
@@ -621,9 +657,9 @@ function showMigrationLedger(ledger, snapshot) {
   const reviewNote = document.querySelector("#review-note");
   const reviewRow = document.querySelector('.ledger-row[data-status="judgment"]');
   const capsuleCalls = [
-    { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12", lines: [1, 120] },
-    { unit: "SearchOrder", chars: 43880, time: "10:42:15", lines: [121, 240] },
-    { unit: "FormatDate", chars: 91530, time: "10:42:18", lines: [241, 360] }
+    { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12", lines: [1, 3] },
+    { unit: "SearchOrder", chars: 43880, time: "10:42:15", lines: [4, 4] },
+    { unit: "FormatDate", chars: 91530, time: "10:42:18", lines: [5, 5] }
   ];
   const ledgerRows = [...document.querySelectorAll(".ledger-row[data-status]")];
   const filterButtons = [...document.querySelectorAll(".filter-button")];
@@ -648,6 +684,8 @@ function showMigrationLedger(ledger, snapshot) {
   let humanReviewHandled = false;
   let correctionRequested = false;
   let capsuleInterrupted = false;
+  const demoMappings = new Map();
+  let demoCandidateWorkspace;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function demoMigrationLedgerState() {
@@ -665,16 +703,25 @@ function showMigrationLedger(ledger, snapshot) {
   }
 
   migrationLedgerButton.disabled = false;
-  migrationLedgerButton.addEventListener("click", () => {
-    openMigrationLedger();
+  function showDemoMigrationLedger() {
     showMigrationLedger({
       run_id: "run-2026-11-14-001",
       target: "Pages/Orders/Index.cshtml.cs",
       capsules: capsuleCalls.map(({lines}, index) => ({
         index: index + 1,
-        sources: [{path: "php/orders.php", start_line: lines[0], end_line: lines[1]}],
+        sources: [{
+          path: "php/orders.php", start_line: lines[0], end_line: lines[1],
+          mapping: demoMappings.get(index + 1),
+        }],
       })),
-    }, demoMigrationLedgerState());
+    }, demoMigrationLedgerState(), () => openDiffViewer(
+      document.querySelector("#demo-anchor-status"), true, demoCandidateWorkspace,
+    ));
+  }
+
+  migrationLedgerButton.addEventListener("click", () => {
+    openMigrationLedger();
+    showDemoMigrationLedger();
   });
   function updateStep(index) {
     toggle.removeAttribute("aria-haspopup");
@@ -724,6 +771,9 @@ function showMigrationLedger(ledger, snapshot) {
     applyLedgerFilter();
     if (index > 3 && events[index - 4]) addEvent(...events[index - 4]);
     if (index === 6 && correctionRequested) {
+      for (const mapping of demoMappings.values()) {
+        if (mapping.path === "Pages/Orders/Index.cshtml.cs") delete mapping.snapshot_id;
+      }
       setReviewRow("done", "確認済み", false);
       applyLedgerFilter();
       updateReviewCount();
@@ -752,7 +802,9 @@ function showMigrationLedger(ledger, snapshot) {
   function createReviewWorkspace(withAnchors) {
     const php = `function get_status_label($status) {
     return $statusLabels[$status] ?? 'Unknown';
-}`;
+}
+echo $statusText;
+// 状態表示の補足`;
     const pageModel = current < 4 ? `public void OnGet() {
     // 移行前の仮実装
     ViewData["StatusText"] = "Unknown";
@@ -781,7 +833,9 @@ function showMigrationLedger(ledger, snapshot) {
         rightCursor: state.dataset.state === "waiting" && current >= 4 ? { lineNumber: 2, column: 1 } : null,
         leftScrollTop: null, rightScrollTop: null,
         anchors: {
-          manualAnchors: withAnchors && current >= 4 ? [{ leftLineNo: 1, rightLineNo: 1 }] : [],
+          manualAnchors: withAnchors && current >= 4
+            ? [{ leftLineNo: 1, rightLineNo: 1 }, { leftLineNo: 3, rightLineNo: lines(pageModel) }]
+            : [],
           staleManualAnchors: [], autoAnchor: null,
           suppressedAutoAnchorKey: null, pendingLeftLineNo: null,
           pendingRightLineNo: null, selectedAnchorKey: null,
@@ -790,22 +844,30 @@ function showMigrationLedger(ledger, snapshot) {
     };
   }
 
-  async function openDiffViewer(status, withAnchors = false) {
+  async function openDiffViewer(status, withAnchors = false, savedWorkspace) {
     // 画面を開くのを待つ間にデモが進んでも、クリックした時点の内容を保持する。
-    const workspace = createReviewWorkspace(withAnchors);
+    const workspace = savedWorkspace ?? createReviewWorkspace(withAnchors);
     const payload = JSON.stringify(workspace, null, 2);
     const viewerUrl = new URL("tools/dist/index.min.html", location.href);
-    const progress = withAnchors ? "対応行の候補を生成中（デモ）" : "";
-    status.textContent = progress;
+    const progress = withAnchors && !savedWorkspace ? "対応行の候補を生成中（デモ）" : "";
+    if (!savedWorkspace) status.textContent = progress;
     viewerPreview.showModal();
     const loading = document.createElement("p");
     loading.setAttribute("role", "status");
     loading.textContent = progress || "比較用のスナップショットを開いています。";
     viewerPreviewBody.replaceChildren(loading);
-    if (withAnchors) {
+    if (withAnchors && !savedWorkspace) {
       await new Promise(resolve => setTimeout(resolve, 650));
       const count = workspace.workspace.anchors.manualAnchors.length;
       status.textContent = count ? `対応行の候補 ${count}件` : "対応行の候補はありませんでした。";
+      if (count) {
+        demoCandidateWorkspace = workspace;
+        const [pageModel, razor] = workspace.workspace.rightSegments;
+        for (const [index, target, line] of [[1, pageModel.fileName, 2], [2, razor.fileName, 1]]) {
+          demoMappings.set(index, {path: target, start_line: line, end_line: line, snapshot_id: "demo", anchors: 1});
+        }
+        if (migrationLedgerDialog.open) showDemoMigrationLedger();
+      }
     }
     const downloadUrl = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const download = document.createElement("a");
@@ -1080,6 +1142,8 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     resetReview();
     resetCapsuleCalls();
     capsuleInterrupted = false;
+    demoMappings.clear();
+    demoCandidateWorkspace = undefined;
     stepElapsed.fill(0);
     current = 0;
     stepStartedAt = 0;
