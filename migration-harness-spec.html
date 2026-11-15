@@ -344,6 +344,7 @@ flowchart TB
     F -- はい --> H[レビュー準備完了]
     F -- いいえ --> I{修正可能で、上限内かつ再発なし?}
     I -- いいえ --> G
+    G -- 問題なしを記録してresume --> A
 
     classDef action fill:#eaf2ff,stroke:#5680bd,color:#172033
     classDef decision fill:#fff4d9,stroke:#d99716,color:#604000,stroke-width:2px
@@ -359,7 +360,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>チェッカーの偽陽性</h3>
-      <p>チェッカーの出力と停止理由を保存します。同じ指摘の判定にはルールID・対象ファイル・メッセージを使います。人が指摘を許容した理由の記録は今後の設計です。</p>
+      <p>CLIのreviewで指摘ごとに「問題なし」と判断した理由をrun.jsonに記録できます。同じrun IDで再開するとビルドとチェッカーを実行し、承認済みの指摘だけが残った場合はレビュー済みとして完了します。</p>
     </div>
   </section>
 

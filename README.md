@@ -12,9 +12,10 @@ PythonとLangGraphで、PHPからASP.NET Core Razor Pages（現状.NET 9）へ�
 - 全カプセルの反映後にworktreeで `dotnet build` を実行し、結果を `run.json`、出力を `build.log` に保存する
 - ビルド成功後に設定した独自チェッカーを実行し、終了コードを `run.json`、標準出力と標準エラーを `checker.log` に保存する
 - 有効にした場合は、チェッカーの指摘をJunieに渡し、修正後にビルドとチェッカーを再実行する
+- 人が指摘を問題なしと判断した場合は理由を記録し、同じRun IDで確認を続ける
 - `resume`では、既存の実行記録・worktree・agent workspaceを使い、未完了カプセルから再開する
 
-テストの実行、人による指摘の承認記録、Diff Viewer用アンカーJSONは今後の実装です。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
+テストの実行とDiff Viewer用アンカーJSONは今後の実装です。SQLiteチェックポイントは準備グラフの状態を保存しますが、`resume`は `run.json` と作成済みファイルを使います。
 
 Junieへ渡す情報と作業フォルダはハーネスで絞りますが、別の絶対パスへのアクセスをOSレベルで遮断するものではありません。Junieを使うと、選択したコンテキストがJunieのサービスへ送られます。生成後は`run.json`とworktreeの差分を人が確認してください。
 
@@ -98,6 +99,20 @@ max_repair_attempts = 2
 Junieは設定済みの移行先ファイルだけを修正します。修正前のチェッカー出力は `checker-before-repair-N.log`、直近の結果は `checker.log`、試行履歴は `run.json` に残ります。過去に修正した指摘が残るか再発した場合は、行番号が変わっていてもルールID・対象ファイル・メッセージで照合し、人の確認に回します。上限、対象外のファイル、解析できない出力、Junieの未完了や変更なしでも、その理由を記録します。
 
 人が確認した後は、同じRun IDで `resume` を実行できます。修正ループに入った実行はビルドからやり直し、過去の修正回数と指摘の履歴を維持します。CLIでのみチェッカーを指定した場合は、`resume` にも `--checker-command` を指定します。
+
+### 指摘を「問題なし」として記録する
+
+`review` で最新の指摘とそのIDを確認します。差分とチェッカーの出力を確認し、偽陽性などと判断した指摘のIDと理由を指定します。
+
+```powershell
+$runId = Read-Host "Run ID"
+php-to-csharp-harness review --config harness.local.toml --run-id $runId
+$findingId = Read-Host "Finding ID"
+php-to-csharp-harness review --config harness.local.toml --run-id $runId --accept $findingId --reason "共通関数に委譲していることを確認済み"
+php-to-csharp-harness resume --config harness.local.toml --run-id $runId
+```
+
+判断は `run.json` に保存します。再開するとビルドとチェッカーを再実行し、同じファイル内容に対する承認済みの指摘だけが残っている場合は `checker_accepted` として完了します。チェッカーが返した終了コードはそのまま残ります。行・列のずれを許容しますが、対象ファイルを編集した場合は再確認が必要です。新しい指摘や解釈できない出力が残る場合は通常の確認フローに戻ります。同じIDの指摘が複数ある場合は、区別できるようにチェッカーのメッセージを整えてください。
 
 ### 中断・失敗から再開する
 

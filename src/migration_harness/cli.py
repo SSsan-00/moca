@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from migration_harness.config import load_config, validate_checker_command
-from migration_harness.workflow import prepare_run, resume_with_junie, run_with_junie
+from migration_harness.workflow import prepare_run, resume_with_junie, review_checker, run_with_junie
 
 
 def main() -> None:
@@ -21,6 +21,11 @@ def main() -> None:
     resume = subparsers.add_parser("resume", help="Continue migration, build or checker in the saved worktree")
     resume.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     resume.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
+    review = subparsers.add_parser("review", help="List checker findings or accept one with a reason")
+    review.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    review.add_argument("--run-id", required=True, help="Run ID awaiting review")
+    review.add_argument("--accept", metavar="FINDING_ID", help="Finding ID shown by review")
+    review.add_argument("--reason", help="Why the finding can be accepted")
     for command in (run, resume):
         command.add_argument(
             "--checker-command", nargs=argparse.REMAINDER, metavar="EXECUTABLE",
@@ -34,6 +39,14 @@ def main() -> None:
         if checker_command is not None:
             validate_checker_command(checker_command)
             config["checker_command"] = checker_command
+        if args.command == "review":
+            report = review_checker(config, args.run_id, args.accept, args.reason)
+            for finding_id, diagnostic, accepted in report["findings"]:
+                print(f"{finding_id} {'[accepted]' if accepted else '[pending]'} {diagnostic}")
+            print(f"Checker log: {report['log_path']}")
+            if report["unrecognized"]:
+                print("The log also has unrecognized lines. Review them before continuing.")
+            return
         if args.command == "prepare":
             result = prepare_run(config, args.unit)
         elif args.command == "run":
@@ -81,10 +94,10 @@ def main() -> None:
             print(f"Checker:   {result['status']} (exit code: {result['checker_exit_code']})")
             if result["checker_log_path"]:
                 print(f"Checker log: {result['checker_log_path']}")
-            if result["status"] != "checker_succeeded":
+            if result["status"] not in {"checker_succeeded", "checker_accepted"}:
                 if result["error"]:
                     print(f"Review reason: {result['error']}")
-                print("Review the checker log and worktree diff. Resume with the same Run ID and checker configuration.")
+                print("Use review with the same Run ID to inspect checker findings. Use resume to rerun verification.")
                 raise SystemExit(1)
         print("Review the worktree diff.")
 
