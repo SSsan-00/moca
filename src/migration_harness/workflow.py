@@ -1018,8 +1018,13 @@ def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFindi
     worktree = worktree.resolve()
     findings = []
     unrecognized = False
-    with log_path.open(encoding="utf-8-sig") as stream:
-        for raw in stream:
+    with log_path.open("rb") as stream:
+        for index, data in enumerate(stream):
+            try:
+                raw = data.decode("utf-8-sig" if index == 0 else "utf-8")
+            except UnicodeDecodeError:
+                unrecognized = True
+                continue
             for line in raw.splitlines():
                 line = line.strip()
                 if not line:
@@ -1145,8 +1150,9 @@ def _verify_worktree(
             if not reported_paths.issubset(targets):
                 raise ValueError("checker reported a finding outside the configured migration targets")
             repair_targets = tuple(path for path in targets if path in reported_paths)
-            fingerprints = {finding.repair_fingerprint for finding in remaining}
-            if any(fingerprints.intersection(attempt["findings"]) for attempt in history):
+            fingerprints = {finding.finding_id for finding in remaining}
+            legacy_fingerprints = {finding.repair_fingerprint for finding in remaining}
+            if any((fingerprints | legacy_fingerprints).intersection(attempt["findings"]) for attempt in history):
                 raise ValueError("a previous checker finding is still present")
             if len(history) >= limit:
                 raise ValueError(f"automatic repair limit reached ({limit})")

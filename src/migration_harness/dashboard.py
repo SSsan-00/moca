@@ -283,8 +283,6 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
         view.observe(saved)
         view.ready(config, saved)
         options += " data-saved"
-        if not view.state["resumable"]:
-            anchor_reference = None
     if anchor_reference is not None:
         options += " data-anchor-reference"
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')

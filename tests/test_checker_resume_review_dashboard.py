@@ -136,7 +136,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             (b"Traceback: checker database is offline\n", "unrecognized"),
             (b"MIG102 ../outside.cs:5 warning: outside the worktree\n", "unrecognized"),
             (b"MIG102 Bad\0Path.cs:5 warning: invalid path\n", "unrecognized"),
-            (b"\xff\n", "utf-8"),
+            (b"\xff\n", "unrecognized"),
         )
         for extra, error in malformed:
             with self.subTest(extra=extra):
@@ -155,13 +155,9 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 self.assertEqual(saved.get("repair_history", []), [])
                 self.assertEqual(self.checker_log.read_bytes(), log)
                 self.assertFalse((self.run_path / "checker-before-repair-1.log").exists())
-                if error == "utf-8":
-                    with self.assertRaises(UnicodeDecodeError):
-                        self.review()
-                else:
-                    report = self.review()
-                    self.assertTrue(report["unrecognized"])
-                    self.assertEqual(len(report["findings"]), 1)
+                report = self.review()
+                self.assertTrue(report["unrecognized"])
+                self.assertEqual(len(report["findings"]), 1)
 
     def test_supported_diagnostics_still_allow_automatic_repair(self):
         self.config["max_repair_attempts"] = 1
@@ -309,7 +305,7 @@ class SavedDashboardTests(SavedRunFixture):
                         response.readline()
                         root_tag = response.readline()
                     self.assertIn(b"data-saved", root_tag)
-                    self.assertNotIn(b"data-anchor-reference", root_tag)
+                    self.assertIn(b"data-anchor-reference", root_tag)
                     with urlopen(url + "migration-ledger", timeout=3) as response:
                         self.assertEqual(json.load(response)["capsules"][0]["sources"][0]["path"], "example.php")
                     with self.post(url, "comparison", {}) as response:
@@ -319,7 +315,6 @@ class SavedDashboardTests(SavedRunFixture):
                     for action in (
                         {"action": "resume"},
                         {"action": "accept", "finding_id": "123456789abc", "reason": "Done"},
-                        {"action": "anchors"},
                     ):
                         with self.assertRaises(HTTPError) as rejected:
                             self.post(url, "control", {**action, "revision": revision})

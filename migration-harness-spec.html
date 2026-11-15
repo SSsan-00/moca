@@ -236,7 +236,7 @@ sequenceDiagram
       </article>
       <article class="card">
         <h3>画面からの操作</h3>
-        <p>モーダルから判断理由の記録と再開をHTTP POSTで送ります。再開時は同じrun IDを使い、Junieはハーネスを起動した端末で対話します。</p>
+        <p>モーダルから判断理由の記録と再開をHTTP POSTで送ります。再開時は同じrun IDを使い、Junieはハーネスを起動した端末で対話します。CLIの <code>view</code> で完了済みRunの結果・台帳・差分を開けます。保存済みRunを開いた場合、再開は画面で操作した時点で行います。</p>
       </article>
       <article class="card">
         <h3>再接続と履歴</h3>
@@ -360,7 +360,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>チェッカーの偽陽性</h3>
-      <p>CLIのreviewで指摘ごとに「問題なし」と判断した理由をrun.jsonに記録できます。同じrun IDで再開するとビルドとチェッカーを実行し、承認済みの指摘だけが残った場合はレビュー済みとして完了します。</p>
+      <p>CLIのreviewで指摘ごとに「問題なし」と判断した理由をrun.jsonに記録できます。同じrun IDで再開するとビルドとチェッカーを実行し、承認済みの指摘だけが残った場合はレビュー済みとして完了します。解釈できないログは人の確認に回します。大きなログでも手動レビューに利用できます。</p>
     </div>
   </section>
 

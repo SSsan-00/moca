@@ -29,7 +29,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-テストは一時ディレクトリにGitリポジトリとRunを作ります。準備処理はGitとLangGraphを実行し、制御のテストではJunieや.NETなどをテスト用の処理に置き換えます。GitHub ActionsはmainへのpushとPRで、WindowsとLinuxのPython 3.11・3.13を検証します。
+テストは一時ディレクトリにGitリポジトリとRunを作ります。PHPと.NET 10 SDKがある環境では振る舞い比較の実行テストも動きます。準備処理はGitとLangGraphを実行し、制御のテストではJunieや.NETなどをテスト用の処理に置き換えます。GitHub ActionsはmainへのpushとPRで、WindowsとLinuxのPython 3.11・3.13を検証します。
 
 ## セットアップ（Windows）
 
@@ -147,7 +147,9 @@ max_repair_attempts = 2
 
 Junieは設定済みの移行先ファイルだけを修正します。修正前のチェッカー出力は `checker-before-repair-N.log`、直近の結果は `checker.log`、試行履歴は `run.json` に残ります。過去に修正した指摘が残るか再発した場合は、行番号が変わっていてもルールID・対象ファイル・メッセージで照合し、人の確認に回します。上限、対象外のファイル、解析できない出力、Junieの未完了や変更なしでも、その理由を記録します。
 
-人が確認した後は、同じRun IDで `resume` を実行できます。修正ループに入った実行はビルドからやり直し、過去の修正回数と指摘の履歴を維持します。CLIでのみチェッカーを指定した場合は、`resume` にも `--checker-command` を指定します。
+人が確認した後は、同じRun IDで `resume` を実行できます。チェッカーの段階から再開する場合も先にビルドし、現在のビルドが成功してからチェッカーを実行します。修正回数と指摘の履歴は維持します。CLIでのみチェッカーを指定した場合は、`resume` にも `--checker-command` を指定します。
+
+解釈できない行が混在する場合は、修正回数を使わず人の確認に回し、元の `checker.log` を残します。ログが65,536バイトを超える場合やJunieに渡す指摘が8,000文字を超える場合も自動修正を保留します。手動レビューではこれらの上限に関わらず、読み取れた指摘を一覧できます。
 
 ### 指摘を「問題なし」として記録する
 
@@ -169,7 +171,13 @@ php-to-csharp-harness resume --config harness.local.toml --run-id $runId
 php-to-csharp-harness run --config harness.local.toml --unit example-page --dashboard
 ```
 
-ターミナルに表示された `http://127.0.0.1:...` のURLを開きます。保存済みの実行を表示するときは `resume --config harness.local.toml --run-id <Run ID> --dashboard` を使います。`--checker-command` と併用する場合は、その前に `--dashboard` を置きます。
+ターミナルに表示された `http://127.0.0.1:...` のURLを開きます。完了後を含む保存済みの実行は、次のコマンドで開きます。Windowsでは `.\h.cmd v` も使えます。
+
+```powershell
+php-to-csharp-harness view --config harness.local.toml --run-id RUN_ID
+```
+
+`view` と `resume --dashboard` は保存された結果を表示します。再開するときは画面の **同じ実行を再開** を選びます。`--checker-command` を指定するときは、コマンドと引数を末尾に置きます。
 
 人の確認待ちになるとモーダルが開きます。指摘を選んで判断理由を入力し、**問題なしとして記録**を押します。必要な指摘を記録したら、**同じ実行を再開**を押します。Junieが必要な場合は起動元のターミナルで対話できます。
 
