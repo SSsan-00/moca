@@ -1,0 +1,52 @@
+{
+  "php_source": "search.php",
+  "ignored_fields": ["generated_at"],
+  "cases": [
+    {
+      "id": "missing-query",
+      "input": {"limit": 1},
+      "expected": {"status": "query_required", "total": 0, "rows": []}
+    },
+    {
+      "id": "empty-query",
+      "input": {"query": "", "limit": 1},
+      "expected": {"status": "query_required", "total": 0, "rows": []}
+    },
+    {
+      "id": "zero-query",
+      "input": {"query": "0", "limit": 1},
+      "expected": {
+        "status": "ok",
+        "total": 2,
+        "rows": [{"id": 1, "code": "01", "label": "振込"}]
+      }
+    },
+    {
+      "id": "maximum-limit-orders-both-rows",
+      "input": {"query": "0", "limit": 2},
+      "expected": {
+        "status": "ok",
+        "total": 2,
+        "rows": [
+          {"id": 1, "code": "01", "label": "振込"},
+          {"id": 2, "code": "02", "label": "返金"}
+        ]
+      }
+    },
+    {
+      "id": "zero-limit",
+      "input": {"query": "0", "limit": 0},
+      "expected": {"status": "invalid_limit", "total": 0, "rows": []}
+    },
+    {
+      "id": "above-maximum-limit",
+      "input": {"query": "0", "limit": 3},
+      "expected": {"status": "invalid_limit", "total": 0, "rows": []}
+    },
+    {
+      "id": "no-results",
+      "input": {"query": "Z", "limit": 2},
+      "expected": {"status": "ok", "total": 0, "rows": []}
+    }
+  ]
+}
