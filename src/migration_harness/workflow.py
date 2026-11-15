@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import codecs
@@ -25,6 +26,8 @@ from typing import Any, Iterator
 from .config import REFERENCE_ROLES
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
+_USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
+_junie_usage_reporter: ContextVar[Callable[[list[int]], None] | None] = ContextVar("junie_usage_reporter", default=None)
 worktree_source_lock = RLock()
 
 
@@ -581,6 +584,30 @@ def _write_run_record(path: Path, record: dict[str, Any]) -> None:
         observer(record)
 
 
+@contextmanager
+def _track_junie_usage(
+    run_path: Path, record: dict[str, Any], phase: str, capsule: int | None = None,
+) -> Iterator[None]:
+    """同じ工程・カプセルの再試行や再開分をRunに加算する。"""
+    def report(delta: list[int]) -> None:
+        rows = record.setdefault("token_usage", [])
+        row = next((row for row in rows if row["phase"] == phase and row.get("capsule") == capsule), None)
+        if row is None:
+            row = {"phase": phase, "capsule": capsule, **dict.fromkeys(_USAGE_FIELDS, 0)}
+            rows.append(row)
+        elif not any(delta):
+            return
+        for field, value in zip(_USAGE_FIELDS, delta, strict=True):
+            row[field] += value
+        _write_run_record(run_path / "run.json", record)
+
+    handle = _junie_usage_reporter.set(report)
+    try:
+        yield
+    finally:
+        _junie_usage_reporter.reset(handle)
+
+
 def _run_script_phase(
     config: dict[str, Any], phase: str, cwd: Path, run_path: Path,
     record: dict[str, Any] | None = None, *, once: bool = False,
@@ -791,6 +818,7 @@ class _JunieSessionEvents:
         self.path: Path | None = None
         self.offset = 0
         self.task: str | None = None
+        self.usage = [0] * len(_USAGE_FIELDS)
 
     def _paths(self) -> Iterator[Path]:
         try:
@@ -799,7 +827,7 @@ class _JunieSessionEvents:
             return
 
     def connection_failed(self) -> bool:
-        """Junieがこのタスクの通信失敗を確定した場合だけ再試行する。"""
+        """今回のセッションの新着行から、使用量と通信失敗を読む。"""
         paths = [self.path] if self.path else [path for path in self._paths() if path not in self.existing]
         for path in paths:
             try:
@@ -823,15 +851,34 @@ class _JunieSessionEvents:
                                 break
                             self.path = path
                         self.offset = stream.tell()
-                        if kind == "TaskStartedEvent" and self.task is None:
+                        if kind == "TaskStartedEvent":
                             self.task = entry.get("taskId")
-                        if self.task and entry.get("taskId") == self.task and _is_junie_connection_failure(entry):
-                            return True
+                        if self.task and entry.get("taskId") == self.task:
+                            if kind == "SessionA2uxEvent":
+                                self._count_usage(entry.get("event"))
+                            if _is_junie_connection_failure(entry):
+                                return True
             except OSError:
                 continue
             if self.path is not None:
                 break
         return False
+
+    def _count_usage(self, event: Any) -> None:
+        agent = event.get("agentEvent") if isinstance(event, dict) else None
+        if not isinstance(agent, dict) or agent.get("kind") != "LlmResponseMetadataEvent":
+            return
+        usage = agent.get("modelUsage")
+        if not isinstance(usage, list):
+            return
+        for entry in usage:
+            if not isinstance(entry, dict) or "inputTokens" not in entry or "outputTokens" not in entry:
+                continue
+            counts = [entry.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheInputTokens", "cacheCreateTokens")]
+            if all(type(value) is int and value >= 0 for value in counts):
+                cold, output, read, write = counts
+                for i, value in enumerate((cold + read + write, output, read, write, 1)):
+                    self.usage[i] += value
 
 
 def _run_interactive_junie(
@@ -865,10 +912,22 @@ def _run_junie_session(
     root = completion_path.parent
     restore_terminal = _save_terminal_mode()
     events = _JunieSessionEvents(token)
+    report = _junie_usage_reporter.get()
+
+    def poll() -> bool:
+        failed = events.connection_failed()
+        if report is not None and any(events.usage):
+            delta = events.usage
+            events.usage = [0] * len(_USAGE_FIELDS)
+            report(delta)
+        return failed
+
     next_poll = time.monotonic()
     # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
     process = subprocess.Popen(command)
     try:
+        if report is not None:
+            report([0] * len(_USAGE_FIELDS))
         while True:
             try:
                 exit_code = process.wait(timeout=0.25)
@@ -884,19 +943,24 @@ def _run_junie_session(
                     return _close_junie(process)
                 if time.monotonic() >= next_poll:
                     next_poll = time.monotonic() + 1
-                    if events.connection_failed():
+                    if poll():
                         _close_junie(process)
                         raise JunieConnectionError("Junie model service connection failed")
             else:
-                if not _has_completion_record(completion_path, token) and events.connection_failed():
+                if poll() and not _has_completion_record(completion_path, token):
                     raise JunieConnectionError("Junie model service connection failed")
                 return exit_code
-    except KeyboardInterrupt:
-        _close_junie(process)
+    except (KeyboardInterrupt, OSError):
+        if process.poll() is None:
+            _close_junie(process)
         raise
     finally:
-        if process.poll() is not None:
-            restore_terminal()
+        try:
+            if report is not None:
+                poll()
+        finally:
+            if process.poll() is not None:
+                restore_terminal()
 
 
 def _save_terminal_mode() -> Callable[[], None]:
@@ -1157,9 +1221,10 @@ def _run_prepared_with_junie(
         interrupted = False
         try:
             try:
-                exit_code = _run_interactive_junie(
-                    command, completion_path, completion_token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
-                )
+                with _track_junie_usage(run_path, record, "migration", index):
+                    exit_code = _run_interactive_junie(
+                        command, completion_path, completion_token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
+                    )
             except KeyboardInterrupt:
                 interrupted = True
             if _unlisted_workspace_files(agent_root, allowed) != other_files:
@@ -1485,9 +1550,11 @@ def _repair_target(
     allowed = {*repair_targets, completion_path.relative_to(agent_root)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     try:
-        exit_code = _run_interactive_junie(
-            command, completion_path, token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
-        )
+        phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
+        with _track_junie_usage(run_path, record, phase):
+            exit_code = _run_interactive_junie(
+                command, completion_path, token, agent_targets[0] if len(agent_targets) == 1 else agent_targets,
+            )
     except (KeyboardInterrupt, JunieConnectionError):
         attempt.pop("draft", None)
         try:

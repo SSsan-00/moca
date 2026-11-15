@@ -8,7 +8,8 @@ from typing import Any
 
 from migration_harness.diff_viewer import capture_workspace, save_workspace, snapshot_bytes
 from migration_harness.workflow import (
-    _has_completion_record, _run_interactive_junie, _validate_junie_execution, migration_ledger, record_migration_candidates,
+    _has_completion_record, _load_saved_run, _run_interactive_junie, _track_junie_usage,
+    _validate_junie_execution, migration_ledger, record_migration_candidates,
 )
 
 
@@ -159,7 +160,9 @@ def generate_anchors(
         command = ["junie", "--project", str(agent)]
         if config["junie_max_steps"] is not None:
             command.extend(["--max-steps", str(config["junie_max_steps"])])
-        _run_interactive_junie([*command, "--prompt", prompt], completion, token, result)
+        _, _, record, _ = _load_saved_run(config, run_id)
+        with _track_junie_usage(run_path, record, "anchors"):
+            _run_interactive_junie([*command, "--prompt", prompt], completion, token, result)
         if not _has_completion_record(completion, token) or result.is_symlink() or not result.is_file():
             raise ValueError("Junieのアンカー作成が完了しませんでした。")
         anchors = _validated_anchors(result, left, right)

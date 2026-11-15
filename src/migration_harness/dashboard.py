@@ -400,8 +400,11 @@ class Dashboard:
         )
         with self.condition:
             fields = (*PROGRESS_FIELDS, "repair_count")
+            usage = [row.copy() for row in record.get("token_usage", [])]
             if state != {key: self.state[key] for key in fields if key in self.state}:
-                self.publish(state)
+                self.publish({**state, "token_usage": usage})
+            elif usage != self.state.get("token_usage", []):
+                self.publish({**self.state, "token_usage": usage})
 
     def ready(self, config: dict[str, Any], result: dict[str, Any], message: str = "") -> None:
         """処理が一区切りついた時点の操作可否とレビュー状態を公開する。"""

@@ -250,6 +250,14 @@ if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1)
 // 最新のSSE状態を工程・入力・指摘に反映し、確認待ちを案内する。
 function render() {
   const data = snapshot;
+  const tokenPhases = {build_repair: "ビルドの自動修正", checker_repair: "チェッカーの自動修正", anchors: "アンカー生成"};
+  const tokenRows = (data.token_usage || []).map(row => ({
+    ...row, label: row.phase === "migration" ? `カプセル ${row.capsule}` : tokenPhases[row.phase],
+  }));
+  const usingJunie = !data.ready && (["junie_running", "repairing"].includes(data.status) || data.generating_anchors);
+  renderTokenUsage(tokenRows, data.run_id ? `${data.unit_id} の移行 · Run ID ${data.run_id}` : "",
+    usingJunie ? "Junieからの使用量の報告を待っています。" :
+      data.run_id ? "このRunには使用量の記録がありません。" : "「実行」タブからRunを選択してください。", usingJunie);
   document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
   const verificationFinished = data.ready && verifiedStatuses.has(data.status);
@@ -543,15 +551,19 @@ stream.onerror = () => {
   syncActions();
 };
 stream.onmessage = event => {
-  snapshot = JSON.parse(event.data);
-  migrationCompletion = undefined;
+  const data = JSON.parse(event.data);
+  const {token_usage: previousUsage, observed_at: previousTime, ...previous} = snapshot;
+  const {token_usage: usage, observed_at: time, ...current} = data;
+  const progressChanged = JSON.stringify(previous) !== JSON.stringify(current);
+  snapshot = data;
+  if (progressChanged) migrationCompletion = undefined;
   rev = Number(event.lastEventId);
   lastObserved = snapshot.observed_at * 1000;
   submitting = false;
   if (snapshot.message === "判断理由を記録しました。") note.value = "";
   addEvent(snapshot);
   render();
-  if (snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
+  if (progressChanged && snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
 };
 setInterval(() => {
   if (!snapshot.created_at) return;

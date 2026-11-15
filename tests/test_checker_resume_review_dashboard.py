@@ -18,6 +18,67 @@ from migration_harness import cli, dashboard, workflow
 
 
 class JunieConnectionTests(unittest.TestCase):
+    def test_matching_junie_session_counts_complete_usage_events_once(self):
+        def event(task, **usage):
+            return {"kind": "SessionA2uxEvent", "taskId": task, "event": {"agentEvent": {
+                "kind": "LlmResponseMetadataEvent", "modelUsage": [usage],
+            }}}
+
+        def line(entry):
+            return json.dumps(entry).encode("utf-8") + b"\n"
+
+        with TemporaryDirectory() as directory, patch.dict("os.environ", {"JUNIE_HOME": directory}):
+            events = workflow._JunieSessionEvents("this-launch")
+            sessions = Path(directory) / "sessions"
+            for name in ("current", "unrelated"):
+                (sessions / name).mkdir(parents=True)
+            task = {"kind": "TaskStartedEvent", "taskId": "task"}
+            metadata = event("task", inputTokens=10, outputTokens=4, cacheInputTokens=5, cacheCreateTokens=3)
+            (sessions / "unrelated/events.jsonl").write_bytes(
+                line({"kind": "UserPromptEvent", "prompt": "unrelated"}) + line(task) + line(metadata),
+            )
+            current = sessions / "current/events.jsonl"
+            current.write_bytes(
+                line({"kind": "UserPromptEvent", "prompt": "this-launch"}) + line(task)
+                + line(event("another-task", inputTokens=100, outputTokens=100))
+                + line(event("task", inputTokens=None, outputTokens=100)) + line(metadata)[:-1],
+            )
+            self.assertFalse(events.connection_failed())
+            self.assertEqual(events.usage, [0, 0, 0, 0, 0])
+            with current.open("ab") as stream:
+                stream.write(b"\n")
+            for _ in range(2):
+                self.assertFalse(events.connection_failed())
+                self.assertEqual(events.usage, [18, 4, 5, 3, 1])
+            with current.open("ab") as stream:
+                stream.write(line({**task, "taskId": "continue"}) + line(event("continue", inputTokens=2, outputTokens=1)))
+            self.assertFalse(events.connection_failed())
+            self.assertEqual(events.usage, [20, 5, 5, 3, 2])
+
+    def test_usage_persists_across_launches_without_resetting_dashboard_actions(self):
+        with TemporaryDirectory() as directory:
+            run_path = Path(directory)
+            view = dashboard.Dashboard()
+            handle = workflow.run_observer.set(view.observe)
+            record = {"run_id": "run", "status": "checker_succeeded"}
+            try:
+                view.observe(record)
+                view.publish({**view.state, "ready": False, "generating_anchors": True})
+                for delta in ([18, 4, 5, 3, 1], [2, 1, 0, 0, 1]):
+                    with workflow._track_junie_usage(run_path, record, "anchors"):
+                        report = workflow._junie_usage_reporter.get()
+                        report([0, 0, 0, 0, 0])
+                        report(delta)
+                    self.assertTrue(view.state["generating_anchors"])
+                loaded = json.loads((run_path / "run.json").read_bytes())
+                self.assertEqual(loaded["token_usage"], [{
+                    "phase": "anchors", "capsule": None, "input": 20, "output": 5,
+                    "cache_read": 5, "cache_write": 3, "responses": 2,
+                }])
+                self.assertEqual(view.state["token_usage"], loaded["token_usage"])
+            finally:
+                workflow.run_observer.reset(handle)
+
     def test_only_current_tasks_terminal_connection_failure_retries(self):
         failure = {"kind": "SessionA2uxEvent", "taskId": "our-task", "event": {
             "state": "FAILED", "agentEvent": {
