@@ -457,6 +457,92 @@ class SavedDashboardTests(SavedRunFixture):
 
         self.open_dashboard(inspect)
 
+    def test_settings_form_edits_rules_and_reference_pairs_without_changing_other_inputs(self):
+        source = """[[units]]
+id = "メニュー"
+source = "menu.php"
+target = "Menu.cs"
+
+[[units.inputs]]
+role = "migration_rules"
+path = "rules.md" # Keep range
+start_line = 2
+end_line = 4
+
+[[units.inputs]]
+role = "reference_php"
+path = "old.php"
+shared = true
+
+[[units.inputs]]
+role = "reference_csharp"
+path = "Old.cs"
+shared = true
+
+[[units.inputs]]
+role = "target_constraints"
+path = "constraints.md"
+start_line = 1
+end_line = 2
+shared = true
+
+[[units]]
+id = "検索"
+source = "search.php"
+target = "Search.cs"
+"""
+        def inspect(url):
+            def preview(content, changes):
+                with self.post(url, "settings", {
+                    "mode": "preview", "content": content, "changes": changes,
+                }) as response:
+                    return json.load(response)
+
+            migrated = preview(source, {})
+            self.assertEqual([item["path"] for item in migrated["form"]["references"]], ["old.php", "Old.cs"])
+            draft = preview(migrated["content"], {
+                "migrationRules": [
+                    {"index": 0, "role": "migration_rules", "path": "updated.md"},
+                    {"role": "migration_rules", "path": "extra.md"},
+                ],
+                "references": [
+                    {"role": "reference_php", "path": "example.php"},
+                    {"role": "reference_csharp", "path": "Example.cshtml.cs"},
+                    {"role": "reference_razor", "path": "Example.cshtml"},
+                ],
+            })
+            rules = draft["form"]["migrationRules"]
+            self.assertEqual(rules[0], {
+                "index": 0, "role": "migration_rules", "path": "updated.md", "start_line": 2, "end_line": 4,
+            })
+            self.assertEqual([item["role"] for item in draft["form"]["references"]], [
+                "reference_php", "reference_csharp", "reference_razor",
+            ])
+            self.assertIn('path = "updated.md" # Keep range', draft["content"])
+            self.assertIn("[[project.migration_rules]]", draft["content"])
+            self.assertIn("[[project.references]]", draft["content"])
+            self.assertEqual(draft["content"].count("[[units.inputs]]"), 1)
+            draft = preview(draft["content"], {"migrationRules": [rules[1]], "references": []})
+            self.assertNotIn('path = "example.php"', draft["content"])
+            self.assertNotIn('path = "updated.md"', draft["content"])
+            self.assertIn('path = "constraints.md"', draft["content"])
+            self.assertEqual(draft["form"]["migrationRules"], [
+                {"index": 0, "role": "migration_rules", "path": "extra.md"},
+            ])
+
+        self.open_dashboard(inspect)
+
+    def test_settings_cleanup_removes_only_empty_unit_at_its_index(self):
+        content = (
+            '[[units]]\nid = "existing"\nsource = "existing.php"\ntarget = "Existing.cs"\n'
+            '[[units]]\nid = " "\ntargets = []\n'
+            '[[units]]\nid = "added"\nsource = "added.php"\ntarget = "Added.cs"\n'
+        )
+        draft = dashboard._settings_draft(content, {"removeEmptyUnits": [1]})
+        self.assertEqual([unit["id"] for unit in draft["form"]["units"]], ["existing", "added"])
+        with self.assertRaisesRegex(ValueError, "入力済み"):
+            dashboard._settings_draft(content, {"removeEmptyUnits": [0]})
+
     # 保存済みRunを開くだけでは再開せず、操作を受けてから実行することを検証する。
     def test_saved_resumable_run_waits_for_explicit_resume(self):
         mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b"clean\n"))

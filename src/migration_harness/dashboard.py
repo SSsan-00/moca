@@ -20,12 +20,12 @@ from typing import Any
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
-from migration_harness.config import load_config
+from migration_harness.config import REFERENCE_ROLES, SCRIPT_PHASES, load_config
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.workflow import (
-    RunInterrupted, _load_saved_run, can_resume_run, migration_ledger, prepare_run, resume_with_junie, review_checker,
-    run_observer, run_with_junie,
+    RunInterrupted, RunScriptError, _load_saved_run, can_resume_run, migration_ledger, prepare_run, resume_with_junie,
+    review_checker, run_observer, run_with_junie,
 )
 
 
@@ -33,6 +33,7 @@ PROGRESS_FIELDS = (
     "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule",
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
     "build_exit_code", "build_log_path", "checker_exit_code", "checker_log_path", "error",
+    "script_phase", "script_logs",
 )
 
 
@@ -50,6 +51,119 @@ def _read_settings(path: Path) -> tuple[bytes, str]:
 
 _PROJECT_SETTINGS = ("root", "worktree_root", "run_root")
 _UNIT_SETTINGS = ("id", "source", "targets")
+_REFERENCE_TARGET_ROLES = ("reference_csharp", "reference_razor")
+
+
+def _form_input(item: Any, index: int, *, common: bool = False) -> dict[str, Any]:
+    if isinstance(item, Mapping) and isinstance(item.get("path"), str):
+        role = "migration_rules" if common else item.get("role")
+        if common or role in REFERENCE_ROLES:
+            return {"index": index, "role": role, **{key: item[key] for key in ("path", "start_line", "end_line") if key in item}}
+    return {"index": index}
+
+
+def _edit_inputs(container: Mapping, key: str, edits: Any) -> None:
+    """フォーム対応の入力だけを編集し、他の入力と既存テーブルの属性を保持する。"""
+    inputs = container.get(key, [])
+    common = key == "migration_rules"
+    roles = ("migration_rules",) if common else REFERENCE_ROLES
+    error = "移行ルール・参考実装の入力内容を確認してください。"
+    if not isinstance(inputs, list) or not isinstance(edits, list):
+        raise ValueError(error)
+    retained = set()
+    previous_index = -1
+    ordered = []
+    for edit in edits:
+        if not isinstance(edit, dict):
+            raise ValueError(error)
+        index = edit.get("index")
+        if index is not None:
+            if type(index) is not int or not previous_index < index < len(inputs):
+                raise ValueError(error)
+            previous_index = index
+            retained.add(index)
+            item = _form_input(inputs[index], index, common=common)
+            if "role" not in item:
+                if set(edit) != {"index"}:
+                    raise ValueError(error)
+                ordered.append((index, None))
+                continue
+            if edit.get("role") != item["role"] and not (
+                edit.get("role") in _REFERENCE_TARGET_ROLES and item["role"] in _REFERENCE_TARGET_ROLES
+            ):
+                raise ValueError(error)
+        role, path = edit.get("role"), edit.get("path")
+        if role not in roles or not isinstance(path, str):
+            raise ValueError(error)
+        ordered.append((index, (role, path)))
+
+    for index in reversed(range(len(inputs))):
+        if index not in retained:
+            if "role" not in _form_input(inputs[index], index, common=common):
+                raise ValueError(error)
+            del inputs[index]
+    if not ordered:
+        container.pop(key, None)
+        return
+    inputs = container.setdefault(key, tomlkit.aot())
+    for position, (index, values) in enumerate(ordered):
+        if values is None:
+            continue
+        role, path = values
+        if index is None:
+            item = tomlkit.inline_table() if isinstance(inputs, tomlkit.items.Array) else tomlkit.table()
+            if not common:
+                item["role"] = role
+            item["path"] = path
+            inputs.insert(position, item)
+        else:
+            item = inputs[position]
+            if item["path"] != path:
+                item["path"] = path
+            if not common and item["role"] != role:
+                item["role"] = role
+
+
+def _promote_legacy_materials(document: Any, units: list) -> bool:
+    """旧設定の共通資料を移し、行範囲、文字コード、コメントを保持する。"""
+    promoted = False
+    for unit in units:
+        inputs = unit.get("inputs")
+        if not isinstance(inputs, list):
+            continue
+        legacy = []
+        for index, item in enumerate(inputs):
+            if not isinstance(item, Mapping):
+                continue
+            role = item.get("role")
+            if role == "migration_rules":
+                key = "migration_rules"
+                item.pop("role")
+            elif role in REFERENCE_ROLES and item.get("shared") is True:
+                key = "references"
+            else:
+                continue
+            legacy.append(index)
+            item.pop("shared", None)
+            project = document.setdefault("project", tomlkit.table())
+            materials = project.setdefault(key, tomlkit.aot())
+            if key == "migration_rules" and item in materials:
+                continue
+            if isinstance(materials, tomlkit.items.Array):
+                destination = tomlkit.inline_table()
+                destination.update(item.unwrap())
+                item = destination
+            elif isinstance(item, tomlkit.items.InlineTable):
+                destination = tomlkit.table()
+                destination.update(item)
+                item = destination
+            materials.append(item)
+        for index in reversed(legacy):
+            del inputs[index]
+        if legacy and not inputs:
+            unit.pop("inputs")
+        promoted = promoted or bool(legacy)
+    return promoted
 
 
 def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -58,13 +172,23 @@ def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict
         document = tomlkit.parse(content)
         project = document.get("project", {})
         units = document.get("units", [])
-        if not isinstance(project, Mapping) or not isinstance(units, list) or any(not isinstance(unit, Mapping) for unit in units):
-            raise ValueError("invalid project or units")
+        scripts = document.get("scripts", {})
+        if (
+            not isinstance(project, Mapping) or not isinstance(units, list)
+            or any(not isinstance(unit, Mapping) for unit in units)
+            or not isinstance(scripts, Mapping)
+            or not isinstance(project.get("migration_rules", []), list)
+            or not isinstance(project.get("references", []), list)
+        ):
+            raise ValueError("invalid settings form data")
     except (TOMLKitError, ValueError):
         if changes:
             raise ValueError("TOMLを直接編集し、書式を修正してください。") from None
         return {"content": content, "form": None}
 
+    promoted = _promote_legacy_materials(document, units)
+    if promoted:
+        project = document["project"]
     if changes:
         project_changes = changes.get("project", {})
         unit_changes = changes.get("units", {})
@@ -76,6 +200,10 @@ def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict
                 if key not in _PROJECT_SETTINGS or not isinstance(value, str):
                     raise ValueError("プロジェクト設定を確認してください。")
                 project[key] = value
+        for field, key in (("migrationRules", "migration_rules"), ("references", "references")):
+            if field in changes:
+                project = document.setdefault("project", tomlkit.table())
+                _edit_inputs(project, key, changes[field])
         if unit_changes:
             units = document.setdefault("units", tomlkit.aot())
             for identifier, fields in unit_changes.items():
@@ -90,7 +218,7 @@ def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict
                 for key, value in fields.items():
                     if key not in _UNIT_SETTINGS:
                         raise ValueError("移行単位の入力内容を確認してください。")
-                    if key == "targets":
+                    elif key == "targets":
                         if not isinstance(value, list) or any(not isinstance(path, str) for path in value):
                             raise ValueError("移行先は1行に1ファイル指定してください。")
                         if len(value) == 1 and "targets" not in unit:
@@ -108,10 +236,57 @@ def _settings_draft(content: str, changes: dict[str, Any] | None = None) -> dict
                         unit.pop(key, None)
                     else:
                         unit[key] = value
+        if "removeEmptyUnits" in changes:
+            indices = changes["removeEmptyUnits"]
+            if not isinstance(indices, list) or any(
+                type(index) is not int or not 0 <= index < len(units) for index in indices
+            ):
+                raise ValueError("空欄の移行単位を確認してください。")
+            for index in sorted(set(indices), reverse=True):
+                unit = units[index]
+                if (
+                    unit.keys() - {"id", "source", "target", "targets"}
+                    or any(not isinstance(value, str) or value.strip()
+                           for key, value in unit.items() if key != "targets")
+                    or unit.get("targets", []) != []
+                ):
+                    raise ValueError("入力済みの移行単位は削除できません。")
+                del units[index]
+        if "scripts" in changes:
+            edits = changes["scripts"]
+            if not isinstance(edits, list):
+                raise ValueError("スクリプトの工程とコマンドを確認してください。")
+            if edits:
+                scripts = document.setdefault("scripts", tomlkit.table())
+            commands_by_phase = {phase: [] for phase in SCRIPT_PHASES}
+            for entry in edits:
+                if not isinstance(entry, dict):
+                    raise ValueError("スクリプトの工程とコマンドを確認してください。")
+                phase, command = entry.get("phase"), entry.get("command")
+                if not isinstance(phase, str) or phase not in commands_by_phase or not isinstance(command, list) or any(
+                    not isinstance(arg, str) for arg in command
+                ):
+                    raise ValueError("スクリプトの工程とコマンドを確認してください。")
+                commands_by_phase[phase].append(command)
+            for phase, commands in commands_by_phase.items():
+                if commands and scripts.get(phase) != commands:
+                    scripts[phase] = commands
+                elif not commands:
+                    scripts.pop(phase, None)
+    if changes or promoted:
         content = tomlkit.dumps(document)
 
     return {"content": content, "form": {
         "project": {key: value for key in _PROJECT_SETTINGS if isinstance(value := project.get(key), str)},
+        "migrationRules": [
+            _form_input(item, index, common=True) for index, item in enumerate(project.get("migration_rules", []))
+        ],
+        "references": [_form_input(item, index) for index, item in enumerate(project.get("references", []))],
+        "scripts": [
+            {"phase": phase, "command": command}
+            for phase in SCRIPT_PHASES if isinstance(commands := scripts.get(phase), list)
+            for command in commands if isinstance(command, list) and all(isinstance(arg, str) for arg in command)
+        ],
         "units": [{
             **{key: value for key in ("id", "source") if isinstance(value := unit.get(key), str)},
             "targets": [path for path in unit.get("targets", [unit.get("target")]) if isinstance(path, str)]
@@ -494,11 +669,25 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         token = run_observer.set(view.observe)
+
+        def show_script_failure(error: RunScriptError) -> dict[str, Any] | None:
+            if error.run_id is None:
+                view.publish({"status": "script_failed", "ready": True, "message": str(error)})
+                return None
+            _, _, failed, _ = _load_saved_run(config, error.run_id)
+            view.observe(failed)
+            view.ready(config, failed, str(error))
+            return failed
+
         try:
             # Junieは起動元の端末を必要とするため、HTTPスレッドは操作をキューに渡す。
             if unit_id is not None:
-                result = run_with_junie(config, unit_id)
-                view.ready(config, result)
+                try:
+                    result = run_with_junie(config, unit_id)
+                except RunScriptError as exc:
+                    result = show_script_failure(exc)
+                else:
+                    view.ready(config, result)
             else:
                 result = saved
             while True:
@@ -548,6 +737,8 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                     _, _, result, _ = _load_saved_run(config, exc.run_id)
                     view.observe(result)
                     view.ready(config, result)
+                except RunScriptError as exc:
+                    result = show_script_failure(exc)
                 except (OSError, ValueError, RuntimeError, CalledProcessError) as exc:
                     message = f"操作を完了できませんでした。設定や実行ログを確認してください。{exc}"
                     if result is not None and view.state.get("run_id") == result.get("run_id"):

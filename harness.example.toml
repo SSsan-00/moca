@@ -8,6 +8,18 @@ run_root = "C:/path/to/local-migration-runs"
 # 上限は文字数で指定する。トークン数の厳密な制限ではない。
 max_context_chars = 100000
 
+# ルールと参考実装は全移行単位に適用する。行範囲の省略時は全文を渡す。
+# [[project.migration_rules]]
+# path = "docs/migration-rules.md"
+#
+# [[project.references]]
+# role = "reference_php"
+# path = "docs/examples/menu/menu.php"
+#
+# [[project.references]]
+# role = "reference_csharp"
+# path = "docs/examples/menu/Menu.cs"
+
 [junie]
 # 任意の正の整数。省略するとJunie CLI側の設定に従う。
 # max_steps = 20
@@ -22,6 +34,11 @@ max_context_chars = 100000
 # 既定はRunごとに最大2回。0なら自動修正せず人の確認に回す。
 # max_repair_attempts = 2
 
+[scripts]
+# 各工程に、実行ファイルと引数の配列を実行順で指定する。
+# before_prepare = [["powershell.exe", "-NoProfile", "-File", "tools/prepare-legacy.ps1"]]
+# after_build = [["py", "-3.11", "tools/export_results.py"]]
+
 [diff_viewer]
 # 移行プロジェクトのルートから、配置済みの単一HTMLへの相対パスを指定する。
 # html = "tools/dist/index.min.html"
@@ -34,8 +51,3 @@ source = "php/menu.php"
 targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
 # 移行先が1ファイルの場合は、targetsの代わりに target = "Pages/Menu.cshtml.cs" を使う。
 # 文字コードの自動判定が曖昧なときは source_encoding = "euc-jp" などを指定する。
-
-# 移行ルールや共通の参考資料は、ファイルごとに追加する。行範囲の省略時は全文を渡す。
-# [[units.inputs]]
-# role = "migration_rules"
-# path = "docs/migration-rules.md"

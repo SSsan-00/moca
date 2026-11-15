@@ -92,6 +92,7 @@
     .workspace-tools label { display: block; margin-bottom: 4px; font-weight: 650; }
     .workspace-tools select, .workspace-tools input, .workspace-tools textarea { display: block; width: 100%; min-height: 38px; margin-bottom: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--paper); font: inherit; }
     .workspace-tools :is(select, input, textarea):focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+    .workspace-settings :is(input, textarea)::placeholder { color: var(--muted); opacity: 1; }
     .workspace-tools textarea { height: min(55dvh, 520px); min-height: 160px; resize: vertical; font: 13px/1.55 var(--mono); }
     .workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     #workspace-runs .workspace-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, 264px); }
@@ -101,24 +102,30 @@
     #workspace-settings { overflow: hidden; }
     .workspace-settings { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; max-width: none; }
     .settings-heading .run-detail { margin-block: 0; }
-    .settings-columns { display: grid; min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 20px; }
-    .settings-columns:has(#workspace-settings-fields[hidden]) { grid-template-columns: minmax(0, 1fr); }
-    #workspace-settings-fields:not([hidden]) { display: flex; flex-direction: column; min-height: 0; overflow: hidden auto; padding: 3px; }
+    .settings-body { min-height: 0; }
+    .settings-columns:not([hidden]) { display: grid; height: 100%; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-rows: minmax(0, 1fr); gap: 16px; }
+    .settings-field-pane { min-width: 0; overflow: hidden auto; padding: 3px; }
+    .settings-shared-pane { border-inline-start: 1px solid var(--line); padding-inline-start: 16px; }
+    .settings-shared-pane > .settings-materials:first-child { margin-top: 0; padding-top: 0; border: 0; }
     .settings-fields { min-inline-size: 0; margin: 0 0 14px; padding: 0; border: 0; }
     .settings-fields legend { margin-bottom: 8px; padding: 0; font-weight: 700; }
     .settings-fields label { font-size: 12px; }
     .settings-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .settings-unit-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
     .settings-unit-picker .button { margin-bottom: 10px; }
-    #settings-unit-fields, #settings-unit-inputs:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; margin-bottom: 0; }
-    #settings-unit-targets { flex: 1; height: auto; min-height: 72px; margin-bottom: 0; resize: none; }
-    .settings-preview { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; min-width: 0; min-height: 0; padding: 3px; }
-    .settings-preview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
-    .settings-preview h2 { margin-bottom: 0; }
-    #workspace-config-toggle { min-inline-size: 10em; }
-    .settings-preview :is(pre, textarea) { height: 100%; min-height: 0; margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-    .settings-preview textarea { resize: none; }
-    .settings-preview :is(pre, textarea)[hidden] { display: none; }
+    #settings-unit-targets { height: 76px; min-height: 72px; resize: vertical; }
+    .settings-materials { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .settings-materials > p, .settings-material-range { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+    .settings-material { min-inline-size: 0; margin: 8px 0; padding: 8px 10px 10px; border: 1px solid var(--line); border-radius: 8px; }
+    .settings-material legend { margin: 0; padding-inline: 4px; }
+    .settings-material .button { min-height: 32px; height: auto; font-size: 12px; }
+    .settings-field-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px 8px; margin-bottom: 10px; }
+    .settings-field-row:last-child, .settings-field-row > label, .settings-field-row :is(input, textarea) { margin-bottom: 0; }
+    .settings-field-row > .settings-remove { grid-area: 1 / 2; margin-bottom: 2px; }
+    .settings-field-row > .settings-material-range { grid-column: 1 / -1; margin-bottom: 0; }
+    .workspace-tools textarea.settings-script-command { min-height: calc(3lh + 22px); height: calc(3lh + 22px); overflow-y: auto; }
+    #workspace-config { height: 100%; min-height: 0; margin: 0; padding: 12px; resize: none; }
+    #workspace-config[hidden] { display: none; }
     .settings-footer { padding-top: 10px; border-top: 1px solid var(--line); }
     .settings-footer .workspace-feedback { max-height: 4.65em; margin-top: 6px; overflow: auto; }
     .workspace-select { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
@@ -149,10 +156,9 @@
       .workspace-select::picker(select), .workspace-select::picker-icon { transition: none !important; }
     }
     @media (max-width: 840px) {
-      .settings-columns { display: block; overflow: hidden auto; }
-      #workspace-settings-fields:not([hidden]) { overflow: visible; }
-      #settings-unit-targets { flex: none; height: 76px; }
-      .settings-preview { height: min(380px, 60dvh); margin-top: 12px; }
+      .settings-columns:not([hidden]) { display: block; overflow: hidden auto; }
+      .settings-field-pane { overflow: visible; }
+      .settings-shared-pane { border-inline-start: 0; border-top: 1px solid var(--line); padding: 12px 3px 3px; }
     }
     @media (max-width: 560px) { .settings-pair { grid-template-columns: minmax(0, 1fr); gap: 0; } }
     .theme-toggle { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); color: var(--ink); cursor: pointer; transition: background 160ms ease, border-color 160ms ease, transform 120ms ease; }
@@ -274,9 +280,9 @@
     .review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
     .review-eyebrow { margin: 0 0 5px; color: var(--blue); font: 700 10px/1.3 var(--mono); letter-spacing: .1em; }
     .review-heading h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
-    .review-close { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--muted); cursor: pointer; font-size: 21px; line-height: 1; }
-    .review-close:hover { border-color: var(--border-hover); background: var(--surface-hover); color: var(--ink); }
-    .review-close:focus-visible, .review-action:focus-visible { outline: 3px solid #7da5df; outline-offset: 2px; }
+    :is(.review-close, .settings-remove) { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--muted); cursor: pointer; font-size: 21px; line-height: 1; }
+    :is(.review-close, .settings-remove):hover { border-color: var(--border-hover); background: var(--surface-hover); color: var(--ink); }
+    :is(.review-close, .review-action, .settings-remove):focus-visible { outline: 3px solid #7da5df; outline-offset: 2px; }
     .review-intro { margin: 12px 0 16px; color: var(--muted); font-size: 13px; }
     .review-finding { padding: 15px; border: 1px solid var(--amber-line); border-radius: 11px; background: var(--amber-soft); }
     .review-finding-top { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
@@ -574,61 +580,77 @@
         <h2>設定ファイル（TOML）</h2>
         <p class="run-detail" id="workspace-config-path"></p>
       </div>
-      <div class="settings-columns">
-        <div id="workspace-settings-fields" hidden>
-          <fieldset class="settings-fields" id="settings-project-fields">
-            <legend>プロジェクト</legend>
-            <label for="settings-root">アプリのリポジトリ</label>
-            <input id="settings-root" data-setting="root" autocomplete="off">
-            <div class="settings-pair">
-              <div>
-                <label for="settings-worktree-root">作業ツリーの保存先</label>
-                <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off">
-              </div>
-              <div>
-                <label for="settings-run-root">実行データの保存先</label>
-                <input id="settings-run-root" data-setting="run_root" autocomplete="off">
-              </div>
-            </div>
-          </fieldset>
-          <fieldset class="settings-fields" id="settings-unit-fields">
-            <legend>移行単位</legend>
-            <div class="settings-unit-picker">
-              <div>
-                <label for="settings-unit">編集する移行単位</label>
-                <select class="workspace-select" id="settings-unit"></select>
-              </div>
-              <button class="button" id="settings-unit-add" type="button">移行単位を追加</button>
-            </div>
-            <div id="settings-unit-inputs" hidden>
+      <div class="settings-body">
+        <div class="settings-columns" id="workspace-settings-fields" hidden>
+          <div class="settings-field-pane">
+            <fieldset class="settings-fields" id="settings-project-fields">
+              <legend>プロジェクト</legend>
+              <label for="settings-root">アプリのリポジトリ</label>
+              <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp">
               <div class="settings-pair">
                 <div>
-                  <label for="settings-unit-id">機能名（ID）</label>
-                  <input id="settings-unit-id" data-setting="id" autocomplete="off">
+                  <label for="settings-worktree-root">作業ツリーの保存先</label>
+                  <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees">
                 </div>
                 <div>
-                  <label for="settings-unit-source">移行元PHP</label>
-                  <input id="settings-unit-source" data-setting="source" autocomplete="off">
+                  <label for="settings-run-root">実行データの保存先</label>
+                  <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs">
                 </div>
               </div>
-              <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
-              <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false"></textarea>
-            </div>
-          </fieldset>
-        </div>
-        <section class="settings-preview" aria-labelledby="workspace-preview-title">
-          <div class="settings-preview-toolbar">
-            <h2 id="workspace-preview-title">TOMLプレビュー</h2>
-            <button class="button" id="workspace-config-toggle" type="button" aria-controls="workspace-config" aria-expanded="false">TOMLを直接編集</button>
+            </fieldset>
+            <fieldset class="settings-fields" id="settings-unit-fields">
+              <legend>移行単位</legend>
+              <div class="settings-unit-picker">
+                <div>
+                  <label for="settings-unit">編集する移行単位</label>
+                  <select class="workspace-select" id="settings-unit"></select>
+                </div>
+                <button class="button" id="settings-unit-add" type="button">移行単位を追加</button>
+              </div>
+              <div id="settings-unit-inputs" hidden>
+                <div class="settings-pair">
+                  <div>
+                    <label for="settings-unit-id">機能名（ID）</label>
+                    <input id="settings-unit-id" data-setting="id" autocomplete="off" placeholder="例：注文履歴">
+                  </div>
+                  <div>
+                    <label for="settings-unit-source">移行元PHP</label>
+                    <input id="settings-unit-source" data-setting="source" autocomplete="off" placeholder="例：php/orders.php">
+                  </div>
+                </div>
+                <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
+                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
+              </div>
+            </fieldset>
           </div>
-          <pre id="workspace-config-preview" tabindex="0" aria-labelledby="workspace-preview-title"></pre>
-          <textarea id="workspace-config" aria-label="TOML本文" spellcheck="false" autocomplete="off" hidden></textarea>
-        </section>
+          <div class="settings-field-pane settings-shared-pane">
+            <section class="settings-materials" aria-labelledby="settings-rules-title">
+              <h2 id="settings-rules-title">プロジェクト共通の移行ルール</h2>
+              <p>すべての移行単位に適用します。アプリのリポジトリからの相対パスを指定してください。</p>
+              <div id="settings-rules"></div>
+              <button class="button" id="settings-rule-add" type="button">移行ルールを追加</button>
+            </section>
+            <section class="settings-materials" aria-labelledby="settings-references-title">
+              <h2 id="settings-references-title">プロジェクト共通の参考実装</h2>
+              <p>すべての移行単位で参照します。元PHPと対応するC#／Razorを、リポジトリからの相対パスで指定してください。</p>
+              <div id="settings-references"></div>
+              <button class="button" id="settings-reference-add" type="button">参考実装ペアを追加</button>
+            </section>
+            <fieldset class="settings-fields settings-materials" id="settings-script-fields">
+              <legend>自作スクリプト</legend>
+              <p>全移行単位に適用します。同じ工程のスクリプトは、上から順に実行します。</p>
+              <div id="settings-scripts"></div>
+              <button class="button" id="settings-script-add" type="button">スクリプトを追加</button>
+            </fieldset>
+          </div>
+        </div>
+        <textarea id="workspace-config" aria-label="TOML本文" spellcheck="false" autocomplete="off" placeholder="[project]&#10;root = &quot;C:/work/LegacyApp&quot;" hidden></textarea>
       </div>
       <div class="settings-footer">
         <div class="workspace-actions">
           <button class="button primary" type="submit">設定を保存</button>
           <button class="button" id="workspace-config-reload" type="button">読み込み直す</button>
+          <button class="button" id="workspace-config-toggle" type="button" aria-controls="workspace-config" aria-expanded="false">TOMLを直接編集</button>
         </div>
         <p class="workspace-feedback" id="workspace-config-feedback" role="status"></p>
       </div>
@@ -776,18 +798,32 @@ const workspaceRunFeedback = document.querySelector("#workspace-run-feedback");
 const workspaceConfigFeedback = document.querySelector("#workspace-config-feedback");
 let workspaceControls = () => {};
 
+const scriptPhases = {
+  before_prepare: "準備前", after_prepare: "準備後",
+  before_migration: "Junie移行前", after_migration: "Junie移行後",
+  before_build: "ビルド前", after_build: "ビルド成功後",
+  before_checker: "チェッカー実行前", after_checker: "チェッカー実行後",
+};
+
 function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct}) {
   const newRun = document.querySelector("#workspace-new-run");
   const openRun = document.querySelector("#workspace-open-run");
   const settings = document.querySelector("#workspace-config-form");
   const reload = document.querySelector("#workspace-config-reload");
-  const preview = document.querySelector("#workspace-config-preview");
-  const previewTitle = document.querySelector("#workspace-preview-title");
   const editToggle = document.querySelector("#workspace-config-toggle");
   const fields = document.querySelector("#workspace-settings-fields");
   const projectFields = [...fields.querySelectorAll("#settings-project-fields [data-setting]")];
   const unitFields = [...fields.querySelectorAll("#settings-unit-inputs [data-setting]")];
   const unit = document.querySelector("#settings-unit");
+  const rules = document.querySelector("#settings-rules");
+  const references = document.querySelector("#settings-references");
+  const addRule = document.querySelector("#settings-rule-add");
+  const addReference = document.querySelector("#settings-reference-add");
+  const scriptList = document.querySelector("#settings-scripts");
+  const addScript = document.querySelector("#settings-script-add");
+  const materialFields = ["migrationRules", "references"];
+  const added = new WeakSet();
+  const formFeedback = form => form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
   const emptyChanges = () => ({project: {}, units: {}});
   let settingsVersion;
   let settingsForm;
@@ -802,11 +838,256 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     const available = canAct() && !busy;
     for (const control of newRun.querySelectorAll("button")) control.disabled = !available || !workspaceUnit.value;
     for (const control of openRun.querySelectorAll("button")) control.disabled = !available || !workspaceRunID.value.trim();
-    settings.querySelector('button[type="submit"]').disabled = !available || previewPending || !settingsVersion || !preview.textContent.trim();
+    settings.querySelector('button[type="submit"]').disabled = !available || previewPending || !settingsVersion
+      || !workspaceConfig.value.trim() || !settingsForm;
     workspaceConfig.readOnly = !available || !settingsVersion || (previewPending && !readingTOML);
+    editToggle.disabled = !available || !settingsVersion || previewPending || (!workspaceConfig.hidden && !settingsForm);
     for (const fieldset of fields.querySelectorAll("fieldset")) fieldset.disabled = !available || readingTOML;
     reload.disabled = busy;
   };
+
+  function newDraft(entry) {
+    added.add(entry);
+    return entry;
+  }
+
+  function* materialGroups(inputs) {
+    for (let index = 0; index < inputs.length; index++) {
+      const item = inputs[index];
+      const group = [item];
+      if (item.role === "reference_php") {
+        while (/^reference_(csharp|razor)$/.test(inputs[index + 1]?.role)) group.push(inputs[++index]);
+      }
+      yield group;
+    }
+  }
+
+  function planSave() {
+    const cleanup = {};
+    const removeEmptyUnits = [];
+    for (const [index, entry] of settingsForm.units.entries()) {
+      if (!added.has(entry)) continue;
+      const {id, source, targets} = entry;
+      if (!id.trim() && !source.trim() && !targets.length) removeEmptyUnits.push(index);
+      else if (!id.trim() || !source.trim() || !targets.length) {
+        throw new Error(`移行単位 ${index + 1} の機能名、移行元PHP、移行先を指定してください。`);
+      }
+    }
+    if (removeEmptyUnits.length) cleanup.removeEmptyUnits = removeEmptyUnits;
+
+    const rules = settingsForm.migrationRules.filter(item => !added.has(item) || item.path.trim());
+    if (rules.some(item => item.role && !item.path.trim())) {
+      throw new Error("移行ルールのファイルパスを指定してください。");
+    }
+    if (rules.length !== settingsForm.migrationRules.length) cleanup.migrationRules = rules;
+
+    const references = [];
+    for (const group of materialGroups(settingsForm.references)) {
+      const [source, ...targets] = group;
+      const filled = group.filter(item => !added.has(item) || item.path.trim());
+      if (!filled.length) continue;
+      if (filled.some(item => item.role && !item.path.trim()) ||
+          (source.role === "reference_php" && added.has(source)
+            && (!source.path.trim() || !targets.some(item => item.path.trim())))) {
+        throw new Error("入力途中の参考実装ペアに、元PHPと移行済みC#／Razorのパスを指定してください。");
+      }
+      references.push(...filled);
+    }
+    if (references.length !== settingsForm.references.length) cleanup.references = references;
+
+    const scripts = settingsForm.scripts.filter(entry =>
+      !added.has(entry) || entry.phase || entry.command.some(argument => argument.trim()));
+    if (scripts.some(entry => !entry.phase || !entry.command[0]?.trim())) {
+      throw new Error("入力途中のスクリプトの実行工程と実行ファイルを指定してください。");
+    }
+    const selected = Number(unit.value);
+    return {
+      cleanup,
+      refresh: Object.keys(cleanup).length > 0 || scripts.length !== settingsForm.scripts.length,
+      unitIndex: selected - removeEmptyUnits.filter(index => index < selected).length,
+    };
+  }
+
+  function changeMaterials(field) {
+    changes[field] = settingsForm[field];
+    schedulePreview();
+  }
+
+  function changeScripts() {
+    changes.scripts = settingsForm.scripts.filter(script => script.phase);
+    schedulePreview();
+  }
+
+  function removeButton(label, action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "settings-remove";
+    button.textContent = "×";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", action);
+    return button;
+  }
+
+  function fieldWithRemove(label, remove) {
+    const row = document.createElement("div");
+    row.className = "settings-field-row";
+    row.append(label, remove);
+    return row;
+  }
+
+  function showScripts() {
+    scriptList.replaceChildren();
+    return settingsForm.scripts.map((script, index) => {
+      const card = document.createElement("fieldset");
+      card.className = "settings-material";
+      const title = document.createElement("legend");
+      title.textContent = `スクリプト ${index + 1}`;
+      const phase = document.createElement("select");
+      phase.className = "workspace-select";
+      phase.append(new Option("工程を選択", ""), ...Object.entries(scriptPhases).map(([key, name]) => new Option(name, key)));
+      phase.value = script.phase;
+      phase.addEventListener("change", () => { script.phase = phase.value; changeScripts(); });
+      const command = document.createElement("textarea");
+      command.className = "settings-script-command";
+      command.spellcheck = false;
+      command.placeholder = "py\n-3.11\ntools/export_results.py";
+      command.value = script.command.join("\n");
+      command.addEventListener("input", () => {
+        script.command = command.value.split("\n");
+        script.command[0] = script.command[0].trim();
+        changeScripts();
+      });
+      const remove = removeButton(`${title.textContent}を削除`, () => {
+        settingsForm.scripts.splice(index, 1);
+        (showScripts()[index] || addScript).focus();
+        changeScripts();
+      });
+      const phaseLabel = document.createElement("label");
+      phaseLabel.append("実行工程", phase);
+      const commandLabel = document.createElement("label");
+      commandLabel.append("1行目に実行ファイル、2行目以降に引数を1つずつ入力", command);
+      card.append(title, phaseLabel, fieldWithRemove(commandLabel, remove));
+      scriptList.append(card);
+      return phase;
+    });
+  }
+
+  addScript.addEventListener("click", () => {
+    settingsForm.scripts.push(newDraft({phase: "", command: [""]}));
+    showScripts().at(-1).focus();
+    changeScripts();
+  });
+
+  function showMaterials(inputs, common = false) {
+    const list = common ? rules : references;
+    list.replaceChildren();
+    const change = () => changeMaterials(common ? "migrationRules" : "references");
+    const rendered = new Map();
+    function addCard(list, title) {
+      const card = document.createElement("fieldset");
+      card.className = "settings-material";
+      const heading = document.createElement("legend");
+      heading.textContent = title;
+      card.append(heading);
+      list.append(card);
+      return card;
+    }
+    function button(label, action) {
+      const control = document.createElement("button");
+      control.type = "button";
+      control.className = "button";
+      control.textContent = label;
+      control.addEventListener("click", action);
+      return control;
+    }
+    function inputField(container, item, title, removal) {
+      const label = document.createElement("label");
+      label.textContent = title;
+      const input = document.createElement("input");
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = {
+        migration_rules: "例：docs/migration/common.md",
+        reference_php: "例：docs/migration/examples/orders/orders.php",
+        reference_csharp: "例：docs/migration/examples/orders/Orders.cshtml.cs",
+        reference_razor: "例：docs/migration/examples/orders/Orders.cshtml",
+      }[item.role];
+      input.value = item.path;
+      input.addEventListener("input", () => {
+        item.path = input.value.trim();
+        if (item.role === "reference_csharp" || item.role === "reference_razor") {
+          item.role = /\.(?:cshtml|razor)$/i.test(item.path) ? "reference_razor" : "reference_csharp";
+        }
+        change();
+      });
+      label.append(input);
+      if (removal) container = container.appendChild(fieldWithRemove(label, removal));
+      else container.append(label);
+      rendered.set(item, input);
+      if (Number.isInteger(item.start_line) && Number.isInteger(item.end_line)) {
+        const range = document.createElement("p");
+        range.className = "settings-material-range";
+        range.textContent = `${item.start_line}〜${item.end_line}行を使用`;
+        container.append(range);
+      }
+    }
+    function remove(items, focusTarget) {
+      for (const item of items) inputs.splice(inputs.indexOf(item), 1);
+      const remaining = showMaterials(inputs, common);
+      (remaining.get(focusTarget) || focusTarget || addReference).focus();
+      change();
+    }
+    let ruleNumber = 0;
+    let pairNumber = 0;
+    for (const group of materialGroups(inputs)) {
+      const [item] = group;
+      if (!item.role) continue;
+      if (item.role === "migration_rules") {
+        const title = `移行ルール ${++ruleNumber}`;
+        const card = addCard(rules, title);
+        inputField(card, item, "ルールファイル", removeButton(`${title}を削除`, () => remove([item], addRule)));
+        continue;
+      }
+
+      const pair = item.role === "reference_php";
+      const title = pair ? `参考実装ペア ${++pairNumber}` : "参考実装ファイル";
+      const card = addCard(references, title);
+      for (const [position, entry] of group.entries()) {
+        const label = entry.role === "reference_php" ? "参考実装の元PHP" : "移行済みC#／Razor";
+        const removal = group.length > 2 && entry !== item
+          ? removeButton(`${title}の移行済みファイル ${position}を削除`, () => remove([entry], item))
+          : undefined;
+        inputField(card, entry, label, removal);
+      }
+      const actions = document.createElement("div");
+      actions.className = "workspace-actions";
+      if (pair) actions.append(button("移行済みファイルを追加", () => {
+        const entry = newDraft({role: "reference_csharp", path: ""});
+        inputs.splice(inputs.indexOf(group.at(-1)) + 1, 0, entry);
+        showMaterials(inputs).get(entry).focus();
+        change();
+      }));
+      actions.append(removeButton(`${title}を削除`, () => remove(group, addReference)));
+      card.append(actions);
+    }
+    return rendered;
+  }
+
+  addRule.addEventListener("click", () => {
+    const inputs = settingsForm.migrationRules;
+    const entry = newDraft({role: "migration_rules", path: ""});
+    inputs.push(entry);
+    showMaterials(inputs, true).get(entry).focus();
+    changeMaterials("migrationRules");
+  });
+  addReference.addEventListener("click", () => {
+    const inputs = settingsForm.references;
+    const source = newDraft({role: "reference_php", path: ""});
+    inputs.push(source, newDraft({role: "reference_razor", path: ""}));
+    showMaterials(inputs).get(source).focus();
+    changeMaterials("references");
+  });
 
   function showUnit() {
     const current = settingsForm.units[Number(unit.value)];
@@ -819,29 +1100,33 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
 
   function showUnitOptions(index = Number(unit.value)) {
     unit.replaceChildren(...settingsForm.units.map(({id}, i) => new Option(id || `移行単位 ${i + 1}`, i)));
-    if (index < settingsForm.units.length) unit.value = String(index);
+    if (settingsForm.units.length) unit.value = String(Math.min(index, settingsForm.units.length - 1));
     showUnit();
   }
 
   function showTOMLEditor(editing) {
-    preview.hidden = editing;
+    fields.hidden = editing || !settingsForm;
     workspaceConfig.hidden = !editing;
-    previewTitle.textContent = editing ? "TOML編集" : "TOMLプレビュー";
-    editToggle.textContent = editing ? "プレビューに戻る" : "TOMLを直接編集";
+    editToggle.textContent = editing ? "入力フォームに戻る" : "TOMLを直接編集";
     editToggle.setAttribute("aria-expanded", String(editing));
   }
 
-  editToggle.addEventListener("click", () => showTOMLEditor(workspaceConfig.hidden));
+  editToggle.addEventListener("click", () => {
+    showTOMLEditor(workspaceConfig.hidden);
+    if (!workspaceConfig.hidden) workspaceConfig.focus();
+  });
 
-  function showSettingsDraft(data, showFields) {
+  function showSettingsDraft(data, showFields, unitIndex) {
     workspaceConfig.value = data.content;
-    preview.textContent = data.content;
     if (!showFields) return;
     settingsForm = data.form;
-    fields.hidden = !settingsForm;
+    fields.hidden = !settingsForm || !workspaceConfig.hidden;
     if (settingsForm) {
       for (const field of projectFields) field.value = settingsForm.project[field.dataset.setting] ?? "";
-      showUnitOptions();
+      showMaterials(settingsForm.migrationRules, true);
+      showMaterials(settingsForm.references);
+      showUnitOptions(unitIndex);
+      showScripts();
     } else {
       showTOMLEditor(true);
     }
@@ -852,16 +1137,23 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     const revision = ++draftRevision;
     previewPending = true;
     readingTOML = fromTOML;
-    workspaceConfigFeedback.textContent = "プレビューを更新しています。";
+    workspaceConfigFeedback.textContent = "";
     workspaceControls();
     timer = setTimeout(async () => {
       try {
-        const draft = await previewSettings(preview.textContent, fromTOML ? {} : changes);
+        const draft = await previewSettings(workspaceConfig.value, fromTOML ? {} : changes);
         if (revision !== draftRevision) return;
         showSettingsDraft(draft, fromTOML);
+        if (!fromTOML && draft.form) {
+          for (const field of materialFields) {
+            settingsForm[field].forEach((input, index) => {
+              input.index = draft.form[field][index].index;
+            });
+          }
+        }
         changes = emptyChanges();
         previewPending = false;
-        workspaceConfigFeedback.textContent = draft.form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
+        workspaceConfigFeedback.textContent = formFeedback(draft.form);
       } catch (error) {
         if (revision !== draftRevision) return;
         workspaceConfigFeedback.textContent = error.message;
@@ -904,7 +1196,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       changes = emptyChanges();
       previewPending = readingTOML = false;
       document.querySelector("#workspace-config-path").textContent = data.path;
-      workspaceConfigFeedback.textContent = data.form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
+      workspaceConfigFeedback.textContent = formFeedback(data.form);
     } catch (error) {
       workspaceConfigFeedback.textContent = error.message;
     } finally {
@@ -938,13 +1230,16 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   });
   settings.addEventListener("submit", async event => {
     event.preventDefault();
-    if (busy || previewPending || !canAct() || !settingsVersion || !preview.textContent.trim()) return;
+    if (settings.querySelector('button[type="submit"]').disabled) return;
     busy = true;
     workspaceConfigFeedback.textContent = "設定を保存しています。";
     workspaceControls();
     try {
-      const saved = await saveSettings(preview.textContent, settingsVersion);
+      const plan = planSave();
+      const cleaned = plan.refresh ? await previewSettings(workspaceConfig.value, plan.cleanup) : null;
+      const saved = await saveSettings(cleaned?.content ?? workspaceConfig.value, settingsVersion);
       settingsVersion = saved.version;
+      if (cleaned) showSettingsDraft(cleaned, true, plan.unitIndex);
       workspaceConfigFeedback.textContent = "設定を保存しました。実行タブから移行単位を選べます。";
     } catch (error) {
       workspaceConfigFeedback.textContent = error.message;
@@ -970,17 +1265,14 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   unit.addEventListener("change", showUnit);
   document.querySelector("#settings-unit-add").addEventListener("click", () => {
     const index = settingsForm.units.length;
-    const draft = {id: "", source: "", targets: []};
+    const draft = newDraft({id: "", source: "", targets: []});
     changes.units[index] = {...draft};
     settingsForm.units.push(draft);
     showUnitOptions(index);
     unitFields[0].focus();
     schedulePreview();
   });
-  workspaceConfig.addEventListener("input", () => {
-    preview.textContent = workspaceConfig.value;
-    schedulePreview(true);
-  });
+  workspaceConfig.addEventListener("input", () => schedulePreview(true));
   reload.addEventListener("click", () => loadSettings(true));
   for (const control of [workspaceUnit, workspaceRunID]) control.addEventListener("input", workspaceControls);
   workspaceTabs.addEventListener("harnesstab", () => {
@@ -1202,39 +1494,83 @@ function showMigrationLedger(ledger, snapshot, compare) {
   const demoRunID = "run-2026-11-14-001";
   let demoSettings = '[project]\nroot = "C:/apps/orders"\nworktree_root = "C:/migration/worktrees"\nrun_root = "C:/migration/runs"\n\n[[units]]\nid = "注文履歴"\nsource = "php/orders.php"\ntargets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]\n';
   const demoUnits = () => [...demoSettings.matchAll(/^\s*id\s*=\s*"([^"\r\n]+)"/gm)].map(match => match[1]);
-  // デモの設定例は文字列と文字列の配列だけで構成される。
+  // デモでは設定例とフォームから生成するTOMLを取り扱う。
   function demoSettingsDraft(content, changes = {}) {
-    const blocks = content.split(/(?=^\s*\[)/m);
+    const blocks = content.split(/(?=^[\t ]*\[)/m);
     let project = blocks.findIndex(block => /^\s*\[project\]/.test(block));
-    const units = blocks.flatMap((block, index) => /^\s*\[\[units\]\]/.test(block) ? [index] : []);
+    const unitBlocks = () => blocks.flatMap((block, index) => /^\s*\[\[units\]\]/.test(block) ? [index] : []);
+    const materialBlocks = table => blocks.flatMap((block, index) =>
+      block.trimStart().startsWith(`[[project.${table}]]`) ? [index] : []);
+    const units = unitBlocks();
     const fieldPattern = key => new RegExp(`^\\s*${key}\\s*=([^\\r\\n]*)`, "m");
-    function patchBlock(index, fields) {
+    function patchBlock(block, fields) {
       for (const [key, value] of Object.entries(fields)) {
         const assignment = `${key} = ${JSON.stringify(value)}`;
         const pattern = fieldPattern(key);
-        blocks[index] = pattern.test(blocks[index])
-          ? blocks[index].replace(pattern, match => match.replace(/\S.*$/, () => assignment))
-          : `${blocks[index].trimEnd()}\n${assignment}\n\n`;
+        block = pattern.test(block)
+          ? block.replace(pattern, match => match.replace(/\S.*$/, () => assignment))
+          : `${block.trimEnd()}\n${assignment}\n\n`;
       }
+      return block;
     }
     if (changes.project && Object.keys(changes.project).length) {
       if (project < 0) project = blocks.push("\n[project]\n") - 1;
-      patchBlock(project, changes.project);
+      blocks[project] = patchBlock(blocks[project], changes.project);
+    }
+    if (changes.scripts) {
+      let scripts = blocks.findIndex(block => /^\s*\[scripts\]/.test(block));
+      if (scripts < 0 && changes.scripts.length) scripts = blocks.push("\n[scripts]\n") - 1;
+      if (scripts >= 0) {
+        for (const phase of Object.keys(scriptPhases)) {
+          const commands = changes.scripts.filter(script => script.phase === phase).map(script => script.command);
+          blocks[scripts] = commands.length ? patchBlock(blocks[scripts], {[phase]: commands})
+            : blocks[scripts].replace(fieldPattern(phase), "");
+        }
+      }
     }
     for (const [index, fields] of Object.entries(changes.units || {})) {
       units[index] ??= blocks.push("\n[[units]]\n") - 1;
       if ("targets" in fields) blocks[units[index]] = blocks[units[index]].replace(/^\s*target\s*=.*$/m, "");
-      patchBlock(units[index], fields);
+      blocks[units[index]] = patchBlock(blocks[units[index]], fields);
+    }
+    for (const index of [...(changes.removeEmptyUnits || [])].sort((a, b) => b - a)) {
+      blocks.splice(units[index], 1);
+    }
+    for (const [field, table] of [["migrationRules", "migration_rules"], ["references", "references"]]) {
+      if (!changes[field]) continue;
+      const previous = materialBlocks(table);
+      const updated = changes[field].map(({index, role, path}) => {
+        const section = index === undefined ? `\n[[project.${table}]]\n` : blocks[previous[index]];
+        if (!role) return section;
+        return patchBlock(section, field === "references" ? {role, path} : {path});
+      });
+      const insertion = previous[0] ?? project + 1;
+      for (const position of previous.reverse()) blocks.splice(position, 1);
+      blocks.splice(insertion, 0, ...updated);
     }
     const read = (index, key) => {
       const value = blocks[index]?.match(fieldPattern(key))?.[1];
       return value === undefined ? undefined : JSON.parse(value.trim());
     };
+    function readMaterials(table) {
+      return materialBlocks(table).map((block, index) => {
+        const role = table === "migration_rules" ? "migration_rules" : read(block, "role");
+        const path = read(block, "path");
+        return typeof path === "string" && role
+          ? {index, role, path, start_line: read(block, "start_line"), end_line: read(block, "end_line")}
+          : {index};
+      });
+    }
     const updated = blocks.join("");
     try {
+      const scripts = blocks.findIndex(block => /^\s*\[scripts\]/.test(block));
       return {content: updated, form: {
-        project: Object.fromEntries(["root", "worktree_root", "run_root"].map(key => [key, read(project, key)])),
-        units: units.map(index => ({id: read(index, "id"), source: read(index, "source"),
+        project: Object.fromEntries(["root", "worktree_root", "run_root"].map(key =>
+          [key, read(blocks.findIndex(block => /^\s*\[project\]/.test(block)), key)])),
+        migrationRules: readMaterials("migration_rules"),
+        references: readMaterials("references"),
+        scripts: Object.keys(scriptPhases).flatMap(phase => (read(scripts, phase) || []).map(command => ({phase, command}))),
+        units: unitBlocks().map(index => ({id: read(index, "id"), source: read(index, "source"),
           targets: read(index, "targets") || [read(index, "target")].filter(Boolean)})),
       }};
     } catch {

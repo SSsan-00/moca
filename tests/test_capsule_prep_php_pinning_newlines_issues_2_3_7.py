@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import closing, redirect_stdout
@@ -131,19 +132,99 @@ class CapsulePreparationTests(HarnessCase):
             path.parent.mkdir(exist_ok=True)
             path.write_bytes(f"first {index}\nlast {index}".encode("ascii"))
 
-        config, result, manifest = self.prepare({**PHP, "end_line": 101}, *shared_inputs)
-
+        path = self.config_path({**PHP, "end_line": 101}, shared_inputs[1])
+        common = [
+            '[[project.migration_rules]]\npath = "common.md"',
+            *[
+                "[[project.references]]\n" + "\n".join(
+                    f"{key} = {json.dumps(item[key])}" for key in ("role", "path")
+                )
+                for item in shared_inputs[2:]
+            ],
+        ]
+        path.write_text(path.read_text(encoding="utf-8") + "\n\n" + "\n\n".join([
+            '[[units]]\nid = "second"\nsource = "Source.php"\ntarget = "Target.cs"',
+            *common,
+        ]), encoding="utf-8")
+        config = load_config(path)
         self.assertEqual(config["max_repair_attempts"], 2)
-        self.assertGreater(result["capsule_count"], 1)
-        self.assertEqual(
-            [(entry["path"], entry["start_line"], entry["end_line"]) for entry in manifest["shared_sources"]],
-            [(item["path"], 1, 2) for item in shared_inputs],
+        for unit_id in ("example", "second"):
+            result = workflow.prepare_run(config, unit_id)
+            manifest = self.read_json(Path(result["capsule_path"]) / "manifest.json")
+            self.assertGreater(result["capsule_count"], 1)
+            self.assertEqual(
+                [(entry["path"], entry["start_line"], entry["end_line"]) for entry in manifest["shared_sources"]],
+                [(item["path"], 1, 2) for item in shared_inputs],
+            )
+            for part in manifest["parts"]:
+                self.assertEqual([entry["path"] for entry in part["sources"]], [PHP["path"]])
+                context = Path(part["path"]).read_text(encoding="utf-8")
+                for index in range(len(shared_inputs)):
+                    self.assertIn(f"     1 | first {index}\n     2 | last {index}", context)
+
+    def test_scripts_run_in_phase_order_and_resume_verification_after_failure(self):
+        log = self.root / "script-order.txt"
+        script = (
+            "from pathlib import Path\n"
+            "import sys\n"
+            "with Path(sys.argv[1]).open('a', encoding='utf-8') as stream:\n"
+            "    print(sys.argv[2], Path.cwd().name, file=stream)\n"
         )
-        for part in manifest["parts"]:
-            self.assertEqual([entry["path"] for entry in part["sources"]], [PHP["path"]])
-            context = Path(part["path"]).read_text(encoding="utf-8")
-            for index in range(len(shared_inputs)):
-                self.assertIn(f"     1 | first {index}\n     2 | last {index}", context)
+
+        def command(name):
+            return [sys.executable, "-c", script, str(log), name]
+        phases = ["before_prepare", "after_prepare", "before_migration", "after_migration", "before_build",
+                  "after_build", "before_checker", "after_checker"]
+        config_path = self.config_path(PHP)
+        config_path.write_text(config_path.read_text(encoding="utf-8") + "\n\n[scripts]\n" + "\n".join(
+            f"{phase} = {json.dumps([command(phase)])}" for phase in phases
+        ), encoding="utf-8")
+        config = load_config(config_path)
+        config["scripts"]["before_prepare"].append(command("second_prepare"))
+        config["scripts"]["after_build"].append([sys.executable, "-c", "raise SystemExit(7)"])
+        config["checker_command"] = ["fixture-checker"]
+        subprocess_run = subprocess.run
+        calls = []
+
+        def run_process(args, **kwargs):
+            if args in (["dotnet", "build"], ["fixture-checker"]):
+                calls.append(args[0])
+                return subprocess.CompletedProcess(args, 0)
+            return subprocess_run(args, **kwargs)
+
+        def migrate(args, completion, token, target):
+            calls.append("junie")
+            target.write_text("class Migrated {}", encoding="utf-8")
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        with (
+            patch.object(workflow, "_validate_junie_execution"),
+            patch.object(workflow, "_run_interactive_junie", side_effect=migrate),
+            patch.object(workflow.subprocess, "run", side_effect=run_process),
+            redirect_stdout(io.StringIO()),
+        ):
+            with self.assertRaises(workflow.RunScriptError) as failure:
+                workflow.run_with_junie(config, "example")
+            run_id = failure.exception.run_id
+            record_path = Path(config["run_root"]) / run_id / "run.json"
+            record = self.read_json(record_path)
+            self.assertEqual(record["status"], "script_failed")
+            self.assertEqual(record["script_phase"], "after_build")
+            self.assertIn("終了コード 7", record["error"])
+            self.assertFalse(workflow.migration_ledger(config, run_id)["completion"]["verification_passed"])
+            config["scripts"]["after_build"].pop()
+            result = workflow.resume_with_junie(config, run_id)
+
+        project = self.project.name
+        self.assertEqual(log.read_text(encoding="utf-8").splitlines(), [
+            f"before_prepare {project}", f"second_prepare {project}",
+            *[f"{phase} {run_id}" for phase in phases[1:6]],
+            *[f"{phase} {run_id}" for phase in phases[4:]],
+        ])
+        self.assertEqual(calls, ["junie", "dotnet", "dotnet", "fixture-checker"])
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertTrue(workflow.migration_ledger(config, run_id)["completion"]["verification_passed"])
 
     # 中断と再開をまたいで、各カプセルに同じ共通資料が含まれることを検証する。
     def test_shared_rules_and_constraints_survive_interruption_and_resume(self):
@@ -192,7 +273,7 @@ class CapsulePreparationTests(HarnessCase):
         self.assertEqual(observed_contexts, saved_contexts[:2] + saved_contexts[1:])
         self.assertEqual(result["completed_capsules"], len(parts))
         self.assertEqual(self.read_json(record_path)["resume_attempts"], 1)
-        self.assertEqual([entry["path"] for entry in manifest["shared_sources"]], ["constraints.md", "rules.md"])
+        self.assertEqual([entry["path"] for entry in manifest["shared_sources"]], ["rules.md", "constraints.md"])
         focus_ranges = []
         for part, content in zip(parts, saved_contexts, strict=True):
             self.assertEqual(content.count(b"REQUIRED_MIGRATION_RULE"), 1)

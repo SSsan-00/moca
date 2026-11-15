@@ -8,8 +8,8 @@ from typing import Any
 
 from migration_harness.config import load_config, validate_checker_command
 from migration_harness.workflow import (
-    VERIFIED_STATUSES, migration_ledger, prepare_run, resume_with_junie, review_checker, review_migration_ranges,
-    run_with_junie,
+    VERIFIED_STATUSES, RunScriptError, migration_ledger, prepare_run, resume_with_junie, review_checker,
+    review_migration_ranges, run_with_junie,
 )
 
 
@@ -111,6 +111,11 @@ def main() -> None:
         else:
             result = resume_with_junie(config, args.run_id)
         completion = migration_ledger(config, result["run_id"])["completion"] if result.get("status") in VERIFIED_STATUSES else None
+    except RunScriptError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if exc.run_id is not None:
+            print(f"Fix the script and resume Run {exc.run_id}.", file=sys.stderr)
+        raise SystemExit(1) from exc
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         details = getattr(exc, "stderr", None)
         print(f"error: {details.strip() if details else exc}", file=sys.stderr)
@@ -133,7 +138,7 @@ def _print_migration_progress(completion: dict[str, Any]) -> None:
     status = "complete" if completion["complete"] else "incomplete"
     print(f"Migration: {status} ({completion['reviewed']}/{completion['total']} PHP ranges reviewed)")
     if not completion["verification_passed"]:
-        print("A successful build and any configured checker are required for the current targets.")
+        print("The build and any configured verification scripts and checker must pass for the current targets.")
 
 
 def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:
@@ -145,7 +150,7 @@ def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:
     if result["source_boundary_review_required"]:
         print("Review:    Check capsule boundaries and character ranges in manifest.json")
     if prepared:
-        print("Status:    prepared (no source files changed)")
+        print("Status:    prepared")
     else:
         print(f"Junie exit code: {result['junie_exit_code']}")
         print(f"Completed capsules: {result['completed_capsules']}/{result['capsule_count']}")

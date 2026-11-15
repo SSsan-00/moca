@@ -31,6 +31,7 @@ const statusNames = {
   build_succeeded: "ビルド成功", build_failed: "ビルド失敗", checking: "チェッカー実行中",
   checker_needs_review: "人の確認待ち", checker_failed: "チェッカー実行失敗",
   checker_succeeded: "チェッカー成功", checker_accepted: "チェッカーの指摘を承認済み",
+  script_running: "スクリプト実行中", script_failed: "スクリプトで停止",
   interrupted: "中断", junie_failed: "Junie実行失敗",
 };
 const savedView = document.documentElement.hasAttribute("data-saved");
@@ -39,6 +40,10 @@ const stage = {
   preparing: 0, prepared: 2, junie_running: 3, junie_finished: 3, interrupted: 3, junie_failed: 3,
   repairing: 3, building: 4, build_succeeded: 4, build_failed: 4, checking: 5, checker_failed: 5,
   checker_needs_review: 6, checker_succeeded: 6, checker_accepted: 6,
+};
+const scriptStages = {
+  before_prepare: 0, after_prepare: 2, before_migration: 3, after_migration: 3,
+  before_build: 4, after_build: 4, before_checker: 5, after_checker: 5,
 };
 let snapshot = {status: "preparing"};
 let migrationCompletion;
@@ -175,6 +180,7 @@ function applyFindingFilter() {
 function describe(state) {
   if (state.generating_anchors) return "Junieでアンカー生成中";
   const label = statusNames[state.status] || state.status;
+  if (state.script_phase && scriptPhases[state.script_phase]) return `${scriptPhases[state.script_phase]}の${label}`;
   if (state.status === "checker_needs_review" && !state.ready) return "チェッカー結果を処理中";
   if (state.status === "junie_running") return `${label} (${state.current_capsule ?? 1}/${state.context_capsules ?? "?"})`;
   if (state.status === "repairing") return `Junieで修正中（${state.repair_count}回目）`;
@@ -251,7 +257,8 @@ function render() {
   }
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
   const verificationFinished = data.ready && verifiedStatuses.has(data.status);
-  const stopped = data.ready && !verificationFinished && (data.resumable || showReview || data.status === "checker_failed");
+  const stopped = data.ready && !verificationFinished
+    && (data.resumable || showReview || ["checker_failed", "script_failed"].includes(data.status));
   const done = verificationFinished && migrationCompletion?.complete;
   element(".demo-badge").textContent = savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
   element("#elapsed").style.display = savedView && data.ready ? "none" : "";
@@ -271,7 +278,8 @@ function render() {
   if (showReview) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
   reviewButton.hidden = !showReview && !((data.ready || data.generating_anchors) && data.resumable);
-  const current = verificationFinished ? 6 : data.status === "checker_needs_review" && !showReview ? 5 : stage[data.status] ?? 0;
+  const current = verificationFinished ? 6 : data.status === "checker_needs_review" && !showReview ? 5
+    : scriptStages[data.script_phase] ?? stage[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
   const completed = data.completed_capsules ?? 0;
   updateMigrationLedgerStatuses(data);
@@ -356,6 +364,9 @@ function addEvent(data) {
     ]) {
       if (Number.isInteger(code)) detail.push(`${label}の終了コード ${code}`);
       if (log) logs.push(`${label}ログ ${log}`);
+    }
+    for (const [phase, path] of Object.entries(data.script_logs || {})) {
+      logs.push(`${scriptPhases[phase]}のスクリプトログ ${path}`);
     }
     detail.push(...logs);
   }

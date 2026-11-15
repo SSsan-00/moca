@@ -39,13 +39,21 @@ py -3.11 -m venv .venv
 
 プロジェクト固有のルールは、アプリ側のMarkdownファイルに保存します。たとえば共通メソッドの使い方を `docs/migration/common.md`、画面の表示条件やRazorの規約を `docs/migration/razor.md` に書きます。
 
-**TOMLを直接編集** で、フォームが作った設定に詳細を追加します。既存の `[project]`、`[build]`、`[checker]` はそれぞれ同じブロックを編集します。`[[units.inputs]]` は適用する `[[units]]` の下に、ファイルごとに追加します。パスは実際の案件に合わせます。
+**設定** の **プロジェクト共通の移行ルール** で **移行ルールを追加** を押して **ルールファイル** に相対パスを入力します。複数ある場合はファイルごとに追加します。不要な項目は、そのルールの **×** で設定から外せます。入力を確認し、**設定を保存** を押します。
+
+ビルド対象と独自チェッカーは **TOMLを直接編集** で設定します。既存の `[build]`、`[checker]` は同じブロックを編集します。以下はフォームで入力した移行単位とルールを含む設定例です。
 
 ```toml
 [project]
 root = "C:/work/LegacyApp"
 worktree_root = "C:/migration/worktrees"
 run_root = "C:/migration/runs"
+
+[[project.migration_rules]]
+path = "docs/migration/common.md"
+
+[[project.migration_rules]]
+path = "docs/migration/razor.md"
 
 [build]
 project = "src/Web/Web.csproj"
@@ -58,17 +66,9 @@ max_repair_attempts = 2
 id = "メニュー"
 source = "legacy/menu.php"
 targets = ["src/Web/Pages/Menu.cshtml.cs", "src/Web/Pages/Menu.cshtml"]
-
-[[units.inputs]]
-role = "migration_rules"
-path = "docs/migration/common.md"
-
-[[units.inputs]]
-role = "migration_rules"
-path = "docs/migration/razor.md"
 ```
 
-- `role = "migration_rules"` は、Junieがこの移行単位のどのカプセルを処理するときも参照する規約です。例のように行範囲を省略すると、各ルールファイルの全文が渡ります。
+- `[[project.migration_rules]]` は、Junieがすべての移行単位の全カプセルで参照する規約です。例のように行範囲を省略すると、各ルールファイルの全文が渡ります。
 - `[build].project` は作業ツリーのルートからの相対パスです。`.csproj`、`.sln`、`.slnx` を使えます。省略時はルートで `dotnet build` を実行します。
 - `[checker].command` はアプリ全体の設定です。実行ファイルと引数を配列の別々の要素にします。ビルド成功後に作業ツリーのルートで実行されるため、スクリプトが依存するファイルやランタイムもその環境から利用できるようにします。
 
@@ -84,41 +84,57 @@ MIG101 src/Web/Pages/Menu.cshtml.cs:12 warning: 共通メソッドを使って�
 
 ### 移行済みのPHPとC#／Razorを参考にする
 
-元PHPと対応する移行済みファイルを、例ごとに同じフォルダに置きます。下の例を、上で設定した移行単位の `[[units.inputs]]` に続けて追加します。例ごとに元PHPと対応するC#／Razorを並べると、Junieがどのファイル同士を比較するか読み取れます。
+**設定** の **プロジェクト共通の参考実装** で **参考実装ペアを追加** を押し、**参考実装の元PHP** と **移行済みC#／Razor** にそれぞれ相対パスを入力します。元PHPに対応するRazorページ本体（`.cshtml`）とPageModel（`.cshtml.cs`）を登録する場合は、ペア内の **移行済みファイルを追加** で入力欄を増やし、1ファイルずつ指定します。セットごと設定から外す場合は、ペアの末尾にある **×** を押し、**設定を保存** します。設定から外したファイルはリポジトリに残ります。
+
+元PHPと対応する移行済みファイルを例ごとに同じフォルダに置くと、Junieが対応を読み取りやすくなります。下は2ペアを登録したときのTOML設定例です。
 
 ```toml
-[[units.inputs]]
+[[project.references]]
 role = "reference_php"
 path = "docs/migration/examples/orders/orders.php"
-shared = true
 
-[[units.inputs]]
+[[project.references]]
+role = "reference_razor"
+path = "docs/migration/examples/orders/Orders.cshtml"
+
+[[project.references]]
 role = "reference_csharp"
 path = "docs/migration/examples/orders/Orders.cshtml.cs"
-shared = true
 
-[[units.inputs]]
+[[project.references]]
 role = "reference_php"
 path = "docs/migration/examples/search/search.php"
-shared = true
 
-[[units.inputs]]
+[[project.references]]
 role = "reference_razor"
 path = "docs/migration/examples/search/Search.cshtml"
-shared = true
 ```
 
-`shared = true` の参考資料は全カプセルに同梱されます。参考用のPHPは移行台帳の対象外です。ルールや参考資料の一部だけを渡す場合は、`start_line` と `end_line` を両方指定します。共通資料は毎回の入力上限に含まれるため、大きい実装例は必要な範囲に絞れます。
+参考実装はすべての移行単位の全カプセルに同梱されます。参考用のPHPは移行台帳の対象外です。ルールや参考資料の一部だけを渡す場合は、`start_line` と `end_line` を両方指定します。共通資料は毎回の入力上限に含まれるため、大きい実装例は必要な範囲に絞れます。既存の移行単位に登録したルールと参考実装は、設定画面で共通欄に引き継がれます。保存すると設定ファイルも共通形式に更新されます。
 
 ## 4. 独自スクリプトを使う
 
-スクリプトを使う工程に合わせて設定します。
+**設定** の **自作スクリプト** で **スクリプトを追加** を押し、実行工程を選びます。コマンドの1行目に実行ファイル、2行目以降に引数を1つずつ入力します。たとえばPowerShellで前処理を実行する場合は、工程に **準備前** を選び、次のように入力します。
 
-| 用途 | 実行方法 |
+```text
+powershell.exe
+-NoProfile
+-File
+tools/prepare-legacy.ps1
+```
+
+設定は全移行単位に適用されます。同じ工程を選んだスクリプトは、フォームの上から順に実行します。相対パスの基準は工程ごとに異なります。
+
+| 工程 | 実行場所とタイミング |
 | --- | --- |
-| PHPの注釈版や移行資料を生成する | **準備** や **移行を実行** の前にアプリ側で実行します。生成したPHPを移行対象にする場合は `source`、参照に使う場合は `[[units.inputs]]` に指定します。 |
-| ビルド後に独自の検証を実行する | `[checker].command` に指定します。既存チェッカーと独自検証を併用する場合は、アプリ側のラッパー1本から呼び出し、失敗したコマンドの終了コードを返します。 |
-| 成果物の変換や出力を行う | 移行後に対象Runの作業ツリーで実行します。変換対象が移行先ファイルなら、その後に差分を確認し、同じRunでビルドとチェックを再実行します。 |
+| 準備前 | アプリのリポジトリで実行します。PHPや参照資料を生成する場合はここを選びます。 |
+| 準備後、Junie移行前、Junie移行後 | Runの作業ツリーで各工程につき1回実行します。準備後にはカプセルが作成済みです。移行先を変換してからビルドしたい場合はJunie移行後を選びます。 |
+| ビルド前、ビルド成功後 | Runの作業ツリーで、再検証や自動修正に伴うビルドでも実行します。 |
+| チェッカー実行前、チェッカー実行後 | チェッカーを設定した場合にRunの作業ツリーで実行します。実行後のスクリプトはチェッカーが指摘を返した場合も実行します。 |
+
+終了コードが非ゼロならその場で停止します。**進捗** の実行ログから工程とログファイルを確認してください。準備前のスクリプトで停止したときは修正後に準備か移行を開始し直します。準備後以降は同じRunを再開できます。再開時は失敗した工程のスクリプトを先頭から実行します。ビルド以降の失敗はビルド工程から再検証します。
+
+作業ツリーで使うスクリプトは基準コミットに含めます。独自チェッカーの指摘として画面に表示し、Junieによる自動修正の対象にする検証は `[checker].command` に設定します。
 
 PowerShellのラッパーをチェッカーにする場合は、上の `[checker].command` をたとえば次に差し替えます。`tools/check-migration.ps1` と呼び出すスクリプトは、作業ツリーの基準コミットに含めます。
 
@@ -168,4 +184,4 @@ Copy-Item -LiteralPath .\tools\dist\index.min.html -Destination $viewerDir
 
 ハーネスのリポジトリに [操作案内スキル](../.junie/skills/harness-setup/SKILL.md) が入っています。ハーネスのフォルダで `junie` を起動し、`/skills` で `harness-setup` を確認します。`/harness-setup` または `$harness-setup` を使い、アプリの場所、移行元、移行先、ルールファイル、チェッカーの起動方法を伝えると、案件に合った設定案と操作手順を案内できます。リポジトリにあるスキルはそのプロジェクトのJunieから使えます。 [JunieのAgent Skills](https://junie.jetbrains.com/docs/agent-skills.html)
 
-ハーネスが実際の移行で起動するJunieは、Runごとの `agent-workspace` をプロジェクトとして開きます。案件の移行ルールを各カプセルに渡すときは、このガイドの `role = "migration_rules"` を使います。
+ハーネスが実際の移行で起動するJunieは、Runごとの `agent-workspace` をプロジェクトとして開きます。案件の移行ルールを各カプセルに渡すときは、このガイドの `[[project.migration_rules]]` を使います。

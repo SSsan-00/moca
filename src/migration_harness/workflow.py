@@ -56,6 +56,12 @@ class RunInterrupted(KeyboardInterrupt):
         self.run_id = run_id
 
 
+class RunScriptError(RuntimeError):
+    def __init__(self, message: str, run_id: str | None) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+
+
 def _unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     """設定で許可された移行単位だけを解決する。"""
     for unit in config["units"]:
@@ -131,6 +137,8 @@ def _create_worktree(state: PrepareState) -> dict[str, Any]:
     }
     if "targets" in unit:
         record["targets"] = unit["targets"]
+    if (log_path := run_path / "before_prepare.log").is_file():
+        record["script_logs"] = {"before_prepare": str(log_path)}
     _write_run_record(run_path / "run.json", record)
     return {"worktree_path": str(worktree)}
 
@@ -518,6 +526,11 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     run_id = str(uuid.uuid4())
     run_root = Path(config["run_root"])
     run_root.mkdir(parents=True, exist_ok=True)
+    run_path = run_root / run_id
+    _unit(config, unit_id)
+    if config.get("scripts", {}).get("before_prepare") and (observer := run_observer.get()) is not None:
+        observer({"status": "script_running", "script_phase": "before_prepare", "unit_id": unit_id, "run_id": run_id})
+    _run_script_phase(config, "before_prepare", Path(config["project_root"]), run_path)
     checkpoint_db = run_root / "checkpoints.sqlite"
     with closing(sqlite3.connect(checkpoint_db, check_same_thread=False)) as connection, connection:
         checkpointer = SqliteSaver(connection)
@@ -526,6 +539,9 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
             {"config": config, "unit_id": unit_id, "run_id": run_id},
             {"configurable": {"thread_id": run_id}},
         )
+    if config.get("scripts", {}).get("after_prepare"):
+        record = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+        _run_script_phase(config, "after_prepare", Path(result["worktree_path"]), run_path, record, once=True)
     return {
         "run_id": run_id,
         "worktree_path": result["worktree_path"],
@@ -537,7 +553,7 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
         "capsule_count": result["capsule_count"],
         "source_boundary_review_required": result["source_boundary_review_required"],
         "max_context_chars": config["max_context_chars"],
-        "run_path": str(run_root / run_id),
+        "run_path": str(run_path),
     }
 
 
@@ -558,6 +574,49 @@ def _write_run_record(path: Path, record: dict[str, Any]) -> None:
     observer = run_observer.get()
     if observer is not None:
         observer(record)
+
+
+def _run_script_phase(
+    config: dict[str, Any], phase: str, cwd: Path, run_path: Path,
+    record: dict[str, Any] | None = None, *, once: bool = False,
+) -> None:
+    commands = config.get("scripts", {}).get(phase)
+    if not commands or (record is not None and once and phase in record.get("completed_script_phases", [])):
+        return
+
+    run_path.mkdir(parents=True, exist_ok=True)
+    log_path = run_path / f"{phase}.log"
+    record_path = run_path / "run.json"
+    previous_status = record["status"] if record is not None else "preparing"
+    if record is not None:
+        record.setdefault("script_logs", {})[phase] = str(log_path)
+        record.update(status="script_running", script_phase=phase)
+        _write_run_record(record_path, record)
+    print(f"Running {phase} scripts in {cwd} (log: {log_path})", flush=True)
+    number = 1
+    try:
+        with log_path.open("ab") as log:
+            for number, command in enumerate(commands, 1):
+                log.write(f"\n[{phase} {number}] {command[0]}\n".encode("utf-8"))
+                log.flush()
+                completed = subprocess.run(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
+                if completed.returncode:
+                    raise ValueError(f"終了コード {completed.returncode}")
+    except (KeyboardInterrupt, OSError, ValueError) as exc:
+        reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else str(exc)
+        message = f"スクリプト {phase} の {number} 番目で停止しました（{reason}）。ログ {log_path}"
+        run_id = None
+        if record is not None:
+            run_id = record["run_id"]
+            record.update(status="script_failed", error=message)
+            _write_run_record(record_path, record)
+        raise RunScriptError(message, run_id) from None
+    if record is not None:
+        if once:
+            record.setdefault("completed_script_phases", []).append(phase)
+        record["status"] = previous_status
+        record.pop("script_phase", None)
+        _write_run_record(record_path, record)
 
 
 def _safe_target(root: Path, relative: Path) -> Path:
@@ -780,6 +839,8 @@ def _run_prepared_with_junie(
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
         raise ValueError("agent workspace path escapes the run directory")
+    _run_script_phase(config, "after_prepare", worktree_root, run_path, record, once=True)
+    _run_script_phase(config, "before_migration", worktree_root, run_path, record, once=True)
     record_path = run_path / "run.json"
     resume_attempts = record.get("resume_attempts", 0)
     if resuming and (type(resume_attempts) is not int or resume_attempts < 0):
@@ -1154,6 +1215,13 @@ def _repair_target(
     _apply_agent_targets(agent_root, worktree, repair_targets, before, record, run_path / "run.json")
 
 
+def _verification_scripts(config: dict[str, Any], checker_command: list[str] | None) -> dict[str, Any]:
+    phases = ("before_build", "after_build")
+    if checker_command is not None:
+        phases += ("before_checker", "after_checker")
+    return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
+
+
 def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1163,19 +1231,36 @@ def _verify_worktree(
     targets = _target_paths(unit)
     record_path = run_path / "run.json"
     _finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
+    _run_script_phase(config, "after_migration", worktree, run_path, record, once=True)
     command = config["checker_command"]
+    scripts = _verification_scripts(config, command)
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
     while True:
+        _run_script_phase(config, "before_build", worktree, run_path, record)
         record["verification"] = {
             "target_hashes": {path.as_posix(): _review_target_hash(worktree, path) for path in targets},
             "build_project": config["build_project"],
             "checker_command": command,
+            "scripts": scripts,
+            "scripts_passed": not scripts,
         }
         verified = _build_worktree(config, result, record)
-        if command is None or record["status"] == "build_failed":
+        if record["status"] == "build_failed":
             return verified
+        _run_script_phase(config, "after_build", worktree, run_path, record)
+        if command is None:
+            if scripts:
+                record["verification"]["scripts_passed"] = True
+                _write_run_record(record_path, record)
+            return verified
+        _run_script_phase(config, "before_checker", worktree, run_path, record)
         checked, findings = _run_checker(command, verified, record)
+        if record.get("checker_exit_code") is not None:
+            _run_script_phase(config, "after_checker", worktree, run_path, record)
+        if scripts:
+            record["verification"]["scripts_passed"] = True
+            _write_run_record(record_path, record)
         if (
             checked["status"] != "checker_needs_review" or checked["error"]
             or (not limit and not record.get("checker_reviews"))
@@ -1412,6 +1497,8 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         and record.get("build_exit_code") == 0
         and bool(verification)
         and verification.get("build_project") == config["build_project"]
+        and verification.get("scripts", {}) == _verification_scripts(config, configured_checker)
+        and verification.get("scripts_passed", True)
         and (configured_checker is None or saved_checker == configured_checker)
         and (status == "build_succeeded" if saved_checker is None else checker_passed)
     )
@@ -1444,7 +1531,9 @@ def review_migration_ranges(
         raise ValueError("--target is only available with --state confirmed")
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
-    if record.get("target_apply_pending") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
+    if record.get("target_apply_pending") or record.get("status") in {
+        "junie_running", "repairing", "building", "checking", "script_running",
+    }:
         raise ValueError("wait for migration, build or verification to finish before recording a range review")
     target_paths = _target_paths(unit)
     entries = {
@@ -1593,11 +1682,14 @@ _BUILD_RESUME_STATUSES = {"junie_finished", "building", "build_failed", "repairi
 _CHECKER_RESUME_STATUSES = {"checking", "checker_needs_review", "checker_failed"}
 VERIFIED_STATUSES = {"build_succeeded", "checker_succeeded", "checker_accepted"}
 _JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrupted"}
+_SCRIPT_RESUME_STATUSES = {"script_running", "script_failed"}
 
 
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
+    if status in _SCRIPT_RESUME_STATUSES:
+        return True
     if status in _CHECKER_RESUME_STATUSES:
         return config["checker_command"] is not None and record.get("build_exit_code") == 0
     if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
@@ -1641,7 +1733,11 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         context_paths.append(str(context_path))
 
     completed_capsules = record.get("completed_capsules", 0)
-    migration_complete = status in _BUILD_RESUME_STATUSES or status in _CHECKER_RESUME_STATUSES or status in VERIFIED_STATUSES
+    script_retry = status in _SCRIPT_RESUME_STATUSES
+    migration_complete = (
+        status in _BUILD_RESUME_STATUSES or status in _CHECKER_RESUME_STATUSES or status in VERIFIED_STATUSES
+        or (script_retry and record.get("script_phase") not in {"after_prepare", "before_migration"})
+    )
     if (
         not isinstance(completed_capsules, int)
         or (completed_capsules != len(context_paths) if migration_complete else not 0 <= completed_capsules < len(context_paths))
@@ -1664,9 +1760,15 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "max_context_chars": record["max_context_chars"],
     }
     if migration_complete:
+        if script_retry:
+            record.update(status="junie_finished")
+            record.pop("error", None)
+            record.pop("script_phase", None)
         return _verify_worktree(config, unit, result, record)
     _validate_junie_execution()
     record.pop("error", None)
+    if script_retry:
+        record["status"] = "prepared"
     return _run_prepared_with_junie(
         config, unit, run_path, result, record, resuming=record["status"] != "prepared",
     )

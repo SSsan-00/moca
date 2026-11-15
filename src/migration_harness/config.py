@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Any
 
 _INPUT_ENCODINGS = {"auto", "utf-8", "utf-8-sig", "euc-jp"}
+SCRIPT_PHASES = (
+    "before_prepare", "after_prepare", "before_migration", "after_migration",
+    "before_build", "after_build", "before_checker", "after_checker",
+)
+REFERENCE_ROLES = ("reference_php", "reference_csharp", "reference_razor")
 
 
 def _outside(root: Path, path: Path, name: str) -> Path:
@@ -80,6 +85,13 @@ def load_config(path: Path) -> dict[str, Any]:
     if type(max_repair_attempts) is not int or max_repair_attempts < 0:
         raise ValueError("[checker].max_repair_attempts must be a non-negative integer")
 
+    scripts = raw.get("scripts", {})
+    if not isinstance(scripts, dict) or scripts.keys() - set(SCRIPT_PHASES):
+        raise ValueError("[scripts] must contain only supported execution phases")
+    for phase, commands in scripts.items():
+        if not isinstance(commands, list) or any(not is_command(command) for command in commands):
+            raise ValueError(f"[scripts].{phase} must list commands as arrays of an executable followed by arguments")
+
     viewer = raw.get("diff_viewer", {})
     if not isinstance(viewer, dict):
         raise ValueError("[diff_viewer] must be a table")
@@ -112,6 +124,22 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("every [[units]] entry needs a non-empty id")
     if len(ids) != len(set(ids)):
         raise ValueError("migration unit IDs must be unique")
+
+    project_rules = project.get("migration_rules", [])
+    if not isinstance(project_rules, list):
+        raise ValueError("[[project.migration_rules]] must list rule files")
+    common_rules = []
+    for item in project_rules:
+        rule = _normalize_input(item, "project migration rules", project_rule=True)
+        if rule not in common_rules:
+            common_rules.append(rule)
+    project_references = project.get("references", [])
+    if not isinstance(project_references, list):
+        raise ValueError("[[project.references]] must list reference files")
+    common_references = []
+    for item in project_references:
+        reference = _normalize_input(item, "project references", project_reference=True)
+        common_references.append(reference)
 
     normalized_units = []
     for unit in units:
@@ -150,45 +178,23 @@ def load_config(path: Path) -> dict[str, Any]:
         if not isinstance(inputs, list) or not (normalized_inputs or inputs):
             raise ValueError(f"unit {unit['id']}: specify source or at least one [[units.inputs]] entry")
         for item in inputs:
-            if not isinstance(item, dict):
-                raise ValueError(f"unit {unit['id']}: each [[units.inputs]] entry must be a table")
-            item_path = item.get("path")
-            role = item.get("role")
-            encoding = item.get("encoding", "auto")
-            symbol = item.get("symbol")
-            shared = item.get("shared", False)
-            start = item.get("start_line")
-            end = item.get("end_line")
-            if not isinstance(item_path, str) or Path(item_path).is_absolute() or ".." in Path(item_path).parts:
-                raise ValueError(f"unit {unit['id']}: input path must be repository-relative")
-            if not isinstance(role, str) or not role.strip():
-                raise ValueError(f"unit {unit['id']}: each input needs a role")
-            if symbol is not None and (not isinstance(symbol, str) or not symbol.strip()):
-                raise ValueError(f"unit {unit['id']}: input symbol must be a non-empty string")
-            if not isinstance(encoding, str) or encoding not in _INPUT_ENCODINGS:
-                raise ValueError(f"unit {unit['id']}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
-            if not isinstance(shared, bool):
-                raise ValueError(f"unit {unit['id']}: input shared must be a boolean")
-            if start is None and end is None and (role == "migration_rules" or shared):
-                start = 1
-            elif not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
-                raise ValueError(f"unit {unit['id']}: input line ranges must be positive and ordered")
-            normalized_inputs.append({
-                "role": role,
-                "path": item_path,
-                "encoding": encoding,
-                "shared": shared,
-                "start_line": start,
-                "end_line": end,
-            })
-            if symbol is not None:
-                normalized_inputs[-1]["symbol"] = symbol.strip()
+            normalized_input = _normalize_input(item, f"unit {unit['id']}")
+            if normalized_input["role"] == "migration_rules":
+                if normalized_input not in common_rules:
+                    common_rules.append(normalized_input)
+            elif normalized_input["role"] in REFERENCE_ROLES and normalized_input["shared"]:
+                common_references.append(normalized_input)
+            else:
+                normalized_inputs.append(normalized_input)
 
         normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
         if "targets" in unit:
             normalized["targets"] = [target.as_posix() for target in target_paths]
             normalized["target"] = normalized["targets"][0]
         normalized_units.append(normalized)
+
+    for unit in normalized_units:
+        unit["inputs"] = common_rules + common_references + unit["inputs"]
 
     return {
         "config_path": str(config_path),
@@ -199,6 +205,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "max_context_chars": max_context_chars,
         "build_project": build_project,
         "checker_command": checker_command,
+        "scripts": scripts,
         "diff_viewer_html": viewer_html,
         "diff_viewer_anchor_reference": resolve_output(anchor_reference) if anchor_reference is not None else None,
         "max_repair_attempts": max_repair_attempts,
@@ -207,12 +214,58 @@ def load_config(path: Path) -> dict[str, Any]:
     }
 
 
+def _normalize_input(
+    item: Any, scope: str, *, project_rule: bool = False, project_reference: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise ValueError(f"{scope}: each [[units.inputs]] entry must be a table")
+    item_path = item.get("path")
+    role = "migration_rules" if project_rule else item.get("role")
+    encoding = item.get("encoding", "auto")
+    symbol = item.get("symbol")
+    shared = item.get("shared", False)
+    start = item.get("start_line")
+    end = item.get("end_line")
+    if (not isinstance(item_path, str) or not item_path.strip() or not Path(item_path).parts
+            or Path(item_path).anchor or ".." in Path(item_path).parts):
+        raise ValueError(f"{scope}: input path must be repository-relative")
+    if not isinstance(role, str) or not role.strip():
+        raise ValueError(f"{scope}: each input needs a role")
+    if project_reference and role not in REFERENCE_ROLES:
+        raise ValueError(f"{scope}: use reference_php, reference_csharp or reference_razor")
+    if symbol is not None and (not isinstance(symbol, str) or not symbol.strip()):
+        raise ValueError(f"{scope}: input symbol must be a non-empty string")
+    if not isinstance(encoding, str) or encoding not in _INPUT_ENCODINGS:
+        raise ValueError(f"{scope}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
+    if not isinstance(shared, bool):
+        raise ValueError(f"{scope}: input shared must be a boolean")
+    shared = shared or role == "migration_rules" or project_reference
+    if start is None and end is None and shared:
+        start = 1
+    elif not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
+        raise ValueError(f"{scope}: input line ranges must be positive and ordered")
+    normalized = {
+        "role": role,
+        "path": item_path,
+        "encoding": encoding,
+        "shared": shared,
+        "start_line": start,
+        "end_line": end,
+    }
+    if symbol is not None:
+        normalized["symbol"] = symbol.strip()
+    return normalized
+
+
 def validate_checker_command(command: Any) -> None:
     """シェル文字列ではなく、実行ファイルと引数の配列を受理する。"""
-    if (
-        not isinstance(command, list)
-        or not command
-        or any(not isinstance(arg, str) or "\0" in arg for arg in command)
-        or not command[0].strip()
-    ):
+    if not is_command(command):
         raise ValueError("checker command must be a non-empty array with an executable followed by arguments")
+
+
+def is_command(command: Any) -> bool:
+    return (
+        isinstance(command, list) and bool(command)
+        and all(isinstance(arg, str) and "\0" not in arg for arg in command)
+        and bool(command[0].strip())
+    )
