@@ -33,6 +33,7 @@ class PrepareState(TypedDict, total=False):
     context_chars: int
     capsule_path: str
     capsule_count: int
+    source_boundary_review_required: bool
     error: str
 
 
@@ -588,7 +589,7 @@ def _run_prepared_with_junie(
     relative_target = Path(unit["target"])
     if relative_target.parts and (
         Path(relative_target.parts[0]) == Path(".migration-context.md")
-        or relative_target.parts[0].lower().startswith(".migration-complete-")
+        or relative_target.parts[0].lower().startswith("migration-complete-")
     ):
         raise ValueError("target path conflicts with a reserved file in the agent workspace")
     if _has_symlink_component(worktree_root, relative_target):
@@ -653,7 +654,8 @@ def _run_prepared_with_junie(
     for index, context_path in enumerate(result["context_paths"][start_index - 1 :], start=start_index):
         shutil.copyfile(context_path, agent_context)
         completion_token = uuid.uuid4().hex
-        completion_path = agent_root / f".migration-complete-{completion_token}"
+        # 隠しファイルはJunieが書き込み前に承認を求めるため、通常の名前を使う。
+        completion_path = agent_root / f"migration-complete-{completion_token}.txt"
         resume_instruction = ""
         if resuming and index == start_index:
             resume_instruction = (
