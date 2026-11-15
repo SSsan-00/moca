@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import codecs
 import hashlib
 import json
@@ -33,6 +34,12 @@ class PrepareState(TypedDict, total=False):
     capsule_path: str
     capsule_count: int
     error: str
+
+
+class RunInterrupted(KeyboardInterrupt):
+    def __init__(self, run_id: str) -> None:
+        super().__init__(run_id)
+        self.run_id = run_id
 
 
 def _unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
@@ -92,9 +99,13 @@ def _create_worktree(state: PrepareState) -> dict[str, Any]:
         "context_part_chars": state["context_part_chars"],
         "context_capsules": state["capsule_count"],
         "max_context_chars": config["max_context_chars"],
+        "junie_max_steps": config["junie_max_steps"],
+        "resume_attempts": 0,
         "segmentation_policy": "line_with_character_fallback_and_overlap",
         "source_boundary_review_required": state["capsule_count"] > 1,
         "target": unit["target"],
+        "completed_capsules": 0,
+        "current_capsule": 1,
     }
     (run_path / "run.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     return {"worktree_path": str(worktree)}
@@ -432,21 +443,182 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     }
 
 
-def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
-    if not sys.stdin.isatty():
-        raise RuntimeError("Junie run requires an interactive terminal")
-    if shutil.which("junie") is None:
-        raise RuntimeError("Junie CLI was not found on PATH")
-    result = prepare_run(config, unit_id)
-    unit = _unit(config, unit_id)
-    worktree_root = Path(result["worktree_path"]).resolve()
-    run_path = Path(result["run_path"])
-    agent_root = run_path / "agent-workspace"
-    agent_root.mkdir()
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(64 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
+
+def _write_run_record(path: Path, record: dict[str, Any]) -> None:
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _apply_agent_target(
+    agent_root: Path,
+    agent_target: Path,
+    worktree_target: Path,
+    relative_target: Path,
+    record: dict[str, Any],
+    record_path: Path,
+) -> None:
+    if (
+        _has_symlink_component(agent_root, relative_target)
+        or not agent_target.resolve().is_relative_to(agent_root.resolve())
+    ):
+        raise ValueError(f"Junie target escapes its workspace or is a symlink: {relative_target}")
+    if not agent_target.is_file():
+        return
+    worktree_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(agent_target, worktree_target)
+    record["target_applied"] = True
+    record["target_sha256"] = _sha256_file(worktree_target)
+    _write_run_record(record_path, record)
+
+
+def _has_completion_record(path: Path, token: str) -> bool:
+    if path.is_symlink() or not path.is_file():
+        return False
+    expected = token.encode("ascii")
+    try:
+        with path.open("rb") as stream:
+            value = stream.read(len(expected) + 3)
+    except OSError:
+        return False
+    return value in (expected, expected + b"\n", expected + b"\r\n")
+
+
+def _close_junie(process: subprocess.Popen) -> int:
+    if process.poll() is not None:
+        return process.returncode
+    try:
+        if os.name == "nt":
+            # Windowsのランチャーが起動した子プロセスも閉じてから次へ進む。
+            taskkill = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
+            subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                check=True, capture_output=True, timeout=10,
+            )
+        else:
+            process.terminate()
+        return process.wait(timeout=10)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        if process.poll() is not None:
+            return process.returncode
+        raise OSError("Could not close Junie. Close the current Junie session before resuming.") from exc
+
+
+def _run_interactive_junie(
+    command: list[str], completion_path: Path, token: str, target: Path,
+) -> int:
+    restore_terminal = _save_terminal_mode()
+    # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
+    process = subprocess.Popen(command)
+    try:
+        while True:
+            try:
+                return process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                if (
+                    _has_completion_record(completion_path, token)
+                    and target.is_file()
+                    and not _has_symlink_component(completion_path.parent, target.relative_to(completion_path.parent))
+                    and target.resolve().is_relative_to(completion_path.parent.resolve())
+                ):
+                    return _close_junie(process)
+    except KeyboardInterrupt:
+        _close_junie(process)
+        raise
+    finally:
+        if process.poll() is not None:
+            restore_terminal()
+
+
+def _save_terminal_mode() -> Callable[[], None]:
+    # 自動終了でJunieの後処理が走らない場合に備え、起動前の端末設定を復元する。
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel = ctypes.windll.kernel32
+        modes = []
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            if stream.isatty():
+                handle = wintypes.HANDLE(msvcrt.get_osfhandle(stream.fileno()))
+                mode = wintypes.DWORD()
+                if kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+                    modes.append((handle, mode))
+
+        def restore() -> None:
+            for handle, mode in modes:
+                kernel.SetConsoleMode(handle, mode)
+
+        return restore
+
+    import termios
+
+    fd = sys.stdin.fileno()
+    try:
+        mode = termios.tcgetattr(fd)
+    except termios.error:
+        return lambda: None
+
+    def restore() -> None:
+        termios.tcsetattr(fd, termios.TCSANOW, mode)
+
+    return restore
+
+
+def _run_prepared_with_junie(
+    config: dict[str, Any],
+    unit: dict[str, Any],
+    run_path: Path,
+    result: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    resuming: bool,
+) -> dict[str, Any]:
+    worktree_root = Path(result["worktree_path"]).resolve()
+    if not worktree_root.is_dir() or not worktree_root.is_relative_to(Path(config["worktree_root"]).resolve()):
+        raise ValueError(f"run worktree is missing or outside configured worktree root: {worktree_root}")
     relative_target = Path(unit["target"])
-    if relative_target == Path(".migration-context.md"):
-        raise ValueError("target path conflicts with the staged migration context")
+    if relative_target.parts and (
+        Path(relative_target.parts[0]) == Path(".migration-context.md")
+        or relative_target.parts[0].lower().startswith(".migration-complete-")
+    ):
+        raise ValueError("target path conflicts with a reserved file in the agent workspace")
+    if _has_symlink_component(worktree_root, relative_target):
+        raise ValueError(f"target path contains a symlink: {unit['target']}")
+    agent_root = run_path / "agent-workspace"
+    if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
+        raise ValueError("agent workspace path escapes the run directory")
+    resume_attempts = record.get("resume_attempts", 0)
+    if resuming:
+        if not isinstance(resume_attempts, int) or isinstance(resume_attempts, bool) or resume_attempts < 0:
+            raise ValueError("run record contains an invalid resume-attempt count")
+    if resuming:
+        if agent_root.exists():
+            if not agent_root.is_dir():
+                raise ValueError("agent workspace path is not a directory")
+            worktree_target_check = worktree_root / unit["target"]
+            actual_hash = _sha256_file(worktree_target_check) if worktree_target_check.is_file() else None
+            if actual_hash != record.get("target_sha256"):
+                raise ValueError("worktree target changed since the last recorded Junie result; inspect and reconcile it before resuming")
+        elif record.get("status") != "prepared":
+            raise ValueError("agent workspace is missing; this run cannot be resumed safely")
+        else:
+            agent_root.mkdir()
+    else:
+        if agent_root.exists():
+            if record.get("status") != "prepared" or not agent_root.is_dir():
+                raise ValueError("agent workspace already exists for this run")
+        else:
+            agent_root.mkdir()
+
     worktree_target = worktree_root / relative_target
     if (
         _has_symlink_component(worktree_root, relative_target)
@@ -457,26 +629,43 @@ def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
         raise ValueError(f"target is not a regular file: {unit['target']}")
 
     agent_target = agent_root / relative_target
+    if _has_symlink_component(agent_root, relative_target):
+        raise ValueError(f"agent target path contains a symlink: {unit['target']}")
     agent_target.parent.mkdir(parents=True, exist_ok=True)
-    if worktree_target.is_file():
+    if not agent_target.exists() and worktree_target.is_file():
         shutil.copyfile(worktree_target, agent_target)
 
     record_path = run_path / "run.json"
-    record = json.loads(record_path.read_text(encoding="utf-8"))
     record["agent_workspace_path"] = str(agent_root)
+    if resuming:
+        record["resume_attempts"] = resume_attempts + 1
     record["status"] = "junie_running"
-    record["completed_capsules"] = 0
-    record["current_capsule"] = 1
-    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    record.setdefault("completed_capsules", 0)
+    record.setdefault("current_capsule", record["completed_capsules"] + 1)
+    if not resuming:
+        record["target_sha256"] = _sha256_file(worktree_target) if worktree_target.is_file() else None
+        record["target_applied"] = False
+    _write_run_record(record_path, record)
 
     agent_context = agent_root / ".migration-context.md"
-    completed = None
-    for index, context_path in enumerate(result["context_paths"], start=1):
+    exit_code = None
+    start_index = record["completed_capsules"] + 1
+    for index, context_path in enumerate(result["context_paths"][start_index - 1 :], start=start_index):
         shutil.copyfile(context_path, agent_context)
+        completion_token = uuid.uuid4().hex
+        completion_path = agent_root / f".migration-complete-{completion_token}"
+        resume_instruction = ""
+        if resuming and index == start_index:
+            resume_instruction = (
+                "This capsule was interrupted. Compare its source ranges with the saved target, "
+                "keep completed edits, and migrate only what is still missing. "
+            )
         prompt = (
             f"Read `{agent_context}`. This is context segment {index} of {result['capsule_count']} "
             f"for migration unit `{unit['id']}`. The target file `{unit['target']}` contains the work "
-            "from earlier segments; preserve it and continue only with this segment. Edit only the configured target. "
+            "from earlier segments; preserve it and continue only with this segment. "
+            "Edit only the configured target and the completion record described below. "
+            f"{resume_instruction}"
             "The source excerpt may begin or end inside a function or control structure. Use its original line numbers; "
             "do not treat the excerpt boundary as a PHP statement boundary or add closing syntax just for the excerpt end. "
             "For `focus chars START-END context chars CONTEXT_START-CONTEXT_END` records, migrate only the focus range. "
@@ -484,22 +673,37 @@ def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
             "These records are slices of one physical source line, and displayed line breaks are not source newlines. "
             "Do not infer text outside the context range. "
             "Do not access files outside this workspace. Do not run builds, tests, or external checkers. "
-            "If the step limit is reached, preserve current edits and state what remains. "
-            "Claim the migration is complete only after the final segment."
+            "After verifying that all required changes for this capsule are saved, write exactly "
+            f"`{completion_token}` as plain text to `{completion_path}` as your final file action. "
+            "Leave this record absent while anything remains, including when blocked or at the step limit. "
+            "The harness closes this session when it sees the record. Finish all edits and checks before writing it. "
+            "If interrupted, preserve the edits and report what remains. "
+            "Claim the entire migration is complete only after the final capsule."
         )
         command = ["junie", "--project", str(agent_root)]
-        if config["junie_max_steps"] is not None:
-            command.extend(["--max-steps", str(config["junie_max_steps"])])
+        max_steps = record.get("junie_max_steps", config["junie_max_steps"])
+        if max_steps is not None:
+            command.extend(["--max-steps", str(max_steps)])
         command.extend(["--prompt", prompt])
         record["current_capsule"] = index
-        record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        _write_run_record(record_path, record)
         try:
-            # 対話CLIで利用者のログイン状態とJunieのモデル選択を引き継ぐ。
-            completed = subprocess.run(command, check=False)
+            exit_code = _run_interactive_junie(command, completion_path, completion_token, agent_target)
+        except KeyboardInterrupt:
+            try:
+                _apply_agent_target(
+                    agent_root, agent_target, worktree_target,
+                    relative_target, record, record_path,
+                )
+            finally:
+                record["status"] = "interrupted"
+                record["error"] = "interrupted by user; current capsule can be resumed"
+                _write_run_record(record_path, record)
+            raise RunInterrupted(record["run_id"]) from None
         except OSError as exc:
             record["status"] = "junie_failed"
             record["error"] = str(exc)
-            record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            _write_run_record(record_path, record)
             raise
 
         if (
@@ -508,34 +712,146 @@ def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
         ):
             record["status"] = "junie_failed"
             record["error"] = f"Junie target escapes its workspace or is a symlink: {unit['target']}"
-            record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            _write_run_record(record_path, record)
             raise ValueError(record["error"])
-        if not agent_target.is_file():
-            record["status"] = "junie_failed"
-            record["error"] = f"Junie did not produce the configured target: {unit['target']}"
-            record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-            raise RuntimeError(record["error"])
-
-        worktree_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(agent_target, worktree_target)
-        record["target_applied"] = True
-        record["junie_exit_code"] = completed.returncode
-        if completed.returncode == 0:
-            record["completed_capsules"] = index
-        else:
-            record["status"] = "junie_failed"
-        record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-        if completed.returncode != 0:
+        target_exists = agent_target.is_file()
+        _apply_agent_target(
+            agent_root, agent_target, worktree_target,
+            relative_target, record, record_path,
+        )
+        record["junie_exit_code"] = exit_code
+        if not target_exists or not _has_completion_record(completion_path, completion_token):
+            record["status"] = "interrupted" if target_exists else "junie_failed"
+            record["error"] = (
+                "Junie did not leave a valid completion record for this capsule" if target_exists
+                else f"Junie did not produce the configured target: {unit['target']}"
+            )
+            _write_run_record(record_path, record)
             break
 
-    if completed is None:
+        record["completed_capsules"] = index
+        record["current_capsule"] = min(index + 1, result["capsule_count"])
+        record["status"] = "junie_finished" if index == result["capsule_count"] else "junie_running"
+        record.pop("error", None)
+        _write_run_record(record_path, record)
+
+    if exit_code is None:
         raise RuntimeError("context preparation produced no capsules")
-    all_capsules_completed = record["completed_capsules"] == result["capsule_count"]
-    record["status"] = "junie_finished" if completed.returncode == 0 and all_capsules_completed else "junie_failed"
-    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     return {
         **result,
-        "junie_exit_code": completed.returncode,
+        "junie_exit_code": exit_code,
         "agent_workspace_path": str(agent_root),
         "completed_capsules": record["completed_capsules"],
+        "status": record["status"],
+        "current_capsule": record["current_capsule"],
+        "error": record.get("error"),
     }
+
+
+def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+    _validate_junie_execution()
+    result = prepare_run(config, unit_id)
+    unit = _unit(config, unit_id)
+    record_path = Path(result["run_path"]) / "run.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
+
+
+def _validate_junie_execution() -> None:
+    if not sys.stdin.isatty():
+        raise RuntimeError("Junie run requires an interactive terminal")
+    if shutil.which("junie") is None:
+        raise RuntimeError("Junie CLI was not found on PATH")
+
+
+def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+    _validate_junie_execution()
+    try:
+        parsed_run_id = uuid.UUID(run_id)
+    except ValueError as exc:
+        raise ValueError("run ID must be a UUID printed by a previous harness command") from exc
+    if str(parsed_run_id) != run_id:
+        raise ValueError("run ID must use its canonical UUID format")
+
+    run_root = Path(config["run_root"]).resolve()
+    run_path = (run_root / run_id).resolve()
+    if run_path.parent != run_root or not run_path.is_dir():
+        raise ValueError(f"run directory not found under configured run_root: {run_id}")
+    record_path = run_path / "run.json"
+    if record_path.is_symlink() or not record_path.is_file():
+        raise ValueError("run record is missing or is a symlink")
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict):
+        raise ValueError("run record must contain a JSON object")
+    if record.get("run_id") != run_id or record.get("project_root") != config["project_root"]:
+        raise ValueError("run record does not match the configured project")
+    if record.get("status") not in {"prepared", "junie_running", "junie_failed", "interrupted"}:
+        raise ValueError(f"run is not resumable from status {record.get('status')!r}")
+
+    unit_id = record.get("unit_id")
+    if not isinstance(unit_id, str):
+        raise ValueError("run record is missing its migration unit ID")
+    unit = _unit(config, unit_id)
+    if unit["target"] != record.get("target"):
+        raise ValueError("configured target differs from the target recorded for this run")
+    worktree_root = Path(config["worktree_root"]).resolve()
+    if not isinstance(record.get("worktree_path"), str):
+        raise ValueError("run record is missing its worktree path")
+    worktree_path = Path(record["worktree_path"]).resolve()
+    if worktree_path.parent != worktree_root or worktree_path.name != run_id:
+        raise ValueError("run worktree path does not match the configured worktree root and run ID")
+    max_steps = record.get("junie_max_steps", config["junie_max_steps"])
+    if max_steps is not None and (isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1):
+        raise ValueError("run record contains an invalid Junie max-steps value")
+    resume_attempts = record.get("resume_attempts", 0)
+    if not isinstance(resume_attempts, int) or isinstance(resume_attempts, bool) or resume_attempts < 0:
+        raise ValueError("run record contains an invalid resume-attempt count")
+    capsule_path = (run_path / "capsule").resolve()
+    if not capsule_path.is_relative_to(run_path) or not capsule_path.is_dir():
+        raise ValueError("run capsule directory is missing or outside the run directory")
+    manifest_path = capsule_path / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("run manifest is missing or is a symlink")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("run manifest must contain a JSON object")
+    parts = manifest.get("parts", [])
+    if not isinstance(parts, list) or not parts or any(not isinstance(part, dict) for part in parts):
+        raise ValueError("run manifest has no valid capsule list")
+    if [part.get("index") for part in parts] != list(range(1, len(parts) + 1)):
+        raise ValueError("run manifest has missing or invalid capsule indexes")
+    context_paths = []
+    for part in parts:
+        part_path = part.get("path")
+        if not isinstance(part_path, str):
+            raise ValueError("run manifest contains an invalid context path")
+        context_path = Path(part_path).resolve()
+        if not isinstance(part.get("chars"), int) or part["chars"] < 0:
+            raise ValueError("run manifest contains an invalid capsule character count")
+        if not context_path.is_relative_to(capsule_path) or not context_path.is_file():
+            raise ValueError("run manifest points to a missing or out-of-run context capsule")
+        context_paths.append(str(context_path))
+
+    completed_capsules = record.get("completed_capsules", 0)
+    if not isinstance(completed_capsules, int) or not 0 <= completed_capsules < len(context_paths):
+        raise ValueError("run has no incomplete capsule to resume")
+    if record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
+        raise ValueError("run record has inconsistent capsule progress; inspect it before resuming")
+
+    result = {
+        "run_id": run_id,
+        "run_path": str(run_path),
+        "worktree_path": str(worktree_path),
+        "context_paths": context_paths,
+        "context_path": context_paths[0],
+        "context_chars": manifest.get("total_context_chars", sum(part["chars"] for part in parts)),
+        "context_part_chars": [part["chars"] for part in parts],
+        "capsule_path": str(capsule_path),
+        "capsule_count": len(context_paths),
+        "source_boundary_review_required": record["source_boundary_review_required"],
+        "max_context_chars": record["max_context_chars"],
+    }
+    record.pop("error", None)
+    return _run_prepared_with_junie(
+        config, unit, run_path, result, record, resuming=record["status"] != "prepared",
+    )

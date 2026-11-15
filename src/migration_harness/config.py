@@ -61,7 +61,6 @@ def load_config(path: Path) -> dict[str, Any]:
         isinstance(junie_max_steps, bool) or not isinstance(junie_max_steps, int) or junie_max_steps < 1
     ):
         raise ValueError("[junie].max_steps must be a positive integer when specified")
-
     units = raw.get("units")
     if not isinstance(units, list) or not units:
         raise ValueError("at least one [[units]] entry is required")
