@@ -365,24 +365,24 @@ flowchart TB
   </section>
 
   <section>
-    <h2>4. 差分レビューと今後のアンカー連携</h2>
+    <h2>4. 差分レビューとアンカー連携</h2>
     <p class="diagram-note">進捗ダッシュボード上部の「比較ツールを開く」を押すと、その時点の参照PHPとworktreeの移行先をDiff Viewerで表示し、同じ内容のJSONを自動でダウンロードします。Razorページの右ペインには .cshtml.cs と .cshtml を並べます。</p>
     <div class="steps">
       <article class="step">
         <h3>既存JSONから対応情報を読む</h3>
-        <p>ハーネスがファイル順、ファイル名、segments、既存アンカーを読み取ります。ワークスペースJSON全体はAIに渡しません。</p>
+        <p>CLIの anchors に既存のワークスペースJSONを渡します。ハーネスは手動アンカーの左右の行を抽出し、対応の例としてJunieに渡します。</p>
       </article>
       <article class="step">
-        <h3>AIがアンカー案を作る</h3>
-        <p>対象コードと必要な周辺行だけを使い、根拠がある対応行を提案します。曖昧な行は無理に結びません。</p>
+        <h3>Junieがアンカー案を作る</h3>
+        <p>Junieはその時点のソースのコピーを読み、PHPと移行先で同じ処理を担う行の組を提案します。</p>
       </article>
       <article class="step">
         <h3>JSONを検査する</h3>
-        <p>Diff Viewerのエクスポート形式に合わせ、ファイル対応、行番号範囲、行の順序を確認してから読み込みます。候補の根拠は別の実行記録に保存します。</p>
+        <p>ハーネスはペイン全体の行番号の範囲、重複、順序を検証し、アンカー付きのワークスペースJSONを別ファイルに保存します。</p>
       </article>
       <article class="step">
         <h3>Diff Viewerで人が確認する</h3>
-        <p>ソースは読み取り専用で参照し、アンカーだけを調整します。ソースコードの修正が必要ならViewerを離れ、ハーネスの修正・検証フローへ戻します。</p>
+        <p>コマンドが表示するJSONをViewerにインポートし、提案された対応行を確認してアンカーを調整します。</p>
       </article>
     </div>
     <div class="callout amber">
@@ -395,7 +395,7 @@ flowchart TB
     </div>
   </section>
 
-  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、ビルドとチェッカーの実行、チェッカー指摘の修正ループ。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認、アンカーJSONを使った人のレビュー。</div>
+  <div class="summary"><strong>現在:</strong> コンテキスト分割、worktree準備、Junieの順次実行と再開、ビルドとチェッカーの実行、チェッカー指摘の修正ループ、アンカー付きワークスペースJSONの生成。<br><strong>目標:</strong> 原文と処理範囲の台帳化、依存情報の取得、網羅性確認。</div>
 
   <footer>台帳のシンボル識別方法、依存関係の抽出、再開上限、チェッカー連携、アンカーJSONの互換性はPoCで検証します。<br>Diff Viewerの<a href="https://github.com/SSsan-00/diff-viewer">リポジトリ</a>と<a href="https://github.com/SSsan-00/diff-viewer/blob/main/doc/SPEC.md">仕様書</a>を参照。</footer>
 </main>

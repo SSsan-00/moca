@@ -26,6 +26,10 @@ def main() -> None:
     review.add_argument("--run-id", required=True, help="Run ID awaiting review")
     review.add_argument("--accept", metavar="FINDING_ID", help="Finding ID shown by review")
     review.add_argument("--reason", help="Why the finding can be accepted")
+    anchors = subparsers.add_parser("anchors", help="Generate Diff Viewer anchors with Junie")
+    anchors.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    anchors.add_argument("--run-id", required=True, help="Run ID with PHP and migration target files")
+    anchors.add_argument("--reference", type=Path, required=True, help="Existing Diff Viewer workspace JSON with manual anchors")
     for command in (run, resume):
         command.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
         command.add_argument(
@@ -40,6 +44,12 @@ def main() -> None:
         if checker_command is not None:
             validate_checker_command(checker_command)
             config["checker_command"] = checker_command
+        if args.command == "anchors":
+            from migration_harness.review_anchors import generate_anchors
+
+            output, count = generate_anchors(config, args.run_id, args.reference)
+            print(f"Diff Viewer workspace ({count} anchors): {output}")
+            return
         if args.command == "review":
             report = review_checker(config, args.run_id, args.accept, args.reason)
             for finding_id, diagnostic, accepted in report["findings"]:

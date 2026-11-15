@@ -35,7 +35,7 @@ def _pane(files: list[tuple[str, str]]) -> tuple[str, list[dict[str, Any]]]:
     return "".join(parts), segments
 
 
-def create_snapshot(config: dict[str, Any], run_id: str) -> str:
+def capture_workspace(config: dict[str, Any], run_id: str) -> tuple[Path, dict[str, Any]]:
     run_path, worktree, _, unit = _load_saved_run(config, run_id)
     project = Path(config["project_root"])
     manifest_path = _inside_file(run_path, "capsule/manifest.json")
@@ -85,6 +85,10 @@ def create_snapshot(config: dict[str, Any], run_id: str) -> str:
             "anchors": {"manualAnchors": [], "staleManualAnchors": []},
         },
     }
+    return run_path, payload
+
+
+def save_workspace(run_path: Path, payload: dict[str, Any]) -> str:
     snapshot_id = uuid.uuid4().hex
     directory = run_path / "review-snapshots"
     directory.mkdir(exist_ok=True)
@@ -93,6 +97,10 @@ def create_snapshot(config: dict[str, Any], run_id: str) -> str:
     with (directory / f"{snapshot_id}.json").open("x", encoding="utf-8") as stream:
         json.dump(payload, stream, ensure_ascii=False)
     return snapshot_id
+
+
+def create_snapshot(config: dict[str, Any], run_id: str) -> str:
+    return save_workspace(*capture_workspace(config, run_id))
 
 
 def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> bytes:
