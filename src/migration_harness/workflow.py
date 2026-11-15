@@ -1237,6 +1237,8 @@ def _load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
 
 
 def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+    from migration_harness.behavior import behavior_status
+
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
     _, manifest = _load_capsule_manifest(run_path)
     mappings = record.get("migration_mappings", {})
@@ -1284,6 +1286,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "run_id": run_id,
         "target": unit["target"],
         "targets": [path.as_posix() for path in _target_paths(unit)],
+        "behavior_status": behavior_status(config, run_id)["status"],
         "capsules": capsules,
     }
 

@@ -185,7 +185,7 @@ def _view(report: dict[str, Any], worktree: Path, unit: dict[str, Any]) -> dict[
 
 def behavior_status(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     """Read the latest result and check its inputs without running any commands."""
-    run_path, worktree, _, unit = _load_saved_run(config, run_id)
+    run_path, worktree, record, unit = _load_saved_run(config, run_id)
     path = run_path / _RESULT_FILE
     try:
         if path.is_symlink():
@@ -206,12 +206,16 @@ def behavior_status(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             raise ValueError("invalid or unsupported behavior result")
     except (OSError, ValueError, RecursionError) as exc:
         return {"status": "stale", "result": None, "reason": str(exc)}
+    if record.get("target_apply_pending"):
+        return {"status": "stale", "result": report, "reason": "migration files are being applied"}
     return _view(report, worktree, unit)
 
 
 def verify(config: dict[str, Any], run_id: str, fixture_path: Path) -> dict[str, Any]:
     """Explicitly run the fixture and atomically save the latest result under the Run."""
-    run_path, worktree, _, unit = _load_saved_run(config, run_id)
+    run_path, worktree, record, unit = _load_saved_run(config, run_id)
+    if record.get("target_apply_pending") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
+        raise ValueError("finish or pause the current migration operation before verifying behavior")
     fixture_path = Path(os.path.abspath(fixture_path.expanduser()))
     identity, fixture, php_source, csharp_sources = _read_inputs(worktree, unit, fixture_path)
     cases = [

@@ -89,7 +89,9 @@ class BehaviorVerificationTests(unittest.TestCase):
     def test_multi_target_identity_covers_primary_and_noncompiled_target(self):
         view = self.worktree / "Search.cshtml"
         view.write_text("<h1>Search</h1>", encoding="utf-8")
-        self.unit["targets"] = [view.name]
+        self.unit["targets"] = [self.target.name, view.name]
+        self.run_record["targets"] = self.unit["targets"]
+        (self.run_path / "run.json").write_text(json.dumps(self.run_record), encoding="utf-8")
         with patch("migration_harness.behavior.subprocess.run", side_effect=self.stub_process):
             result = verify(self.config, self.run_id, self.fixture)
         self.assertEqual(result["status"], "passed")
@@ -173,6 +175,8 @@ class BehaviorVerificationTests(unittest.TestCase):
         companion = self.worktree / "SearchOrdering.cs"
         companion.write_text("static class Ordering { public static int Key(int id) => id; }", encoding="utf-8")
         self.unit["targets"] = [self.target.name, companion.name]
+        self.run_record["targets"] = self.unit["targets"]
+        (self.run_path / "run.json").write_text(json.dumps(self.run_record), encoding="utf-8")
         source = self.target.read_text(encoding="utf-8")
         self.target.write_text(source.replace("OrderBy(row => row.id)", "OrderBy(row => Ordering.Key(row.id))"), encoding="utf-8")
 

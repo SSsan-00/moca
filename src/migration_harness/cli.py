@@ -38,6 +38,10 @@ def main() -> None:
     anchors.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     anchors.add_argument("--run-id", required=True, help="Run ID with PHP and migration target files")
     anchors.add_argument("--reference", type=Path, required=True, help="Existing Diff Viewer workspace JSON with manual anchors")
+    verify = subparsers.add_parser("verify", help="Run or inspect a saved Run's behavior comparison")
+    verify.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    verify.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
+    verify.add_argument("--fixture", type=Path, help="Case JSON to execute; omit to inspect the saved result")
     for command in (run, resume):
         command.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
         command.add_argument(
@@ -55,6 +59,23 @@ def main() -> None:
         if args.command == "ledger-review":
             review_migration_ranges(config, args.run_id, args.ranges, args.state, args.reason)
             print(f"Migration ledger updated for {args.run_id}")
+            return
+        if args.command == "verify":
+            from migration_harness.behavior import behavior_status, verify as verify_behavior
+
+            report = (verify_behavior(config, args.run_id, args.fixture)
+                      if args.fixture is not None else behavior_status(config, args.run_id))
+            status = report["status"]
+            print(f"Behavior: {status}")
+            if report.get("reason"):
+                print(report["reason"])
+            if result := report["result"]:
+                for case in result["cases"]:
+                    if not all(case["matches"].values()):
+                        print(f"{case['id']}: expected={case['expected']!r} php={case['php']!r} csharp={case['csharp']!r}")
+                print(f"Behavior log: {result['log_path']}")
+            if status in {"failed", "stale"}:
+                raise SystemExit(1)
             return
         if args.command == "anchors":
             from migration_harness.review_anchors import generate_anchors

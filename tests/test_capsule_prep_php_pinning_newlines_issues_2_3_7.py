@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -259,6 +260,13 @@ class CapsulePreparationTests(unittest.TestCase):
             resumed = workflow.resume_with_junie(config, result["run_id"])
         invocation.assert_called_once()
         self.assertEqual(resumed["status"], "interrupted")
+
+    @unittest.skipUnless(os.name == "nt", "observes Windows default text translation")
+    def test_legacy_windows_writer_doubles_crlf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / "old-context.md"
+            legacy.write_text("excerpt\r\n", encoding="utf-8")
+            self.assertEqual(legacy.read_bytes(), b"excerpt\r\r\n")
 
     def test_windows_text_write_preserves_lf_crlf_and_heredoc(self):
         original_open = Path.open

@@ -513,6 +513,7 @@
     <div id="migration-ledger-details" hidden>
       <p class="run-detail">Run ID <code id="migration-ledger-run-id"></code></p>
       <p class="migration-ledger-target">移行先 <code id="migration-ledger-target"></code></p>
+      <p class="migration-ledger-target">振る舞い比較 <strong id="migration-behavior-status"></strong></p>
       <div id="migration-candidate-comparison" hidden>
         <button class="button" type="button">候補をDiff Viewerで開く</button>
       </div>
@@ -628,6 +629,8 @@ function openMigrationLedger(message = "") {
 function showMigrationLedger(ledger, snapshot, compare) {
   document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
   document.querySelector("#migration-ledger-target").textContent = (ledger.targets || [ledger.target]).join(" / ");
+  document.querySelector("#migration-behavior-status").textContent =
+    {not_run: "未実行", passed: "サンプル検証済み", failed: "失敗", stale: "要再検証"}[ledger.behavior_status] || "未実行";
   migrationLedgerList.replaceChildren(...ledger.capsules.map(migrationLedgerRow));
   migrationLedgerDetails.hidden = false;
   migrationLedgerMessage.hidden = true;
@@ -714,6 +717,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
       run_id: "run-2026-11-14-001",
       target: "Pages/Orders/Index.cshtml.cs",
       targets: ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"],
+      behavior_status: current >= steps.length ? "passed" : "not_run",
       capsules: capsuleCalls.map(({lines}, index) => ({
         index: index + 1,
         sources: [{
