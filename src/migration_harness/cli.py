@@ -23,6 +23,9 @@ def main() -> None:
     resume = subparsers.add_parser("resume", help="Continue migration, build or checker in the saved worktree")
     resume.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     resume.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
+    view = subparsers.add_parser("view", help="Open the dashboard for a saved run")
+    view.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
+    view.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     review = subparsers.add_parser("review", help="List checker findings or accept one with a reason")
     review.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     review.add_argument("--run-id", required=True, help="Run ID awaiting review")
@@ -42,8 +45,9 @@ def main() -> None:
     verify.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
     verify.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     verify.add_argument("--fixture", type=Path, help="Case JSON to execute; omit to inspect the saved result")
-    for command in (run, resume):
-        command.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
+    run.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
+    resume.add_argument("--dashboard", action="store_true", help="Open the saved run and resume from the dashboard")
+    for command in (run, resume, view):
         command.add_argument(
             "--checker-command", nargs=argparse.REMAINDER, metavar="EXECUTABLE",
             help="Checker executable and its arguments. Put this option last.",
@@ -93,10 +97,13 @@ def main() -> None:
             return
         if args.command == "prepare":
             result = prepare_run(config, args.unit)
-        elif args.dashboard:
+        elif args.command == "view" or args.dashboard:
             from migration_harness.dashboard import run_dashboard
 
-            result = run_dashboard(config, unit_id=getattr(args, "unit", None), run_id=getattr(args, "run_id", None))
+            if args.command != "run":
+                run_dashboard(config, run_id=args.run_id)
+                return
+            result = run_dashboard(config, unit_id=args.unit)
         elif args.command == "run":
             result = run_with_junie(config, args.unit)
         else:

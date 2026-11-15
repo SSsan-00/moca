@@ -29,7 +29,7 @@ const statusNames = {
   checker_succeeded: "確認完了", checker_accepted: "人の判断を反映して完了",
   interrupted: "中断", junie_failed: "Junie実行失敗",
 };
-const resumable = new Set(["checker_needs_review", "checker_failed", "build_failed", "interrupted", "junie_failed"]);
+const savedView = document.documentElement.hasAttribute("data-saved");
 const complete = new Set(["checker_succeeded", "checker_accepted", "build_succeeded"]);
 const stage = {
   preparing: 0, prepared: 2, junie_running: 3, junie_finished: 3, interrupted: 3, junie_failed: 3,
@@ -50,7 +50,6 @@ let pendingOnly = false;
 document.title = "移行ハーネスの進捗";
 element(".brand").href = "./";
 element(".top-links").hidden = true;
-element(".demo-badge").textContent = "実行中のデータ";
 const snapshotStatus = document.createElement("div");
 snapshotStatus.className = "run-detail";
 snapshotStatus.setAttribute("role", "status");
@@ -128,11 +127,12 @@ function showNotice(message) {
 }
 
 function syncActions() {
-  const canAct = connected && snapshot.ready && !submitting && resumable.has(snapshot.status);
+  const canAct = connected && snapshot.ready && !submitting;
+  const canReview = snapshot.status === "checker_needs_review";
   const selected = snapshot.review?.findings[findings.selectedIndex];
-  accept.disabled = !canAct || !selected || selected[2] || !note.value.trim();
-  resume.disabled = !canAct;
-  reviewButton.disabled = !canAct;
+  accept.disabled = !canAct || !canReview || !selected || selected[2] || !note.value.trim();
+  resume.disabled = !canAct || !snapshot.resumable;
+  reviewButton.disabled = !canAct || !(canReview || snapshot.resumable);
   migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
   dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || snapshotting;
   for (const button of anchorButtons) {
@@ -206,8 +206,10 @@ migrationLedgerButton.addEventListener("click", () => {
 function render() {
   const data = snapshot;
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
-  const done = data.ready && complete.has(data.status);
-  const stopped = data.ready && resumable.has(data.status);
+  const stopped = data.ready && (data.resumable || showReview || data.status === "checker_failed");
+  const done = data.ready && !stopped && complete.has(data.status);
+  element(".demo-badge").textContent = savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
+  element("#elapsed").style.display = savedView && data.ready ? "none" : "";
   element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : "移行を準備中";
   element(".run-detail").textContent = data.run_id ? `Run ID ${data.run_id} · ${data.target || ""}` : "実行情報を取得中";
   element(".run-detail").title = data.worktree_path || "";
@@ -218,7 +220,7 @@ function render() {
   reviewButton.textContent = showReview ? "判断が必要です" : "同じ実行を再開";
   if (showReview) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
-  reviewButton.hidden = !stopped && !(data.generating_anchors && resumable.has(data.status));
+  reviewButton.hidden = !showReview && !((data.ready || data.generating_anchors) && data.resumable);
   const current = data.status === "checker_needs_review" && !showReview ? 5 : stage[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
   const completed = data.completed_capsules ?? 0;
@@ -294,9 +296,21 @@ function render() {
 }
 
 function addEvent(data) {
+  if (savedView && !data.ready && !archived.length) return;
   const title = describe(data);
-  const detail = data.message || (data.ready ? data.error || data.review_error : "");
-  const key = `${title}\n${detail || ""}`;
+  const detail = [data.message || (data.ready ? data.error || data.review_error : "")];
+  if (data.ready) {
+    const logs = [];
+    for (const [label, code, log] of [
+      ["ビルド", data.build_exit_code, data.build_log_path],
+      ["チェッカー", data.checker_exit_code, data.checker_log_path],
+    ]) {
+      if (Number.isInteger(code)) detail.push(`${label}の終了コード ${code}`);
+      if (log) logs.push(`${label}ログ ${log}`);
+    }
+    detail.push(...logs);
+  }
+  const key = [title, ...detail].join("\n");
   if (key === previousLog) return;
   previousLog = key;
   const row = document.createElement("div");
@@ -310,12 +324,12 @@ function addEvent(data) {
   const strong = document.createElement("strong");
   strong.textContent = title;
   text.append(strong);
-  if (detail) text.append(document.createElement("br"), detail);
+  for (const line of detail) if (line) text.append(document.createElement("br"), line);
   row.append(time, pin, text);
   activity.append(row);
   archived.push(row);
   if (archived.length > 100) archived.shift().remove();
-  activity.scrollTop = activity.scrollHeight;
+  activity.scrollTop = savedView && archived.length === 1 ? 0 : activity.scrollHeight;
 }
 
 async function send(action) {

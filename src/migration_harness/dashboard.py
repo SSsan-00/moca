@@ -16,15 +16,14 @@ from typing import Any
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.workflow import (
-    migration_ledger, resume_with_junie, review_checker, run_observer, run_with_junie,
+    _load_saved_run, can_resume_run, migration_ledger, resume_with_junie, review_checker, run_observer, run_with_junie,
 )
 
 
-RESUMABLE = {"checker_needs_review", "checker_failed", "build_failed", "junie_failed", "interrupted"}
 PROGRESS_FIELDS = (
     "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule",
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
-    "build_exit_code", "checker_exit_code", "checker_log_path", "error",
+    "build_exit_code", "build_log_path", "checker_exit_code", "checker_log_path", "error",
 )
 
 
@@ -56,7 +55,10 @@ class Dashboard:
                 self.publish(state)
 
     def ready(self, config: dict[str, Any], result: dict[str, Any], message: str = "") -> None:
-        state = {**self.state, "ready": True, "status": result["status"], "message": message}
+        state = {
+            **self.state, "ready": True, "status": result["status"], "message": message,
+            "resumable": can_resume_run(config, result),
+        }
         if result["status"] == "checker_needs_review":
             try:
                 state["review"] = review_checker(config, result["run_id"], None, None)
@@ -71,7 +73,7 @@ class Dashboard:
                 not self.state.get("ready")
                 or action.get("revision") != self.revision
                 or (generating_anchors and not self.state.get("worktree_path"))
-                or (not generating_anchors and self.state.get("status") not in RESUMABLE)
+                or (action["action"] == "resume" and not self.state.get("resumable"))
                 or (action["action"] == "accept" and self.state.get("status") != "checker_needs_review")
             ):
                 return False
@@ -81,7 +83,9 @@ class Dashboard:
             })
             return True
 
-    def server(self, config: dict[str, Any], html: bytes, script: bytes) -> ThreadingHTTPServer:
+    def server(
+        self, config: dict[str, Any], html: bytes, script: bytes, anchor_reference: Path | None,
+    ) -> ThreadingHTTPServer:
         dashboard = self
         # ポート番号だけで操作できないようにし、他サイトからのPOSTも拒否する。
         prefix = "/" + secrets.token_urlsafe(24) + "/"
@@ -236,7 +240,7 @@ class Dashboard:
                     self.send_error(409)
 
             def send_anchored_comparison(self, action: dict[str, Any]) -> None:
-                if config.get("diff_viewer_anchor_reference") is None:
+                if anchor_reference is None:
                     self.send_body(409, "text/plain; charset=utf-8", "設定ファイルで参照ワークスペースJSONを指定してください。".encode())
                     return
                 # ブラウザーを閉じても端末側は結果を保存できる。応答は要求元だけに返す。
@@ -268,24 +272,35 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
     html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
     if not marker:
         raise ValueError("progress dashboard template is missing its script marker")
-    anchor_reference = config.get("diff_viewer_anchor_reference")
-    anchor_option = " data-anchor-reference" if anchor_reference is not None else ""
-    html = html.replace('<html lang="ja">', f'<html lang="ja" data-live{anchor_option}>')
-    html += '<script src="dashboard.js" defer></script></body></html>'
     view = Dashboard()
-    view.publish({"status": "preparing", "unit_id": unit_id, "run_id": run_id})
-    with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
+    anchor_reference = config.get("diff_viewer_anchor_reference")
+    options = " data-live"
+    saved = None
+    if run_id is None:
+        view.publish({"status": "preparing", "unit_id": unit_id})
+    else:
+        _, _, saved, _ = _load_saved_run(config, run_id)
+        view.observe(saved)
+        view.ready(config, saved)
+        options += " data-saved"
+        if not view.state["resumable"]:
+            anchor_reference = None
+    if anchor_reference is not None:
+        options += " data-anchor-reference"
+    html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
+    html += '<script src="dashboard.js" defer></script></body></html>'
+    with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes(), anchor_reference) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         token = run_observer.set(view.observe)
         try:
             # Junieは起動元の端末を必要とするため、HTTPスレッドは操作をキューに渡す。
-            if run_id is None:
+            if saved is None:
                 assert unit_id is not None
                 result = run_with_junie(config, unit_id)
+                view.ready(config, result)
             else:
-                result = resume_with_junie(config, run_id)
-            view.ready(config, result)
+                result = saved
             while True:
                 try:
                     action = view.actions.get(timeout=0.25)

@@ -892,7 +892,8 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
     command = ["dotnet", "build"]
 
     record.update(status="building", build_exit_code=None, build_log_path=str(log_path))
-    record.pop("error", None)
+    for key in ("error", "checker_exit_code", "checker_log_path", "review_file_hashes"):
+        record.pop(key, None)
     _write_run_record(record_path, record)
     print(f"Building in {worktree} (log: {log_path})", flush=True)
     try:
@@ -932,10 +933,13 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
     }
 
 
-def _run_checker(command: list[str], result: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+def _run_checker(
+    command: list[str], result: dict[str, Any], record: dict[str, Any],
+) -> tuple[dict[str, Any], list[CheckerFinding]]:
     run_path = Path(result["run_path"])
     record_path = run_path / "run.json"
     log_path = run_path / "checker.log"
+    findings = []
     record.update(status="checking", checker_exit_code=None, checker_log_path=str(log_path), review_file_hashes={})
     record.pop("error", None)
     _write_run_record(record_path, record)
@@ -955,14 +959,17 @@ def _run_checker(command: list[str], result: dict[str, Any], record: dict[str, A
         if completed.returncode > 0:
             worktree = Path(result["worktree_path"])
             try:
-                findings, _ = _checker_findings(log_path, worktree)
+                findings, unrecognized = _checker_findings(log_path, worktree)
                 record["review_file_hashes"] = {
                     path: _review_target_hash(worktree, Path(path))
                     for path in {finding.path for finding in findings}
                 }
-            except (OSError, RuntimeError, ValueError):
-                # 解析できないチェッカー出力も、元の終了コードとログを保持する。
-                pass
+                if unrecognized:
+                    record["error"] = "checker output includes unrecognized text. Inspect checker.log before resuming."
+            except (OSError, RuntimeError, ValueError) as exc:
+                record["error"] = str(exc)
+        elif completed.returncode < 0:
+            record["error"] = "checker did not complete normally"
     except OSError as exc:
         record.update(status="checker_failed", error=str(exc))
     except KeyboardInterrupt:
@@ -982,7 +989,7 @@ def _run_checker(command: list[str], result: dict[str, Any], record: dict[str, A
         "build_log_path": record.get("build_log_path"),
         "checker_exit_code": record["checker_exit_code"],
         "checker_log_path": str(log_path) if log_path.is_file() else None,
-    }
+    }, findings
 
 
 _CHECKER_FINDING = re.compile(
@@ -1009,33 +1016,36 @@ class CheckerFinding:
 
 def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFinding], bool]:
     worktree = worktree.resolve()
-    with log_path.open("rb") as stream:
-        output = stream.read(65_537)
-    if len(output) > 65_536:
-        raise ValueError("checker output is too large for automatic repair")
     findings = []
     unrecognized = False
-    for line in output.decode("utf-8-sig").splitlines():
-        if not line.strip():
-            continue
-        match = _CHECKER_FINDING.fullmatch(line.strip())
-        if match is None:
-            unrecognized = True
-            continue
-        path = Path(match["path"].replace("\\", "/"))
-        resolved = (worktree / path).resolve()
-        if not resolved.is_relative_to(worktree):
-            unrecognized = True
-            continue
-        relative = resolved.relative_to(worktree).as_posix()
-        # 行・列がずれても、同じ対象ファイルのルールとメッセージで指摘を識別する。
-        key = (match["rule"].casefold(), " ".join(match["message"].split()))
-        repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
-        review_key = (*key, relative, match["severity"].lower())
-        finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
-        findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, line.strip(), match["line"]))
-    if not findings or sum(len(finding.diagnostic) + 1 for finding in findings) > 8_000:
-        raise ValueError("checker output contains no supported findings or too much text for automatic repair")
+    with log_path.open(encoding="utf-8-sig") as stream:
+        for raw in stream:
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                match = _CHECKER_FINDING.fullmatch(line)
+                if match is None:
+                    unrecognized = True
+                    continue
+                path = Path(match["path"].replace("\\", "/"))
+                try:
+                    resolved = (worktree / path).resolve()
+                except (OSError, RuntimeError, ValueError):
+                    unrecognized = True
+                    continue
+                if not resolved.is_relative_to(worktree):
+                    unrecognized = True
+                    continue
+                relative = resolved.relative_to(worktree).as_posix()
+                # 行・列がずれても、同じ対象ファイルのルールとメッセージで指摘を識別する。
+                key = (match["rule"].casefold(), " ".join(match["message"].split()))
+                repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
+                review_key = (*key, relative, match["severity"].lower())
+                finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
+                findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, line, match["line"]))
+    if not findings:
+        raise ValueError("checker output contains no supported findings")
     return findings, unrecognized
 
 
@@ -1099,7 +1109,6 @@ def _repair_target(
 
 def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
-    *, build_first: bool = True,
 ) -> dict[str, Any]:
     run_path = Path(result["run_path"])
     worktree = Path(result["worktree_path"])
@@ -1110,26 +1119,28 @@ def _verify_worktree(
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
     while True:
-        verified = _build_worktree(config, result, record) if build_first else result
+        verified = _build_worktree(config, result, record)
         if command is None or record["status"] == "build_failed":
             return verified
-        checked = _run_checker(command, verified, record)
-        if checked["status"] != "checker_needs_review" or (not limit and not record.get("checker_reviews")):
+        checked, findings = _run_checker(command, verified, record)
+        if (
+            checked["status"] != "checker_needs_review" or checked["error"]
+            or (not limit and not record.get("checker_reviews"))
+        ):
             return checked
         try:
-            if checked["checker_exit_code"] <= 0:
-                raise ValueError("checker did not complete normally")
-            findings, unrecognized = _checker_findings(run_path / "checker.log", worktree)
             accepted = _accepted_findings(record, findings, record.get("review_file_hashes", {}))
             remaining = [finding for finding in findings if finding.finding_id not in accepted]
             if not remaining:
-                if unrecognized:
-                    raise ValueError("checker output includes unrecognized text that cannot be accepted")
                 record["status"] = "checker_accepted"
                 _write_run_record(record_path, record)
                 return {**checked, "status": record["status"]}
             if not limit:
                 return checked
+            if (run_path / "checker.log").stat().st_size > 65_536:
+                raise ValueError("checker output is too large for automatic repair")
+            if sum(len(finding.diagnostic) + 1 for finding in remaining) > 8_000:
+                raise ValueError("checker findings contain too much text for automatic repair")
             reported_paths = {Path(finding.path) for finding in remaining}
             if not reported_paths.issubset(targets):
                 raise ValueError("checker reported a finding outside the configured migration targets")
@@ -1159,7 +1170,6 @@ def _verify_worktree(
             record.update(status="checker_needs_review", error="repair interrupted; inspect Junie's workspace")
             _write_run_record(record_path, record)
             raise RunInterrupted(record["run_id"]) from None
-        build_first = True
 
 
 def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
@@ -1386,7 +1396,7 @@ def review_checker(
     if record.get("status") not in allowed_status or (record.get("checker_exit_code") or 0) <= 0:
         raise ValueError("run has no checker findings to review")
     log_path = run_path / "checker.log"
-    if log_path.is_symlink():
+    if log_path.is_symlink() or not log_path.is_file():
         raise ValueError("checker log must be a regular file inside the run directory")
     findings, unrecognized = _checker_findings(log_path, worktree)
     # 旧版のRunは最後に反映した移行先のハッシュで照合する。
@@ -1427,14 +1437,25 @@ def review_checker(
     }
 
 
+_BUILD_RESUME_STATUSES = {"junie_finished", "building", "build_failed", "repairing"}
+_CHECKER_RESUME_STATUSES = {"build_succeeded", "checking", "checker_needs_review", "checker_failed"}
+_JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrupted"}
+
+
+def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
+    status = record.get("status")
+    if status in _CHECKER_RESUME_STATUSES:
+        return config["checker_command"] is not None and record.get("build_exit_code") == 0
+    return status in _BUILD_RESUME_STATUSES or status in _JUNIE_RESUME_STATUSES
+
+
 def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     run_path, worktree_path, record, unit = _load_saved_run(config, run_id)
-    build_only = record.get("status") in {"junie_finished", "building", "build_failed", "repairing"}
-    checker_only = record.get("status") in {"build_succeeded", "checking", "checker_needs_review", "checker_failed"}
-    if checker_only and (config["checker_command"] is None or record.get("build_exit_code") != 0):
-        raise ValueError("resuming the checker requires a successful build and a checker command")
-    if not (build_only or checker_only) and record.get("status") not in {"prepared", "junie_running", "junie_failed", "interrupted"}:
-        raise ValueError(f"run is not resumable from status {record.get('status')!r}")
+    status = record.get("status")
+    if not can_resume_run(config, record):
+        if status in _CHECKER_RESUME_STATUSES:
+            raise ValueError("resuming the checker requires a successful build and a checker command")
+        raise ValueError(f"run is not resumable from status {status!r}")
 
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
     if max_steps is not None and (isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1):
@@ -1457,7 +1478,7 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         context_paths.append(str(context_path))
 
     completed_capsules = record.get("completed_capsules", 0)
-    migration_complete = build_only or checker_only
+    migration_complete = status in _BUILD_RESUME_STATUSES or status in _CHECKER_RESUME_STATUSES
     if (
         not isinstance(completed_capsules, int)
         or (completed_capsules != len(context_paths) if migration_complete else not 0 <= completed_capsules < len(context_paths))
@@ -1479,12 +1500,7 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "source_boundary_review_required": record["source_boundary_review_required"],
         "max_context_chars": record["max_context_chars"],
     }
-    if checker_only:
-        # 人が修正した後に再開する場合も、修正後の成果物をチェッカーに渡す。
-        return _verify_worktree(
-            config, unit, result, record, build_first=bool(record.get("repair_history") or record.get("checker_reviews")),
-        )
-    if build_only:
+    if migration_complete:
         return _verify_worktree(config, unit, result, record)
     _validate_junie_execution()
     record.pop("error", None)
