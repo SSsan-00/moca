@@ -140,6 +140,22 @@ worktreeと対象ファイルがそろったら、進捗ダッシュボード上
 
 公開の進捗デモでは、同じ画面内で模擬データの比較とJSONのダウンロードを試せます。「人の確認待ち」になったら、画面上部と確認モーダルのどちらから開いても右ペインに指摘行を表示します。デモHTMLをブラウザーで直接開いた場合は、ダウンロードされたJSONをViewerの **インポート** から読み込みます。
 
+#### Razorページに複数の指摘がある例
+
+サンプルのチェッカーが次の順で指摘を出した場合、比較ツールは操作に応じて右ペインの表示位置を選びます。行番号は各ファイル内の番号です。
+
+```text
+MIG401 Pages/Review.cshtml.cs:5 warning: Confirm PageModel return value.
+MIG402 Pages/Review.cshtml:3 warning: Confirm rendered result.
+```
+
+| 操作 | 右ペインの表示位置 |
+| --- | --- |
+| 2件とも未判断の状態で、画面上部から開く | `Pages/Review.cshtml.cs` の5行目 |
+| 確認モーダルで `MIG402` を選んで開く | `Pages/Review.cshtml` の3行目 |
+| 確認モーダルで `MIG401` を選んで開く | `Pages/Review.cshtml.cs` の5行目 |
+| `MIG401` を **問題なしとして記録** し、画面上部から開く | `Pages/Review.cshtml` の3行目 |
+
 ### Junieでアンカー付きの比較JSONを作る
 
 手動アンカーを含む既存のワークスペースJSONをDiff Viewerからエクスポートします。ダッシュボードから使う場合は、設定ファイルに参照先を追加します。相対パスの基準は設定ファイルのあるフォルダーです。
