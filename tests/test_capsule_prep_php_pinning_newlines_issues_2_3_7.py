@@ -116,6 +116,35 @@ class CapsulePreparationTests(HarnessCase):
         ]
         self.assertEqual(covered_lines, list(range(1, len(source_lines) + 1)))
 
+    def test_multiple_rules_and_reference_pairs_include_complete_files_in_each_capsule(self):
+        self.php.write_bytes(b"<?php\n" + b"echo 100;\n" * 100)
+        shared_inputs = [
+            {"path": "common.md", "role": "migration_rules"},
+            {"path": "razor.md", "role": "migration_rules"},
+            {"path": "orders/example.php", "role": "reference_php", "shared": True},
+            {"path": "orders/Example.cs", "role": "reference_csharp", "shared": True},
+            {"path": "search/example.php", "role": "reference_php", "shared": True},
+            {"path": "search/Example.cshtml", "role": "reference_razor", "shared": True},
+        ]
+        for index, item in enumerate(shared_inputs):
+            path = self.project / item["path"]
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(f"first {index}\nlast {index}".encode("ascii"))
+
+        config, result, manifest = self.prepare({**PHP, "end_line": 101}, *shared_inputs)
+
+        self.assertEqual(config["max_repair_attempts"], 2)
+        self.assertGreater(result["capsule_count"], 1)
+        self.assertEqual(
+            [(entry["path"], entry["start_line"], entry["end_line"]) for entry in manifest["shared_sources"]],
+            [(item["path"], 1, 2) for item in shared_inputs],
+        )
+        for part in manifest["parts"]:
+            self.assertEqual([entry["path"] for entry in part["sources"]], [PHP["path"]])
+            context = Path(part["path"]).read_text(encoding="utf-8")
+            for index in range(len(shared_inputs)):
+                self.assertIn(f"     1 | first {index}\n     2 | last {index}", context)
+
     # 中断と再開をまたいで、各カプセルに同じ共通資料が含まれることを検証する。
     def test_shared_rules_and_constraints_survive_interruption_and_resume(self):
         long_line = "$value = '" + "abcd" * 655 + "';"

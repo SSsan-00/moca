@@ -8,7 +8,7 @@ description: WindowsでPHPからC#への移行ハーネスをセットアップ�
 ハーネスのチェックアウトから `docs/windows-user-guide.md` と `harness.example.toml` を読み、利用者の案件に合わせた設定案と次の画面操作を案内する。既存の `harness.local.toml` があれば、その内容に沿って必要な変更箇所を示す。
 
 1. アプリのGitリポジトリ、移行元PHP、書き換えるC#やRazor、ビルド対象を確認する。ルールや独自スクリプトがある場合は、ファイルと起動方法を確認する。
-2. `source`、`target` または `targets`、必要に応じて `[build].project` を使う。ルールは `[[units.inputs]]` の `role = "migration_rules"` と実在する行範囲で登録する。チェッカーの実行ファイル名と引数を `[checker].command` の個別要素にする。
+2. `source`、`target` または `targets`、必要に応じて `[build].project` を使う。ルールはファイルごとに `[[units.inputs]]` の `role = "migration_rules"` で登録する。移行済みの実装例は元PHPと対応するC#／Razorを並べ、各ファイルに `shared = true` を指定する。ルールと共通資料は行範囲を省略すると全文が渡る。チェッカーの実行ファイル名と引数を `[checker].command` の個別要素にする。
 3. PHPとルールは準備時のアプリフォルダから読み込まれ、ビルドとチェッカーは基準コミットから作るworktreeで動く。保存先と基準コミットを確認し、初回の準備、実行、中断後の再開をダッシュボードの表示に合わせて案内する。
 
 このスキルはWindowsでの操作を案内する。移行実行中の案件固有ルールは設定ファイルの `migration_rules` から渡す。

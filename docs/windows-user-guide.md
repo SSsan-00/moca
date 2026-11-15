@@ -35,15 +35,11 @@ py -3.11 -m venv .venv
 
 作業ツリーは既定でアプリの現在の `HEAD` から作ります。別のブランチ、タグ、コミットで作る場合は、**TOMLを直接編集** で `[project]` に `base_ref` を設定します。PHP原文と参照資料は準備時点のアプリフォルダから読み取ります。ビルド対象やチェッカースクリプト、既存の移行先ファイルは基準コミットに含めておきます。移行先には新規ファイルも指定できます。
 
-## 3. 移行ルールと独自チェッカーを追加する
+## 3. 移行ルール、参考実装、独自チェッカーを追加する
 
-プロジェクト固有のルールは、アプリ側の `docs/migration-rules.md` などに保存します。たとえば既存の共通メソッドへの対応、文字コードの扱い、画面の表示条件など、対象処理で使う規約と具体例を書きます。行数は次のように取得できます。
+プロジェクト固有のルールは、アプリ側のMarkdownファイルに保存します。たとえば共通メソッドの使い方を `docs/migration/common.md`、画面の表示条件やRazorの規約を `docs/migration/razor.md` に書きます。
 
-```powershell
-@(Get-Content -LiteralPath 'C:\work\LegacyApp\docs\migration-rules.md' -Encoding UTF8).Count
-```
-
-**TOMLを直接編集** で、フォームが作った設定に詳細を追加します。既存の `[project]`、`[build]`、`[checker]` はそれぞれ同じブロックを編集します。`[[units.inputs]]` は適用する `[[units]]` の直後に追加します。下の例で、パスと `end_line` は実際の案件に合わせます。
+**TOMLを直接編集** で、フォームが作った設定に詳細を追加します。既存の `[project]`、`[build]`、`[checker]` はそれぞれ同じブロックを編集します。`[[units.inputs]]` は適用する `[[units]]` の下に、ファイルごとに追加します。パスは実際の案件に合わせます。
 
 ```toml
 [project]
@@ -56,7 +52,7 @@ project = "src/Web/Web.csproj"
 
 [checker]
 command = ["py", "-3.11", "-X", "utf8", "tools/check_migration.py"]
-max_repair_attempts = 0
+max_repair_attempts = 2
 
 [[units]]
 id = "メニュー"
@@ -65,12 +61,14 @@ targets = ["src/Web/Pages/Menu.cshtml.cs", "src/Web/Pages/Menu.cshtml"]
 
 [[units.inputs]]
 role = "migration_rules"
-path = "docs/migration-rules.md"
-start_line = 1
-end_line = 24
+path = "docs/migration/common.md"
+
+[[units.inputs]]
+role = "migration_rules"
+path = "docs/migration/razor.md"
 ```
 
-- `role = "migration_rules"` の指定行は、この移行単位の全カプセルに同梱されます。既存のC#の実装例なども毎回必要なら、別の `[[units.inputs]]` にその行範囲を指定して `shared = true` を加えます。
+- `role = "migration_rules"` は、Junieがこの移行単位のどのカプセルを処理するときも参照する規約です。例のように行範囲を省略すると、各ルールファイルの全文が渡ります。
 - `[build].project` は作業ツリーのルートからの相対パスです。`.csproj`、`.sln`、`.slnx` を使えます。省略時はルートで `dotnet build` を実行します。
 - `[checker].command` はアプリ全体の設定です。実行ファイルと引数を配列の別々の要素にします。ビルド成功後に作業ツリーのルートで実行されるため、スクリプトが依存するファイルやランタイムもその環境から利用できるようにします。
 
@@ -80,9 +78,37 @@ end_line = 24
 MIG101 src/Web/Pages/Menu.cshtml.cs:12 warning: 共通メソッドを使ってください
 ```
 
-`max_repair_attempts = 0` では、指摘を保存して人の確認を待ちます。正の整数にすると、その回数までJunieによる自動修正を試し、その都度ビルドとチェッカーを実行します。自動修正に渡す指摘は設定済みの移行先を指す必要があります。指摘と混ざるサマリーなどの出力は、必要に応じて別ログに分けます。
+`max_repair_attempts` を省略すると、1つのRunにつき最大2回の自動修正を試み、その都度ビルドとチェッカーを実行します。`0` を指定すると指摘を保存して人の確認を待ちます。自動修正に渡す指摘は設定済みの移行先を指す必要があります。指摘と混ざるサマリーなどの出力は、必要に応じて別ログに分けます。
 
 文字コードが自動判定できないPHPは、`[[units]]` に `source_encoding = "euc-jp"` など、実際の文字コードを指定します。指定できる値は `auto`、`utf-8`、`utf-8-sig`、`euc-jp` です。
+
+### 移行済みのPHPとC#／Razorを参考にする
+
+元PHPと対応する移行済みファイルを、例ごとに同じフォルダに置きます。下の例を、上で設定した移行単位の `[[units.inputs]]` に続けて追加します。例ごとに元PHPと対応するC#／Razorを並べると、Junieがどのファイル同士を比較するか読み取れます。
+
+```toml
+[[units.inputs]]
+role = "reference_php"
+path = "docs/migration/examples/orders/orders.php"
+shared = true
+
+[[units.inputs]]
+role = "reference_csharp"
+path = "docs/migration/examples/orders/Orders.cshtml.cs"
+shared = true
+
+[[units.inputs]]
+role = "reference_php"
+path = "docs/migration/examples/search/search.php"
+shared = true
+
+[[units.inputs]]
+role = "reference_razor"
+path = "docs/migration/examples/search/Search.cshtml"
+shared = true
+```
+
+`shared = true` の参考資料は全カプセルに同梱されます。参考用のPHPは移行台帳の対象外です。ルールや参考資料の一部だけを渡す場合は、`start_line` と `end_line` を両方指定します。共通資料は毎回の入力上限に含まれるため、大きい実装例は必要な範囲に絞れます。
 
 ## 4. 独自スクリプトを使う
 
@@ -99,7 +125,7 @@ PowerShellのラッパーをチェッカーにする場合は、上の `[checker
 ```toml
 [checker]
 command = ["powershell.exe", "-NoProfile", "-File", "tools/check-migration.ps1"]
-max_repair_attempts = 0
+max_repair_attempts = 2
 ```
 
 ## 5. ダッシュボードから実行する

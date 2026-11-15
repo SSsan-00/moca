@@ -19,7 +19,7 @@ max_context_chars = 100000
 [checker]
 # 実行ファイル名と引数を個別に並べる。相対パスの基準はworktreeのルート。
 # command = ["py", "-3.11", "tools/check_migration.py"]
-# 0は確認のみ。正の整数を設定すると対応形式の指摘をJunieで修正する。
+# 既定はRunごとに最大2回。0なら自動修正せず人の確認に回す。
 # max_repair_attempts = 2
 
 [diff_viewer]
@@ -35,9 +35,7 @@ targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
 # 移行先が1ファイルの場合は、targetsの代わりに target = "Pages/Menu.cshtml.cs" を使う。
 # 文字コードの自動判定が曖昧なときは source_encoding = "euc-jp" などを指定する。
 
-# 参照資料が必要な場合は [[units.inputs]] を追加できる。行番号は1始まりで終了行も含む。
+# 移行ルールや共通の参考資料は、ファイルごとに追加する。行範囲の省略時は全文を渡す。
 # [[units.inputs]]
 # role = "migration_rules"
 # path = "docs/migration-rules.md"
-# start_line = 1
-# end_line = 10

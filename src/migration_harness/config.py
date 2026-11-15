@@ -76,7 +76,7 @@ def load_config(path: Path) -> dict[str, Any]:
     checker_command = checker.get("command")
     if "command" in checker:
         validate_checker_command(checker_command)
-    max_repair_attempts = checker.get("max_repair_attempts", 0)
+    max_repair_attempts = checker.get("max_repair_attempts", 2)
     if type(max_repair_attempts) is not int or max_repair_attempts < 0:
         raise ValueError("[checker].max_repair_attempts must be a non-negative integer")
 
@@ -169,7 +169,9 @@ def load_config(path: Path) -> dict[str, Any]:
                 raise ValueError(f"unit {unit['id']}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
             if not isinstance(shared, bool):
                 raise ValueError(f"unit {unit['id']}: input shared must be a boolean")
-            if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
+            if start is None and end is None and (role == "migration_rules" or shared):
+                start = 1
+            elif not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
                 raise ValueError(f"unit {unit['id']}: input line ranges must be positive and ordered")
             normalized_inputs.append({
                 "role": role,
