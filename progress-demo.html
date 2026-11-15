@@ -118,6 +118,13 @@
     .token-panel .run-titleline { flex-wrap: wrap; gap: 6px 10px; }
     .token-panel h1 { margin: 0; font-size: 20px; }
     .token-panel h2 { margin: 0; font-size: 15px; }
+    .token-overall { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+    .token-overall strong { font-size: 17px; }
+    .token-overall dl { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; }
+    .token-overall dl > div { display: flex; align-items: baseline; gap: 5px; }
+    .token-overall dd { margin: 0; }
+    .token-overall dt, .token-overall p { margin: 0; color: var(--muted); font-size: 12px; }
+    .token-overall :is(strong, dd, p) { font-variant-numeric: tabular-nums; }
     :root:not([data-live]) #token-status { display: none; }
     .token-panel .run-detail { overflow-wrap: anywhere; }
     .token-run-controls { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 8px 0; }
@@ -773,6 +780,14 @@
     <div class="panel token-panel">
       <header>
         <div class="run-titleline"><h1>Junieのトークン使用量</h1><span class="demo-badge" data-demo-only>完了時のサンプル</span></div>
+        <section class="token-overall" aria-labelledby="token-overall-title">
+          <h2 id="token-overall-title">全Runの合計 <strong id="token-overall-total">—</strong> トークン</h2>
+          <dl>
+            <div><dt>入力</dt><dd id="token-overall-input">—</dd></div>
+            <div><dt>出力</dt><dd id="token-overall-output">—</dd></div>
+          </dl>
+          <p id="token-overall-count"></p>
+        </section>
       </header>
       <section class="token-runs" aria-labelledby="token-runs-title">
         <div class="token-run-heading"><h2 id="token-runs-title">Run一覧</h2><span id="token-run-count"></span></div>
@@ -898,7 +913,8 @@ function bindTokenRuns(renderRun) {
   const countLabel = document.querySelector("#token-run-count");
   const message = document.querySelector("#token-run-message");
   const dates = new Intl.DateTimeFormat("ja-JP", {dateStyle: "short", timeStyle: "short"});
-  let runs = [];
+  const numbers = new Intl.NumberFormat("ja-JP");
+  let runs;
   let active;
   let preferredId;
   let displayedId;
@@ -906,13 +922,28 @@ function bindTokenRuns(renderRun) {
 
   function render() {
     const query = filter.value.trim().toLocaleLowerCase();
-    const records = runs.filter(run => run.run_id !== active?.run_id);
+    const records = (runs ?? []).filter(run => run.run_id !== active?.run_id);
     if (active) records.push(active);
     const date = run => Date.parse(run.created_at) || 0;
-    const total = run => {
-      const rows = run.token_usage || [];
-      return rows.some(row => row.responses) ? rows.reduce((sum, row) => sum + row.input + row.output, 0) : -1;
-    };
+    const totals = new Map();
+    let input = 0;
+    let output = 0;
+    for (const run of records) {
+      const usage = (run.token_usage || []).filter(row => row.responses > 0);
+      if (!usage.length) continue;
+      const runInput = usage.reduce((sum, row) => sum + row.input, 0);
+      const runOutput = usage.reduce((sum, row) => sum + row.output, 0);
+      totals.set(run, runInput + runOutput);
+      input += runInput;
+      output += runOutput;
+    }
+    const total = run => totals.get(run) ?? -1;
+    const hasOverallUsage = runs && totals.size > 0;
+    document.querySelector("#token-overall-total").textContent = hasOverallUsage ? numbers.format(input + output) : "—";
+    document.querySelector("#token-overall-input").textContent = hasOverallUsage ? numbers.format(input) : "—";
+    document.querySelector("#token-overall-output").textContent = hasOverallUsage ? numbers.format(output) : "—";
+    document.querySelector("#token-overall-count").textContent = runs
+      ? `記録あり ${numbers.format(totals.size)} / ${numbers.format(records.length)} 件` : "";
     const matching = records.filter(run => [run.run_id, run.unit_id].some(text => text.toLocaleLowerCase().includes(query)));
     matching.sort((a, b) => sort.value === "oldest" ? date(a) - date(b)
       : (sort.value === "usage" ? total(b) - total(a) : 0) || date(b) - date(a));
@@ -936,7 +967,7 @@ function bindTokenRuns(renderRun) {
       name.append(button);
       row.insertCell().textContent = date(run) ? dates.format(date(run)) : "—";
       const count = total(run);
-      row.insertCell().textContent = count < 0 ? "未記録" : count.toLocaleString("ja-JP");
+      row.insertCell().textContent = count < 0 ? "未記録" : numbers.format(count);
       return row;
     });
     body.replaceChildren(...rows);
@@ -954,7 +985,7 @@ function bindTokenRuns(renderRun) {
   filter.addEventListener("input", render);
   sort.addEventListener("change", render);
   return {
-    setRuns(records, reason = "") { runs = records; error = reason; render(); },
+    setRuns(records, reason = "") { runs = reason ? undefined : records; error = reason; render(); },
     setActive(run) {
       if (JSON.stringify(run) === JSON.stringify(active)) return;
       active = run;
