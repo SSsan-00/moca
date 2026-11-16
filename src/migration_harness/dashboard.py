@@ -19,6 +19,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
+from migration_harness.errors import format_error
 from migration_harness.files import harness_asset
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.settings_form import build_settings_draft
@@ -34,6 +35,7 @@ PROGRESS_FIELDS = (
     "build_exit_code", "build_log_path", "checker_exit_code", "checker_log_path", "error",
     "script_phase", "script_logs",
 )
+_ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
 
 def _read_settings(path: Path) -> tuple[bytes, str]:
@@ -99,15 +101,26 @@ class Dashboard:
         """処理が一区切りついた時点の操作可否とレビュー状態を公開する。"""
         state = {
             **self.state, "ready": True, "status": result["status"], "message": message,
+            "error_details": "",
             "resumable": can_resume_run(config, result),
             "diff_viewer_enabled": bool(config.get("diff_viewer_html")),
         }
+        state.pop("review_error", None)
         if result["status"] == "checker_needs_review":
             try:
                 state["review"] = review_checker(config, result["run_id"], None, None)
-            except (OSError, ValueError, RuntimeError) as exc:
-                state["review_error"] = str(exc)
+            except _ERRORS as exc:
+                state["review_error"] = format_error(exc)
         self.publish(state)
+
+    def failed(self, error: BaseException) -> None:
+        """Keep the workspace usable after an operation or saved-state failure."""
+        details = format_error(error)
+        self.publish({
+            **self.state, "status": self.state.get("status", "idle"), "ready": True,
+            "resumable": self.state.get("resumable", False), "generating_anchors": False, "error_details": details,
+            "message": "操作を完了できませんでした。設定や実行ログを確認してください。\n" + details,
+        })
 
     def submit(self, action: dict[str, Any]) -> bool:
         """古い画面からの操作や、処理中の重複実行を拒否する。"""
@@ -124,6 +137,7 @@ class Dashboard:
             self.actions.put_nowait(action)
             self.publish({
                 **self.state, "ready": False, "message": "", "generating_anchors": generating_anchors,
+                "error_details": "",
             })
             return True
 
@@ -177,8 +191,8 @@ class Dashboard:
                     if run_id and dashboard.state.get("worktree_path"):
                         try:
                             ledger = migration_ledger(config, run_id)
-                        except (OSError, ValueError, KeyError, TypeError) as exc:
-                            self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
+                        except _ERRORS as exc:
+                            self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
                         else:
                             self.send_body(200, "application/json", json.dumps(ledger, ensure_ascii=False).encode("utf-8"))
                     else:
@@ -199,15 +213,15 @@ class Dashboard:
                     for record_path in newest:
                         try:
                             _, _, record, _ = _load_saved_run(workspace_config, record_path.parent.name)
-                        except (OSError, ValueError, TypeError):
+                        except _ERRORS:
                             continue
                         keys = ("run_id", "unit_id", "created_at", "token_usage") if include_usage else ("run_id", "unit_id")
                         runs.append({key: record[key] for key in keys if key in record})
                         if not include_usage and len(runs) == 30:
                             break
                     body = json.dumps({"units": units, "runs": runs}).encode()
-                except OSError:
-                    message = "保存済みの実行を読み込めませんでした。保存先を確認して、実行タブを開き直してください。"
+                except _ERRORS as exc:
+                    message = "保存済みの実行を読み込めませんでした。保存先を確認して、実行タブを開き直してください。\n" + format_error(exc)
                     self.send_body(409, "text/plain; charset=utf-8", message.encode())
                     return
                 self.send_body(200, "application/json", body)
@@ -217,8 +231,9 @@ class Dashboard:
                     path = Path(config["config_path"])
                     data, version = _read_settings(path)
                     body = json.dumps({"path": str(path), "version": version, **build_settings_draft(data.decode("utf-8"))}).encode()
-                except (KeyError, OSError, UnicodeError):
-                    self.send_body(409, "text/plain; charset=utf-8", "設定を読み込めませんでした。ファイルの場所と文字コードを確認してください。".encode())
+                except _ERRORS as exc:
+                    message = "設定を読み込めませんでした。ファイルの場所と文字コードを確認してください。\n" + format_error(exc)
+                    self.send_body(409, "text/plain; charset=utf-8", message.encode())
                 else:
                     self.send_body(200, "application/json", body)
 
@@ -248,9 +263,9 @@ class Dashboard:
                                 "base-uri 'none'; frame-ancestors 'self'"
                             ),
                         })
-                except (OSError, RuntimeError, ValueError) as exc:
+                except _ERRORS as exc:
                     headers = {"X-Frame-Options": "SAMEORIGIN"} if extension == "html" else None
-                    self.send_body(409, "text/plain; charset=utf-8", f"比較ツールを開けませんでした。\n{exc}".encode("utf-8"), headers)
+                    self.send_body(409, "text/plain; charset=utf-8", f"比較ツールを開けませんでした。\n{format_error(exc)}".encode("utf-8"), headers)
 
             def send_events(self) -> None:
                 """SSEの再接続では、受信済みの連番より新しいイベントを再送する。"""
@@ -322,8 +337,8 @@ class Dashboard:
                         snapshot_id = create_snapshot(comparison_config, run_id, focus=action.get("focus"))
                         response = json.dumps({"run_id": run_id, "id": snapshot_id}).encode("utf-8")
                         self.send_body(201, "application/json", response)
-                    except (OSError, RuntimeError, ValueError) as exc:
-                        self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
+                    except _ERRORS as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
                     return
                 try:
                     if type(action.get("revision")) is not int:
@@ -356,8 +371,8 @@ class Dashboard:
                         return
                     try:
                         draft = build_settings_draft(action["content"], action["changes"])
-                    except (TOMLKitError, ValueError) as exc:
-                        self.send_body(409, "text/plain; charset=utf-8", str(exc).encode())
+                    except _ERRORS as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
                     else:
                         self.send_body(200, "application/json", json.dumps(draft).encode())
                     return
@@ -374,8 +389,8 @@ class Dashboard:
                         config.pop("toml_checker_command", None)
                         config.update(updated)
                         dashboard.publish({"status": "idle", "ready": True, "settings_revision": dashboard.revision + 1})
-                except (KeyError, OSError, ValueError) as exc:
-                    message = f"設定を保存できませんでした。内容を確認してください。\n{exc}"
+                except _ERRORS as exc:
+                    message = f"設定を保存できませんでした。内容を確認してください。\n{format_error(exc)}"
                     self.send_body(409, "text/plain; charset=utf-8", message.encode())
                 else:
                     version = hashlib.sha256(action["content"].encode()).hexdigest()
@@ -393,8 +408,8 @@ class Dashboard:
                     return
                 try:
                     run_id, snapshot_id, count = reply.result()
-                except (OSError, ValueError, RuntimeError) as exc:
-                    self.send_body(409, "text/plain; charset=utf-8", str(exc).encode())
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
                     return
                 self.send_body(201, "application/json", json.dumps({
                     "run_id": run_id, "id": snapshot_id, "count": count,
@@ -407,7 +422,10 @@ class Dashboard:
         return server
 
 
-def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None) -> dict[str, Any] | None:
+def run_dashboard(
+    config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None,
+    config_error: str | None = None,
+) -> dict[str, Any] | None:
     """サーバーを開き、対話が必要な作業を起動元の端末で処理する。"""
     if unit_id is not None and run_id is not None:
         raise ValueError("choose a migration unit or a saved Run ID")
@@ -419,13 +437,25 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
     view = Dashboard()
     options = " data-live"
     saved = None
-    if run_id is None and unit_id is not None:
+    if config_error is not None:
+        view.publish({
+            "status": "idle", "ready": True, "error_details": config_error,
+            "message": "設定を読み込めませんでした。設定タブで確認して保存してください。\n" + config_error,
+        })
+        options += " data-workspace"
+    elif run_id is None and unit_id is not None:
         view.publish({"status": "preparing", "unit_id": unit_id})
     elif run_id is not None:
-        _, _, saved, _ = _load_saved_run(config, run_id)
-        view.observe(saved)
-        view.ready(config, saved)
-        options += " data-saved"
+        try:
+            _, _, saved, _ = _load_saved_run(config, run_id)
+            view.observe(saved)
+            view.ready(config, saved)
+        except _ERRORS as exc:
+            saved = None
+            view.failed(exc)
+            options += " data-workspace"
+        else:
+            options += " data-saved"
         if config.get("diff_viewer_html"):
             options += " data-viewer-enabled"
     else:
@@ -438,24 +468,32 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
         thread.start()
         token = run_observer.set(view.observe)
 
-        def show_script_failure(error: RunScriptError) -> dict[str, Any] | None:
-            if error.run_id is None:
-                view.publish({"status": "script_failed", "ready": True, "message": str(error)})
-                return None
-            _, _, failed, _ = _load_saved_run(config, error.run_id)
-            view.observe(failed)
-            view.ready(config, failed, str(error))
+        def show_failure(error: BaseException) -> dict[str, Any] | None:
+            failed = None
+            failed_run_id = getattr(error, "run_id", None) or view.state.get("run_id")
+            if failed_run_id:
+                try:
+                    _, _, failed, _ = _load_saved_run(config, failed_run_id)
+                    view.observe(failed)
+                    view.ready(config, failed)
+                except _ERRORS as load_error:
+                    view.failed(load_error)
+                    return None
+            elif isinstance(error, RunScriptError):
+                view.publish({"status": "script_failed"})
+            view.failed(error)
             return failed
 
         try:
             # Junieは起動元の端末を必要とするため、HTTPスレッドは操作をキューに渡す。
-            if unit_id is not None:
+            if unit_id is not None and config_error is None:
                 try:
                     result = run_with_junie(config, unit_id)
-                except RunScriptError as exc:
-                    result = show_script_failure(exc)
-                else:
                     view.ready(config, result)
+                except RunInterrupted as exc:
+                    result = show_failure(exc)
+                except _ERRORS as exc:
+                    result = show_failure(exc)
             else:
                 result = saved
             while True:
@@ -467,14 +505,15 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                     continue
                 if action["action"] == "anchors":
                     reply = action["reply"]
-                    source_run_id = result["run_id"]
                     try:
+                        source_run_id = view.state["run_id"]
                         path, count = generate_anchors(
                             config, source_run_id, focus=action.get("focus"),
                         )
                     except KeyboardInterrupt:
                         reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))
-                    except (OSError, ValueError, RuntimeError) as exc:
+                    except _ERRORS as exc:
+                        view.failed(exc)
                         reply.set_exception(exc)
                     else:
                         reply.set_result((source_run_id, path.stem, count))
@@ -497,23 +536,15 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
                             result = run_with_junie(config, action["unit_id"])
                         view.ready(config, result)
                     elif action["action"] == "accept":
-                        review_checker(config, result["run_id"], action["finding_id"], action["reason"])
+                        review_checker(config, view.state["run_id"], action["finding_id"], action["reason"])
                         view.ready(config, result, "判断理由を記録しました。")
                     else:
-                        result = resume_with_junie(config, result["run_id"])
+                        result = resume_with_junie(config, view.state["run_id"])
                         view.ready(config, result)
                 except RunInterrupted as exc:
-                    _, _, result, _ = _load_saved_run(config, exc.run_id)
-                    view.observe(result)
-                    view.ready(config, result)
-                except RunScriptError as exc:
-                    result = show_script_failure(exc)
-                except (OSError, ValueError, RuntimeError, CalledProcessError) as exc:
-                    message = f"操作を完了できませんでした。設定や実行ログを確認してください。{exc}"
-                    if result is not None and view.state.get("run_id") == result.get("run_id"):
-                        view.ready(config, result, message)
-                    else:
-                        view.publish({"status": "idle", "ready": True, "message": message})
+                    result = show_failure(exc)
+                except _ERRORS as exc:
+                    result = show_failure(exc)
         finally:
             run_observer.reset(token)
             with view.condition:

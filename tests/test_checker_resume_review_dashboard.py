@@ -775,7 +775,7 @@ target = "Search.cs"
         self.assertEqual(form["project"]["base_ref"], "stable")
         self.assertNotIn("inputs", form["units"][0])
         self.assertNotIn("source_encoding", form["units"][0])
-        self.assertNotIn("anchor_reference", form["diff_viewer"])
+        self.assertEqual(form["diff_viewer"]["anchor_reference"], "old.workspace.json")
         draft = build_settings_draft(content, {
             "project": {"base_ref": "main", "max_context_chars": "25000"},
             "junie": {"max_steps": "20"},

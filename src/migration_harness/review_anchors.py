@@ -91,10 +91,11 @@ def _reviewed_examples(config: dict[str, Any], run_id: str) -> list[dict[str, st
 
 def _automatic_examples(config: dict[str, Any], run_id: str) -> list[dict[str, str]]:
     if (reference := config.get("diff_viewer_anchor_reference")) is not None:
+        # 明示された資料の誤りを隠して、別の資料で生成を続けない。
         try:
             return _reference_examples(reference)
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"アンカーの参考ワークスペースJSONを読み込めません: {reference}\n{exc}") from exc
     return _reviewed_examples(config, run_id)
 
 

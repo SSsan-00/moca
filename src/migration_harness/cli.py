@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from migration_harness.config import load_config, validate_checker_command
+from migration_harness.errors import format_error
 from migration_harness.workflow import (
     VERIFIED_STATUSES, RunScriptError, migration_ledger, prepare_run, resume_with_junie, review_checker,
     review_migration_ranges, run_with_junie,
@@ -60,16 +61,25 @@ def main() -> None:
     """利用者の操作を振り分け、途中停止や入力エラーを終了コードで伝える。"""
     args = _parse_args()
     try:
+        try:
+            config = load_config(args.config)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
+            if args.command not in {"dashboard", "view"} and not getattr(args, "dashboard", False):
+                raise
+            from migration_harness.dashboard import run_dashboard
+
+            # 初回のdashboardは設定例から作り始める。既存設定の読み込み失敗は表示する。
+            first_setup = args.command == "dashboard" and isinstance(exc, FileNotFoundError) and not args.config.exists()
+            run_dashboard(
+                {"config_path": str(args.config.expanduser().resolve())},
+                config_error=None if first_setup else format_error(exc),
+            )
+            return
         if args.command == "dashboard":
             from migration_harness.dashboard import run_dashboard
 
-            try:
-                config = load_config(args.config)
-            except (OSError, ValueError):
-                config = {"config_path": str(args.config.expanduser().resolve())}
             run_dashboard(config)
             return
-        config = load_config(args.config)
         checker_command = getattr(args, "checker_command", None)
         if checker_command is not None:
             validate_checker_command(checker_command)
@@ -114,13 +124,12 @@ def main() -> None:
             result = resume_with_junie(config, args.run_id)
         completion = migration_ledger(config, result["run_id"])["completion"] if result.get("status") in VERIFIED_STATUSES else None
     except RunScriptError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {format_error(exc)}", file=sys.stderr)
         if exc.run_id is not None:
             print(f"Fix the script and resume Run {exc.run_id}.", file=sys.stderr)
         raise SystemExit(1) from exc
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
-        details = getattr(exc, "stderr", None)
-        print(f"error: {details.strip() if details else exc}", file=sys.stderr)
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, subprocess.CalledProcessError) as exc:
+        print(f"error: {format_error(exc)}", file=sys.stderr)
         raise SystemExit(2) from exc
     except KeyboardInterrupt as exc:
         run_id = getattr(exc, "run_id", None)

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from migration_harness.workflow import (
-    _input_encoding, _load_capsule_manifest, _load_saved_run, _pinned_php_sources, _read_pinned_php,
+    _input_encoding, _is_php_input, _load_capsule_manifest, _load_saved_run, _pinned_php_sources, _read_pinned_php,
     worktree_source_lock,
 )
 
@@ -58,7 +58,7 @@ def capture_workspace(
         encodings: dict[str, str] = {}
         for part in manifest["parts"]:
             for source in part["sources"]:
-                if Path(source["path"]).suffix.lower() == ".php":
+                if _is_php_input(source):
                     encodings.setdefault(source["path"], source["encoding"])
         legacy_paths = [(_inside_file(project, name), name, encoding) for name, encoding in encodings.items()]
     if not (sources or legacy_paths):
@@ -158,7 +158,8 @@ def review_html(config: dict[str, Any], workspace: bytes) -> bytes:
     """既存ViewerのJSON取込に比較データと初期表示位置を渡す。"""
     if not (viewer_html := config.get("diff_viewer_html")):
         raise ValueError("設定の差分ビューアーのHTMLを指定してください。")
-    path = _inside_file(Path(config["project_root"]), viewer_html)
+    # HTMLは設定で明示した場所から読み、アプリ外のViewerも利用できる。
+    path = (Path(config["project_root"]) / viewer_html).resolve()
     html = path.read_bytes()
     closing = list(re.finditer(rb"</body\s*>", html, flags=re.IGNORECASE))
     if not closing or b"workspace-import-file" not in html:

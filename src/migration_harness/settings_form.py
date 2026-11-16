@@ -17,7 +17,7 @@ _TABLE_FIELDS = {
     "build": ("project",),
     "checker": ("command", "max_repair_attempts"),
     "junie": ("max_steps",),
-    "diff_viewer": ("html", "enabled"),
+    "diff_viewer": ("html", "enabled", "anchor_reference"),
 }
 _NUMERIC_FIELDS = {
     "max_repair_attempts": (0, "自動修正回数"),

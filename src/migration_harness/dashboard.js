@@ -191,7 +191,7 @@ async function loadMigrationLedger() {
   const request = ++migrationLedgerRequest;
   try {
     const response = await fetch("migration-ledger", {cache: "no-store"});
-    if (!response.ok) throw new Error();
+    if (!response.ok) throw await responseError(response);
     const ledger = await response.json();
     if (request !== migrationLedgerRequest || ledger.run_id !== snapshot.run_id) return;
     migrationCompletion = ledger.completion;
@@ -201,13 +201,13 @@ async function loadMigrationLedger() {
       const url = new URL(`${comparisonPath(ledger.run_id, id)}.html`, document.baseURI);
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
     });
-  } catch {
+  } catch (error) {
     if (request !== migrationLedgerRequest) return;
     migrationCompletion = undefined;
     render();
     if (!migrationLedgerDialog.open) return;
     migrationLedgerMessage.hidden = false;
-    migrationLedgerMessage.textContent = "移行台帳を読み込めませんでした。画面を閉じてから、もう一度お試しください。";
+    migrationLedgerMessage.textContent = `移行台帳を読み込めませんでした。\n${error.message}`;
   }
 }
 
@@ -219,6 +219,11 @@ window.addEventListener("focus", () => {
   if (snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
 });
 
+async function responseError(response) {
+  // サーバーの診断を捨てず、HTMLのエラー本文も文字列として表示する。
+  return new Error(`HTTP ${response.status} ${response.statusText}\n${await response.text()}`);
+}
+
 async function workspaceRequest(path, payload) {
   const message = "操作できませんでした。接続と入力内容を確認して、もう一度お試しください。";
   let response;
@@ -226,11 +231,11 @@ async function workspaceRequest(path, payload) {
     response = await fetch(path, payload === undefined ? {cache: "no-store"} : {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
     });
-  } catch {
-    throw new Error(message);
+  } catch (error) {
+    throw new Error(`${message}\n${path}: ${error.message}`);
   }
   if (!response.ok) {
-    throw new Error(response.headers.get("Content-Type")?.startsWith("text/plain") ? await response.text() : message);
+    throw await responseError(response);
   }
   return response.json();
 }
@@ -260,8 +265,8 @@ workspaceTabs.addEventListener("harnesstab", async () => {
   try {
     const {runs} = await workspaceRequest("token-runs");
     if (request === tokenListRequest) tokenRuns.setRuns(runs);
-  } catch {
-    if (request === tokenListRequest) tokenRuns.setRuns([], "Run一覧を読み込めませんでした。タブを開き直してください。");
+  } catch (error) {
+    if (request === tokenListRequest) tokenRuns.setRuns([], `Run一覧を読み込めませんでした。\n${error.message}`);
   }
 });
 if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1);
@@ -317,7 +322,7 @@ function renderCheckerReview(data, showReview) {
   if (data.message === "判断理由を記録しました。" && nextPending !== -1) findings.selectedIndex = nextPending;
   else if (selected !== -1) findings.selectedIndex = selected;
   renderSelectedFinding();
-  showNotice(data.message || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
+  showNotice(data.message || (data.ready ? data.error : "") || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
   if (showReview && data.ready && !prompted && activeHarnessTab === 0) {
     prompted = true;
     openReview();
@@ -347,7 +352,7 @@ function render() {
   element("#elapsed").style.display = savedView && data.ready ? "none" : "";
   element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : data.status === "idle" ? "移行ハーネス" : "移行を準備中";
   element(".run-detail").textContent = data.run_id ? `Run ID ${data.run_id} · ${data.target || ""}` : "";
-  element("#workspace-progress-feedback").textContent = data.message || "";
+  element("#workspace-progress-feedback").textContent = data.message || (data.ready ? data.error || data.review_error : "") || "";
   element(".run-detail").title = data.worktree_path || "";
   let label = describe(data);
   if (verificationFinished && migrationCompletion) {
@@ -430,11 +435,11 @@ async function send(action) {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({action, revision: dashboardRevision, finding_id: findings.value, reason: note.value.trim()}),
     });
-    if (!response.ok) throw new Error();
-  } catch {
+    if (!response.ok) throw await responseError(response);
+  } catch (error) {
     submitting = false;
     syncActions();
-    const message = "操作を送信できませんでした。接続と実行状態を確認してから、もう一度お試しください。";
+    const message = `操作を送信できませんでした。\n${error.message}`;
     if (dialog.open) showNotice(message);
     else connection.textContent = message;
   }

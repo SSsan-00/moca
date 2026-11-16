@@ -327,3 +327,40 @@ class MultipleTargetsTest(HarnessCase):
             self.assertEqual(self.record()["repair_history"], [])
             self.assertEqual(self.resume(complete)["status"], "checker_succeeded")
         self.assertEqual(len(self.record()["repair_history"]), 1)
+
+    def test_junie_startup_failures_do_not_consume_a_repair_attempt(self):
+        self.resume(self.edit_with_junie(complete=False))
+        page = self.targets[1]
+        record = self.record()
+        record.update(status="checker_needs_review", build_exit_code=0, completed_capsules=1)
+        workflow._write_run_record(self.record_path, record)
+        self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
+        run_process = subprocess.run
+
+        def check(command, **kwargs):
+            if command[0] == "git":
+                return run_process(command, **kwargs)
+            if command[0] == "fixture-checker" and (self.worktree / page).read_text() != "ready":
+                kwargs["stdout"].write(f"RZ1 {page}:1 error: fix output\n".encode())
+                return subprocess.CompletedProcess(command, 1)
+            return subprocess.CompletedProcess(command, 0)
+
+        failures = [
+            junie_cli.JunieLaunchError(["junie"], str(self.worktree), None, FileNotFoundError("missing launcher")),
+            junie_cli.JunieSessionError(["junie"], 0, "JLine returned dumb"),
+        ]
+        with patch.object(workflow.subprocess, "run", side_effect=check):
+            for failure in failures:
+                with self.subTest(error=type(failure).__name__):
+                    def fail(*args, **kwargs):
+                        raise failure
+                    self.assertEqual(self.resume(fail)["status"], "checker_needs_review")
+                    self.assertEqual(self.record()["repair_history"], [])
+                    self.assertIn("repair_pending", self.record())
+
+            def finish(command, completion, token, targets, **kwargs):
+                targets[0].write_text("ready")
+                completion.write_text(token)
+                return 0
+            self.assertEqual(self.resume(finish)["status"], "checker_succeeded")
+        self.assertEqual(len(self.record()["repair_history"]), 1)

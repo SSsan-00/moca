@@ -24,6 +24,7 @@ from typing import Any, Iterator
 
 from . import junie_cli
 from .config import REFERENCE_ROLES
+from .errors import format_error
 from .files import harness_asset, has_symlink_component, sha256_file
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
@@ -59,13 +60,16 @@ def _target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:
 
 
 def _validate_inputs(root: Path, unit: dict[str, Any]) -> None:
-    """作業場所を作る前に入力ファイルがアプリ内にあることを確認する。"""
+    """作業場所を作る前に、設定で指定された入力ファイルを確認する。"""
     for source in unit["inputs"]:
         path = (root / source["path"]).resolve()
-        if not path.is_relative_to(root):
-            raise ValueError(f"input escapes project root: {source['path']}")
         if not path.is_file():
-            raise ValueError(f"input file not found: {source['path']}")
+            raise ValueError(f"input file not found: {path}")
+
+
+def _is_php_input(source: dict[str, Any]) -> bool:
+    """拡張子を問わずPHP用途を扱い、従来の.php入力・保存済みRunも引き続き扱う。"""
+    return source.get("role") in {"php", "reference_php"} or Path(source["path"]).suffix.lower() == ".php"
 
 
 def _create_worktree(
@@ -291,10 +295,8 @@ def _prepare_inputs(
     for item in inputs:
         name = item["path"]
         source_path = (root / name).resolve()
-        if not source_path.is_relative_to(root):
-            raise ValueError(f"input escapes project root: {name}")
         pin = None
-        if Path(name).suffix.lower() == ".php":
+        if _is_php_input(item):
             pin = php_sources.get(name)
             if pin is None:
                 relative = f"php-sources/{len(php_sources) + 1:04d}.php"
@@ -656,6 +658,7 @@ def _run_script_phase(
         _write_run_record(record_path, record)
     print(f"Running {phase} scripts in {cwd} (log: {log_path})", flush=True)
     number = start + 1
+    invocation = commands[start] if start < len(commands) else []
     try:
         with log_path.open("ab") as log:
             for number, command in enumerate(commands[start:], start + 1):
@@ -672,8 +675,10 @@ def _run_script_phase(
                     record.setdefault("script_command_progress", {})[phase] = command_ids[:number]
                     _write_run_record(record_path, record)
     except (KeyboardInterrupt, OSError, ValueError) as exc:
-        reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else str(exc)
-        message = f"スクリプト {phase} の {number} 番目で停止しました（{reason}）。ログ {log_path}"
+        reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else format_error(exc, command=invocation, cwd=cwd)
+        message = f"スクリプト {phase} の {number} 番目で停止しました。ログ {log_path}\n{reason}"
+        if not isinstance(exc, KeyboardInterrupt) and log_path.is_file():
+            message += "\n" + log_path.read_text(encoding="utf-8", errors="replace")
         run_id = None
         if record is not None:
             run_id = record["run_id"]
@@ -1015,7 +1020,7 @@ def _run_prepared_with_junie(
                 record["target_hashes"], record, record_path,
             )
         except (OSError, ValueError) as exc:
-            record.update(status="junie_failed", error=str(exc))
+            record.update(status="junie_failed", error=format_error(exc, command=command))
             _write_run_record(record_path, record)
             raise
         if interrupted:
@@ -1030,7 +1035,7 @@ def _run_prepared_with_junie(
             record["error"] = (
                 f"Junie did not produce configured targets: {', '.join(missing)}" if missing
                 else "Junie did not leave a valid completion record for this capsule"
-            )
+            ) + f"\nExit code: {exit_code}\n" + junie_cli.launch_diagnostics(command)
             _write_run_record(record_path, record)
             break
 
@@ -1081,13 +1086,13 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
                     command.append(str(target))
                 completed = subprocess.run(command, cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
             except (OSError, ValueError) as exc:
-                log.write(f"{exc}\n".encode("utf-8"))
+                log.write((format_error(exc, command=command, cwd=worktree) + "\n").encode("utf-8"))
                 raise
         record["build_exit_code"] = completed.returncode
         if completed.returncode:
             record["error"] = f"dotnet build exited with code {completed.returncode}"
     except (OSError, ValueError) as exc:
-        record["error"] = str(exc)
+        record["error"] = format_error(exc, command=command, cwd=worktree)
     except KeyboardInterrupt:
         record.update(status="build_failed", error="build interrupted by user")
         _write_run_record(record_path, record)
@@ -1128,7 +1133,7 @@ def _run_checker(
                     command, cwd=result["worktree_path"], stdout=log, stderr=subprocess.STDOUT, check=False,
                 )
             except OSError as exc:
-                log.write(f"{exc}\n".encode("utf-8"))
+                log.write((format_error(exc, command=command, cwd=result["worktree_path"]) + "\n").encode("utf-8"))
                 raise
         record["checker_exit_code"] = completed.returncode
         record["status"] = "checker_succeeded" if completed.returncode == 0 else "checker_needs_review"
@@ -1143,11 +1148,11 @@ def _run_checker(
                 if unrecognized:
                     record["error"] = "checker output includes unrecognized text. Inspect checker.log before resuming."
             except (OSError, RuntimeError, ValueError) as exc:
-                record["error"] = str(exc)
+                record["error"] = format_error(exc)
         elif completed.returncode < 0:
             record["error"] = "checker did not complete normally"
     except OSError as exc:
-        record.update(status="checker_failed", error=str(exc))
+        record.update(status="checker_failed", error=format_error(exc, command=command, cwd=result["worktree_path"]))
     except KeyboardInterrupt:
         record.update(status="checker_failed", error="checker interrupted by user")
         _write_run_record(record_path, record)
@@ -1258,7 +1263,7 @@ def _attempt_repair(
     _write_run_record(record_path, record)
     try:
         _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
-    except junie_cli.JunieConnectionError:
+    except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError):
         raise
     except (OSError, RuntimeError, ValueError):
         _charge_repair(record)
@@ -1333,7 +1338,7 @@ def _repair_target(
             command, completion_path, token, agent_targets,
             report_usage=junie_usage_recorder(run_path, phase),
         )
-    except (KeyboardInterrupt, junie_cli.JunieConnectionError):
+    except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError):
         attempt.pop("draft", None)
         try:
             if _unlisted_workspace_files(agent_root, allowed) == other_files:
@@ -1608,9 +1613,9 @@ def _verify_worktree(
                 if _repair_build_failure(config, targets, worktree, run_path, record):
                     continue
             except (OSError, RuntimeError, ValueError) as exc:
-                record.update(status="build_failed", error=str(exc))
+                record.update(status="build_failed", error=format_error(exc))
                 _write_run_record(record_path, record)
-                return {**verified, "error": str(exc)}
+                return {**verified, "error": record["error"]}
             except KeyboardInterrupt:
                 record.update(status="build_failed", error="repair interrupted; inspect Junie's workspace")
                 _write_run_record(record_path, record)
@@ -1674,9 +1679,9 @@ def _verify_worktree(
                 {"findings": sorted(fingerprints), "checker_log_path": str(checker_log)},
             )
         except (OSError, RuntimeError, ValueError) as exc:
-            record.update(status="checker_needs_review", error=str(exc))
+            record.update(status="checker_needs_review", error=format_error(exc))
             _write_run_record(record_path, record)
-            return {**checked, "error": str(exc)}
+            return {**checked, "error": record["error"]}
         except KeyboardInterrupt:
             record.update(status="checker_needs_review", error="repair interrupted; inspect Junie's workspace")
             _write_run_record(record_path, record)
@@ -1805,7 +1810,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     for part in manifest["parts"]:
         sources = []
         for index, source in enumerate(part.get("sources", [])):
-            if Path(source["path"]).suffix.lower() != ".php":
+            if not _is_php_input(source):
                 continue
             entry = {key: source[key] for key in ("path", "start_line", "end_line", "character_slices", "symbol") if key in source}
             entry["id"] = f"{part['index']}:{index + 1}"
@@ -1916,7 +1921,7 @@ def review_migration_ranges(
         f"{part['index']}:{index + 1}": (part["index"], index)
         for part in manifest["parts"]
         for index, source in enumerate(part.get("sources", []))
-        if Path(source["path"]).suffix.lower() == ".php"
+        if _is_php_input(source)
     }
     manual_hashes = {}
     allowed_targets = set(target_paths)

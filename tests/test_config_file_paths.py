@@ -1,0 +1,158 @@
+import json
+import subprocess
+from pathlib import Path
+from unittest.mock import patch
+
+import tomlkit
+
+from fixtures import HarnessCase
+from migration_harness import junie_cli, review_anchors, workflow
+from migration_harness.config import load_config
+from migration_harness.diff_viewer import capture_workspace, review_html
+from migration_harness.settings_form import build_settings_draft
+
+
+class ConfigFilePathTests(HarnessCase):
+    """設定の表記を変えても、原文の固定・比較・分離した編集先が変わらないことを確認する。"""
+
+    def setUp(self):
+        super().setUp()
+        self.source = self.project / "注文.inc"
+        self.source.write_text("<?php\nfunction total() { return 42; }\n", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page { int Total() => 42; }\n", encoding="utf-8")
+        (self.project / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk" />', encoding="utf-8")
+        self.commit_project()
+        self.reference = self.root / "対応 例.json"
+        self.reference.write_text(json.dumps({
+            "kind": "diff-viewer-workspace", "version": 1,
+            "workspace": {
+                "leftText": "function example() {}", "rightText": "void Example() {}",
+                "anchors": {"manualAnchors": [{"leftLineNo": 0, "rightLineNo": 0}]},
+            },
+        }), encoding="utf-8")
+        self.viewer = self.root / "viewer.html"
+        self.viewer.write_text('<body><input id="workspace-import-file"></body>', encoding="utf-8")
+        self.raw = {
+            "project": {"root": "app", "worktree_root": "trees", "run_root": "runs"},
+            "diff_viewer": {"html": "../viewer.html", "anchor_reference": self.reference.name},
+            "build": {"project": "App.csproj"},
+            "units": [{"id": "orders", "source": self.source.name, "target": "Page.cs"}],
+        }
+
+    def load(self):
+        path = self.root / "harness.toml"
+        path.write_text(tomlkit.dumps(self.raw), encoding="utf-8")
+        return load_config(path)
+
+    def test_absolute_and_relative_paths_have_the_same_worktree_destinations(self):
+        relative = self.load()
+        self.assertEqual(relative["max_context_chars"], 500000)
+        self.raw["project"].update(root=str(self.project), worktree_root=str(self.root / "trees"), run_root=str(self.root / "runs"))
+        self.raw["units"][0].update(source=str(self.source), target=str(self.project / "Page.cs"))
+        self.raw["build"]["project"] = str(self.project / "App.csproj")
+        self.raw["diff_viewer"].update(html=str(self.viewer), anchor_reference=str(self.reference))
+        absolute = self.load()
+        self.assertEqual(relative, absolute)
+        prepared = workflow.prepare_run(absolute, "orders")
+        record = json.loads((Path(prepared["run_path"]) / "run.json").read_bytes())
+        with patch.object(workflow.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as build:
+            workflow._build_worktree(absolute, prepared, record)
+        self.assertEqual(build.call_args.args[0][-1], str(Path(prepared["worktree_path"]) / "App.csproj"))
+        self.assertNotEqual(build.call_args.kwargs["cwd"], self.project)
+
+    def test_outside_edit_destinations_are_rejected(self):
+        for section, key in (("units", "target"), ("build", "project")):
+            with self.subTest(section=section):
+                entry = self.raw[section][0] if section == "units" else self.raw[section]
+                before = entry[key]
+                entry[key] = str(self.root / "outside.csproj")
+                with self.assertRaisesRegex(ValueError, "inside the application repository"):
+                    self.load()
+                entry[key] = before
+
+    def test_source_accepts_no_extension_and_arbitrary_extensions(self):
+        for name in ("legacy", "legacy.inc", "legacy.tpl", "legacy.html", "legacy.PHP", "legacy.custom"):
+            with self.subTest(name=name):
+                self.raw["units"][0]["source"] = name
+                source = self.load()["units"][0]["inputs"][0]
+                self.assertEqual(source["path"], name)
+                self.assertTrue(workflow._is_php_input(source))
+        self.assertTrue(workflow._is_php_input({"role": "legacy_custom_role", "path": "legacy.php"}))
+
+    def test_external_inputs_are_pinned_and_non_php_extension_reaches_review(self):
+        external = self.root / "legacy template"
+        original = self.source.read_bytes()
+        external.write_bytes(original)
+        self.raw["units"][0]["source"] = str(external)
+        rule = self.root / "rules.md"
+        rule.write_text("Preserve the value 42.\n", encoding="utf-8")
+        reference_php = self.root / "reference.inc"
+        reference_php.write_text("<?php function example() {}\n", encoding="utf-8")
+        reference_cs = self.root / "Reference.cs"
+        reference_cs.write_text("class Example {}\n", encoding="utf-8")
+        self.raw["project"].update(
+            migration_rules=[{"path": "../rules.md"}],
+            references=[{"role": "reference_php", "path": str(reference_php)},
+                        {"role": "reference_csharp", "path": "../Reference.cs"}],
+        )
+        config = self.load()
+        prepared = workflow.prepare_run(config, "orders")
+        capsule = Path(prepared["capsule_path"])
+        manifest = json.loads((capsule / "manifest.json").read_bytes())
+        self.assertEqual({source["path"] for source in manifest["php_sources"]}, {external.as_posix(), reference_php.as_posix()})
+        self.assertIn("Preserve the value 42.", Path(manifest["parts"][0]["path"]).read_text(encoding="utf-8"))
+        external.write_text("changed", encoding="utf-8")
+        _, payload = capture_workspace(config, prepared["run_id"])
+        self.assertIn(original.decode(), payload["workspace"]["leftText"])
+        self.assertNotIn("changed", payload["workspace"]["leftText"])
+        html = review_html(config, json.dumps(payload).encode())
+        self.assertIn(b"harness-review-workspace", html)
+        ledger = workflow.migration_ledger(config, prepared["run_id"])
+        source = ledger["capsules"][0]["sources"][0]
+        self.assertEqual(source["path"], external.as_posix())
+        workflow.review_migration_ranges(config, prepared["run_id"], [source["id"]], "excluded", "fixture")
+        self.assertEqual(workflow.migration_ledger(config, prepared["run_id"])["capsules"][0]["sources"][0]["review"]["state"], "excluded")
+
+    def test_configured_reference_is_passed_to_junie_and_errors_are_not_ignored(self):
+        config = self.load()
+        prepared = workflow.prepare_run(config, "orders")
+
+        def junie(command, completion, token, targets, **kwargs):
+            guide = json.loads((completion.parent / "guide.json").read_bytes())
+            self.assertEqual(guide["examples"], [{"left": "function example() {}", "right": "void Example() {}"}])
+            targets[0].write_text('[{"leftLineNo":2,"rightLineNo":1}]', encoding="utf-8")
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=junie):
+            output, count = review_anchors.generate_anchors(config, prepared["run_id"])
+        self.assertEqual(count, 1)
+        self.assertEqual(json.loads(output.read_bytes())["workspace"]["anchors"]["manualAnchors"], [{"leftLineNo": 1, "rightLineNo": 0}])
+        self.reference.write_text("invalid", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, self.reference.name):
+            review_anchors._automatic_examples(config, prepared["run_id"])
+        config["diff_viewer_anchor_reference"] = None
+        with patch.object(review_anchors, "_reviewed_examples", return_value=[{"left": "saved", "right": "saved"}]) as automatic:
+            self.assertEqual(review_anchors._automatic_examples(config, prepared["run_id"]), automatic.return_value)
+
+    def test_reference_form_round_trip_and_clear(self):
+        content = tomlkit.dumps(self.raw)
+        changed = build_settings_draft(content, {"diff_viewer": {"anchor_reference": str(self.reference)}})
+        self.assertEqual(changed["form"]["diff_viewer"]["anchor_reference"], str(self.reference))
+        self.raw = tomlkit.parse(changed["content"]).unwrap()
+        self.assertEqual(self.load()["diff_viewer_anchor_reference"], self.reference)
+        cleared = build_settings_draft(changed["content"], {"diff_viewer": {"anchor_reference": ""}})
+        self.raw = tomlkit.parse(cleared["content"]).unwrap()
+        self.assertIsNone(self.load()["diff_viewer_anchor_reference"])
+
+    def test_relative_draft_copy_source_and_absolute_destination(self):
+        draft = self.root / "Draft.cs"
+        draft.write_text("class Draft {}\n", encoding="utf-8")
+        self.raw["scripts"] = {"before_migration": [["@copy-migration-draft", "../Draft.cs", str(self.project / "Page.cs")]]}
+        config = self.load()
+        self.assertEqual(config["scripts"]["before_migration"], [["@copy-migration-draft", str(draft), "Page.cs"]])
+        prepared = workflow.prepare_run(config, "orders")
+        worktree = Path(prepared["worktree_path"])
+        workflow._run_script_phase(config, "before_migration", worktree, Path(prepared["run_path"]))
+        self.assertEqual((worktree / "Page.cs").read_bytes(), draft.read_bytes())
+        self.assertNotEqual((self.project / "Page.cs").read_bytes(), draft.read_bytes())

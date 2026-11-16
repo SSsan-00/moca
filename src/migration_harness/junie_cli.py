@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import ntpath
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +15,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+from .errors import format_error, safe_command
 from .files import has_symlink_component
 
 
@@ -22,12 +26,74 @@ class JunieConnectionError(OSError):
     """Junieがモデルサービスとの通信を再試行しても続行できなかった。"""
 
 
+class JunieLaunchError(OSError):
+    """起動診断を文字列にも残し、保存済みRunから原因を確認できるようにする。"""
+
+    def __init__(
+        self, command: list[str], cwd: str | None, executable: str | None, cause: Exception,
+        *, interpreter: str | None = None,
+    ) -> None:
+        self.command = command.copy()
+        self.cwd = cwd
+        self.executable = executable
+        super().__init__(
+            "Could not launch Junie. Check the executable, working directory and file permissions; "
+            "after installing Junie or changing PATH, reopen the terminal and resume this Run.\n"
+            + launch_diagnostics(command, cwd=cwd, executable=executable or "<not resolved>")
+            + (f"\nBatch interpreter: {interpreter}" if interpreter else "")
+            + "\n" + format_error(cause, command=command, cwd=cwd)
+        )
+
+
+class JunieSessionError(OSError):
+    """終了コードが0でも、対話セッションを開始できなかった終了を報告する。"""
+
+    def __init__(self, command: list[str], exit_code: int, details: str) -> None:
+        self.command = command.copy()
+        self.returncode = exit_code
+        super().__init__(
+            f"Junie exited with code {exit_code} before starting a matching session or writing a completion record.\n"
+            + launch_diagnostics(command) + "\n" + details
+        )
+
+
+def _resolve_executable(name: str) -> str:
+    executable = shutil.which(name)
+    if executable is None:
+        raise FileNotFoundError(errno.ENOENT, "Junie CLI was not found on PATH (or is not executable)", name)
+    # Preserve the launcher path: resolving a symlink can change a wrapper's installation directory.
+    return os.path.abspath(executable)
+
+
+def launch_diagnostics(
+    command: list[str], *, cwd: str | None = None, executable: str | None = None,
+) -> str:
+    """端末出力を奪わず、保存するエラーに安全な起動情報を添える。"""
+    if cwd is None:
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = "<working directory unavailable>"
+    if executable is None:
+        try:
+            executable = _resolve_executable(command[0])
+        except (OSError, ValueError, IndexError):
+            executable = "<not resolved>"
+    return (
+        f"Command: {safe_command(command)}\nCWD: {cwd}\nExecutable: {executable}\n"
+        "Junie inherits this terminal's stdin/stdout/stderr. Check its output and the log file "
+        "reported at startup (normally under JUNIE_HOME/logs or ~/.junie/logs)."
+    )
+
+
 def require_interactive_cli() -> None:
     """実行前に対話端末とJunie CLIが利用できることを確認する。"""
     if not sys.stdin.isatty():
         raise RuntimeError("Junie run requires an interactive terminal")
-    if shutil.which("junie") is None:
-        raise RuntimeError("Junie CLI was not found on PATH")
+    try:
+        _resolve_executable("junie")
+    except OSError as exc:
+        raise JunieLaunchError(["junie"], None, None, exc) from exc
 
 
 def build_command(project: Path, prompt: str, max_steps: int | None) -> list[str]:
@@ -36,6 +102,71 @@ def build_command(project: Path, prompt: str, max_steps: int | None) -> list[str
         command.extend(["--max-steps", str(max_steps)])
     # 再試行時に続きを促す文を付けるため、プロンプトを末尾に置く。
     return [*command, "--prompt", prompt]
+
+
+def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]]:
+    """cmdの展開対象にプロンプトを含めず、Junieの公式環境変数で渡す。"""
+    environment = os.environ.copy()
+    # os.environ is case-insensitive on Windows; its plain-dict copy is not.
+    system_root = os.environ.get("SystemRoot")
+    interpreter = ntpath.join(system_root, "System32", "cmd.exe") if system_root else environment.get("COMSPEC", "")
+    if not ntpath.isabs(interpreter) or ntpath.basename(interpreter).lower() != "cmd.exe":
+        raise OSError("Cannot locate cmd.exe; check the SystemRoot/COMSPEC settings and reopen the terminal")
+
+    environment["PHP_TO_CSHARP_JUNIE_LAUNCHER"] = command[0]
+    arguments = ['"%PHP_TO_CSHARP_JUNIE_LAUNCHER%"']
+    remaining = iter(command[1:])
+    for argument in remaining:
+        option, separator, value = argument.partition("=")
+        variable = {"--prompt": "JUNIE_PROMPT", "--project": "JUNIE_PROJECT", "-p": "JUNIE_PROJECT"}.get(option)
+        if variable:
+            if not separator:
+                try:
+                    value = next(remaining)
+                except StopIteration:
+                    raise ValueError(f"{option} requires a value") from None
+            # cmd silently drops inherited variables over its 8191-character limit.
+            if len((variable + "=" + value).encode("utf-16-le")) // 2 > 8191:
+                raise ValueError(f"{option} exceeds the Windows batch launcher limit; shorten it or use a native Junie executable")
+            if "\0" in value:
+                raise ValueError(f"{option} contains a NUL character")
+            environment[variable] = value
+            continue
+        # Remaining harness arguments are flags/numbers. Reject text that could break cmd quotes.
+        if any(character in argument for character in ('"', "\r", "\n", "\0")):
+            raise ValueError("A Windows batch launcher argument contains quotes or control characters; use --prompt for prompt text")
+        name = f"PHP_TO_CSHARP_JUNIE_ARG_{len(arguments)}"
+        # Batch launchers forward %* to a native binary, whose argv parser consumes trailing backslashes.
+        trailing = len(argument) - len(argument.rstrip("\\"))
+        environment[name] = argument + "\\" * trailing
+        arguments.append(f'"%{name}%"')
+
+    if any(character in command[0] for character in ('"', "\r", "\n", "\0")):
+        raise ValueError("The Junie batch launcher path contains invalid characters")
+    expanded_size = sum(len(environment[item[2:-2]].encode("utf-16-le")) // 2 + 3 for item in arguments)
+    if expanded_size > 8191:
+        raise ValueError("Junie arguments exceed the Windows batch command limit; shorten the paths or arguments")
+    # No CALL (second expansion), AutoRun, delayed !expansion!, or shell=True argv conversion.
+    line = subprocess.list2cmdline([interpreter]) + ' /d /v:off /s /c "' + " ".join(arguments) + '"'
+    return line, interpreter, environment
+
+
+def _launch_process(command: list[str]) -> subprocess.Popen:
+    executable = None
+    interpreter = None
+    cwd = None
+    try:
+        cwd = os.getcwd()
+        if not command:
+            raise ValueError("Junie command is empty")
+        executable = _resolve_executable(command[0])
+        resolved = [executable, *command[1:]]
+        if sys.platform == "win32" and ntpath.splitext(executable)[1].lower() in {".bat", ".cmd"}:
+            line, interpreter, environment = _windows_batch_command(resolved)
+            return subprocess.Popen(line, executable=interpreter, cwd=cwd, env=environment)
+        return subprocess.Popen(resolved, cwd=cwd)
+    except (OSError, ValueError) as exc:
+        raise JunieLaunchError(command, cwd, executable, exc, interpreter=interpreter) from exc
 
 
 def has_completion_record(path: Path, token: str) -> bool:
@@ -91,7 +222,13 @@ class _JunieSessionEvents:
 
     def __init__(self, token: str) -> None:
         self.token = token
+        try:
+            self.launch_cwd = os.getcwd()
+        except OSError:
+            self.launch_cwd = None
         self.sessions = Path(os.environ.get("JUNIE_HOME") or Path.home() / ".junie").expanduser() / "sessions"
+        self.logs = self.sessions.parent / "logs"
+        self.existing_logs = set(self._log_paths())
         self.existing = set(self._paths())
         self.path: Path | None = None
         self.offset = 0
@@ -103,6 +240,68 @@ class _JunieSessionEvents:
             yield from self.sessions.glob("*/events.jsonl")
         except OSError:
             return
+
+    def _log_paths(self) -> Iterator[Path]:
+        try:
+            yield from self.logs.glob("log-*.log")
+        except OSError:
+            return
+
+    def startup_diagnostics(self, pid: int, command: list[str]) -> str:
+        """起動に対応するログのエラーとスタックを秘密情報を伏せて取り込む。"""
+        new_logs = [path for path in self._log_paths() if path not in self.existing_logs]
+        matched = [path for path in new_logs if path.name.endswith(f"-pid-{pid}.log")]
+        # Both Windows and Unix launchers can spawn a child with a different PID.
+        paths = matched or (new_logs if len(new_logs) == 1 else [])
+        if not paths:
+            return f"Junie log directory: {self.logs} (no unambiguous log file for this launch)"
+        details = [f"Junie startup log: {path}" for path in paths]
+        for path in paths:
+            if path.is_symlink():
+                continue
+            try:
+                errors = []
+                in_error = False
+                terminal_failure = False
+                startup_matches = False
+                cwd_matches = False
+                with path.open(encoding="utf-8", errors="replace") as stream:
+                    for line in stream:
+                        startup = re.search(r"\] INFO\s+JunieRunner - Startup: Junie .* \(pid=(\d+)\); log file: (.+)", line)
+                        if startup:
+                            startup_matches = (
+                                path.name.endswith(f"-pid-{startup[1]}.log")
+                                and Path(startup[2]).resolve() == path.resolve()
+                            )
+                        directory = re.search(r"\] INFO\s+JunieRunner - user\.dir: (.+)", line)
+                        if directory and self.launch_cwd is not None:
+                            cwd_matches = Path(directory[1]).resolve() == Path(self.launch_cwd).resolve()
+                        if re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", line):
+                            in_error = bool(re.search(r"\]\s+(ERROR|FATAL)\s", line))
+                        terminal_failure |= "JLine returned dumb" in line or "Unable to initialize an interactive terminal" in line
+                        if in_error:
+                            errors.append(line)
+                correlated = path in matched or (startup_matches and cwd_matches)
+                if errors and correlated:
+                    text = "".join(errors).rstrip()
+                    # Only use secret values for redaction; never include environment keys or dumps.
+                    secrets = [value for name, value in os.environ.items() if value and re.search(
+                        r"TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|API_?KEY|AUTH|JUNIE_(PROMPT|TASK)", name, re.I,
+                    )]
+                    for value in sorted(secrets, key=len, reverse=True):
+                        for variant in (value, repr(value)[1:-1], json.dumps(value)[1:-1]):
+                            text = text.replace(variant, "[REDACTED]")
+                    details.append("Junie startup error log:\n" + format_error(RuntimeError(text), command=command))
+                if terminal_failure and correlated:
+                    details.append(
+                        "Junie could not initialize its interactive terminal (JLine returned dumb). "
+                        "Run from an interactive terminal without redirected stdin/stdout; "
+                        "if TERM is unset or dumb, use a TERM value supported by your terminal "
+                        "(for example xterm-256color) and resume."
+                    )
+            except OSError:
+                details.append("Could not read the startup log; check its file permissions.")
+        return "\n".join(details)
 
     def read_new_events(self) -> bool:
         """今回のセッションの新着行から、使用量と通信失敗を読む。"""
@@ -177,11 +376,11 @@ def run_interactive(
                     "workspace and continue the remaining work without duplicating completed changes."
                 )]
             return _run_session(invocation, completion_path, token, targets, report_usage=report_usage)
-        except JunieConnectionError:
+        except JunieConnectionError as exc:
             if attempt == len(delays):
                 raise JunieConnectionError(
                     "Junie could not reach the model service after 2 retries. Resume this Run after the connection recovers."
-                ) from None
+                ) from exc
             print(f"Retrying Junie after a connection failure ({attempt + 1}/{len(delays)})", flush=True)
             time.sleep(delays[attempt])
 
@@ -193,7 +392,7 @@ def _run_session(
     """対話用の端末を引き継ぎ、成果物と完了記録がそろえばセッションを閉じる。"""
     root = completion_path.parent
     restore_terminal = _save_terminal_mode()
-    events = _JunieSessionEvents(token)
+    process = None
 
     def poll() -> bool:
         failed = events.read_new_events()
@@ -203,10 +402,11 @@ def _run_session(
             report_usage(delta)
         return failed
 
-    next_poll = time.monotonic()
-    # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
-    process = subprocess.Popen(command)
     try:
+        events = _JunieSessionEvents(token)
+        next_poll = time.monotonic()
+        # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
+        process = _launch_process(command)
         if report_usage is not None:
             report_usage([0] * len(USAGE_FIELDS))
         while True:
@@ -230,17 +430,21 @@ def _run_session(
             else:
                 if poll() and not has_completion_record(completion_path, token):
                     raise JunieConnectionError("Junie model service connection failed")
+                if events.path is None and not has_completion_record(completion_path, token):
+                    raise JunieSessionError(
+                        command, exit_code, events.startup_diagnostics(process.pid, command),
+                    )
                 return exit_code
     except (KeyboardInterrupt, OSError):
-        if process.poll() is None:
+        if process is not None and process.poll() is None:
             _close_junie(process)
         raise
     finally:
         try:
-            if report_usage is not None:
+            if process is not None and report_usage is not None:
                 poll()
         finally:
-            if process.poll() is not None:
+            if process is None or process.poll() is not None:
                 restore_terminal()
 
 

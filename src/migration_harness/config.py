@@ -12,6 +12,20 @@ SCRIPT_PHASES = (
 REFERENCE_ROLES = ("reference_php", "reference_csharp", "reference_razor")
 
 
+def _file_path(value: Any, root: Path, scope: str, *, inside: bool = False) -> str:
+    """入力は外部ファイルも許可し、編集対象は元リポジトリ内の相対パスにそろえる。"""
+    if not isinstance(value, str) or not value.strip() or "\0" in value or not Path(value).parts:
+        raise ValueError(f"{scope}: specify a file path")
+    path = (root / Path(value).expanduser()).resolve()
+    if path == root:
+        raise ValueError(f"{scope}: specify a file, not the application repository root")
+    if path.is_relative_to(root):
+        return path.relative_to(root).as_posix()
+    if inside:
+        raise ValueError(f"{scope}: file must be inside the application repository: {path}")
+    return path.as_posix()
+
+
 def _outside(root: Path, path: Path, name: str) -> Path:
     """アプリのリポジトリと実行データが混ざらないよう、保存先を解決する。"""
     resolved = path.expanduser().resolve()
@@ -60,7 +74,7 @@ def load_config(path: Path) -> dict[str, Any]:
     if worktree_root == run_root or worktree_root.is_relative_to(run_root) or run_root.is_relative_to(worktree_root):
         raise ValueError("worktree_root and run_root must be separate directories")
 
-    max_context_chars = project.get("max_context_chars", 100000)
+    max_context_chars = project.get("max_context_chars", 500000)
     if not isinstance(max_context_chars, int) or max_context_chars < 1000:
         raise ValueError("[project].max_context_chars must be an integer of at least 1000")
 
@@ -69,10 +83,9 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("[build] must be a table")
     build_project = build.get("project")
     if build_project is not None:
-        if not isinstance(build_project, str) or not build_project.strip():
-            raise ValueError("[build].project must be a path relative to the worktree")
+        build_project = _file_path(build_project, root, "[build].project", inside=True)
         build_path = Path(build_project)
-        if build_path.anchor or ".." in build_path.parts or build_path.suffix.lower() not in {".csproj", ".sln", ".slnx"}:
+        if build_path.suffix.lower() not in {".csproj", ".sln", ".slnx"}:
             raise ValueError("[build].project must name a .csproj, .sln or .slnx inside the worktree")
 
     checker = raw.get("checker", {})
@@ -91,6 +104,12 @@ def load_config(path: Path) -> dict[str, Any]:
     for phase, commands in scripts.items():
         if not isinstance(commands, list) or any(not is_command(command) for command in commands):
             raise ValueError(f"[scripts].{phase} must list commands as arrays of an executable followed by arguments")
+        for command in commands:
+            if command[0] == "@copy-migration-draft" and phase == "before_migration":
+                if len(command) != 3:
+                    raise ValueError("@copy-migration-draft requires a source file and destination")
+                command[1] = str(root / _file_path(command[1], root, "draft source"))
+                command[2] = _file_path(command[2], root, "draft destination", inside=True)
 
     viewer = raw.get("diff_viewer", {})
     if not isinstance(viewer, dict):
@@ -100,12 +119,13 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("[diff_viewer].enabled must be a boolean")
     viewer_html = viewer.get("html", "")
     if not isinstance(viewer_html, str):
-        raise ValueError("[diff_viewer].html must be a path inside the application repository")
+        raise ValueError("[diff_viewer].html must be a file path")
     viewer_html = viewer_html.strip() or None
     if viewer_enabled and viewer_html:
+        viewer_html = _file_path(viewer_html, root, "[diff_viewer].html")
         viewer_path = Path(viewer_html)
-        if viewer_path.anchor or ".." in viewer_path.parts or viewer_path.suffix.lower() != ".html":
-            raise ValueError("[diff_viewer].html must name a relative .html file inside the application repository")
+        if viewer_path.suffix.lower() != ".html":
+            raise ValueError("[diff_viewer].html must name an .html file")
     anchor_reference = viewer.get("anchor_reference")
     if anchor_reference is not None and (
         not isinstance(anchor_reference, str) or not anchor_reference.strip()
@@ -135,7 +155,7 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("[[project.migration_rules]] must list rule files")
     common_rules = []
     for item in project_rules:
-        rule = _normalize_input(item, "project migration rules", project_rule=True)
+        rule = _normalize_input(item, "project migration rules", root=root, project_rule=True)
         if rule not in common_rules:
             common_rules.append(rule)
     project_references = project.get("references", [])
@@ -143,7 +163,7 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("[[project.references]] must list reference files")
     common_references = []
     for item in project_references:
-        reference = _normalize_input(item, "project references", project_reference=True)
+        reference = _normalize_input(item, "project references", root=root, project_reference=True)
         common_references.append(reference)
 
     normalized_units = []
@@ -151,12 +171,9 @@ def load_config(path: Path) -> dict[str, Any]:
         targets = unit.get("targets", [unit.get("target")])
         if "targets" in unit and "target" in unit:
             raise ValueError(f"unit {unit['id']}: specify target or targets")
-        if not isinstance(targets, list) or not targets or any(
-            not isinstance(target, str) or not target.strip() or not Path(target).parts
-            or Path(target).anchor or ".." in Path(target).parts
-            for target in targets
-        ):
-            raise ValueError(f"unit {unit['id']}: targets must be safe repository-relative paths")
+        if not isinstance(targets, list) or not targets:
+            raise ValueError(f"unit {unit['id']}: targets must list file paths")
+        targets = [_file_path(target, root, f"unit {unit['id']} targets", inside=True) for target in targets]
         target_paths = [Path(target) for target in targets]
         if len(set(target_paths)) != len(target_paths) or any(
             parent in target_paths for target in target_paths for parent in target.parents
@@ -178,17 +195,12 @@ def load_config(path: Path) -> dict[str, Any]:
 
         normalized_inputs = []
         if "source" in unit:
-            source = unit["source"]
-            if not isinstance(source, str) or "\0" in source:
-                raise ValueError(f"unit {unit['id']}: source must name a repository-relative .php file")
-            source_path = Path(source)
-            if source_path.anchor or ".." in source_path.parts or source_path.suffix.lower() != ".php":
-                raise ValueError(f"unit {unit['id']}: source must name a repository-relative .php file")
+            source = _file_path(unit["source"], root, f"unit {unit['id']} source")
             encoding = unit.get("source_encoding", "auto")
             if not isinstance(encoding, str) or encoding not in _INPUT_ENCODINGS:
                 raise ValueError(f"unit {unit['id']}: source_encoding must be auto, utf-8, utf-8-sig, or euc-jp")
             normalized_inputs.append({
-                "role": "php", "path": source_path.as_posix(), "encoding": encoding,
+                "role": "php", "path": source, "encoding": encoding,
                 "shared": False, "start_line": 1, "end_line": None,
             })
 
@@ -196,7 +208,7 @@ def load_config(path: Path) -> dict[str, Any]:
         if not isinstance(inputs, list) or not (normalized_inputs or inputs):
             raise ValueError(f"unit {unit['id']}: specify source or at least one [[units.inputs]] entry")
         for item in inputs:
-            normalized_input = _normalize_input(item, f"unit {unit['id']}")
+            normalized_input = _normalize_input(item, f"unit {unit['id']}", root=root)
             if normalized_input["role"] == "migration_rules":
                 if normalized_input not in common_rules:
                     common_rules.append(normalized_input)
@@ -233,20 +245,17 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def _normalize_input(
-    item: Any, scope: str, *, project_rule: bool = False, project_reference: bool = False,
+    item: Any, scope: str, *, root: Path, project_rule: bool = False, project_reference: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise ValueError(f"{scope}: each [[units.inputs]] entry must be a table")
-    item_path = item.get("path")
+    item_path = _file_path(item.get("path"), root, scope)
     role = "migration_rules" if project_rule else item.get("role")
     encoding = item.get("encoding", "auto")
     symbol = item.get("symbol")
     shared = item.get("shared", False)
     start = item.get("start_line")
     end = item.get("end_line")
-    if (not isinstance(item_path, str) or not item_path.strip() or not Path(item_path).parts
-            or Path(item_path).anchor or ".." in Path(item_path).parts):
-        raise ValueError(f"{scope}: input path must be repository-relative")
     if not isinstance(role, str) or not role.strip():
         raise ValueError(f"{scope}: each input needs a role")
     if project_reference and role not in REFERENCE_ROLES:

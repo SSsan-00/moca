@@ -97,8 +97,9 @@
     .workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     #workspace-runs .workspace-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, 264px); }
     #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
-    .workspace-feedback { margin-bottom: 0; white-space: pre-wrap; color: var(--muted); }
+    .workspace-feedback { min-width: 0; margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
     .workspace-feedback:empty { display: none; }
+    #workspace-progress-feedback { max-height: 25vh; overflow: auto; }
     .token-panel { display: grid; gap: 16px 20px; padding: 22px; }
     .token-run-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
     .token-run-heading span { color: var(--muted); font-size: 12px; }
@@ -203,7 +204,7 @@
     #workspace-config { height: 100%; min-height: 0; margin: 0; padding: 12px; resize: none; }
     #workspace-config[hidden] { display: none; }
     .settings-footer { padding-top: 10px; border-top: 1px solid var(--line); }
-    .settings-footer .workspace-feedback { max-height: 4.65em; margin-top: 6px; overflow: auto; }
+    .settings-footer .workspace-feedback { max-height: min(30dvh, 18em); margin-top: 6px; overflow-y: auto; }
     .workspace-select { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
     @supports (appearance: base-select) and selector(::picker(select)) {
       .workspace-select, .workspace-select::picker(select) { appearance: base-select; }
@@ -309,7 +310,7 @@
     .event-pin::before { content: ""; width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: #9aa7b8; }
     .event.ok .event-pin::before { background: var(--green); }
     .event.live .event-pin::before { background: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
-    .event-text { color: var(--muted); font-size: 12px; }
+    .event-text { color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .event-text strong { color: var(--ink); font-weight: 680; }
     .capsule { padding: 14px 18px 17px; }
     .capsule-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
@@ -318,7 +319,7 @@
     .capsule-title span { color: var(--muted); font-size: 10px; }
     .capsule-top span { color: var(--muted); font-size: 11px; }
     .meter { height: 7px; margin: 12px 0 8px; overflow: hidden; border-radius: 6px; background: var(--meter-track); }
-    .meter-fill { width: 67%; height: 100%; border-radius: inherit; background: var(--blue); transition: width 700ms var(--ease); }
+    .meter-fill { width: 13%; height: 100%; border-radius: inherit; background: var(--blue); transition: width 700ms var(--ease); }
     .meter-label { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11px; }
     .meter-label strong { color: var(--ink); font-family: var(--mono); font-weight: 650; }
     .ledger { overflow: hidden; }
@@ -373,7 +374,7 @@
     .review-location code { display: block; overflow-wrap: anywhere; color: var(--ink); font: 11px/1.45 var(--mono); }
     .review-location code + small { margin: 4px 0 0; color: var(--amber); font-weight: 700; }
     .review-code { margin: 0; padding: 11px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); font: 12px/1.65 var(--mono); }
-    .review-caveat { margin-top: 9px !important; font-size: 11px !important; }
+    .review-caveat { margin-top: 9px !important; font-size: 11px !important; white-space: pre-wrap; overflow-wrap: anywhere; }
     .review-context { margin-top: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
     .review-context summary { padding: 10px 12px; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 700; }
     .review-context p { margin: 0; padding: 0 12px 12px; color: var(--muted); font-size: 12px; }
@@ -404,7 +405,7 @@
     .comparison-option-panel button:hover, .comparison-option-panel button:focus-visible { background: var(--blue-soft); color: var(--blue); }
     .comparison-option-panel button:disabled { cursor: default; opacity: .55; }
     .comparison-options summary:focus-visible { position: relative; z-index: 1; }
-    .demo-comparison-status { margin-block: 5px 0; color: var(--muted); }
+    .demo-comparison-status { margin-block: 5px 0; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
     .demo-comparison-status:empty { margin: 0; }
     .viewer-preview { width: min(1200px, calc(100vw - 24px)); height: 94dvh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink); }
     .viewer-preview[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
@@ -600,9 +601,9 @@
 
       <section class="panel" aria-labelledby="capsule-title">
         <div class="capsule">
-          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">今回のJunie入力</h2><span id="capsule-call">呼び出し 1/3 · OrderHistoryPage</span></div><span>上限 100,000文字</span></div>
-          <div class="meter" id="capsule-meter" role="progressbar" aria-label="今回のJunie入力の文字数" aria-valuemin="0" aria-valuemax="100000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
-          <div class="meter-label"><span><strong id="char-count">67,240</strong> 文字</span><span id="capsule-percent">上限の67%</span></div>
+          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">今回のJunie入力</h2><span id="capsule-call">呼び出し 1/3 · OrderHistoryPage</span></div><span>上限 500,000文字</span></div>
+          <div class="meter" id="capsule-meter" role="progressbar" aria-label="今回のJunie入力の文字数" aria-valuemin="0" aria-valuemax="500000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
+          <div class="meter-label"><span><strong id="char-count">67,240</strong> 文字</span><span id="capsule-percent">上限の13%</span></div>
         </div>
       </section>
 
@@ -672,24 +673,25 @@
               <fieldset class="settings-fields" id="settings-project-fields">
                 <legend>プロジェクト</legend>
                 <label for="settings-root">アプリのリポジトリ</label>
-                <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp">
+                <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp" aria-describedby="settings-roots-help">
                 <div class="settings-pair">
                   <div>
                     <label for="settings-worktree-root">作業ツリーの保存先</label>
-                    <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees">
+                    <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees" aria-describedby="settings-roots-help">
                   </div>
                   <div>
                     <label for="settings-run-root">実行データの保存先</label>
-                    <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs">
+                    <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs" aria-describedby="settings-roots-help">
                   </div>
                 </div>
+                <p class="settings-material-range" id="settings-roots-help">絶対パス、または設定ファイルの場所からの相対パス。保存先2つは両リポジトリの外に置き、互いに入れ子にしません。</p>
                 <label for="settings-base-ref">作業ツリーの基準リビジョン</label>
                 <input id="settings-base-ref" data-section="project" data-setting="base_ref" placeholder="HEAD（既定）" autocomplete="off">
                 <p class="settings-material-range">必要に応じてブランチ名、タグ名、コミットIDを指定します。</p>
                 <div class="settings-pair">
                   <div>
                     <label for="settings-context-limit">カプセルの文字数上限</label>
-                    <input id="settings-context-limit" data-section="project" data-setting="max_context_chars" inputmode="numeric" placeholder="100000（既定）">
+                    <input id="settings-context-limit" data-section="project" data-setting="max_context_chars" inputmode="numeric" placeholder="500000（既定）">
                   </div>
                   <div>
                     <label for="settings-junie-steps">Junieのステップ数上限</label>
@@ -702,14 +704,17 @@
                   <option value="false">使用しない</option>
                 </select>
                 <label for="settings-viewer-html">差分ビューアーのHTML</label>
-                <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off">
-                <p class="settings-material-range">アプリのリポジトリからの相対パスです。空欄なら差分ビューアーは無効です。</p>
+                <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off" aria-describedby="settings-viewer-html-help">
+                <p class="settings-material-range" id="settings-viewer-html-help">アプリルートからの相対パス、または外部ファイルの絶対パス。空欄なら比較とアンカー生成は無効です。</p>
+                <label for="settings-anchor-reference">アンカーの参照JSON（任意）</label>
+                <input id="settings-anchor-reference" data-section="diff_viewer" data-setting="anchor_reference" placeholder="例：references/previous.workspace.json" autocomplete="off" aria-describedby="settings-anchor-reference-help">
+                <p class="settings-material-range" id="settings-anchor-reference-help">Junieが対応行の手本にするDiff ViewerのワークスペースJSONを優先して使います。絶対パス、または設定ファイルの場所からの相対パス。空欄なら同じRunの確認済み対応例を自動参照します。指定ファイルがない・不正な場合はエラーになります。</p>
               </fieldset>
               <fieldset class="settings-fields" id="settings-verification-fields">
                 <legend>ビルド・独自チェッカー</legend>
                 <label for="settings-build-project">ビルド対象</label>
                 <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj" aria-describedby="settings-build-help">
-                <p class="settings-material-range" id="settings-build-help">作業ツリーからの相対パス（.csproj、.sln、.slnx）。空欄ならルートでビルドします。</p>
+                <p class="settings-material-range" id="settings-build-help">アプリルートからの相対パス、またはアプリ内の絶対パス（.csproj、.sln、.slnx）。作業ツリー内のパスに変換してビルドします。空欄ならルートでビルドします。</p>
                 <label for="settings-checker-command">チェッカーの実行ファイルと引数</label>
                 <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" aria-describedby="settings-checker-help" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
                 <p class="settings-material-range" id="settings-checker-help">1行目に実行ファイル、2行目以降に引数を1つずつ入力します。空欄なら実行しません。</p>
@@ -735,16 +740,19 @@
                   </div>
                   <div>
                     <label for="settings-unit-source">移行元PHP</label>
-                    <input id="settings-unit-source" data-setting="source" autocomplete="off" placeholder="例：php/orders.php">
+                    <input id="settings-unit-source" data-setting="source" autocomplete="off" placeholder="例：php/orders.php" aria-describedby="settings-source-help">
                   </div>
                 </div>
+                <p class="settings-material-range" id="settings-source-help">アプリルートからの相対パス、または外部ファイルの絶対パス。拡張子なしを含め、拡張子を問わず移行元PHPとして全文を読み込みます。</p>
                 <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
-                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
+                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml" aria-describedby="settings-targets-help"></textarea>
+                <p class="settings-material-range" id="settings-targets-help">アプリルートからの相対パス、またはアプリ内の絶対パス。作業ツリー内のパスに変換し、元のリポジトリには書き込みません。</p>
               </div>
             </fieldset>
             <fieldset class="settings-fields settings-materials" id="settings-draft-import-fields">
               <legend>仮C#の取り込み</legend>
               <p>仮C#を登録済みの移行先にコピーしてから、Junieが編集します。先に「移行先」を登録してください。</p>
+              <p id="settings-draft-source-help">コピー元はアプリルートからの相対パス、または外部ファイルの絶対パスで指定できます。</p>
               <p>取り込みは全移行単位に適用します。</p>
               <div id="settings-draft-imports"></div>
               <button class="button" id="settings-draft-import-add" type="button">仮C#の取り込みを追加</button>
@@ -753,13 +761,13 @@
           <div class="settings-field-pane settings-shared-pane">
             <section class="settings-materials" aria-labelledby="settings-rules-title">
               <h2 id="settings-rules-title">プロジェクト共通の移行ルール</h2>
-              <p>すべての移行単位で全文を使います。リポジトリからの相対パスを指定してください。</p>
+              <p>すべての移行単位で全文を使います。アプリルートからの相対パス、または外部ファイルの絶対パスを指定します。</p>
               <div id="settings-rules"></div>
               <button class="button" id="settings-rule-add" type="button">移行ルールを追加</button>
             </section>
             <section class="settings-materials" aria-labelledby="settings-references-title">
               <h2 id="settings-references-title">プロジェクト共通の参考実装</h2>
-              <p>元PHPと対応するC#／Razorの相対パスを指定してください。準備時に各ファイルの全文を保存します。</p>
+              <p>元PHPと対応するC#／Razorを、アプリルートからの相対パス、または外部ファイルの絶対パスで指定します。準備時に全文を保存します。</p>
               <div id="settings-references"></div>
               <button class="button" id="settings-reference-add" type="button">参考実装ペアを追加</button>
             </section>
@@ -1335,6 +1343,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
         const source = document.createElement("input");
         source.autocomplete = "off";
         source.spellcheck = false;
+        source.setAttribute("aria-describedby", "settings-draft-source-help");
         source.placeholder = "例：C:/migration/draft/generated/Services/MenuService.cs";
         source.value = sourcePath;
         source.addEventListener("input", () => {
@@ -1363,7 +1372,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
           card.append(targetLabel);
         }
         const sourceLabel = document.createElement("label");
-        sourceLabel.append("仮C#のコピー元（絶対パス）", source);
+        sourceLabel.append("仮C#のコピー元（絶対・相対パス）", source);
         card.append(fieldWithRemove(sourceLabel, remove));
         return source;
       }
@@ -2084,6 +2093,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
         junie: {max_steps: read(findTable("junie"), "max_steps")},
         diff_viewer: {
           html: read(findTable("diff_viewer"), "html"),
+          anchor_reference: read(findTable("diff_viewer"), "anchor_reference"),
           enabled: read(findTable("diff_viewer"), "enabled") === false ? "false" : "",
         },
         migrationRules: readMaterials(materialBlocks("migration_rules"), true),
@@ -2511,7 +2521,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   // その時点のJunie呼び出しと文字数の比率を表示する。
   function updateCapsuleCall(index) {
     const call = capsuleCalls[index];
-    const percent = Math.round(call.chars / 100000 * 100);
+    const percent = Math.round(call.chars / Number(capsuleMeter.getAttribute("aria-valuemax")) * 100);
     capsuleCallIndex = index;
     capsuleCall.textContent = `呼び出し ${index + 1}/${capsuleCalls.length} · ${call.unit}`;
     capsuleCharCount.textContent = call.chars.toLocaleString("en-US");
