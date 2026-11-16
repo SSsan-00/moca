@@ -17,6 +17,7 @@ def write(name: str, content: str) -> None:
     destination.write_text(content, encoding="utf-8")
 
 
+write(".gitignore", "bin/\nobj/\n")
 write("Case.csproj", """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
