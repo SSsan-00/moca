@@ -76,16 +76,13 @@ class LiveComparisonTests(HarnessCase):
 
         for name in ("left.txt", "right.txt", "guide.json"):
             with self.subTest(name=name):
-                def junie(command, completion, token, targets, *, report_usage=None):
+                def junie(command, completion, token, targets, **kwargs):
                     proposal, = targets
                     (proposal.parent / name).write_text("changed input", encoding="utf-8")
                     proposal.write_text('[{"leftLineNo": 1, "rightLineNo": 1}]', encoding="utf-8")
                     completion.write_text(token, encoding="ascii")
 
-                with (
-                    patch.object(junie_cli, "require_interactive_cli"),
-                    patch.object(junie_cli, "run_interactive", side_effect=junie),
-                ):
+                with patch.object(junie_cli, "run_interactive", side_effect=junie):
                     with self.assertRaisesRegex(ValueError, "アンカー作成中に入力"):
                         review_anchors.generate_anchors(config, result["run_id"])
                 self.assertFalse((Path(result["run_path"]) / "review-snapshots").exists())

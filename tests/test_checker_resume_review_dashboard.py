@@ -327,6 +327,56 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(self.build_log.read_bytes(), b"edited target does not build\n")
         self.assertEqual(self.checker_log.read_bytes(), old_checker_log)
 
+    def test_build_response_passes_saved_edit_and_instruction_to_junie_before_verification(self):
+        diagnostic = f"{self.target}(1,30): error CS1525: Invalid expression\n".encode()
+        self.target.write_bytes(b"\xef\xbb\xbfclass Example { int Value = ; }\r\n")
+        self.resume(("dotnet", 1, diagnostic * 2))
+        (self.run_path / "agent-workspace").mkdir()
+        summary = workflow.build_failure_review(self.config, self.run_id)
+        self.assertEqual(summary["errors"], ["Example.cs(1,30): CS1525: Invalid expression"])
+        self.assertEqual(summary["preferred_target"], self.target.name)
+        source = workflow.build_failure_review(self.config, self.run_id, self.target.name)
+        edited = b"\xef\xbb\xbf// human edit\r\nclass Example { int Value = ; }\r\n"
+        instruction = "値を 42 にしてください。"
+
+        def repair(command, completion, token, targets, **kwargs):
+            instructions = next(completion.parent.glob("checker-findings-*-instruction.txt"))
+            self.assertIn(instructions.name, command[-1])
+            self.assertEqual(instructions.read_text(encoding="utf-8").strip(), instruction)
+            self.assertEqual(targets[0].read_bytes(), edited)
+            targets[0].write_bytes(edited.replace(b"= ;", b"= 42;"))
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        commands, calls = self.mock_commands(self.build, ("fixture-checker", 0, b"ok\n"))
+        with (
+            commands, redirect_stdout(io.StringIO()),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=repair) as junie,
+        ):
+            result = workflow.resume_with_junie(self.config, self.run_id, build_response={
+                "instruction": instruction,
+                "edit": {"target": self.target.name, "version": source["version"],
+                         "content": "// human edit\nclass Example { int Value = ; }\n"},
+            })
+        junie.assert_called_once()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(self.target.read_bytes(), edited.replace(b"= ;", b"= 42;"))
+
+    def test_build_response_rejects_a_stale_edit_before_starting_any_command(self):
+        self.resume(("dotnet", 1, b"failed\n"))
+        source = workflow.build_failure_review(self.config, self.run_id, self.target.name)
+        self.target.write_text("class ChangedExternally {}", encoding="utf-8")
+        with patch.object(workflow, "run_process") as process:
+            with self.assertRaisesRegex(ValueError, "対象ファイルが更新されました"):
+                workflow.resume_with_junie(self.config, self.run_id, build_response={
+                    "edit": {"target": self.target.name, "version": source["version"], "content": "class Stale {}"},
+                })
+        process.assert_not_called()
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "class ChangedExternally {}")
+        self.assertEqual(self.record()["status"], "build_failed")
+
     def test_build_diagnostic_repairs_target_and_stops_if_error_repeats(self):
         self.config["max_repair_attempts"] = 2
         error = f"{self.target}(5,3): error CS1002: ; expected\n".encode()
@@ -371,35 +421,44 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                     self.assertEqual(len(self.record()["repair_history"]), 1)
                     self.assertNotIn("repair_pending", self.record())
 
-    # 不正な出力が混じった場合に、修正枠を消費せず元ログを残すことを検証する。
-    def test_mixed_and_invalid_checker_output_stop_before_automatic_repair(self):
+    def test_free_form_checker_output_reaches_junie_before_rebuild(self):
         self.config["max_repair_attempts"] = 2
-        malformed = (
-            (b"Traceback: checker database is offline\n", "unrecognized"),
-            (b"MIG102 ../outside.cs:5 warning: outside the worktree\n", "unrecognized"),
-            (b"MIG102 Bad\0Path.cs:5 warning: invalid path\n", "unrecognized"),
-            (b"\xff\n", "unrecognized"),
-        )
-        for extra, error in malformed:
-            with self.subTest(extra=extra):
-                log = self.diagnostic + extra
-                with (
-                    patch.object(workflow, "_repair_target") as repair,
-                    patch.object(junie_cli, "require_interactive_cli") as validate,
-                ):
-                    result = self.resume(self.build, ("fixture-checker", 2, log))
+        log = b'{"expected": 42, "actual": 0}\n'
+        with (
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+        ):
+            result = self.resume(
+                self.build, ("fixture-checker", 2, log),
+                self.build, ("fixture-checker", 0, b"fixed\n"),
+            )
+        self.assertEqual(result["status"], "checker_succeeded")
+        repair.assert_called_once()
+        self.assertEqual(repair.call_args.args[5], log.decode())
+        self.assertEqual(repair.call_args.args[2], (Path("Example.cs"),))
+        self.assertTrue(self.record()["repair_history"][0]["raw_checker_output"])
+        self.assertEqual((self.run_path / "checker-before-repair-1.log").read_bytes(), log)
+
+    def test_repeated_free_form_checker_output_stops_before_another_repair(self):
+        self.config["max_repair_attempts"] = 2
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(
+                self.build, ("fixture-checker", 2, b"expected 42; actual 0\n"),
+                self.build, ("fixture-checker", 2, b"expected   42; actual 0\n"),
+            )
+        repair.assert_called_once()
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertIn("previous checker finding", result["error"])
+
+    def test_unreadable_checker_output_requires_review(self):
+        self.config["max_repair_attempts"] = 2
+        for log in (b"", b"\xff\n", self.diagnostic + b"unknown\0data\n"):
+            with self.subTest(log=log), patch.object(workflow, "_repair_target") as repair:
+                result = self.resume(self.build, ("fixture-checker", 2, log))
                 repair.assert_not_called()
-                validate.assert_not_called()
                 self.assertEqual(result["status"], "checker_needs_review")
-                self.assertIn(error, result["error"])
-                saved = self.record()
-                self.assertEqual(saved["error"], result["error"])
-                self.assertEqual(saved.get("repair_history", []), [])
                 self.assertEqual(self.checker_log.read_bytes(), log)
-                self.assertFalse((self.run_path / "checker-before-repair-1.log").exists())
-                report = self.review()
-                self.assertTrue(report["unrecognized"])
-                self.assertEqual(len(report["findings"]), 1)
+                self.assertTrue(self.review()["unrecognized"])
 
     # 有効な指摘だけなら通常の自動修正経路を使用することを検証する。
     def test_supported_diagnostics_still_allow_automatic_repair(self):
@@ -534,6 +593,60 @@ class SavedDashboardTests(SavedRunFixture):
             patch.object(view.actions, "get", side_effect=interact),
         ):
             return dashboard.run_dashboard(self.config, run_id=self.run_id)
+
+    def test_checker_dashboard_displays_raw_output_and_resumes_with_instruction(self):
+        raw = b'{"expected": 42, "actual": 0}\n'
+        self.checker_log.write_bytes(raw)
+        instruction = "Keep the shared conversion and correct the returned value."
+
+        def send_instruction(url):
+            revision, _ = self.get_ready_event(url)
+            route = url + "checker-output?run_id=" + self.run_id
+            with self.assertRaises(HTTPError) as stale:
+                urlopen(url + "checker-output?run_id=wrong", timeout=3)
+            self.assertEqual(stale.exception.code, 409)
+            stale.exception.close()
+            with urlopen(route, timeout=3) as response:
+                self.assertEqual(json.load(response), {"output": raw.decode(), "truncated": False})
+            with urlopen(route + "&download=1", timeout=3) as response:
+                self.assertEqual(response.read(), raw)
+            with self.post(url, "control", {
+                "action": "resume", "revision": revision, "checker_instruction": instruction,
+            }) as response:
+                self.assertEqual(response.status, 202)
+
+        mock, calls = self.mock_commands(("dotnet", 0, b"build ok"), ("fixture-checker", 0, b"check ok"))
+        with mock, patch.object(workflow, "_repair_target") as repair:
+            result = self.open_dashboard(send_instruction, resume=True)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(repair.call_args.args[5], raw.decode())
+        self.assertEqual(self.record()["repair_history"][0]["instruction"], instruction)
+
+    def test_build_failure_dashboard_saves_a_large_target_and_rebuilds(self):
+        self.save_record({**self.record(), "status": "build_failed", "build_exit_code": 1})
+        original = "class Original {}\n/*\n" + "\t\\ コメント\n" * 100_000 + "*/\n"
+        self.target.write_text(original, encoding="utf-8", newline="")
+        edited = original.replace("class Original", "class Repaired", 1)
+
+        def inspect(url):
+            revision, state = self.get_ready_event(url)
+            self.assertEqual(state["status"], "build_failed")
+            with urlopen(f"{url}build-review?run_id={self.run_id}&target={self.target.name}", timeout=3) as response:
+                source = json.load(response)
+            self.assertEqual(source["content"], original)
+            with self.post(url, "build-response", {
+                "action": "build-response", "revision": revision,
+                "edit": {"target": self.target.name, "version": source["version"], "content": edited},
+            }) as response:
+                self.assertEqual(response.status, 202)
+
+        commands, calls = self.mock_commands(("dotnet", 0, b"ok\n"), ("fixture-checker", 0, b"ok\n"))
+        with commands:
+            result = self.open_dashboard(inspect, resume=True)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.target.read_text(encoding="utf-8"), edited)
 
     # 完了状態で外部コマンドを起動せず、記録と比較を閲覧できることを検証する。
     def test_complete_runs_show_saved_results_ledger_and_diff_without_running_commands(self):

@@ -15,6 +15,34 @@ from migration_harness.errors import format_error
 
 
 class JunieLaunchTests(unittest.TestCase):
+    def test_preferred_task_checks_the_help_before_selecting_a_mode(self):
+        command = junie_cli.build_command(Path("project"), "anchor prompt", 7, guidelines=Path("rules.md"))
+        completion = Path("project/complete.txt")
+        for option in ("--task=<text>", "--task-file=<path>"):
+            with (
+                self.subTest(option=option),
+                patch.object(junie_cli, "_launch_process") as launch,
+                patch.object(junie_cli, "require_interactive_cli") as require_terminal,
+                patch.object(junie_cli, "_run_session", return_value=0) as run,
+            ):
+                launch.side_effect = lambda argv, **streams: subprocess.Popen(
+                    [sys.executable, "-c", f"print({('  ' + option)!r})"], **streams,
+                )
+                self.assertEqual(
+                    junie_cli.run_interactive(command, completion, "token", (), prefer_task=True), 0,
+                )
+                self.assertEqual(launch.call_args.args[0], ["junie", "--help"])
+                if option == "--task=<text>":
+                    require_terminal.assert_not_called()
+                    expected = [
+                        "junie", "--project", "project", "--ide-guidelines", "rules.md",
+                        "--max-steps", "7", "--task", "anchor prompt",
+                    ]
+                else:
+                    require_terminal.assert_called_once_with()
+                    expected = command
+                run.assert_called_once_with(expected, completion, "token", (), report_usage=None)
+
     def test_native_launch_uses_resolved_path_and_inherits_terminal(self):
         executable = os.path.abspath("Junie Tools/junie.exe")
         command = ["junie", "--project", "space & (project)", "--prompt", 'say "hello"\n%PATH% & echo no']
@@ -75,7 +103,8 @@ class JunieLaunchTests(unittest.TestCase):
         project = 'C:\\space & ()\\%NAME% !NAME! 日本語\\'
         guidelines = project + '必須事項 & details.md'
         executable = r"C:\Junie Tools & (%)!^\Junie.BAT"
-        command = [executable, "--project", project, "--ide-guidelines", guidelines, "--max-steps", "2", "--prompt", prompt]
+        command = junie_cli.build_command(Path(project), prompt, 2, guidelines=Path(guidelines))
+        command[0] = executable
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows", "JUNIE_PROMPT": "old", "JUNIE_PROJECT": "old"}):
             before = dict(os.environ)
             line, interpreter, environment = junie_cli._windows_batch_command(command)
@@ -84,9 +113,11 @@ class JunieLaunchTests(unittest.TestCase):
         self.assertIn(' /d /v:off /s /c ""%PHP_TO_CSHARP_JUNIE_LAUNCHER%"', line)
         self.assertTrue(line.endswith('""'))
         self.assertEqual(environment["JUNIE_PROMPT"], prompt)
-        self.assertEqual(environment["JUNIE_PROJECT"], project)
-        self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], guidelines)
+        self.assertEqual(environment["JUNIE_PROJECT"], str(Path(project)))
+        self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], str(Path(guidelines)))
         self.assertEqual(environment["PHP_TO_CSHARP_JUNIE_LAUNCHER"], executable)
+        self.assertEqual(environment["PHP_TO_CSHARP_JUNIE_ARG_1"], "--brave")
+        self.assertIn('"%PHP_TO_CSHARP_JUNIE_ARG_1%"', line)
         self.assertNotIn(prompt, line)
         self.assertNotIn(project, line)
         self.assertNotIn(guidelines, line)
@@ -116,6 +147,16 @@ class JunieLaunchTests(unittest.TestCase):
         self.assertEqual(environment["JUNIE_PROJECT"], "C:\\")
         self.assertEqual(environment["JUNIE_PROMPT"], 'a "b"\nc')
         self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], 'C:\\資料 & rules.md')
+
+    def test_windows_batch_transports_task_text_in_environment(self):
+        prompt = '対応行を提案してください。\n"quoted" & %PATH%'
+        with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
+            line, _, environment = junie_cli._windows_batch_command([
+                r"C:\Junie.CMD", "--task", prompt,
+            ])
+        self.assertEqual(environment["JUNIE_TASK"], prompt)
+        self.assertNotIn(prompt, line)
+        self.assertNotIn("--task", line)
 
     def test_windows_batch_rejects_unsafe_or_silently_truncated_arguments(self):
         cases = (

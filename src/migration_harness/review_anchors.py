@@ -131,10 +131,9 @@ def generate_anchors(
     config: dict[str, Any], run_id: str, reference: Path | list[Path] | None = None,
     *, focus: dict[str, Any] | None = None,
 ) -> tuple[Path, int]:
-    """対話端末でJunieに対応を提案させ、検証した比較をRunに保存する。"""
+    """Junieに対応を提案させ、検証した比較をRunに保存する。"""
     if not config.get("diff_viewer_html"):
         raise ValueError("アンカーを生成するには、設定で差分ビューアーを有効にしてください。")
-    junie_cli.require_interactive_cli()
     target_hashes: dict[str, str] = {}
     run_path, payload = capture_workspace(config, run_id, focus=focus, target_hashes=target_hashes)
     if reference is None:
@@ -160,6 +159,7 @@ def generate_anchors(
         result = agent / "anchors.json"
         prompt = (
             "Propose Diff Viewer anchors for a human reviewing migrated PHP and C#/Razor code. "
+            f"Your two required output files are anchors.json and {completion.name}. "
             "Start with guide.json. Its segments map file names to ranges in left.txt (PHP) and right.txt (C#/Razor). "
             "If examples are present, they show previously reviewed line pairs. "
             "If the guide is large, read its segments and relevant examples in smaller ranges. "
@@ -170,14 +170,15 @@ def generate_anchors(
             "Skip uncertain matches, blank lines, boilerplate, and competing matches in reordered sections. "
             "Use the printed 1-based pane line numbers, not editor row numbers or file-local numbers. "
             "Each left and right number can occur once and both sides must increase. "
-            'Write only anchors.json as a JSON array like [{"leftLineNo":3,"rightLineNo":7}]; use [] if none. '
+            'Write anchors.json as a JSON array like [{"leftLineNo":3,"rightLineNo":7}]; use [] if none. '
             "Do not edit input copies, access other directories, or run builds or tests. "
-            f"Check the result against the exact numbered lines, then write exactly {token} to "
-            f"{completion.name} as your final action. Leave the completion file absent if interrupted."
+            f"Check the result against the exact numbered lines, then create {completion.name} containing exactly "
+            f"{token} as a separate file write. Leave the completion file absent if interrupted."
         )
         command = junie_cli.build_command(agent, prompt, config["junie_max_steps"])
         junie_cli.run_interactive(
             command, completion, token, (result,), report_usage=junie_usage_recorder(run_path, "anchors"),
+            prefer_task=True,
         )
         if not junie_cli.has_completion_record(completion, token) or result.is_symlink() or not result.is_file():
             raise ValueError("Junieのアンカー作成が完了しませんでした。")

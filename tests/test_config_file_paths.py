@@ -132,7 +132,7 @@ class ConfigFilePathTests(HarnessCase):
             completion.write_text(token, encoding="ascii")
             return 0
 
-        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=junie):
+        with patch.object(junie_cli, "run_interactive", side_effect=junie):
             output, count = review_anchors.generate_anchors(config, prepared["run_id"])
         self.assertEqual(count, 1)
         self.assertEqual(json.loads(output.read_bytes())["workspace"]["anchors"]["manualAnchors"], [{"leftLineNo": 1, "rightLineNo": 0}])

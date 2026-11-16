@@ -441,7 +441,7 @@ class CapsulePreparationTests(HarnessCase):
         reference.write_text(json.dumps(edited), encoding="utf-8")
         config["diff_viewer_html"] = "viewer.html"
 
-        def junie(command, completion, token, targets, *, report_usage=None):
+        def junie(command, completion, token, targets, **kwargs):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             proposal, = targets
             numbered_php = (proposal.parent / "left.txt").read_text(encoding="utf-8")
@@ -450,10 +450,7 @@ class CapsulePreparationTests(HarnessCase):
             proposal.write_text('[{"leftLineNo": 2, "rightLineNo": 1}]', encoding="utf-8")
             completion.write_text(token, encoding="ascii")
 
-        with (
-            patch.object(junie_cli, "require_interactive_cli"),
-            patch.object(junie_cli, "run_interactive", side_effect=junie),
-        ):
+        with patch.object(junie_cli, "run_interactive", side_effect=junie):
             snapshot, count = review_anchors.generate_anchors(config, run_id, reference)
         self.assertEqual(count, 1)
         self.assertEqual(self.read_json(snapshot)["workspace"], edited["workspace"])
@@ -467,20 +464,17 @@ class CapsulePreparationTests(HarnessCase):
         record_path.write_text(json.dumps(record), encoding="utf-8")
         observed = []
 
-        def junie(command, completion, token, targets, *, report_usage=None):
+        def junie(command, completion, token, targets, **kwargs):
             proposal, = targets
             guide = self.read_json(proposal.parent / "guide.json")
             observed.append(guide["examples"])
             proposal.write_text('[{"leftLineNo": 2, "rightLineNo": 1}]', encoding="utf-8")
             completion.write_text(token, encoding="ascii")
 
-        with (
-            patch.object(junie_cli, "require_interactive_cli") as validate,
-            patch.object(junie_cli, "run_interactive", side_effect=junie),
-        ):
+        with patch.object(junie_cli, "run_interactive", side_effect=junie) as launch:
             with self.assertRaisesRegex(ValueError, "差分ビューアーを有効に"):
                 review_anchors.generate_anchors(config, run_id)
-            validate.assert_not_called()
+            launch.assert_not_called()
             config["diff_viewer_html"] = "viewer.html"
             review_anchors.generate_anchors(config, run_id)
             workflow.review_migration_ranges(config, run_id, ["1:1"], "confirmed", "行の対応を確認")

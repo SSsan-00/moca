@@ -1,0 +1,67 @@
+<div id="junie-progress-preview" class="viz-dotted-background" lang="ja">
+  <section class="preview-panel" aria-labelledby="jpp-heading">
+    <header class="preview-header">
+      <h2 id="jpp-heading">移行の進捗</h2>
+      <span class="preview-phase">Junieで移行中</span>
+    </header>
+    <div class="preview-content" aria-live="polite">
+      <h3>Junieの累計トークン <span class="preview-muted">このRun</span></h3>
+      <dl class="preview-tokens">
+        <div><dt>入力</dt><dd data-input>82,410</dd></div>
+        <div><dt>出力</dt><dd data-output>3,260</dd></div>
+      </dl>
+      <div class="preview-capsule">
+        <div class="preview-row"><h3>カプセル本文の文字数</h3><span class="preview-muted" data-part>カプセル 1 / 3</span></div>
+        <meter min="0" max="500000" value="67240" aria-label="カプセル本文の文字数"></meter>
+        <div class="preview-row"><span data-chars>67,240文字</span><span class="preview-muted">上限 500,000文字</span></div>
+      </div>
+    </div>
+  </section>
+  <label class="preview-control">表示例
+    <select>
+      <option value="0">カプセル1の実行中</option>
+      <option value="1">同じカプセルで応答を受信</option>
+      <option value="2">カプセル2を開始</option>
+    </select>
+  </label>
+</div>
+<style>
+  #junie-progress-preview { color-scheme: light dark; --jpp-panel: light-dark(#fff,#142137); --jpp-text: light-dark(#18283d,#eaf1fb); --jpp-sub: light-dark(#526580,#a9bbd1); --jpp-line: light-dark(#dce5f0,#334760); --jpp-blue: light-dark(#2563bd,#82afff); --jpp-track: light-dark(#e6edf7,#263952); padding: clamp(12px,4vw,26px); font: 14px/1.55 system-ui,sans-serif; color: var(--jpp-text); }
+  #junie-progress-preview .preview-panel { background: var(--jpp-panel); border: 1px solid var(--jpp-line); border-radius: 12px; max-width: 570px; margin-inline: auto; }
+  #junie-progress-preview .preview-header, #junie-progress-preview .preview-content { padding: 13px clamp(12px,4vw,21px); }
+  #junie-progress-preview .preview-header, #junie-progress-preview .preview-row { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+  #junie-progress-preview .preview-header { border-bottom: 1px solid var(--jpp-line); }
+  #junie-progress-preview h2, #junie-progress-preview h3 { margin: 0; font: 650 1em/1.55 system-ui,sans-serif; }
+  #junie-progress-preview .preview-phase { font-size: 12px; color: var(--jpp-blue); }
+  #junie-progress-preview .preview-muted, #junie-progress-preview dt { color: var(--jpp-sub); font-size: 12px; font-weight: 400; }
+  #junie-progress-preview h3 .preview-muted { margin-inline-start: 8px; }
+  #junie-progress-preview .preview-tokens { display: flex; flex-wrap: wrap; gap: 8px clamp(22px,8vw,62px); margin: 8px 0 16px; }
+  #junie-progress-preview dd { margin: 0; font: 650 clamp(21px,5vw,29px)/1.2 ui-monospace,monospace; font-variant-numeric: tabular-nums; }
+  #junie-progress-preview .preview-capsule { border-top: 1px solid var(--jpp-line); padding-top: 12px; }
+  #junie-progress-preview meter { display: block; width: 100%; height: 8px; margin: 10px 0 7px; appearance: none; border: 0; background: var(--jpp-track); border-radius: 20px; }
+  #junie-progress-preview meter::-webkit-meter-bar { background: var(--jpp-track); border: 0; height: 8px; }
+  #junie-progress-preview meter::-webkit-meter-optimum-value { background: var(--jpp-blue); }
+  #junie-progress-preview meter::-moz-meter-bar { background: var(--jpp-blue); }
+  #junie-progress-preview .preview-control { max-width: 570px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px auto 0; font-size: 12px; }
+  #junie-progress-preview select { max-width: 100%; min-height: 44px; padding-inline: 8px; background: var(--jpp-panel); color: var(--jpp-text); border: 1px solid var(--jpp-line); border-radius: 6px; font: inherit; }
+</style>
+<script>
+  (() => {
+    const root = document.getElementById('junie-progress-preview');
+    const select = root.querySelector('select');
+    const states = [
+      { input: 82410, output: 3260, part: 1, chars: 67240 },
+      { input: 96730, output: 3840, part: 1, chars: 67240 },
+      { input: 96730, output: 3840, part: 2, chars: 51380 },
+    ];
+    const number = new Intl.NumberFormat('ja-JP');
+    select.addEventListener('change', () => {
+      const { input, output, part, chars } = states[Number(select.value)];
+      root.querySelector('[data-input]').textContent = number.format(input);
+      root.querySelector('[data-output]').textContent = number.format(output);
+      root.querySelector('[data-part]').textContent = `カプセル ${part} / 3`;
+      root.querySelector('[data-chars]').textContent = `${number.format(chars)}文字`;
+      root.querySelector('meter').value = chars;
+    });
+  })();
+</script>

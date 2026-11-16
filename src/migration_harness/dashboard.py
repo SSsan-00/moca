@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import copy
+import os
 import json
 import re
 import secrets
+import shutil
 import time
 from collections import deque
 from concurrent.futures import Future
@@ -15,11 +17,13 @@ from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 from threading import Condition, Thread
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from tomlkit.exceptions import TOMLKitError
 
 from migration_harness.config import load_config
-from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
+from migration_harness.diff_viewer import _inside_file, create_snapshot, review_html, snapshot_bytes
+from migration_harness.editor_queue import AGENT_PHASES, EDITOR_TARGET_SUFFIXES, EDIT_BYTES, QUEUE_PHASES, add_prompt, editor_queue, editor_target, editor_text
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset
@@ -27,8 +31,11 @@ from migration_harness.timings import freeze_timings
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.workflow import (
-    RunInterrupted, RunScriptError, _load_saved_run, can_resume_run, migration_ledger, prepare_run, resume_with_junie,
-    review_checker, run_observer, run_with_junie,
+    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _load_saved_run, _review_log, _safe_target,
+    _save_build_review_edit, _target_paths, build_failure_review, can_resume_run,
+    _input_encoding, _is_php_input, _load_capsule_manifest, _pinned_php_sources, _read_pinned_php,
+    migration_ledger, prepare_run, resume_with_junie,
+    review_checker, run_observer, run_with_junie, worktree_source_lock,
 )
 
 
@@ -39,6 +46,22 @@ PROGRESS_FIELDS = (
     "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
+
+
+def _prompt_timing(config, state, run_path, record) -> str | None:
+    if state.get("stop_requested") or state.get("generating_anchors"):
+        return None
+    phase = record["status"]
+    if phase == "prepared" or phase in QUEUE_PHASES or (
+        phase in {"script_running", "script_failed"}
+        and record.get("script_phase") in {"after_prepare", "before_migration"}
+    ):
+        return "resume" if state.get("ready") else "checkpoint"
+    agent = run_path / "agent-workspace"
+    if (record.get("completed_capsules", 0) > 0 and record.get("completed_capsules") == record.get("context_capsules")
+            and not agent.is_symlink() and agent.is_dir() and can_resume_run(config, record)):
+        return "resume"
+    return None
 
 
 def _read_settings(path: Path) -> tuple[bytes, str]:
@@ -75,12 +98,17 @@ class Dashboard:
         self.actions: Queue[dict[str, Any]] = Queue(maxsize=1)
         self.closed = False
         self.control: ExecutionControl | None = None
+        self.junie_reply: Future[str] | None = None
+        self.trusted_junie_workspaces: set[str] = set()
         self.activity_sequence = 0
 
     def begin_operation(self) -> None:
         """停止要求は実行ごとのIDに結び付け、別のRunに持ち越さない。"""
         with self.condition:
-            self.control = ExecutionControl(self.activity)
+            self.control = ExecutionControl(
+                self.activity, on_junie_request=self.show_junie_request,
+                trusted_junie_workspaces=self.trusted_junie_workspaces,
+            )
             state = {key: value for key, value in self.state.items() if key != "activity"}
             self.publish({**state, "ready": False, "cancellable": True,
                           "operation_id": secrets.token_hex(16), "stop_requested": False})
@@ -92,12 +120,37 @@ class Dashboard:
             self.activity_sequence += 1
             self.publish({**self.state, "activity": {**entry, "sequence": self.activity_sequence}})
 
+    def show_junie_request(self, request: dict | None) -> Future[str] | None:
+        with self.condition:
+            state = self.state.copy()
+            state.pop("junie_request", None)
+            self.junie_reply = None
+            if request is not None and self.control and not self.control.cancelled.is_set():
+                state["junie_request"] = {**request, "id": secrets.token_hex(16)}
+                self.junie_reply = Future()
+            self.publish(state)
+            return self.junie_reply
+
+    def answer_junie(self, action: dict) -> bool:
+        with self.condition:
+            request = self.state.get("junie_request")
+            option = action.get("option_id")
+            if (self.junie_reply is None or request is None
+                    or action.get("operation_id") != self.state.get("operation_id")
+                    or action.get("request_id") != request["id"]
+                    or not any(option == choice["id"] for choice in request["options"])):
+                return False
+            self.junie_reply.set_result(option)
+            self.show_junie_request(None)
+            return True
+
     def request_stop(self, action: dict[str, Any]) -> bool:
         with self.condition:
             if (self.control is None or self.state.get("ready")
                     or action.get("operation_id") != self.state.get("operation_id")):
                 return False
             self.control.cancelled.set()
+            self.show_junie_request(None)
             self.publish({**self.state, "stop_requested": True, "cancellable": False,
                           "message": "停止しています。保存済みの編集を残して処理を終了します。"})
             return True
@@ -125,7 +178,7 @@ class Dashboard:
             if state != {key: self.state[key] for key in fields if key in self.state}:
                 operation = {key: self.state[key] for key in (
                     "operation_id", "cancellable", "stop_requested", "activity", "generating_anchors",
-                    "diff_viewer_enabled",
+                    "diff_viewer_enabled", "junie_request",
                 ) if key in self.state and (key != "activity" or state.get("run_id") == self.state.get("run_id"))}
                 self.publish({**state, **operation, "token_usage": usage})
             elif usage != self.state.get("token_usage", []):
@@ -171,6 +224,11 @@ class Dashboard:
                 or action.get("revision") != self.revision
                 or (generating_anchors and not self.state.get("worktree_path"))
                 or (action["action"] == "resume" and not self.state.get("resumable"))
+                or (action["action"] == "build-response"
+                    and (self.state.get("status") != "build_failed" or not self.state.get("resumable")))
+                or ("checker_instruction" in action and self.state.get("status") not in {
+                    "checker_needs_review", "checker_failed",
+                })
                 or (action["action"] == "accept" and self.state.get("status") != "checker_needs_review")
             ):
                 return False
@@ -178,7 +236,7 @@ class Dashboard:
                 **self.state, "ready": False, "message": "", "generating_anchors": generating_anchors,
                 "error_details": "",
             })
-            if action["action"] in ("prepare", "run", "resume", "resume-run", "anchors"):
+            if action["action"] in ("prepare", "run", "resume", "resume-run", "anchors", "build-response"):
                 self.begin_operation()
             self.actions.put_nowait(action)
             return True
@@ -220,6 +278,28 @@ class Dashboard:
                     self.send_body(200, "text/html; charset=utf-8", html)
                 elif self.path == prefix + "dashboard.js":
                     self.send_body(200, "text/javascript; charset=utf-8", script)
+                elif self.path == prefix + "dashboard_editor.js":
+                    self.send_body(200, "text/javascript; charset=utf-8", Path(__file__).with_name("dashboard_editor.js").read_bytes())
+                elif self.path.startswith(prefix + "monaco/"):
+                    name = self.path.removeprefix(prefix + "monaco/")
+                    content_type = {
+                        "editor.js": "text/javascript",
+                        "worker.js": "text/javascript",
+                        "editor.css": "text/css",
+                    }.get(name)
+                    if content_type is None:
+                        self.send_error(404)
+                        return
+                    try:
+                        asset = (Path(__file__).with_name("monaco") / name).read_bytes()
+                    except OSError:
+                        self.send_error(404)
+                    else:
+                        self.send_body(200, content_type, asset)
+                elif self.path.partition("?")[0] == prefix + "editor":
+                    self.send_editor()
+                elif self.path.partition("?")[0] == prefix + "editor-php":
+                    self.send_editor_php()
                 elif self.path == prefix + "events":
                     self.send_events()
                 elif self.path == prefix + "workspace":
@@ -228,6 +308,12 @@ class Dashboard:
                     self.send_workspace(include_usage=True)
                 elif self.path == prefix + "settings":
                     self.send_settings()
+                elif self.path == prefix + "prompts":
+                    self.send_prompts()
+                elif self.path.partition("?")[0] == prefix + "checker-output":
+                    self.send_checker_output()
+                elif self.path.partition("?")[0] == prefix + "build-review":
+                    self.send_build_review()
                 elif self.path == prefix + "migration-ledger":
                     run_id = dashboard.state.get("run_id")
                     if run_id and dashboard.state.get("worktree_path"):
@@ -243,6 +329,211 @@ class Dashboard:
                     self.send_comparison()
                 else:
                     self.send_error(404)
+
+            def send_prompts(self, action: dict[str, Any] | None = None) -> None:
+                state = dashboard.state
+                run_id = state.get("run_id")
+                payload = {"run_id": run_id, "timing": None, "prompts": []}
+                try:
+                    if action is not None and action.get("run_id") != run_id:
+                        raise ValueError("表示中の実行が変わりました。")
+                    if run_id and state.get("worktree_path"):
+                        run_path, _, _, _ = _load_saved_run(config, run_id)
+                        with editor_queue(run_path) as queue:
+                            with dashboard.condition:
+                                state = dashboard.state
+                                if state.get("run_id") != run_id:
+                                    raise ValueError("表示中の実行が変わりました。")
+                                _, _, record, _ = _load_saved_run(config, run_id)
+                                timing = _prompt_timing(config, state, run_path, record)
+                                if action is not None:
+                                    if timing is None:
+                                        raise ValueError("現在の工程では指示を登録できません。")
+                                    add_prompt(queue, action)
+                            payload.update(timing=timing, prompts=queue["prompts"])
+                    elif action is not None:
+                        raise ValueError("移行の実行を開いてから指示を登録してください。")
+                    self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8", errors="replace"))
+
+            def send_editor_php(self) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                run_id = dashboard.state.get("run_id")
+                try:
+                    if not run_id or query.get("run_id", [None])[0] != run_id:
+                        raise ValueError("表示中の実行が変わりました。")
+                    run_path, _, _, _ = _load_saved_run(config, run_id)
+                    capsule, manifest = _load_capsule_manifest(run_path)
+                    pinned = _pinned_php_sources(manifest)
+                    legacy: dict[str, str] = {}
+                    if pinned is None:
+                        for part in manifest["parts"]:
+                            for entry in part["sources"]:
+                                if _is_php_input(entry):
+                                    legacy.setdefault(Path(entry["path"]).as_posix(), entry["encoding"])
+                    sources = {Path(entry["path"]).as_posix(): entry for entry in (pinned or [])}
+                    names = list(sources if pinned is not None else legacy)
+                    name = query.get("source", names[:1] or [None])[0]
+                    if name is not None and name not in names:
+                        raise ValueError("この実行の移行元 PHP を選んでください。")
+                    content = ""
+                    error = None
+                    try:
+                        if name in sources:
+                            entry = sources[name]
+                            content = _read_pinned_php(capsule, entry).decode(entry["encoding"])
+                        elif name is not None:
+                            path = _inside_file(Path(config["project_root"]).resolve(), name)
+                            content = path.read_text(encoding=_input_encoding(path, legacy[name]))
+                    except (OSError, ValueError, LookupError) as exc:
+                        error = format_error(exc)
+                    payload = {"sources": names, "source": name, "content": content, "error": error}
+                    self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
+
+            def send_editor(self, action: dict[str, Any] | None = None) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                state = dashboard.state
+                run_id = state.get("run_id")
+                try:
+                    if not run_id or not state.get("worktree_path"):
+                        if action is not None:
+                            raise ValueError("移行の実行を開いてから保存してください。")
+                        payload = {"run_id": None, "targets": [], "prompts": [], "can_prompt": False}
+                    else:
+                        if action is not None and action.get("run_id") != run_id:
+                            raise ValueError("表示中の実行が変わりました。")
+                        run_path, _, _, _ = _load_saved_run(config, run_id)
+                        with editor_queue(run_path) as queue:
+                            state = dashboard.state
+                            if state.get("run_id") != run_id:
+                                raise ValueError("表示中の実行が変わりました。")
+                            _, worktree, record, unit = _load_saved_run(config, run_id)
+                            targets = tuple(path for path in _target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
+                            names = [path.as_posix() for path in targets]
+                            name = query.get("target", names[:1] or [None])[0]
+                            if action is not None and action.get("kind") == "save":
+                                name = action.get("target")
+                                if name not in names:
+                                    raise ValueError("設定された移行先ファイルを選んでください。")
+                            elif name is not None and name not in names:
+                                raise ValueError("設定された移行先ファイルを選んでください。")
+                            phase = record["status"]
+                            agent_root = run_path / "agent-workspace"
+                            if agent_root.is_symlink():
+                                raise ValueError("Junie の作業場所がシンボリックリンクです。")
+                            from_agent = phase in AGENT_PHASES and agent_root.is_dir()
+                            root = agent_root if from_agent else worktree
+                            busy_other = state.get("generating_anchors") or state.get("stop_requested")
+                            queued = bool(from_agent and phase in QUEUE_PHASES and not busy_other)
+                            direct = bool(state.get("ready") and not busy_other and phase not in AGENT_PHASES)
+                            prompt_timing = _prompt_timing(config, state, run_path, record)
+                            read_error = None
+                            try:
+                                original, content = editor_target(root, Path(name)) if name else (None, "")
+                            except (OSError, ValueError) as exc:
+                                if action is not None and action.get("kind") == "save":
+                                    raise
+                                original, content = None, ""
+                                read_error = format_error(exc)
+                            edit = queue["edits"].get(name)
+                            if action is not None:
+                                if action.get("kind") == "prompt" and prompt_timing:
+                                    add_prompt(queue, action)
+                                elif action.get("kind") == "save" and name and original is not None and (queued or direct):
+                                    base = editor_text(action.get("base"))
+                                    draft = editor_text(action.get("content"))
+                                    if action.get("edit_id") != (edit["id"] if edit else None):
+                                        raise ValueError("保存済みの編集が別の画面で変更されました。")
+                                    if queued:
+                                        if edit and edit["status"] == "conflict" and (
+                                            not action.get("resolve") or base != content
+                                        ):
+                                            raise ValueError("Junie の最新版を確認してから競合を解消してください。")
+                                        edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
+                                        queue["edits"][name] = edit
+                                    else:
+                                        if content != base:
+                                            raise ValueError("ファイルが更新されました。差分を確認してください。")
+                                        with worktree_source_lock, dashboard.condition:
+                                            if dashboard.state.get("run_id") != run_id or not dashboard.state.get("ready"):
+                                                raise ValueError("処理が始まりました。終了後に保存してください。")
+                                            _save_build_review_edit(worktree, targets, {
+                                                "target": name, "version": hashlib.sha256(original).hexdigest(), "content": draft,
+                                            })
+                                        content = draft
+                                else:
+                                    raise ValueError("現在の工程ではこの操作を受け付けられません。")
+                            payload = {
+                                "run_id": run_id, "targets": names, "target": name, "content": content, "edit": edit,
+                                "source": "agent-workspace" if from_agent else "worktree",
+                                "can_save": bool(original is not None and (queued or direct)), "queued": queued,
+                                "exists": original is not None, "read_error": read_error,
+                                "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,
+                                "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
+                                "status": phase,
+                            }
+                    self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
+
+            def send_checker_output(self) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                with dashboard.condition:
+                    state = dashboard.state
+                    current_config = config.copy()
+                run_id = state.get("run_id")
+                if (not run_id or query.get("run_id") != [run_id] or not state.get("ready")
+                        or state.get("status") not in {"checker_needs_review", "checker_failed"}):
+                    self.send_body(409, "text/plain; charset=utf-8", "現在の実行から確認画面を開き直してください。".encode())
+                    return
+                try:
+                    run_path, _, record, _ = _load_saved_run(current_config, run_id)
+                    if record["status"] not in {"checker_needs_review", "checker_failed"}:
+                        raise ValueError("チェッカーの結果が変わりました。確認画面を開き直してください。")
+                    if query.get("download") != ["1"]:
+                        output, truncated = _review_log(run_path, "checker.log")
+                        body = json.dumps({"output": output, "truncated": truncated}, ensure_ascii=False).encode()
+                        self.send_body(200, "application/json; charset=utf-8", body)
+                        return
+                    path = _safe_target(run_path, Path("checker.log"))
+                    if not path.is_file():
+                        raise ValueError("チェッカーの出力ファイルが見つかりません。")
+                    stream = path.open("rb")
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8", errors="replace"))
+                    return
+                with stream:
+                    self.connection.settimeout(5)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Disposition", 'attachment; filename="checker.log"')
+                    self.send_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    try:
+                        shutil.copyfileobj(stream, self.wfile)
+                    except OSError:
+                        return
+
+            def send_build_review(self) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                with dashboard.condition:
+                    state = dashboard.state
+                    if (not state.get("ready") or state.get("status") != "build_failed"
+                            or query.get("run_id") != [state.get("run_id")]):
+                        self.send_body(409, "text/plain; charset=utf-8", "現在の実行から確認画面を開き直してください。".encode())
+                        return
+                    current_config = config.copy()
+                try:
+                    review = build_failure_review(current_config, state["run_id"], query.get("target", [None])[0])
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                else:
+                    self.send_body(200, "application/json; charset=utf-8", json.dumps(review, ensure_ascii=False).encode())
 
             def send_workspace(self, *, include_usage: bool = False) -> None:
                 try:
@@ -340,7 +631,8 @@ class Dashboard:
 
             def do_POST(self) -> None:
                 """オリジンと操作内容を検証してから比較または端末側の操作へ渡す。"""
-                if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings"):
+                if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
+                                      prefix + "build-response", prefix + "editor", prefix + "prompts"):
                     self.send_error(404)
                     return
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
@@ -348,23 +640,43 @@ class Dashboard:
                     return
                 comparison = self.path == prefix + "comparison"
                 settings = self.path == prefix + "settings"
+                build_response = self.path == prefix + "build-response"
+                editor = self.path == prefix + "editor"
+                prompts = self.path == prefix + "prompts"
+                limit = 16_384
+                if settings:
+                    limit = 8 * 1024 * 1024
+                elif build_response:
+                    # JSON エスケープはソースの 1 バイトを最大 6 バイトに展開する。
+                    limit = 6 * BUILD_REVIEW_EDIT_BYTES + 256 * 1024
+                elif editor:
+                    limit = 12 * EDIT_BYTES + 16_384
+                elif prompts:
+                    limit = 32_768
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if comparison and length == 0:
                         action = {}
                     else:
-                        limit = 8 * 1024 * 1024 if settings else 16_384
                         if not 0 < length <= limit or self.headers.get_content_type() != "application/json":
                             raise ValueError
                         self.connection.settimeout(5)
                         action = json.loads(self.rfile.read(length))
                         if not isinstance(action, dict):
                             raise ValueError
+                        if build_response != (action.get("action") == "build-response"):
+                            raise ValueError
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
                 if settings:
                     self.save_settings(action)
+                    return
+                if editor:
+                    self.send_editor(action)
+                    return
+                if prompts:
+                    self.send_prompts(action)
                     return
                 if comparison:
                     with dashboard.condition:
@@ -387,7 +699,10 @@ class Dashboard:
                 try:
                     if type(action.get("revision")) is not int:
                         raise ValueError
-                    if action.get("action") not in ("stop", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run"):
+                    if action.get("action") not in (
+                        "stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run",
+                        "build-response",
+                    ):
                         raise ValueError
                     if action["action"] in ("prepare", "run", "open-run", "resume-run"):
                         name = action.get("run_id" if action["action"] in ("open-run", "resume-run") else "unit_id")
@@ -398,11 +713,30 @@ class Dashboard:
                         or not isinstance(action.get("reason"), str) or not 0 < len(action["reason"].strip()) <= 2_000
                     ):
                         raise ValueError
+                    if "checker_instruction" in action:
+                        if action["action"] != "resume" or not editor_text(action["checker_instruction"], 4_000).strip():
+                            raise ValueError
+                    if action["action"] == "build-response":
+                        instruction, edit = action.get("instruction", ""), action.get("edit")
+                        if not isinstance(instruction, str) or len(instruction) > 4_000 or "\0" in instruction:
+                            raise ValueError
+                        instruction.encode("utf-8")
+                        if edit is not None and (
+                            not isinstance(edit, dict) or not all(isinstance(edit.get(key), str) for key in ("target", "version", "content"))
+                            or not re.fullmatch(r"[0-9a-f]{64}", edit["version"])
+                            or "\0" in edit["content"] or len(edit["content"].encode("utf-8")) > BUILD_REVIEW_EDIT_BYTES
+                        ):
+                            raise ValueError
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
                 if action["action"] == "stop":
                     if dashboard.request_stop(action):
+                        self.send_body(202, "application/json", b"{}")
+                    else:
+                        self.send_error(409)
+                elif action["action"] == "junie-answer":
+                    if dashboard.answer_junie(action):
                         self.send_body(202, "application/json", b"{}")
                     else:
                         self.send_error(409)
@@ -476,7 +810,7 @@ def run_dashboard(
     config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None,
     config_error: str | None = None,
 ) -> dict[str, Any] | None:
-    """サーバーを開き、対話が必要な作業を起動元の端末で処理する。"""
+    """サーバーを開き、ブラウザーで移行の進捗と確認操作を公開する。"""
     if unit_id is not None and run_id is not None:
         raise ValueError("choose a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent
@@ -513,7 +847,7 @@ def run_dashboard(
         options += " data-workspace"
     view.publish({**view.state, "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
-    html += '<script src="dashboard.js" defer></script></body></html>'
+    html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>'
     with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -564,7 +898,7 @@ def run_dashboard(
                     raise RunInterrupted(view.state.get("run_id", "")) from None
 
         try:
-            # Junieは起動元の端末を必要とするため、HTTPスレッドは操作をキューに渡す。
+            # 実行とRunの保存はHTTPスレッドの外で行う。
             if unit_id is not None and config_error is None:
                 view.begin_operation()
                 try:
@@ -621,8 +955,15 @@ def run_dashboard(
                     elif action["action"] == "accept":
                         review_checker(config, view.state["run_id"], action["finding_id"], action["reason"])
                         view.ready(config, result, "判断理由を記録しました。")
+                    elif action["action"] == "build-response":
+                        result = execute(resume_with_junie, config, view.state["run_id"], build_response=action)
+                        view.ready(config, result)
                     else:
-                        result = execute(resume_with_junie, config, view.state["run_id"])
+                        if "checker_instruction" in action:
+                            result = execute(resume_with_junie, config, view.state["run_id"],
+                                             checker_instruction=action["checker_instruction"])
+                        else:
+                            result = execute(resume_with_junie, config, view.state["run_id"])
                         view.ready(config, result)
                 except RunInterrupted as exc:
                     result = show_failure(exc)

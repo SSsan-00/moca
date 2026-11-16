@@ -6,6 +6,12 @@ const dialog = element("#review-dialog");
 const note = element("#review-note");
 const accept = element("#review-accept");
 const resume = element("#review-fix");
+const checkerInstruction = element("#checker-instruction");
+const checkerOpenEditor = element("#checker-open-editor");
+const checkerOutput = element("#checker-review-output");
+const checkerOutputStatus = element("#checker-output-status");
+const checkerDownload = element("#checker-output-download");
+let checkerOutputRequest = 0;
 const viewer = element("#open-diff-viewer");
 const dashboardViewer = element(".runbar [data-compare]");
 for (const button of [viewer, dashboardViewer]) {
@@ -30,7 +36,8 @@ steps[4].querySelector("h3").textContent = "ビルド";
 steps[6].querySelector("h3").textContent = "人の確認";
 const statusNames = {
   idle: "実行を選択してください", preparing: "準備中", prepared: "準備完了", junie_running: "Junieで移行中",
-  junie_finished: "Junieの編集完了", repairing: "Junieで修正中", building: "ビルド中",
+  junie_finished: "Junieの編集完了", editor_checkpoint: "編集・追加指示の反映", repairing: "Junieで修正中", building: "ビルド中",
+  editor_followup: "Junieが追加指示を実行中",
   build_succeeded: "ビルド成功", build_failed: "ビルド失敗", checking: "チェッカー実行中",
   checker_needs_review: "人の確認待ち", checker_failed: "チェッカー実行失敗",
   checker_succeeded: "チェッカー成功", checker_accepted: "チェッカーの指摘を承認済み",
@@ -42,7 +49,8 @@ const savedView = document.documentElement.hasAttribute("data-saved");
 const verifiedStatuses = new Set(["checker_succeeded", "checker_accepted", "build_succeeded"]);
 const statusStages = {
   preparing: 0, preparation_interrupted: 0, preparation_failed: 0,
-  prepared: 2, junie_running: 3, junie_finished: 3, interrupted: 3, junie_failed: 3,
+  prepared: 2, junie_running: 3, junie_finished: 3, editor_checkpoint: 3, interrupted: 3, junie_failed: 3,
+  editor_followup: 3,
   repairing: 3, building: 4, build_succeeded: 4, build_failed: 4, checking: 5, checker_failed: 5,
   checker_needs_review: 6, checker_succeeded: 6, checker_accepted: 6,
 };
@@ -95,12 +103,8 @@ ledger.replaceChildren();
 element(".work-summary .metric-label").textContent = "カプセル総数";
 element(".work-summary .metric:nth-child(2) .metric-label").textContent = "移行済み";
 element(".review-eyebrow").hidden = true;
-element(".review-intro").textContent = "指摘を選び、問題なしと判断した理由を記録してください。再開するとビルドとチェッカーを再実行します。";
-element(".review-note-label").textContent = "判断理由（必須）";
-note.placeholder = "例：共通関数へ委譲していることを差分で確認済み";
-note.required = true;
-note.maxLength = 2000;
-element(".review-context").hidden = true;
+element(".review-intro").textContent = "出力を確認し、必要に応じて Junie に追加指示を渡せます。問題なしと判断した指摘には理由を記録できます。";
+element("#review-demo-context").hidden = true;
 element("#review-later").hidden = true;
 accept.textContent = "問題なしとして記録";
 resume.textContent = "同じ実行を再開";
@@ -120,10 +124,48 @@ locationCard.append(locationTitle, locationPath, locationLine);
 findingLocation.append(locationCard);
 const reviewFiles = document.createElement("p");
 reviewFiles.className = "review-caveat";
-element(".review-finding").replaceChildren(findings, findingLocation, diagnostic, reviewFiles);
+element(".review-finding").replaceChildren(findings, findingLocation, diagnostic, reviewFiles, checkerOpenEditor);
 const connection = document.createElement("span");
 connection.setAttribute("role", "status");
 element("#activity-title").after(connection);
+const reviewTitle = element("#review-title");
+const checkerReviewBody = document.createElement("div");
+const modalHeading = dialog.querySelector(".review-heading");
+checkerReviewBody.append(...Array.from(modalHeading.parentElement.children).slice(1));
+modalHeading.after(checkerReviewBody);
+const junieReviewBody = document.createElement("div");
+const junieDetail = document.createElement("pre");
+junieDetail.className = "review-code";
+const junieChoices = document.createElement("div");
+junieChoices.className = "review-actions junie-choices";
+const junieNotice = document.createElement("p");
+junieNotice.className = "review-caveat";
+junieNotice.setAttribute("role", "status");
+junieReviewBody.append(junieDetail, junieNotice, junieChoices);
+checkerReviewBody.after(junieReviewBody);
+junieReviewBody.hidden = true;
+let junieRequestId;
+let junieSubmitting;
+const buildDialog = element("#build-review-dialog");
+const buildTarget = element("#build-review-target");
+const buildSource = element("#build-review-source");
+const buildInstruction = element("#build-review-instruction");
+const buildSubmit = element("#build-review-submit");
+const buildReset = element("#build-review-reset");
+const buildFeedback = element("#build-review-feedback");
+const buildFileStatus = element("#build-review-file-status");
+let buildViewRun;
+let buildFile;
+let buildRequest = 0;
+let buildLoading = false;
+let buildEditSubmitted = false;
+const progressPrompt = bindProgressPromptDialog({
+  open: refreshProgressPrompts, submit: submitProgressPrompt, inputChanged: syncProgressPrompts,
+});
+let progressPrompts;
+let promptLoading = false;
+let promptSaving = false;
+let promptRequest = 0;
 
 // 判断に関する通知はメッセージがあるときだけ表示する。
 function showNotice(message) {
@@ -138,8 +180,20 @@ function syncActions() {
   const canReview = snapshot.status === "checker_needs_review";
   const selected = snapshot.review?.findings[findings.selectedIndex];
   accept.disabled = !canAct || !canReview || !selected || selected[2] || !note.value.trim();
-  resume.disabled = !canAct || !snapshot.resumable;
-  reviewButton.disabled = !canAct || !(canReview || snapshot.resumable);
+  const instruction = checkerInstruction.value.trim();
+  const instructionTooLong = new TextEncoder().encode(instruction).length > 4_000;
+  resume.disabled = !canAct || !snapshot.resumable || instructionTooLong;
+  resume.textContent = instruction ? "指示を送って再開" : "同じ実行を再開";
+  checkerInstruction.readOnly = !canAct || !snapshot.resumable;
+  checkerOpenEditor.disabled = !canAct;
+  element("#checker-instruction-status").textContent = instructionTooLong
+    ? "追加指示を 4,000 バイト以下にしてください。"
+    : "指示を送ると、Junie が出力と指示を確認してから再ビルドします。";
+  reviewButton.disabled = snapshot.junie_request ? !connected
+    : !canAct || !(canReview || snapshot.resumable || snapshot.status === "build_failed");
+  for (const button of junieChoices.children) {
+    button.disabled = !connected || junieSubmitting === junieRequestId || !!snapshot.stop_requested;
+  }
   const stopping = snapshot.stop_requested || (stopPendingOperation !== undefined && stopPendingOperation === snapshot.operation_id);
   stopButton.hidden = !snapshot.cancellable && !stopping;
   stopButton.disabled = !connected || submitting || !snapshot.cancellable || stopping;
@@ -149,6 +203,167 @@ function syncActions() {
   element("#migration-ledger-compare").disabled = dashboardViewer.disabled;
   for (const button of anchorButtons) {
     button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
+  }
+  syncBuildReview(canAct);
+  syncProgressPrompts();
+}
+
+function syncProgressPrompts() {
+  progressPrompt.button.hidden = !snapshot.worktree_path;
+  progressPrompt.button.disabled = !connected;
+  progressPrompt.render(progressPrompts, {available: connected, loading: promptLoading, saving: promptSaving});
+}
+
+async function refreshProgressPrompts() {
+  if (!progressPrompt.dialog.open || !connected || promptLoading || promptSaving) return;
+  const request = ++promptRequest;
+  const runId = snapshot.run_id;
+  promptLoading = true;
+  syncProgressPrompts();
+  try {
+    const data = await workspaceRequest("prompts");
+    if (request === promptRequest && data.run_id === runId) progressPrompts = data;
+  } catch (error) {
+    if (request === promptRequest) {
+      progressPrompts = undefined;
+      progressPrompt.showError(error);
+    }
+  } finally {
+    promptLoading = false;
+    syncProgressPrompts();
+  }
+}
+
+async function submitProgressPrompt(text) {
+  const runId = snapshot.run_id;
+  const request = ++promptRequest;
+  promptSaving = true;
+  progressPrompt.showError();
+  syncProgressPrompts();
+  try {
+    const data = await workspaceRequest("prompts", {run_id: runId, text});
+    if (request === promptRequest && data.run_id === runId) {
+      progressPrompts = data;
+      progressPrompt.input.value = "";
+    }
+  } catch (error) {
+    if (request === promptRequest) progressPrompt.showError(error);
+  } finally {
+    promptSaving = false;
+    syncProgressPrompts();
+  }
+}
+
+function buildEditIsDirty() {
+  return !!buildFile && buildSource.value !== buildFile.content;
+}
+
+function syncBuildReview(canAct) {
+  const edited = buildEditIsDirty();
+  const instructed = !!buildInstruction.value.trim();
+  const source = edited ? buildSource.value : "";
+  const tooLarge = edited && source.length * 3 + buildFile.bomBytes > buildFile.maxBytes && (
+    source.length + buildFile.bomBytes > buildFile.maxBytes
+    || new TextEncoder().encode(buildFile.crlf ? source.replaceAll("\n", "\r\n") : source).length
+      + buildFile.bomBytes > buildFile.maxBytes
+  );
+  buildTarget.disabled = submitting || edited;
+  buildSource.readOnly = buildInstruction.readOnly = submitting || !snapshot.resumable;
+  buildReset.hidden = !edited;
+  buildReset.disabled = submitting;
+  buildSubmit.disabled = !canAct || !snapshot.resumable || buildLoading || tooLarge;
+  buildSubmit.textContent = instructed
+    ? (edited ? "保存して Junie に修正を依頼" : "Junie に修正を依頼して再開")
+    : (edited ? "保存して再ビルド" : "再ビルド");
+  if (buildFile) {
+    buildFileStatus.textContent = tooLarge ? `${buildFile.maxBytes / (1024 * 1024)} MiB を超えています。作業ツリーで編集してください。`
+      : edited ? "未保存の編集があります。別のファイルを選ぶには、保存するか最新の内容を読み込み直してください。" : "";
+  }
+}
+
+async function fetchBuildReview(runId, target) {
+  const query = new URLSearchParams({run_id: runId});
+  if (target) query.set("target", target);
+  const response = await fetch(`build-review?${query}`, {cache: "no-store"});
+  if (!response.ok) throw await responseError(response);
+  return response.json();
+}
+
+async function loadBuildSource() {
+  const request = ++buildRequest;
+  const target = buildTarget.value;
+  buildFile = undefined;
+  buildSource.value = "";
+  buildSource.hidden = element("#build-review-source-label").hidden = true;
+  buildFileStatus.textContent = target ? "ファイルを読み込んでいます…" : "";
+  buildLoading = !!target;
+  syncActions();
+  if (!target) return;
+  try {
+    const file = await fetchBuildReview(buildViewRun, target);
+    if (request !== buildRequest) return;
+    buildSource.value = file.content;
+    buildFile = {
+      target, version: file.version, content: buildSource.value,
+      maxBytes: file.max_bytes, crlf: file.crlf, bomBytes: file.bom_bytes,
+    };
+    buildSource.hidden = element("#build-review-source-label").hidden = false;
+  } catch (error) {
+    if (request === buildRequest) buildFileStatus.textContent = `ファイルを開けませんでした。\n${error.message}`;
+  } finally {
+    if (request === buildRequest) {
+      buildLoading = false;
+      syncActions();
+    }
+  }
+}
+
+async function openBuildReview() {
+  const request = ++buildRequest;
+  const runId = snapshot.run_id;
+  const newRun = buildViewRun !== runId;
+  buildViewRun = runId;
+  if (newRun) {
+    buildFile = undefined;
+    buildInstruction.value = buildSource.value = "";
+    element("#build-review-editor").open = false;
+  }
+  const errors = element("#build-review-errors");
+  const logSection = element("#build-review-log-section");
+  const editor = element("#build-review-editor");
+  element("#build-review-intro").textContent = Number.isInteger(snapshot.build_exit_code)
+    ? `ビルドの終了コード ${snapshot.build_exit_code}。独自チェッカーの前で停止しました。`
+    : "ビルド工程で停止しました。エラーの詳細を確認してください。";
+  errors.textContent = "ビルド出力を読み込んでいます…";
+  logSection.hidden = editor.hidden = true;
+  buildFeedback.textContent = snapshot.message || (!snapshot.resumable
+    ? "再開するには、前回の実行で使用したチェッカーを設定してください。" : "");
+  buildLoading = true;
+  buildDialog.showModal();
+  element("#build-review-title").focus();
+  syncActions();
+  try {
+    const review = await fetchBuildReview(runId);
+    if (request !== buildRequest) return;
+    errors.textContent = review.errors.join("\n") || snapshot.error || "エラーの詳細はビルド出力を確認してください。";
+    element("#build-review-log").textContent = review.log;
+    element("#build-review-log-label").textContent = review.truncated ? "ビルド出力（末尾 64 KiB）" : "ビルド出力";
+    logSection.hidden = !review.log;
+    const selected = buildFile?.target || (!newRun && buildTarget.value) || review.preferred_target;
+    buildTarget.replaceChildren(new Option("ファイルを選択", ""), ...review.targets.map(path => new Option(path, path)));
+    buildTarget.value = review.targets.includes(selected) ? selected : "";
+    editor.hidden = !review.targets.length;
+    if (!buildEditIsDirty()) await loadBuildSource();
+  } catch (error) {
+    if (request === buildRequest) {
+      errors.textContent = snapshot.error || "ビルド工程で停止しました。";
+      buildFeedback.textContent = `ビルド出力を読み込めませんでした。実行ログを確認するか、画面を開き直してください。\n${error.message}`;
+    }
+  } finally {
+    if (request === buildRequest) {
+      buildLoading = false;
+      syncActions();
+    }
   }
 }
 
@@ -164,6 +379,10 @@ function renderSelectedFinding() {
 
 // 選択した指摘を見せ、別の指摘の判断理由が残らないようにする。
 function openReview(index = findings.selectedIndex) {
+  if (snapshot.junie_request) {
+    openJunieReview();
+    return;
+  }
   if (index !== findings.selectedIndex) {
     findings.selectedIndex = index;
     note.value = "";
@@ -172,7 +391,83 @@ function openReview(index = findings.selectedIndex) {
   syncActions();
   if (!dialog.open) {
     dialog.showModal();
-    element("#review-title").focus();
+    reviewTitle.focus();
+    loadCheckerOutput();
+  }
+}
+
+async function loadCheckerOutput() {
+  const request = ++checkerOutputRequest;
+  const path = `checker-output?run_id=${encodeURIComponent(snapshot.run_id)}`;
+  checkerOutput.textContent = "";
+  checkerDownload.hidden = true;
+  checkerOutputStatus.textContent = "出力を読み込んでいます…";
+  try {
+    const data = await workspaceRequest(path);
+    if (request !== checkerOutputRequest) return;
+    checkerOutput.textContent = data.output || "チェッカーの出力はありません。";
+    checkerOutputStatus.textContent = data.truncated ? "出力の末尾 64 KiB を表示しています。" : "";
+    checkerDownload.href = `${path}&download=1`;
+    checkerDownload.hidden = !data.output;
+  } catch {
+    if (request === checkerOutputRequest) checkerOutputStatus.textContent =
+      "出力を読み込めませんでした。画面を開き直すか、実行ログを確認してください。";
+  }
+}
+
+function openJunieReview() {
+  if (!dialog.open) dialog.showModal();
+  reviewTitle.focus();
+}
+
+function renderJunieReview(request) {
+  if (request?.id === junieRequestId) return;
+  junieRequestId = request?.id;
+  checkerReviewBody.hidden = !!request;
+  junieReviewBody.hidden = !request;
+  reviewTitle.textContent = request?.title || "チェッカーの指摘を確認";
+  junieNotice.textContent = "";
+  junieChoices.replaceChildren();
+  if (!request) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  junieDetail.textContent = request.detail;
+  const labels = {
+    allow_once: "今回のみ許可", reject_once: "今回のみ拒否",
+    allow_always: "今後も許可", reject_always: "今後も拒否",
+  };
+  for (const choice of request.options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "review-action";
+    button.textContent = request.title === "Junie の操作を確認" && labels[choice.kind]
+      ? `${labels[choice.kind]}（${choice.label}）` : choice.label;
+    button.addEventListener("click", () => answerJunie(request.id, choice.id));
+    junieChoices.append(button);
+  }
+  if (!progressPrompt.dialog.open) openJunieReview();
+}
+
+async function answerJunie(requestId, optionId) {
+  if (!connected || snapshot.junie_request?.id !== requestId || junieSubmitting === requestId) return;
+  junieSubmitting = requestId;
+  junieNotice.textContent = "回答を送信しています。";
+  syncActions();
+  try {
+    const response = await fetch("control", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: "junie-answer", revision: dashboardRevision,
+        operation_id: snapshot.operation_id, request_id: requestId, option_id: optionId}),
+    });
+    if (!response.ok) throw await responseError(response);
+    if (junieRequestId === requestId) junieNotice.textContent = "回答を送信しました。";
+  } catch (error) {
+    if (junieRequestId === requestId) {
+      junieNotice.textContent = `回答を送信できませんでした。接続を確認して、もう一度お試しください。\n${error.message}`;
+    }
+    if (junieSubmitting === requestId) junieSubmitting = undefined;
+    syncActions();
   }
 }
 
@@ -289,10 +584,10 @@ function renderCapsuleProgress(data, total, completed) {
   const chars = data.context_part_chars?.[capsuleIndex] ?? 0;
   const limit = data.max_context_chars ?? 0;
   const percent = limit ? Math.round(chars * 100 / limit) : 0;
-  element("#capsule-call").textContent = total ? `カプセル ${capsuleIndex + 1}/${total}` : "入力を準備中";
+  element("#capsule-call").textContent = total ? `カプセル ${capsuleIndex + 1} / ${total}` : "未準備";
   element(".capsule-top > span").textContent = limit ? `上限 ${limit.toLocaleString("ja-JP")}文字` : "上限 —";
-  element("#char-count").textContent = chars.toLocaleString("ja-JP");
-  element("#capsule-percent").textContent = `上限の${percent}%`;
+  element("#char-count").textContent = total ? chars.toLocaleString("ja-JP") : "—";
+  element("#capsule-percent").textContent = total ? `上限の${percent}%` : "—";
   element("#capsule-meter").setAttribute("aria-valuemax", String(limit || 1));
   element("#capsule-meter").setAttribute("aria-valuenow", String(chars));
   element("#meter-fill").style.width = `${percent}%`;
@@ -340,7 +635,8 @@ function renderCheckerReview(data, showReview) {
     renderSelectedFinding();
   }
   showNotice(data.message || (data.ready ? data.error : "") || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
-  if (showReview && data.ready && !prompted && activeHarnessTab === 0) {
+  if (data.junie_request) return;
+  if (showReview && data.ready && !prompted && activeHarnessTab === 0 && !progressPrompt.dialog.open) {
     prompted = true;
     openReview();
   } else if (!showReview) {
@@ -351,8 +647,9 @@ function renderCheckerReview(data, showReview) {
 
 function renderTokens() {
   const data = snapshot;
+  const usingJunie = !data.ready && (["junie_running", "editor_followup", "repairing"].includes(data.status) || data.generating_anchors);
+  renderRunTokenSummary(data.token_usage, usingJunie);
   if (element("#tab-tokens").getAttribute("aria-selected") === "true") {
-    const usingJunie = !data.ready && (["junie_running", "repairing"].includes(data.status) || data.generating_anchors);
     tokenRuns.setActive(data.run_id ? {
       run_id: data.run_id, unit_id: data.unit_id, created_at: data.created_at,
       token_usage: data.token_usage, running: Boolean(usingJunie),
@@ -365,10 +662,18 @@ function render() {
   const data = snapshot;
   renderTokens();
   document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
-  const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
+  const showReview = ["checker_needs_review", "checker_failed"].includes(data.status)
+    && (data.ready || data.generating_anchors || dialog.open);
+  const showBuildReview = data.ready && data.status === "build_failed";
+  if (!showBuildReview && buildDialog.open) buildDialog.close();
+  if (data.ready && buildEditSubmitted) {
+    buildEditSubmitted = false;
+    if (!data.error_details && !data.message) buildFile = undefined;
+  }
+  const waitingForJunie = !!data.junie_request;
   const verificationFinished = data.ready && verifiedStatuses.has(data.status);
-  const stopped = data.ready && !verificationFinished
-    && (data.resumable || showReview || ["checker_failed", "script_failed", "interrupted", "junie_failed", "preparation_interrupted", "preparation_failed"].includes(data.status));
+  const stopped = data.ready && !verificationFinished && (data.resumable || showReview || showBuildReview
+    || ["checker_failed", "script_failed", "interrupted", "junie_failed", "preparation_interrupted", "preparation_failed"].includes(data.status));
   const done = verificationFinished && migrationCompletion?.complete;
   element(".demo-badge").textContent = savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
   element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : data.status === "idle" ? "移行ハーネス" : "移行を準備中";
@@ -379,16 +684,23 @@ function render() {
   if (verificationFinished && migrationCompletion) {
     label = done ? "移行完了" : migrationCompletion.verification_passed ? "移行台帳の確認待ち" : "ビルド・チェックの再確認が必要";
   }
-  element("#state-label").textContent = data.stop_requested ? "停止待ち" : label;
+  element("#state-label").textContent = data.stop_requested ? "停止待ち" : waitingForJunie ? "Junie の確認待ち" : label;
   element("#run-state").title = element("#state-label").textContent;
   const state = element("#run-state");
   state.classList.toggle("is-running", !data.ready);
   element("#flow").classList.toggle("is-paused", !!data.ready);
-  state.dataset.state = done ? "complete" : showReview || verificationFinished ? "waiting" : stopped ? "paused" : "running";
-  reviewButton.textContent = showReview ? "判断が必要です" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
-  if (showReview) reviewButton.setAttribute("aria-haspopup", "dialog");
+  state.dataset.state = done ? "complete" : showReview || waitingForJunie || verificationFinished ? "waiting" : stopped ? "paused" : "running";
+  reviewButton.textContent = waitingForJunie ? "Junie の確認を開く" : showBuildReview ? "ビルド失敗を確認"
+    : showReview ? "チェッカー出力を確認" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
+  if (showReview || showBuildReview || waitingForJunie) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
-  reviewButton.hidden = !showReview && !((data.ready || data.generating_anchors) && data.resumable);
+  if (showReview && data.status === "checker_needs_review" && !waitingForJunie && !data.stop_requested) {
+    reviewButton.setAttribute("aria-controls", "review-dialog");
+  } else {
+    reviewButton.removeAttribute("aria-controls");
+  }
+  reviewButton.hidden = !waitingForJunie && !showReview && !showBuildReview
+    && !((data.ready || data.generating_anchors) && data.resumable);
   const current = verificationFinished ? 6 : data.status === "checker_needs_review" && !showReview ? 5
     : data.active_stage ?? scriptStages[data.script_phase] ?? statusStages[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
@@ -405,6 +717,7 @@ function render() {
       ? stopped && !showReview ? "停止中" : data.ready ? "確認待ち" : "処理中" : "待機中";
   });
   renderCapsuleProgress(data, total, completed);
+  renderJunieReview(data.junie_request);
   renderCheckerReview(data, showReview);
   syncActions();
   renderElapsed();
@@ -500,7 +813,7 @@ function appendEvent(at, title, detail, kind = "state") {
 }
 
 // 受信済みの連番を付けて利用者の操作を端末へ送る。
-async function send(action) {
+async function send(action, fields = {finding_id: findings.value, reason: note.value.trim()}) {
   if (submitting) return;
   if (action === "stop") {
     if (!connected || !snapshot.cancellable || snapshot.stop_requested || stopPendingOperation !== undefined) return;
@@ -509,17 +822,19 @@ async function send(action) {
   submitting = true;
   syncActions();
   try {
-    const response = await fetch("control", {
+    const response = await fetch(action === "build-response" ? "build-response" : "control", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(action === "stop"
         ? {action, operation_id: snapshot.operation_id, revision: dashboardRevision}
-        : {action, revision: dashboardRevision, finding_id: findings.value, reason: note.value.trim()}),
+        : {action, revision: dashboardRevision, ...fields}),
     });
     if (!response.ok) throw await responseError(response);
+    return true;
   } catch (error) {
     if (action === "stop") stopPendingOperation = undefined;
     const message = `操作を送信できませんでした。接続を確認して、もう一度お試しください。\n${error.message}`;
-    if (dialog.open) showNotice(message);
+    if (action === "build-response" && buildDialog.open) buildFeedback.textContent = message;
+    else if (dialog.open) showNotice(message);
     else element("#workspace-progress-feedback").textContent = message;
   } finally {
     submitting = false;
@@ -542,7 +857,18 @@ pendingFilter.addEventListener("click", () => {
 });
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
-resume.addEventListener("click", () => send("resume"));
+checkerInstruction.addEventListener("input", syncActions);
+resume.addEventListener("click", async () => {
+  const text = checkerInstruction.value.trim();
+  if (await send("resume", text ? {checker_instruction: text} : {})) {
+    checkerInstruction.value = "";
+    syncActions();
+  }
+});
+checkerOpenEditor.addEventListener("click", () => {
+  dialog.close();
+  switchHarnessTab(harnessTabs.indexOf(element("#tab-editor")), true);
+});
 stopButton.addEventListener("click", () => send("stop"));
 
 function comparisonPath(runId, snapshotId) {
@@ -597,7 +923,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   const line = Number(reported?.line);
   const focus = Number.isSafeInteger(line) && line > 0 ? {path: reported.path, line} : undefined;
   const progress = withAnchors
-    ? "Junieでアンカーを生成中です。確認が表示されたら起動元の端末で操作してください。"
+    ? "Junieでアンカーを生成中です。確認が必要な場合は、進捗画面のダイアログで回答してください。"
     : "現在の参照PHPと最新の保存済み移行先を取得中";
   const popup = reserveComparisonTab(progress);
   snapshotting = true;
@@ -626,7 +952,6 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
     download.textContent = "ワークスペースJSONを保存";
     showComparisonStatus(...(withAnchors && count === 0 ? ["対応行の候補はありませんでした。 "] : []),
       ...(!withAnchors ? ["現在の参照PHPと最新の移行先（保存済みの編集） · "] : []), open, " · ", download);
-    download.click();
     displayComparison(open.href, popup);
     if (withAnchors && migrationLedgerDialog.open) {
       await loadMigrationLedger();
@@ -652,7 +977,33 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
 viewer.addEventListener("click", () => openSnapshot({fromReview: true}));
 dashboardViewer.addEventListener("click", () => openSnapshot());
 element("#migration-ledger-compare").addEventListener("click", () => openSnapshot());
-reviewButton.addEventListener("click", () => snapshot.status === "checker_needs_review" ? openReview() : send("resume"));
+reviewButton.addEventListener("click", () => {
+  if (snapshot.junie_request) openJunieReview();
+  else if (snapshot.status === "build_failed") openBuildReview();
+  else if (["checker_needs_review", "checker_failed"].includes(snapshot.status)) openReview();
+  else send("resume");
+});
+element("#build-review-close").addEventListener("click", () => buildDialog.close());
+buildTarget.addEventListener("change", loadBuildSource);
+buildReset.addEventListener("click", () => {
+  loadBuildSource();
+  buildTarget.focus();
+});
+buildSource.addEventListener("input", syncActions);
+buildInstruction.addEventListener("input", syncActions);
+element("#build-review-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (buildSubmit.disabled) return;
+  const edit = buildEditIsDirty() ? {
+    target: buildFile.target, version: buildFile.version, content: buildSource.value,
+  } : null;
+  buildEditSubmitted = !!edit;
+  if (await send("build-response", {instruction: buildInstruction.value.trim(), edit})) {
+    if (buildDialog.open) buildDialog.close();
+  } else {
+    buildEditSubmitted = false;
+  }
+});
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
 const stream = new EventSource("events");
 stream.onopen = () => {
@@ -677,6 +1028,13 @@ stream.onmessage = event => {
     && snapshot.review?.findings.some(item => item[0] === findings.value && !item[2])
     && data.review?.findings.some(item => item[0] === findings.value && item[2]);
   if (snapshot.run_id !== data.run_id) {
+    checkerOutputRequest++;
+    checkerInstruction.value = "";
+    dialog.close();
+    promptRequest++;
+    progressPrompts = undefined;
+    progressPrompt.input.value = "";
+    progressPrompt.dialog.close();
     showComparisonStatus();
     activity.replaceChildren();
     seenActivities.clear();
@@ -701,5 +1059,6 @@ stream.onmessage = event => {
   if (progressChanged && snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
 };
 setInterval(renderElapsed, 1000);
+setInterval(refreshProgressPrompts, 1000);
 render();
 document.documentElement.dataset.liveReady = "true";

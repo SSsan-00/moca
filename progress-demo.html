@@ -80,6 +80,7 @@
     .workspace-tabs button:hover { background: var(--surface-hover); }
     .workspace-tabs button[aria-selected="true"] { color: var(--blue); font-weight: 700; }
     .workspace-tabs button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .workspace-tabs button[hidden] { display: none; }
     .workspace-tab-indicator { position: absolute; inset: auto auto -3px 0; height: 4px; border-radius: 2px; background: var(--blue); pointer-events: none; transition: transform 250ms cubic-bezier(.65,0,.35,1), width 250ms cubic-bezier(.65,0,.35,1); }
     .workspace-panels { position: relative; min-width: 0; min-height: 0; }
     .workspace-pane { height: 100%; min-width: 0; overflow: hidden auto; }
@@ -99,6 +100,60 @@
     #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
     .workspace-feedback { min-width: 0; margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
     .workspace-feedback:empty { display: none; }
+    .editor-layout:not([hidden]) {
+      --editor-min-width: 220px;
+      --junie-min-width: 230px;
+      --editor-divider-width: 14px;
+      display: grid; height: 100%; min-height: 360px; padding: 2px;
+      grid-template-columns: clamp(var(--editor-min-width), var(--editor-width, 65%), calc(100% - var(--junie-min-width) - var(--editor-divider-width)))
+        var(--editor-divider-width) minmax(var(--junie-min-width), 1fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
+    .editor-layout .panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .editor-splitter { display: grid; place-items: center; border-radius: 5px; cursor: col-resize; touch-action: none; user-select: none; }
+    .editor-splitter::after { content: ""; width: 3px; height: 32px; border-radius: 3px; background: var(--muted); }
+    .editor-splitter:is(:hover, :focus-visible, .is-dragging) { background: var(--blue-soft); }
+    .editor-splitter:is(:hover, :focus-visible, .is-dragging)::after { background: var(--blue); }
+    .editor-splitter:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .editor-heading, .editor-header, .editor-chat form { padding: 12px; }
+    .editor-heading { border-bottom: 1px solid var(--line); }
+    .editor-heading :is(h2, p), .editor-header p { margin: 0; }
+    .editor-heading h2 { font-size: 16px; }
+    #editor-php-source { width: min(100%, 30ch); min-height: 34px; padding: 6px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+    .editor-muted { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .editor-notice { margin: 10px 10px 0; padding: 8px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: var(--amber-soft); color: var(--amber-ink); }
+    .editor-source { position: relative; flex: 1; min-height: 0; border-block: 1px solid var(--line); }
+    .editor-source > div { position: absolute; inset: 0; }
+    .editor-header { display: grid; gap: 6px; }
+    .editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .editor-header-actions, .editor-languages { display: flex; gap: 6px; }
+    .editor-header-actions { margin-inline-start: auto; }
+    .editor-languages { flex-wrap: wrap; }
+    .editor-languages button { flex: 0 0 92px; padding-inline: 0; }
+    #editor-target-buttons { display: contents; }
+    .editor-languages button[aria-pressed="true"], #editor-diff-toggle[aria-pressed="true"] { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
+    #editor-save, #editor-send { background: var(--blue); color: var(--blue-ink); border-color: var(--blue); }
+    #workspace-editor .button:disabled { background: var(--surface-muted); color: var(--muted); border-color: var(--line); }
+    .editor-chat-body { flex: 1; min-height: 0; padding: 12px; overflow: auto; overflow-wrap: anywhere; }
+    .editor-chat-body p, .editor-chat form p { margin: 0; }
+    .editor-chat-list { display: grid; justify-items: end; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
+    .editor-chat-list li { max-width: 95%; min-width: 0; padding: 8px 10px; border-radius: 10px 10px 2px 10px; background: var(--blue-soft); }
+    .editor-chat-list li p { white-space: pre-wrap; }
+    .editor-chat-list button { min-height: 28px; height: auto; padding-inline: 6px; margin-left: 6px; }
+    .editor-chat form { display: grid; gap: 6px; border-top: 1px solid var(--line); }
+    .editor-chat textarea { width: 100%; min-height: 64px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
+    .editor-chat-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; }
+    .editor-chat-actions > div { display: flex; gap: 6px; margin-inline-start: auto; }
+    #editor-send:has([data-send-icon]:not([hidden])) { width: 38px; padding: 0; border-radius: 50%; font-size: 19px; }
+    #workspace-editor .workspace-feedback { margin: 4px 12px 10px; }
+    .editor-layout:has(#editor-php-toggle[aria-pressed="true"]) #editor-error { display: none; }
+    @media (max-width: 680px) {
+      .editor-layout:not([hidden]) { height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; row-gap: 12px; }
+      .editor-splitter { display: none; }
+      .editor-source { flex: none; height: max(250px, 48dvh); }
+      .workspace-tabs:has(#tab-editor:not([hidden])) { gap: 2px; }
+      .workspace-tabs:has(#tab-editor:not([hidden])) button { padding-inline: 5px; font-size: 12px; }
+    }
     #workspace-progress-feedback { max-height: 25vh; overflow: auto; }
     .token-panel { display: grid; gap: 16px 20px; padding: 22px; }
     .token-run-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -263,6 +318,12 @@
     .state[data-state="waiting"] { background: var(--amber-soft); color: var(--amber); }
     .state-orb { width: 9px; height: 9px; border-radius: 50%; background: currentColor; transform-origin: center bottom; }
     .is-running .state-orb { animation: squash-bounce 1.175s ease-in-out infinite; }
+    #editor-junie-status { width: auto; max-width: 100%; min-height: 38px; height: auto; padding-block: 5px; border: 1px solid transparent; text-align: start; white-space: normal; }
+    #editor-junie-status:not(:disabled) { cursor: pointer; }
+    #editor-junie-status:not(:disabled):hover { border-color: currentColor; }
+    #editor-junie-status:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    #editor-junie-status .state-orb { flex-shrink: 0; }
+    .editor-chat-body #editor-junie-activity { margin-top: 6px; }
     .controls { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 7px; }
     #toggle { width: 128px; }
     [data-live] #toggle { width: auto; min-width: 128px; }
@@ -304,7 +365,7 @@
     .metric-label { color: var(--muted); font-size: 11px; }
     .metric-value { margin-top: 3px; font: 700 17px var(--mono); }
     .metric-value span { color: var(--muted); font: 11px system-ui, sans-serif; }
-    .side { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; }
+    .side { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto minmax(0, 1.35fr); gap: 16px; }
     .side > .panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
     .activity { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 18px 14px; }
     .event { display: grid; grid-template-columns: 62px 9px 1fr; gap: 9px; min-height: 56px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); animation: arrive 240ms var(--ease) both; }
@@ -316,13 +377,21 @@
     .event.live .event-pin::before { background: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
     .event-text { color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .event-text strong { color: var(--ink); font-weight: 680; }
-    .capsule { padding: 14px 18px 17px; }
-    .capsule-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-    .capsule-title { display: grid; gap: 2px; }
+    .capsule { padding: 10px 18px 11px; }
+    .run-token-summary { margin-bottom: 7px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+    .run-token-summary h2 { margin: 0; font-size: 13px; }
+    .run-token-summary h2 span, .run-token-summary p { color: var(--muted); font-size: 11px; font-weight: 400; }
+    .run-token-summary p { margin: 3px 0 0; }
+    .run-token-counts:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 3px 0 0; }
+    .run-token-counts > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; }
+    .run-token-counts dt { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .run-token-counts dd { min-width: 0; margin: 0; font: 650 clamp(13px, 1.7vw, 16px) var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .capsule-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 10px; }
+    .capsule-title { display: grid; min-width: 0; gap: 2px; overflow-wrap: anywhere; }
     .capsule-title h2 { margin: 0; font-size: 13px; }
     .capsule-title span { color: var(--muted); font-size: 10px; }
     .capsule-top span { color: var(--muted); font-size: 11px; }
-    .meter { height: 7px; margin: 12px 0 8px; overflow: hidden; border-radius: 6px; background: var(--meter-track); }
+    .meter { height: 6px; margin: 7px 0 4px; overflow: hidden; border-radius: 6px; background: var(--meter-track); }
     .meter-fill { width: 13%; height: 100%; border-radius: inherit; background: var(--blue); transition: width 700ms var(--ease); }
     .meter-label { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11px; }
     .meter-label strong { color: var(--ink); font-family: var(--mono); font-weight: 650; }
@@ -372,6 +441,7 @@
     .review-severity { background: #d58b1b20; color: var(--amber); }
     .review-finding h3 { margin: 10px 0 5px; font-size: 14px; }
     .review-finding > p { margin: 0; color: var(--amber-ink); font-size: 12px; }
+    #checker-open-editor { margin-top: 12px; }
     .review-location { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 14px 0 10px; }
     .review-location div { min-width: 0; padding: 9px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); }
     .review-location small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
@@ -386,6 +456,44 @@
     .review-note { width: 100%; min-height: 66px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; }
     .review-note:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
     .review-note::placeholder { color: var(--soft); }
+    .prompt-field { position: relative; min-width: 0; }
+    .prompt-field textarea { display: block; caret-color: var(--blue); }
+    .prompt-field textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+    .prompt-example {
+      position: absolute; inset: 10px 12px auto; width: max-content; max-width: calc(100% - 24px);
+      color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; pointer-events: none; visibility: hidden;
+    }
+    .prompt-field:has(> textarea:placeholder-shown:enabled:not([readonly])) .prompt-example { visibility: visible; }
+    /* Typewriter #006: https://showheyohtaki.github.io/motion-prompt/#006 */
+    @media (prefers-reduced-motion: no-preference) {
+      .prompt-example { --typing-time: calc(var(--characters) * 55ms); }
+      .prompt-example > span { display: block; animation: prompt-type var(--typing-time) steps(var(--characters)) both; }
+      .prompt-example::after {
+        content: ""; position: absolute; top: 2px; width: 2px; height: 1em; background: #cf6557;
+        animation: prompt-caret var(--typing-time) steps(var(--characters)) both;
+      }
+      .prompt-field:focus-within .prompt-example::after { display: none; }
+    }
+    @keyframes prompt-type { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+    @keyframes prompt-caret { 0% { left: 0; } 99% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
+    #progress-prompt-submit:disabled {
+      background: var(--surface-muted); color: var(--muted); border-color: var(--line); opacity: 1; transform: none;
+    }
+    #editor-send:enabled:hover { background: var(--blue-hover); }
+    #build-review-dialog { width: min(760px, calc(100vw - 20px)); max-height: none; overflow: hidden; }
+    #build-review-form { display: flex; flex-direction: column; max-height: min(90dvh, 800px); }
+    .build-review-body { min-height: 0; overflow: auto; padding: clamp(16px, 3vw, 22px); }
+    #checker-review-output, #build-review-dialog .review-code { max-height: 13rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #checker-output-section p:empty, #checker-output-section p:has(a[hidden]) { display: none; }
+    #checker-output-section .review-code, #build-review-dialog .review-context .review-code { margin: 0 9px 9px; }
+    #build-review-dialog summary:focus-visible, #build-review-dialog select:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
+    #build-review-dialog .build-editor { padding: 0 12px 12px; }
+    #build-review-dialog .build-editor p { padding: 0; }
+    #build-review-dialog select { width: 100%; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
+    #build-review-source { min-height: 11rem; margin-top: 8px; font: 13px/1.55 var(--mono); }
+    #build-review-dialog .review-actions { display: flex; justify-content: flex-end; flex: 0 0 auto; margin: 0; padding: 10px clamp(16px, 3vw, 22px); border-top: 1px solid var(--line); }
+    #progress-prompt-dialog .review-actions { display: flex; justify-content: flex-end; }
+    #progress-prompt-list { max-height: 12rem; overflow: auto; overflow-wrap: anywhere; }
     .review-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
     @media (min-width: 650px) {
       :root:not([data-live]) .review-actions { grid-template-columns: minmax(0, 1fr) minmax(154px, 1fr) repeat(2, minmax(0, 1fr)); }
@@ -419,6 +527,7 @@
     .viewer-preview-body p { margin: 16px; }
     .viewer-preview-body iframe { display: block; width: 100%; height: 100%; border: 0; }
     [data-live] [data-demo-only] { display: none; }
+    :root:not([data-live]) [data-live-only] { display: none; }
     #open-migration-ledger { min-height: 36px; height: 36px; }
     .migration-ledger-target { margin: 4px 0 8px; color: var(--muted); overflow-wrap: anywhere; }
     .migration-ledger-target code { color: var(--ink); }
@@ -466,7 +575,7 @@
       .run-meta { flex-basis: 100%; }
       .runbar .controls { flex-wrap: wrap; min-width: 0; }
       .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
-      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) auto; }
       .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
       .side .panel:nth-child(2) { grid-column: 1; grid-row: 2; }
       .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
@@ -498,7 +607,7 @@
       .metric { padding: 9px 8px; }
       .metric-value { font-size: 15px; }
       .layout { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
-      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+      .side { gap: 8px; }
       .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
       .side .panel:nth-child(2) { grid-column: 1; grid-row: 2; overflow-y: auto; }
       .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
@@ -523,6 +632,7 @@
     [data-live] .review-finding { margin-block: 12px; }
     [data-live] .review-finding select { width: 100%; min-height: 36px; margin-bottom: 8px; background: var(--paper); color: var(--ink); }
     [data-live] .review-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .junie-choices button { overflow-wrap: anywhere; }
     [data-live] .review-caveat { overflow-wrap: anywhere; }
     [data-live] #restart { display: none; }
     [data-live] .review-location { grid-template-columns: 1fr; margin-top: 0; }
@@ -550,6 +660,7 @@
   </nav>
   <div class="workspace-tabs" role="tablist" aria-label="ハーネス操作">
     <button id="tab-progress" type="button" role="tab" aria-selected="true" aria-controls="workspace-progress">進捗</button>
+    <button id="tab-editor" type="button" role="tab" aria-selected="false" aria-controls="workspace-editor" tabindex="-1" hidden>エディタ</button>
     <button id="tab-runs" type="button" role="tab" aria-selected="false" aria-controls="workspace-runs" tabindex="-1">実行</button>
     <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="workspace-settings" tabindex="-1">設定</button>
     <button id="tab-tokens" type="button" role="tab" aria-selected="false" aria-controls="workspace-tokens" tabindex="-1">トークン使用量</button>
@@ -563,6 +674,7 @@
     <span class="state is-running" id="run-state" data-state="running" aria-live="polite"><span class="state-orb" aria-hidden="true"></span><span id="state-label">Junieが実行中</span></span>
     <div class="controls" aria-label="デモ操作">
       <button class="button" id="toggle" type="button" hidden>同じ実行を再開</button>
+      <button class="button" id="open-progress-prompt" type="button" aria-haspopup="dialog" hidden>Junie に指示</button>
       <button class="button" id="stop" type="button" title="編集内容を残して処理を停止します">停止</button>
       <button class="button" id="restart" type="button">最初から</button>
       <div class="comparison-control">
@@ -604,10 +716,20 @@
         </div>
       </section>
 
-      <section class="panel" aria-labelledby="capsule-title">
+      <section class="panel" aria-labelledby="run-token-title capsule-title">
         <div class="capsule">
-          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">今回のJunie入力</h2><span id="capsule-call">呼び出し 1/3 · OrderHistoryPage</span></div><span>上限 500,000文字</span></div>
-          <div class="meter" id="capsule-meter" role="progressbar" aria-label="今回のJunie入力の文字数" aria-valuemin="0" aria-valuemax="500000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
+          <div class="run-token-summary">
+            <h2 id="run-token-title">Junieの累計トークン <span>（このRun）</span></h2>
+            <div aria-live="polite" aria-atomic="true">
+              <dl class="run-token-counts" id="run-token-counts" hidden>
+                <div><dt>入力</dt><dd id="run-token-input">—</dd></div>
+                <div><dt>出力</dt><dd id="run-token-output">—</dd></div>
+              </dl>
+              <p id="run-token-status">初回の使用量を待っています。</p>
+            </div>
+          </div>
+          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">カプセル本文の文字数</h2><span id="capsule-call">カプセル 1 / 3 · OrderHistoryPage</span></div><span>上限 500,000文字</span></div>
+          <div class="meter" id="capsule-meter" role="meter" aria-labelledby="capsule-title" aria-valuemin="0" aria-valuemax="500000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
           <div class="meter-label"><span><strong id="char-count">67,240</strong> 文字</span><span id="capsule-percent">上限の13%</span></div>
         </div>
       </section>
@@ -639,6 +761,54 @@
       </section>
     </div>
   </div>
+  </section>
+  <section class="workspace-pane" id="workspace-editor" role="tabpanel" aria-labelledby="tab-editor" tabindex="0" hidden>
+    <p id="editor-empty" class="workspace-feedback" role="status">実行タブで移行を始めるか、保存済みの実行を開いてください。</p>
+    <div class="editor-layout" id="editor-layout" hidden>
+      <section class="panel" id="editor-pane" aria-label="移行エディタ">
+        <header class="editor-header">
+          <div class="editor-toolbar">
+            <div class="editor-languages" role="group" aria-label="表示するソース">
+              <span id="editor-target-buttons"></span>
+              <button class="button" id="editor-php-toggle" type="button" aria-pressed="false">PHP</button>
+            </div>
+            <div class="editor-header-actions">
+              <button class="button" id="editor-save" type="button" disabled>保存</button>
+              <button class="button" id="editor-diff-toggle" type="button" aria-controls="editor-diff" aria-pressed="false" disabled>差分</button>
+            </div>
+          </div>
+          <div><p id="editor-save-status" role="status"></p><p id="editor-save-timing" class="editor-muted"></p></div>
+          <select id="editor-php-source" aria-label="移行元 PHP ファイル" hidden></select>
+        </header>
+        <p class="editor-notice" id="editor-update" role="status" hidden></p>
+        <p class="workspace-feedback" id="editor-error" role="alert" hidden></p>
+        <div class="editor-source"><div id="editor-code"></div><div id="editor-diff" hidden></div><div id="editor-php" hidden></div></div>
+      </section>
+      <div class="editor-splitter" role="separator" aria-label="エディタとJunieの幅を調整"
+           aria-controls="editor-pane" aria-orientation="vertical" tabindex="0"></div>
+      <aside class="panel editor-chat" aria-labelledby="editor-chat-title">
+        <header class="editor-heading"><h2 id="editor-chat-title">Junie</h2></header>
+        <div class="editor-chat-body">
+          <p role="status"><button class="state" id="editor-junie-status" type="button" disabled><span class="state-orb" aria-hidden="true"></span><span id="editor-junie-phase"></span></button></p>
+          <p id="editor-junie-activity" class="editor-muted" hidden></p>
+          <ol class="editor-chat-list" id="editor-prompts" aria-label="Junie への追加指示"></ol>
+        </div>
+        <form id="editor-prompt-form">
+          <div class="prompt-field">
+            <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " required aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-prompt-example"></textarea>
+            <span class="prompt-example" id="editor-prompt-example" style="--characters: 14" aria-hidden="true"><span>例：日付の表示形式を維持する</span></span>
+          </div>
+          <div class="editor-chat-actions">
+            <p class="editor-muted" id="editor-prompt-timing"></p>
+            <div>
+              <button class="button" id="editor-cancel-prompt" type="button" disabled>キャンセル</button>
+              <button class="button" id="editor-send" type="submit" aria-label="送信" disabled><span data-send-icon aria-hidden="true">↑</span><span data-send-label hidden>変更を保存</span></button>
+            </div>
+          </div>
+        </form>
+        <p class="workspace-feedback" id="editor-prompt-error" role="alert" hidden></p>
+      </aside>
+    </div>
   </section>
   <section class="workspace-pane" id="workspace-runs" role="tabpanel" aria-labelledby="tab-runs" tabindex="0" hidden>
     <div class="panel workspace-tools">
@@ -678,21 +848,19 @@
               <fieldset class="settings-fields" id="settings-project-fields">
                 <legend>プロジェクト</legend>
                 <label for="settings-root">アプリのリポジトリ</label>
-                <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp" aria-describedby="settings-roots-help">
+                <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp">
                 <div class="settings-pair">
                   <div>
                     <label for="settings-worktree-root">作業ツリーの保存先</label>
-                    <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees" aria-describedby="settings-roots-help">
+                    <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees">
                   </div>
                   <div>
                     <label for="settings-run-root">実行データの保存先</label>
-                    <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs" aria-describedby="settings-roots-help">
+                    <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs">
                   </div>
                 </div>
-                <p class="settings-material-range" id="settings-roots-help">絶対パス、または設定ファイルの場所からの相対パス。保存先2つは両リポジトリの外に置き、互いに入れ子にしません。</p>
                 <label for="settings-base-ref">作業ツリーの基準リビジョン</label>
                 <input id="settings-base-ref" data-section="project" data-setting="base_ref" placeholder="HEAD（既定）" autocomplete="off">
-                <p class="settings-material-range">必要に応じてブランチ名、タグ名、コミットIDを指定します。</p>
                 <div class="settings-pair">
                   <div>
                     <label for="settings-context-limit">カプセルの文字数上限</label>
@@ -709,23 +877,18 @@
                   <option value="false">使用しない</option>
                 </select>
                 <label for="settings-viewer-html">差分ビューアーのHTML</label>
-                <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off" aria-describedby="settings-viewer-html-help">
-                <p class="settings-material-range" id="settings-viewer-html-help">アプリルートからの相対パス、または外部ファイルの絶対パス。空欄なら比較とアンカー生成は無効です。</p>
+                <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off">
                 <label for="settings-anchor-reference">アンカーの参照JSON（任意）</label>
-                <textarea id="settings-anchor-reference" class="settings-command" data-section="diff_viewer" data-setting="anchor_reference" placeholder="references/orders.workspace.json&#10;references/products.workspace.json" spellcheck="false" aria-describedby="settings-anchor-reference-help"></textarea>
-                <p class="settings-material-range" id="settings-anchor-reference-help">Diff Viewerから保存したワークスペースJSONのパスを、1行に1つ入力してください。絶対パス、または設定ファイルからの相対パスが使えます。空欄なら同じRunの確認済みの対応例を使います。</p>
+                <textarea id="settings-anchor-reference" class="settings-command" data-section="diff_viewer" data-setting="anchor_reference" placeholder="references/orders.workspace.json&#10;references/products.workspace.json" spellcheck="false"></textarea>
               </fieldset>
               <fieldset class="settings-fields" id="settings-verification-fields">
                 <legend>ビルド・独自チェッカー</legend>
                 <label for="settings-build-project">ビルド対象</label>
-                <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj" aria-describedby="settings-build-help">
-                <p class="settings-material-range" id="settings-build-help">アプリルートからの相対パス、またはアプリ内の絶対パス（.csproj、.sln、.slnx）。作業ツリー内のパスに変換してビルドします。空欄ならルートでビルドします。</p>
+                <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj">
                 <label for="settings-checker-command">チェッカーの実行ファイルと引数</label>
-                <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" aria-describedby="settings-checker-help" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
-                <p class="settings-material-range" id="settings-checker-help">1行目に実行ファイル、2行目以降に引数を1つずつ入力します。空欄なら実行しません。</p>
+                <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
                 <label for="settings-checker-repairs">自動修正回数</label>
-                <input id="settings-checker-repairs" data-section="checker" data-setting="max_repair_attempts" inputmode="numeric" autocomplete="off" placeholder="2（既定）" aria-describedby="settings-repairs-help">
-                <p class="settings-material-range" id="settings-repairs-help">1回の移行実行でJunieが修正を試みる上限です。0を指定すると自動修正を行いません。</p>
+                <input id="settings-checker-repairs" data-section="checker" data-setting="max_repair_attempts" inputmode="numeric" autocomplete="off" placeholder="2（既定）">
               </fieldset>
             </details>
             <fieldset class="settings-fields" id="settings-unit-fields">
@@ -745,20 +908,15 @@
                   </div>
                   <div>
                     <label for="settings-unit-source">移行元PHP</label>
-                    <input id="settings-unit-source" data-setting="source" autocomplete="off" placeholder="例：php/orders.php" aria-describedby="settings-source-help">
+                    <input id="settings-unit-source" data-setting="source" autocomplete="off" placeholder="例：php/orders.php">
                   </div>
                 </div>
-                <p class="settings-material-range" id="settings-source-help">アプリルートからの相対パス、または外部ファイルの絶対パス。拡張子なしを含め、拡張子を問わず移行元PHPとして全文を読み込みます。</p>
                 <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
-                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml" aria-describedby="settings-targets-help"></textarea>
-                <p class="settings-material-range" id="settings-targets-help">アプリルートからの相対パス、またはアプリ内の絶対パス。作業ツリー内のパスに変換し、元のリポジトリには書き込みません。</p>
+                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
               </div>
             </fieldset>
             <fieldset class="settings-fields settings-materials" id="settings-draft-import-fields">
               <legend>仮C#の取り込み</legend>
-              <p>仮C#を登録済みの移行先にコピーしてから、Junieが編集します。先に「移行先」を登録してください。</p>
-              <p id="settings-draft-source-help">コピー元はアプリルートからの相対パス、または外部ファイルの絶対パスで指定できます。</p>
-              <p>取り込みは全移行単位に適用します。</p>
               <div id="settings-draft-imports"></div>
               <button class="button" id="settings-draft-import-add" type="button">仮C#の取り込みを追加</button>
             </fieldset>
@@ -766,20 +924,16 @@
           <div class="settings-field-pane settings-shared-pane">
             <section class="settings-materials" aria-labelledby="settings-rules-title">
               <h2 id="settings-rules-title">プロジェクト共通の移行ルール</h2>
-              <p>既存のルールは「毎回適用する必須事項」のまま、毎回全文を読みます。長い説明や例は別ファイルに分け、「必要時に読む詳細・例」として登録してください。内容の要約や分類は自動では行いません。</p>
-              <p>アプリルートからの相対パス、または外部ファイルの絶対パスを指定します。</p>
               <div id="settings-rules"></div>
               <button class="button" id="settings-rule-add" type="button">移行ルールを追加</button>
             </section>
             <section class="settings-materials" aria-labelledby="settings-references-title">
               <h2 id="settings-references-title">プロジェクト共通の参考実装</h2>
-              <p>元PHPと対応するC#／Razorを、アプリルートからの相対パス、または外部ファイルの絶対パスで指定します。準備時に全文を保存します。</p>
               <div id="settings-references"></div>
               <button class="button" id="settings-reference-add" type="button">参考実装ペアを追加</button>
             </section>
             <fieldset class="settings-fields settings-materials" id="settings-script-fields">
               <legend>自作スクリプト</legend>
-              <p>全移行単位に適用します。同じ工程のスクリプトは、上から順に実行します。</p>
               <div id="settings-scripts"></div>
               <button class="button" id="settings-script-add" type="button">スクリプトを追加</button>
             </fieldset>
@@ -868,13 +1022,30 @@
         </div>
         <pre class="review-code"><code>ViewData["StatusText"] = GetStatusText(row.Status);</code></pre>
         <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
+        <button class="review-action" id="checker-open-editor" type="button">エディタで修正</button>
       </section>
-      <details class="review-context">
+      <details class="review-context" id="checker-output-section" open>
+        <summary>チェッカー出力</summary>
+        <pre class="review-code" id="checker-review-output" tabindex="0" aria-label="チェッカー出力">検査結果: 確認が必要です。
+注文の状態変換がページ内に残っています。</pre>
+        <p id="checker-output-status" role="status"></p>
+        <p><a id="checker-output-download" download="checker.log" hidden>出力をダウンロード</a></p>
+      </details>
+      <details class="review-context" id="review-demo-context">
         <summary>この指摘を判断する材料</summary>
         <p><strong>適用ルール:</strong> 複数ページで使う状態変換は共通関数にまとめる。<br><strong>確認点:</strong> <code>OrderStatusMap.ToLabel</code>の実装が共通 .cs にあり、変換処理が重複していないか確認する。</p>
       </details>
-      <label class="review-note-label" for="review-note">判断メモ（任意）</label>
-      <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
+      <div data-live-only>
+        <label class="review-note-label" for="review-note">判断理由（必須）</label>
+        <textarea class="review-note" id="review-note" placeholder="例：共通関数へ委譲していることを差分で確認済み" required maxlength="2000"></textarea>
+      </div>
+      <label class="review-note-label" for="checker-instruction">Junie への追加指示（任意）</label>
+      <div class="prompt-field">
+        <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2" placeholder=" "
+                  aria-describedby="checker-instruction-status checker-instruction-example"></textarea>
+        <span class="prompt-example" id="checker-instruction-example" style="--characters: 14" aria-hidden="true"><span>例：状態変換を共通関数に移す</span></span>
+      </div>
+      <p class="review-caveat" id="checker-instruction-status" role="status"></p>
       <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
       <div class="review-actions">
         <button class="review-action" id="review-later" type="button">あとで確認</button>
@@ -889,6 +1060,65 @@
         <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
       </div>
     </div>
+  </dialog>
+  <dialog class="review-dialog" id="progress-prompt-dialog" aria-labelledby="progress-prompt-title">
+    <form class="review-dialog-inner" id="progress-prompt-form">
+      <header class="review-heading">
+        <h2 id="progress-prompt-title">Junie に指示</h2>
+        <button class="review-close" id="close-progress-prompt" type="button" aria-label="閉じる">×</button>
+      </header>
+      <p class="review-intro" data-demo-only>指示の受付と作業区間での反映をサンプルで試せます。</p>
+      <label class="review-note-label" for="progress-prompt">追加の指示</label>
+      <div class="prompt-field">
+        <textarea class="review-note" id="progress-prompt" rows="4" maxlength="4000" placeholder=" "
+                  aria-describedby="progress-prompt-timing progress-prompt-example" required></textarea>
+        <span class="prompt-example" id="progress-prompt-example" style="--characters: 13" aria-hidden="true"><span>例：注文の並び順を維持する</span></span>
+      </div>
+      <p class="review-intro" id="progress-prompt-timing" role="status"></p>
+      <p class="review-caveat" id="progress-prompt-feedback" role="alert" hidden></p>
+      <ol class="editor-chat-list" id="progress-prompt-list" aria-label="登録済みの指示" hidden></ol>
+      <div class="review-actions">
+        <button class="button primary" id="progress-prompt-submit" type="submit" disabled>指示を登録</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog class="review-dialog" id="build-review-dialog" aria-labelledby="build-review-title">
+    <form id="build-review-form">
+      <div class="build-review-body">
+        <header class="review-heading">
+          <h2 id="build-review-title" tabindex="-1">ビルド失敗の詳細</h2>
+          <button class="review-close" id="build-review-close" type="button" aria-label="閉じる">×</button>
+        </header>
+        <p class="review-intro" id="build-review-intro"></p>
+        <pre class="review-code" id="build-review-errors" tabindex="0" aria-label="ビルドエラー"></pre>
+        <details class="review-context" id="build-review-log-section" hidden>
+          <summary id="build-review-log-label">ビルド出力</summary>
+          <pre class="review-code" id="build-review-log" tabindex="0" aria-label="ビルド出力"></pre>
+        </details>
+        <details class="review-context" id="build-review-editor" hidden>
+          <summary>移行対象ファイルを編集</summary>
+          <div class="build-editor">
+            <label class="review-note-label" for="build-review-target">編集するファイル</label>
+            <select id="build-review-target"></select>
+            <label class="review-note-label" for="build-review-source" id="build-review-source-label" hidden>ファイルの内容</label>
+            <textarea class="review-note" id="build-review-source" spellcheck="false" wrap="off" hidden></textarea>
+            <p class="review-caveat" id="build-review-file-status" role="status"></p>
+            <button class="review-action" id="build-review-reset" type="button" hidden>最新の内容を読み込み直す</button>
+          </div>
+        </details>
+        <label class="review-note-label" for="build-review-instruction">Junie への修正指示（任意）</label>
+        <div class="prompt-field">
+          <textarea class="review-note" id="build-review-instruction" maxlength="4000" spellcheck="false" placeholder=" "
+                    aria-describedby="build-review-hint build-review-example"></textarea>
+          <span class="prompt-example" id="build-review-example" style="--characters: 12" aria-hidden="true"><span>例：既存のモデル型を使う</span></span>
+        </div>
+        <p class="review-caveat" id="build-review-hint">編集内容は、この実行の作業ツリーに保存されます。指示を入力すると、Junie が修正した後に再ビルドします。</p>
+        <p class="review-caveat" id="build-review-feedback" role="status"></p>
+      </div>
+      <div class="review-actions">
+        <button class="button primary" id="build-review-submit" type="submit">再ビルド</button>
+      </div>
+    </form>
   </dialog>
 </main>
 <dialog class="viewer-preview" id="viewer-preview" aria-labelledby="viewer-preview-title">
@@ -1015,12 +1245,35 @@ function bindTokenRuns(renderRun) {
   };
 }
 
+function summarizeTokenUsage(rows) {
+  return rows.reduce((totals, row) => {
+    if (row.responses > 0) {
+      totals.input += row.input;
+      totals.output += row.output;
+      totals.reported = true;
+    }
+    return totals;
+  }, {input: 0, output: 0, reported: false});
+}
+
+function renderRunTokenSummary(rows = [], waiting = false) {
+  const {input, output, reported} = summarizeTokenUsage(rows);
+  document.querySelector("#run-token-counts").hidden = !reported;
+  const status = document.querySelector("#run-token-status");
+  status.hidden = reported;
+  const message = waiting ? "初回の使用量を待っています。" : "使用量の記録がありません。";
+  if (status.textContent !== message) status.textContent = message;
+  for (const [selector, count] of [["#run-token-input", input], ["#run-token-output", output]]) {
+    const node = document.querySelector(selector);
+    const text = reported ? count.toLocaleString("ja-JP") : "—";
+    if (node.textContent !== text) node.textContent = text;
+  }
+}
+
 function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
   const tokenNumber = new Intl.NumberFormat("ja-JP");
-  const inputTokens = rows.reduce((sum, call) => sum + call.input, 0);
-  const outputTokens = rows.reduce((sum, call) => sum + call.output, 0);
+  const {input: inputTokens, output: outputTokens, reported: hasUsage} = summarizeTokenUsage(rows);
   const maxCallTokens = rows.reduce((max, call) => Math.max(max, call.input + call.output), 1);
-  const hasUsage = rows.some(call => call.responses > 0);
   const cacheRead = rows.reduce((sum, call) => sum + call.cache_read, 0);
   const cacheWrite = rows.reduce((sum, call) => sum + call.cache_write, 0);
   const inputBreakdown = (input, read, write) => [
@@ -1090,7 +1343,8 @@ function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
 }
 
 const workspaceTabs = document.querySelector(".workspace-tabs");
-const harnessTabs = [...workspaceTabs.querySelectorAll('[role="tab"]')];
+document.querySelector("#tab-editor").hidden = false;
+const harnessTabs = [...workspaceTabs.querySelectorAll('[role="tab"]:not([hidden])')];
 const tabIndicator = workspaceTabs.querySelector(".workspace-tab-indicator");
 const harnessPanes = harnessTabs.map(tab => document.getElementById(tab.getAttribute("aria-controls")));
 let activeHarnessTab = 0;
@@ -1363,7 +1617,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
         const source = document.createElement("input");
         source.autocomplete = "off";
         source.spellcheck = false;
-        source.setAttribute("aria-describedby", "settings-draft-source-help");
         source.placeholder = "例：C:/migration/draft/generated/Services/MenuService.cs";
         source.value = sourcePath;
         source.addEventListener("input", () => {
@@ -1773,8 +2026,8 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   reload.addEventListener("click", () => loadSettings(true));
   for (const control of [workspaceUnit, workspaceRunID]) control.addEventListener("input", workspaceControls);
   workspaceTabs.addEventListener("harnesstab", () => {
-    if (activeHarnessTab === 1) loadRuns();
-    if (activeHarnessTab === 2) loadSettings();
+    if (harnessTabs[activeHarnessTab].id === "tab-runs") loadRuns();
+    if (harnessTabs[activeHarnessTab].id === "tab-settings") loadSettings();
   });
   workspaceControls();
 }
@@ -1982,6 +2235,58 @@ function showMigrationLedger(ledger, snapshot, compare) {
   migrationCandidateComparison.querySelector("button").onclick = snapshotId ? () => compare(snapshotId) : null;
   updateMigrationLedgerStatuses(snapshot);
 }
+
+  function bindProgressPromptDialog({open, submit, inputChanged}) {
+    const button = document.querySelector("#open-progress-prompt");
+    const dialog = document.querySelector("#progress-prompt-dialog");
+    const input = document.querySelector("#progress-prompt");
+    const send = document.querySelector("#progress-prompt-submit");
+    const timingNote = document.querySelector("#progress-prompt-timing");
+    const feedback = document.querySelector("#progress-prompt-feedback");
+    const list = document.querySelector("#progress-prompt-list");
+    const labels = {queued: "送信待ち", sending: "Junie が実行中", sent: "反映済み"};
+    let renderedPrompts = "";
+    function showError(error) {
+      feedback.textContent = error?.message || "";
+      feedback.hidden = !error;
+    }
+    function render({timing, prompts = []} = {}, {available = true, loading = false, saving = false} = {}) {
+      if (!dialog.open) return;
+      const bytes = new TextEncoder().encode(input.value.trim()).length;
+      send.disabled = !available || !timing || saving || !bytes || bytes > 4_000;
+      input.readOnly = saving;
+      const message = bytes > 4_000 ? "指示を 4,000 バイト以下にしてください。"
+        : timing === "checkpoint" ? "現在の作業区間が終わると Junie に渡します。"
+        : timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
+        : loading ? "指示を読み込んでいます…" : "現在の工程では指示を登録できません。";
+      if (timingNote.textContent !== message) timingNote.textContent = message;
+      const key = JSON.stringify(prompts);
+      if (key === renderedPrompts) return;
+      renderedPrompts = key;
+      list.replaceChildren(...prompts.map(({text, status}) => {
+        const item = document.createElement("li");
+        item.append(
+          Object.assign(document.createElement("span"), {className: "editor-muted", textContent: labels[status]}),
+          Object.assign(document.createElement("p"), {textContent: text}),
+        );
+        return item;
+      }));
+      list.hidden = !prompts.length;
+    }
+    button.addEventListener("click", () => {
+      showError();
+      dialog.showModal();
+      input.focus();
+      open();
+    });
+    document.querySelector("#close-progress-prompt").addEventListener("click", () => dialog.close());
+    input.addEventListener("input", inputChanged);
+    document.querySelector("#progress-prompt-form").addEventListener("submit", event => {
+      event.preventDefault();
+      if (!send.disabled) submit(input.value.trim());
+    });
+    return {button, dialog, input, render, showError};
+  }
 </script>
 <!-- dashboard-script -->
 <script>
@@ -2006,7 +2311,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
   const capsulePercent = document.querySelector("#capsule-percent");
   const reviewDialog = document.querySelector("#review-dialog");
   const reviewHeading = document.querySelector("#review-title");
-  const reviewNote = document.querySelector("#review-note");
   const reviewRow = document.querySelector('.ledger-row[data-status="judgment"]');
   const capsuleCalls = [
     { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12", lines: [1, 3], inputTokens: 18420, outputTokens: 3240, cacheRead: 11000, cacheWrite: 960 },
@@ -2043,6 +2347,9 @@ function showMigrationLedger(ledger, snapshot, compare) {
     label: `${index + 1}. ${call.unit}`, input: call.inputTokens, output: call.outputTokens, responses: 1,
     cache_read: call.cacheRead, cache_write: call.cacheWrite,
   }));
+  const repairUsage = {label: "チェッカーの自動修正", input: 8570, output: 760, responses: 1, cache_read: 4300, cache_write: 0};
+  let reportedCapsules = 0;
+  let reportedRepair = false;
   const sampleUnits = ["注文履歴", "商品検索", "在庫照会", "会員情報", "請求明細", "売上集計", "配送状況"];
   const olderSamples = Array.from({length: 21}, (_, index) => {
     const day = 11 - Math.floor(index / 3);
@@ -2064,14 +2371,25 @@ function showMigrationLedger(ledger, snapshot, compare) {
       }),
     };
   });
-  bindTokenRuns(run => renderTokenUsage(run?.token_usage || [], run ? `${run.unit_id} · ${run.run_id}` : "")).setRuns([
-    {run_id: demoRunID, unit_id: "注文履歴ページの移行", created_at: "2026-11-14T10:42:00+09:00", token_usage: sampleUsage},
+  const demoTokenRuns = bindTokenRuns(run => renderTokenUsage(run?.token_usage || [], run ? `${run.unit_id} · ${run.run_id}` : "",
+    run?.running ? "初回の使用量を待っています。" : "使用量の記録がありません。", run?.running));
+  demoTokenRuns.setRuns([
     {run_id: "run-2026-11-13-002", unit_id: "商品検索ページの移行", created_at: "2026-11-13T14:16:00+09:00",
       token_usage: [{label: "カプセル 1", input: 78120, output: 6150, cache_read: 63400, cache_write: 2150, responses: 1}]},
     {run_id: "run-2026-11-12-001", unit_id: "注文履歴ページの移行", created_at: "2026-11-12T09:05:00+09:00",
       token_usage: [{label: "カプセル 1", input: 15380, output: 2210, cache_read: 8800, cache_write: 420, responses: 1}]},
     ...olderSamples,
   ]);
+  function renderDemoTokenUsage() {
+    const rows = sampleUsage.slice(0, reportedCapsules);
+    if (reportedRepair) rows.push(repairUsage);
+    const running = playing && current === 3;
+    renderRunTokenSummary(rows, running);
+    demoTokenRuns.setActive({
+      run_id: demoRunID, unit_id: "注文履歴ページの移行", created_at: "2026-11-14T10:42:00+09:00",
+      token_usage: rows, running,
+    });
+  }
   let demoSettings = `[project]
 root = "C:/apps/orders"
 worktree_root = "C:/migration/worktrees"
@@ -2292,6 +2610,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
   // 工程の切り替えに合わせて、計測・表示・人の確認待ちを更新する。
   function updateStep(index) {
     toggle.removeAttribute("aria-haspopup");
+    toggle.removeAttribute("aria-controls");
     const now = performance.now();
     if (index !== current) {
       if (stepStartedAt && current < steps.length) stepElapsed[current] += now - stepStartedAt;
@@ -2533,6 +2852,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     toggle.hidden = false;
     stopButton.hidden = true;
     toggle.setAttribute("aria-haspopup", "dialog");
+    toggle.setAttribute("aria-controls", "review-dialog");
     openReviewDialog();
   }
 
@@ -2575,7 +2895,9 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     applyLedgerFilter();
     updateReviewCount();
     closeReviewDialog();
-    logHumanAction("Junieに修正を依頼", "RZ-017 · 対象項目に戻して再確認");
+    const instruction = document.querySelector("#checker-instruction");
+    logHumanAction("Junieに修正を依頼", instruction.value.trim() || "RZ-017 · 対象項目に戻して再確認");
+    instruction.value = "";
     current = 3;
     stepStartedAt = 0;
     updateStep(current);
@@ -2598,7 +2920,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     applyLedgerFilter();
     updateReviewCount();
     closeReviewDialog();
-    logHumanAction("人が指摘を確認", reviewNote.value.trim() || "問題なしとして記録");
+    logHumanAction("人が指摘を確認", "問題なしとして記録");
     playing = false;
     updateStep(steps.length);
   }
@@ -2608,7 +2930,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     humanReviewHandled = false;
     correctionRequested = false;
     setReviewRow("judgment", "判断待ち", true);
-    reviewNote.value = "";
+    document.querySelector("#checker-instruction").value = "";
     updateReviewCount();
     applyLedgerFilter();
   }
@@ -2637,12 +2959,12 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     const call = capsuleCalls[index];
     const percent = Math.round(call.chars / Number(capsuleMeter.getAttribute("aria-valuemax")) * 100);
     capsuleCallIndex = index;
-    capsuleCall.textContent = `呼び出し ${index + 1}/${capsuleCalls.length} · ${call.unit}`;
-    capsuleCharCount.textContent = call.chars.toLocaleString("en-US");
+    capsuleCall.textContent = `カプセル ${index + 1} / ${capsuleCalls.length} · ${call.unit}`;
+    capsuleCharCount.textContent = call.chars.toLocaleString("ja-JP");
     capsulePercent.textContent = `上限の${percent}%`;
     capsuleFill.style.width = `${percent}%`;
     capsuleMeter.setAttribute("aria-valuenow", String(call.chars));
-    addEvent(call.time, "Junie入力を確定", `${call.unit} · ${call.chars.toLocaleString("en-US")}文字`);
+    addEvent(call.time, "カプセル本文を確定", `${call.unit} · ${call.chars.toLocaleString("ja-JP")}文字`);
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
@@ -2650,22 +2972,34 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   function startCapsuleCalls() {
     if (capsuleTimer) return;
     if (capsuleCallIndex < 0) updateCapsuleCall(0);
+    renderDemoTokenUsage();
     capsuleTimer = setInterval(() => {
+      if (correctionRequested) {
+        reportedRepair = true;
+        return stopCapsuleCalls();
+      }
+      if (reportedCapsules === capsuleCallIndex) {
+        reportedCapsules++;
+        return renderDemoTokenUsage();
+      }
       if (capsuleCallIndex + 1 >= capsuleCalls.length) return stopCapsuleCalls();
       updateCapsuleCall(capsuleCallIndex + 1);
-    }, 2600);
+    }, 1300);
   }
 
   // 現在のカプセル表示を残したまま、進行タイマーを止める。
   function stopCapsuleCalls() {
     clearInterval(capsuleTimer);
     capsuleTimer = undefined;
+    renderDemoTokenUsage();
   }
 
   // 次の再生で最初のカプセルを表示できる状態に戻す。
   function resetCapsuleCalls() {
-    stopCapsuleCalls();
     capsuleCallIndex = -1;
+    reportedCapsules = 0;
+    reportedRepair = false;
+    stopCapsuleCalls();
     capsuleCall.textContent = "未開始";
     capsuleCharCount.textContent = "—";
     capsulePercent.textContent = "—";
@@ -2838,6 +3172,10 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   document.querySelector("#review-later").addEventListener("click", closeReviewDialog);
   document.querySelector("#review-accept").addEventListener("click", acceptReview);
   document.querySelector("#review-fix").addEventListener("click", resumeForCorrection);
+  document.querySelector("#checker-open-editor").addEventListener("click", () => {
+    closeReviewDialog();
+    switchHarnessTab(harnessTabs.indexOf(document.querySelector("#tab-editor")), true);
+  });
   for (const comparison of document.querySelectorAll(".comparison-control")) {
     const status = document.querySelector(comparison.closest("dialog") ? "#review-anchor-status" : "#demo-anchor-status");
     const propose = comparison.querySelector("[data-propose-anchors]");
@@ -2873,5 +3211,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     scheduleNext();
   }
 </script>
+<script src="./src/migration_harness/dashboard_editor_demo.js" defer></script>
+<script src="./src/migration_harness/dashboard_editor.js" defer></script>
 </body>
 </html>

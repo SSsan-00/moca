@@ -4,22 +4,25 @@ from __future__ import annotations
 
 import copy
 import time
-from typing import Any
+from typing import Any, Literal
 
 
 SCRIPT_STAGES = {
     "before_prepare": 0, "after_prepare": 2, "before_migration": 3, "after_migration": 3,
     "before_build": 4, "after_build": 4, "before_checker": 5, "after_checker": 5,
 }
-ACTIVE_STAGES = {"junie_running": 3, "repairing": 3, "building": 4, "checking": 5}
+ACTIVE_STAGES = {"junie_running": 3, "editor_followup": 3, "repairing": 3, "building": 4, "checking": 5}
 
 
-def update_timings(record: dict[str, Any], *, now: float | None = None) -> None:
+def update_timings(
+    record: dict[str, Any], *, stage: int | None | Literal["status"] = "status", now: float | None = None,
+) -> None:
     now = time.time() if now is None else now
-    status = record.get("status")
-    stage = (record.get("preparation_stage", 0) if status == "preparing" else
-             SCRIPT_STAGES.get(record.get("script_phase")) if status == "script_running" else
-             ACTIVE_STAGES.get(status))
+    if stage == "status":
+        status = record.get("status")
+        stage = (record.get("preparation_stage", 0) if status == "preparing" else
+                 SCRIPT_STAGES.get(record.get("script_phase")) if status == "script_running" else
+                 ACTIVE_STAGES.get(status))
     previous = record.get("active_stage")
     timings = record.setdefault("stage_timings", {})
     if previous != stage:
