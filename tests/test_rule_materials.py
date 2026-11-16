@@ -96,9 +96,13 @@ class RuleMaterialsTests(HarnessCase):
             ({"path": "database.md", "usage": "reference", "description": "DB transactions"}, irrelevant),
         ])
         source = capsule / "context.md"
-        source.write_text("<?php echo json_encode($orders);", encoding="utf-8")
+        source.write_bytes(b"<?php echo json_encode($orders);\r\n")
+        last = capsule / "last.md"
+        last.write_text("// 最後のカプセルだけにある例外\n", encoding="utf-8")
         manifest = {
-            "unit_id": "test", "parts": [{"path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}],
+            "unit_id": "test", "parts": [
+                {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in (source, last)
+            ],
             "rule_files": entries, "materials": {**{row["file"]: row["sha256"] for row in entries},
                 "rules.json": hashlib.sha256((capsule / "materials/rules.json").read_bytes()).hexdigest()},
         }
@@ -106,8 +110,15 @@ class RuleMaterialsTests(HarnessCase):
         targets = (Path("SomeTarget.cs"),)
 
         def review(command, completion, token, outputs, **kwargs):
-            self.assertEqual({p.name for p in completion.parent.iterdir()}, {"details.json", "source-0001.md"})
-            self.assertNotIn(body.strip(), (completion.parent / "details.json").read_text(encoding="utf-8"))
+            self.assertEqual({p.name for p in completion.parent.iterdir()},
+                             {"review-context.md"})
+            context = Path(command[command.index("--ide-guidelines") + 1]).read_bytes()
+            for p in (source, last):
+                self.assertIn(p.read_bytes(), context)
+            self.assertIn(json.dumps(rule_materials.detail_index(manifest), ensure_ascii=False).encode(), context)
+            self.assertNotIn(body.strip().encode(), context)
+            self.assertNotIn(irrelevant.strip().encode(), context)
+            self.assertIn("complete detail index and every saved legacy capsule", command[-1])
             outputs[0].write_text(json.dumps(decisions), encoding="utf-8")
             completion.write_text(token, encoding="utf-8")
 
@@ -131,6 +142,39 @@ class RuleMaterialsTests(HarnessCase):
         self.assertNotIn(irrelevant, guidelines)
         self.assertFalse((agent / ".migration-materials" / entries[1]["file"]).exists())
         self.assertNotIn("database.md", guidelines)
+
+    def test_large_review_uses_complete_files_instead_of_inlining_only_a_prefix(self):
+        capsule = self.root / "capsule"
+        capsule.mkdir()
+        first, last = capsule / "first.md", capsule / "last.md"
+        first.write_text("<?php echo 'orders';\n", encoding="utf-8")
+        entry = {"file": "rule-0001.txt", "path": "rules.md", "usage": "reference", "description": "Order output"}
+        manifest = {"unit_id": "test", "parts": [], "rule_files": [entry]}
+
+        def review(command, completion, token, outputs, **kwargs):
+            self.assertNotIn("--ide-guidelines", command)
+            self.assertFalse((completion.parent / "review-context.md").exists())
+            self.assertIn("Search across all the saved capsules", command[-1])
+            for number, p in enumerate((first, last), 1):
+                self.assertEqual((completion.parent / f"source-{number:04d}.md").read_bytes(), p.read_bytes())
+            saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved_index[0]["when_to_read"], entry["description"])
+            outputs[0].write_text(json.dumps({"rule-0001.txt": {"applies": True, "reason": "Orders"}}))
+            completion.write_text(token)
+
+        for oversized in ("source", "index"):
+            with self.subTest(oversized=oversized):
+                last.write_text(("// 日本語\r\n" * 3000 if oversized == "source" else "") + "TAIL", encoding="utf-8")
+                entry["description"] = "Orders" * 5000 if oversized == "index" else "Order output"
+                manifest["parts"] = [{"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+                                     for p in (first, last)]
+                with patch.object(junie_cli, "run_interactive", side_effect=review):
+                    workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), {}, None)
+                last.write_text("changed", encoding="utf-8")
+                with patch.object(junie_cli, "run_interactive") as junie:
+                    with self.assertRaisesRegex(ValueError, "saved detail review source changed"):
+                        workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), {}, None)
+                    junie.assert_not_called()
 
     def test_missing_or_changed_pinned_files_are_not_silently_ignored(self):
         capsule, manifest, agent = self.prepare()
