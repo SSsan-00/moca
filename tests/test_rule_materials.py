@@ -206,7 +206,7 @@ class RuleMaterialsTests(HarnessCase):
 
         for oversized in ("source", "index", "huge_index"):
             with self.subTest(oversized=oversized):
-                last.write_text(("// 日本語\r\n" * 3000 if oversized == "source" else "") + "TAIL", encoding="utf-8")
+                last.write_text(("// 日本語\r\n" * 3000 if oversized == "source" else "") + "TAIL", encoding="utf-8", newline="")
                 entry["description"] = {"source": "Order output", "index": "Orders" * 5000,
                                         "huge_index": "日本語" * 8000}[oversized]
                 manifest["parts"] = [{"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
