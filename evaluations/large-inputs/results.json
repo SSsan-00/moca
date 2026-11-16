@@ -1,0 +1,449 @@
+{
+  "date": "2026-11-17",
+  "baseline_commit": "2505f46c56c0ef92031ca9b37c798e6fe5a2db15",
+  "fixture": {
+    "php_lines": 20000,
+    "values": 19979,
+    "php_bytes": 1024391,
+    "documents": 200,
+    "document_bytes": 1531171,
+    "expected_selected_details": [
+      "rule-0019.txt",
+      "rule-0066.txt",
+      "rule-0115.txt",
+      "rule-0167.txt",
+      "rule-0200.txt"
+    ],
+    "php_sha256": "64e474efd337fe3e30f8fcfbc56fc162b50791df806dd9a5c27e8a7234914b90",
+    "modes": [
+      "all",
+      "reverse",
+      "selected",
+      "empty",
+      "unknown"
+    ]
+  },
+  "environment": {
+    "os": "macOS",
+    "junie": "26.11.1 (4020.10) Junie Lite",
+    "model": "Qwen/Qwen3.6-27B-FP8",
+    "dotnet": "10.0.201"
+  },
+  "preparation": [
+    {
+      "label": "before",
+      "warmup_seconds": 1.914889792446047,
+      "seconds": [
+        1.3764002923853695,
+        1.847518667113036,
+        1.455478166230023,
+        1.424818417057395,
+        1.463422916829586
+      ],
+      "median_seconds": 1.455478166230023,
+      "max_rss_bytes": 37011456
+    },
+    {
+      "label": "after",
+      "warmup_seconds": 0.5115062911063433,
+      "seconds": [
+        0.5729545000940561,
+        0.4688572082668543,
+        0.4225147496908903,
+        0.4169431668706238,
+        0.40394329093396664
+      ],
+      "median_seconds": 0.4225147496908903,
+      "max_rss_bytes": 38780928
+    }
+  ],
+  "trials": [
+    {
+      "label": "baseline",
+      "run_id": "33295eb1-b95e-4607-99c6-42982046c534",
+      "status": "junie_failed",
+      "completed_capsules": 0,
+      "capsules": 3,
+      "build_exit_code": null,
+      "checker_exit_code": null,
+      "capsule_hashes": [
+        "2fe5136b1ecdeb6e0e1644bb224e4cb4b5e12c08f75e9ea1882421400f22019a",
+        "7607b9b95f13665f74744203602f6d4d8b5444ccd43c4e6c05e6f1d2ab0a831f",
+        "2734586b4ef95a4e7b819abe5dc2b8bb4bbdf8a93254c9cbbc5af601d9888dfd"
+      ],
+      "material_hashes_digest": "b87a8e08acd3cb9c07d3d20070d34af65626e013d01d6135f0aa3b5cf96568be",
+      "selected_details": [],
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 808541,
+          "output": 7718,
+          "cache_read": 675680,
+          "cache_write": 0,
+          "responses": 50,
+          "session_id": "session-261117-043009-1nhi",
+          "start_ms": 1794857411433,
+          "junie_seconds": 80.111,
+          "tool_steps": 11
+        }
+      ],
+      "totals": {
+        "input": 808541,
+        "output": 7718,
+        "cache_read": 675680,
+        "cache_write": 0,
+        "responses": 50,
+        "junie_seconds": 80.111,
+        "tool_steps": 11
+      },
+      "stages": {
+        "0": 0.007559061050415039,
+        "1": 0.8968698978424072,
+        "2": 0.1444699764251709,
+        "3": 92.20256209373474
+      },
+      "repair_kinds": []
+    },
+    {
+      "label": "file_review",
+      "run_id": "abd04d0f-8019-4131-9ab0-fecc8bdcd855",
+      "status": "script_failed",
+      "completed_capsules": 3,
+      "capsules": 3,
+      "build_exit_code": 0,
+      "checker_exit_code": null,
+      "capsule_hashes": [
+        "2fe5136b1ecdeb6e0e1644bb224e4cb4b5e12c08f75e9ea1882421400f22019a",
+        "7607b9b95f13665f74744203602f6d4d8b5444ccd43c4e6c05e6f1d2ab0a831f",
+        "2734586b4ef95a4e7b819abe5dc2b8bb4bbdf8a93254c9cbbc5af601d9888dfd"
+      ],
+      "material_hashes_digest": "b87a8e08acd3cb9c07d3d20070d34af65626e013d01d6135f0aa3b5cf96568be",
+      "selected_details": [
+        "rule-0019.txt",
+        "rule-0066.txt",
+        "rule-0115.txt",
+        "rule-0167.txt",
+        "rule-0200.txt"
+      ],
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 413537,
+          "output": 4675,
+          "cache_read": 331728,
+          "cache_write": 0,
+          "responses": 35,
+          "session_id": "session-261117-043403-1cwh",
+          "start_ms": 1794857646426,
+          "junie_seconds": 50.66,
+          "tool_steps": 5
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 1609968,
+          "output": 11582,
+          "cache_read": 1474576,
+          "cache_write": 0,
+          "responses": 60,
+          "session_id": "session-261117-043508-4p4g",
+          "start_ms": 1794857711368,
+          "junie_seconds": 122.614,
+          "tool_steps": 19
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 2715499,
+          "output": 23396,
+          "cache_read": 2505376,
+          "cache_write": 0,
+          "responses": 99,
+          "session_id": "session-261117-043721-1lau",
+          "start_ms": 1794857843345,
+          "junie_seconds": 195.022,
+          "tool_steps": 20
+        },
+        {
+          "phase": "migration",
+          "capsule": 3,
+          "input": 1407250,
+          "output": 15069,
+          "cache_read": 1295552,
+          "cache_write": 0,
+          "responses": 80,
+          "session_id": "session-261117-044045-14em",
+          "start_ms": 1794858047015,
+          "junie_seconds": 165.272,
+          "tool_steps": 14
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 294725,
+          "output": 2621,
+          "cache_read": 252016,
+          "cache_write": 0,
+          "responses": 25,
+          "session_id": "session-261117-044346-fnh8",
+          "start_ms": 1794858228665,
+          "junie_seconds": 46.864,
+          "tool_steps": 7
+        }
+      ],
+      "totals": {
+        "input": 6440979,
+        "output": 57343,
+        "cache_read": 5859248,
+        "cache_write": 0,
+        "responses": 299,
+        "junie_seconds": 580.432,
+        "tool_steps": 65
+      },
+      "stages": {
+        "0": 0.009151220321655273,
+        "1": 0.3475048542022705,
+        "2": 0.19418907165527344,
+        "3": 641.9961059093475,
+        "4": 7.824747085571289
+      },
+      "repair_kinds": [
+        "build"
+      ]
+    },
+    {
+      "label": "cumulative_sources",
+      "run_id": "3d4e57e2-0259-4874-8603-67e7ef1a7ea9",
+      "status": "script_failed",
+      "completed_capsules": 3,
+      "capsules": 3,
+      "build_exit_code": 0,
+      "checker_exit_code": null,
+      "capsule_hashes": [
+        "2fe5136b1ecdeb6e0e1644bb224e4cb4b5e12c08f75e9ea1882421400f22019a",
+        "7607b9b95f13665f74744203602f6d4d8b5444ccd43c4e6c05e6f1d2ab0a831f",
+        "2734586b4ef95a4e7b819abe5dc2b8bb4bbdf8a93254c9cbbc5af601d9888dfd"
+      ],
+      "material_hashes_digest": "b87a8e08acd3cb9c07d3d20070d34af65626e013d01d6135f0aa3b5cf96568be",
+      "selected_details": [
+        "rule-0019.txt",
+        "rule-0066.txt",
+        "rule-0115.txt",
+        "rule-0167.txt",
+        "rule-0200.txt"
+      ],
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 977724,
+          "output": 7968,
+          "cache_read": 855456,
+          "cache_write": 0,
+          "responses": 46,
+          "session_id": "session-261117-044524-yl71",
+          "start_ms": 1794858326160,
+          "junie_seconds": 103.145,
+          "tool_steps": 12
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 2211567,
+          "output": 15862,
+          "cache_read": 2056000,
+          "cache_write": 0,
+          "responses": 95,
+          "session_id": "session-261117-044718-q0sk",
+          "start_ms": 1794858440106,
+          "junie_seconds": 159.608,
+          "tool_steps": 27
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 844699,
+          "output": 8899,
+          "cache_read": 748656,
+          "cache_write": 0,
+          "responses": 51,
+          "session_id": "session-261117-045007-11fu",
+          "start_ms": 1794858609144,
+          "junie_seconds": 92.229,
+          "tool_steps": 10
+        },
+        {
+          "phase": "migration",
+          "capsule": 3,
+          "input": 1424255,
+          "output": 13191,
+          "cache_read": 1296784,
+          "cache_write": 0,
+          "responses": 64,
+          "session_id": "session-261117-045149-ctw5",
+          "start_ms": 1794858711571,
+          "junie_seconds": 113.356,
+          "tool_steps": 14
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 95312,
+          "output": 1838,
+          "cache_read": 75536,
+          "cache_write": 0,
+          "responses": 14,
+          "session_id": "session-261117-045355-1ma2",
+          "start_ms": 1794858836988,
+          "junie_seconds": 18.804,
+          "tool_steps": 3
+        }
+      ],
+      "totals": {
+        "input": 5553557,
+        "output": 47758,
+        "cache_read": 5032432,
+        "cache_write": 0,
+        "responses": 270,
+        "junie_seconds": 487.142,
+        "tool_steps": 66
+      },
+      "stages": {
+        "0": 0.009500741958618164,
+        "1": 0.31068921089172363,
+        "2": 0.17818379402160645,
+        "3": 542.0864500999451,
+        "4": 4.613425970077515
+      },
+      "repair_kinds": [
+        "build"
+      ]
+    },
+    {
+      "label": "final",
+      "run_id": "de636f53-2baf-4522-84c3-5fdcbfbb997c",
+      "status": "checker_succeeded",
+      "completed_capsules": 3,
+      "capsules": 3,
+      "build_exit_code": 0,
+      "checker_exit_code": 0,
+      "capsule_hashes": [
+        "2fe5136b1ecdeb6e0e1644bb224e4cb4b5e12c08f75e9ea1882421400f22019a",
+        "7607b9b95f13665f74744203602f6d4d8b5444ccd43c4e6c05e6f1d2ab0a831f",
+        "2734586b4ef95a4e7b819abe5dc2b8bb4bbdf8a93254c9cbbc5af601d9888dfd"
+      ],
+      "material_hashes_digest": "b87a8e08acd3cb9c07d3d20070d34af65626e013d01d6135f0aa3b5cf96568be",
+      "selected_details": [
+        "rule-0019.txt",
+        "rule-0066.txt",
+        "rule-0115.txt",
+        "rule-0167.txt",
+        "rule-0200.txt"
+      ],
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 426959,
+          "output": 5785,
+          "cache_read": 349296,
+          "cache_write": 0,
+          "responses": 36,
+          "session_id": "session-261117-045559-1k1p",
+          "start_ms": 1794858960979,
+          "junie_seconds": 52.125,
+          "tool_steps": 6
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 976461,
+          "output": 9062,
+          "cache_read": 863408,
+          "cache_write": 0,
+          "responses": 48,
+          "session_id": "session-261117-045701-zqg2",
+          "start_ms": 1794859023758,
+          "junie_seconds": 92.314,
+          "tool_steps": 19
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 3268838,
+          "output": 22302,
+          "cache_read": 3077088,
+          "cache_write": 0,
+          "responses": 124,
+          "session_id": "session-261117-045844-c4ii",
+          "start_ms": 1794859126420,
+          "junie_seconds": 182.711,
+          "tool_steps": 17
+        },
+        {
+          "phase": "migration",
+          "capsule": 3,
+          "input": 1328292,
+          "output": 12325,
+          "cache_read": 1201888,
+          "cache_write": 0,
+          "responses": 71,
+          "session_id": "session-261117-050158-1utq",
+          "start_ms": 1794859320667,
+          "junie_seconds": 118.649,
+          "tool_steps": 16
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 98872,
+          "output": 1242,
+          "cache_read": 77968,
+          "cache_write": 0,
+          "responses": 14,
+          "session_id": "session-261117-050446-1vzr",
+          "start_ms": 1794859487983,
+          "junie_seconds": 18.366,
+          "tool_steps": 3
+        }
+      ],
+      "totals": {
+        "input": 6099422,
+        "output": 50716,
+        "cache_read": 5569648,
+        "cache_write": 0,
+        "responses": 293,
+        "junie_seconds": 464.165,
+        "tool_steps": 61
+      },
+      "stages": {
+        "0": 0.009428977966308594,
+        "1": 0.28881192207336426,
+        "2": 0.1339421272277832,
+        "3": 521.4075117111206,
+        "4": 69.4307382106781,
+        "5": 0.36038780212402344
+      },
+      "repair_kinds": [
+        "checker"
+      ],
+      "wall_seconds": 592.2524585723877,
+      "test_passes": 2,
+      "checker_output": "PASS: all six rule constants and both adjacent helpers"
+    }
+  ],
+  "excluded_monitor_interruption": "ae49bfd8-32ba-4b44-b402-ff664ee2c796",
+  "ui": {
+    "run_id": "de636f53-2baf-4522-84c3-5fdcbfbb997c",
+    "target_bytes": 1150341,
+    "php_lines": 20000,
+    "viewports": [
+      1440,
+      768,
+      390
+    ],
+    "page_errors": []
+  }
+}

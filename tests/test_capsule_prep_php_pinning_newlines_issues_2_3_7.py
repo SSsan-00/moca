@@ -70,11 +70,17 @@ class CapsulePreparationTests(HarnessCase):
             encoding="utf-8",
         )
         observed_lines = []
+        final_reviews = []
 
         def junie(command, completion, token, agent_targets, *, report_usage=None):
             self.assertIn("`メニュー`", command[-1])
+            final_reviews.append("Check exact branch conditions and selector strings" in command[-1])
             context = (completion.parent / ".migration-context.md").read_bytes().decode("utf-8")
             observed_lines.extend(re.findall(r"^ *([0-9]+) \| ([^\r\n]*)", context, re.MULTILINE))
+            accumulated = "".join(p.read_bytes().decode("utf-8") for p in sorted(
+                (completion.parent / ".migration-materials").glob("source-*.md")
+            ))
+            self.assertEqual(re.findall(r"^ *([0-9]+) \| ([^\r\n]*)", accumulated, re.MULTILINE), observed_lines)
             for target in agent_targets:
                 target.write_text(f"migrated {target.name}", encoding="utf-8")
             completion.write_text(token, encoding="ascii")
@@ -97,6 +103,7 @@ class CapsulePreparationTests(HarnessCase):
             cli.main()
 
         self.assertGreater(agent.call_count, 1)
+        self.assertEqual(final_reviews, [False] * (agent.call_count - 1) + [True])
         self.assertEqual(observed_lines, [(str(number), line) for number, line in enumerate(source_lines, 1)])
         record_path, = (self.root / "runs").glob("*/run.json")
         record = self.read_json(record_path)

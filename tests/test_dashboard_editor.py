@@ -11,7 +11,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, junie_cli, workflow
+from migration_harness import dashboard, editor_queue, junie_cli, workflow
 from migration_harness.config import load_config
 
 BASE = "class Page\n{\n    int First = 1;\n    int Middle = 0;\n    int Last = 1;\n}\n"
@@ -53,6 +53,18 @@ class DashboardEditorTests(HarnessCase):
             "base": state["content"], "content": content, "edit_id": (state["edit"] or {}).get("id"),
             "resolve": resolve,
         })
+
+    def test_editor_accepts_eight_mib_and_rejects_larger_files_without_changing_them(self):
+        path = self.project / "Page.cs"
+        path.write_bytes(b"a" * (8 * 1024 * 1024))
+        data, text = editor_queue.editor_target(self.project, Path("Page.cs"))
+        self.assertEqual(len(data), 8 * 1024 * 1024)
+        self.assertEqual(text.encode(), data)
+        with path.open("ab") as stream:
+            stream.write(b"x")
+        with self.assertRaisesRegex(ValueError, "8 MiB.*外部エディタ"):
+            editor_queue.editor_target(self.project, Path("Page.cs"))
+        self.assertEqual(path.stat().st_size, 8 * 1024 * 1024 + 1)
 
     def test_php_view_reads_the_run_snapshot_and_accepts_only_get(self):
         other = self.project / "other.php"
@@ -127,17 +139,21 @@ class DashboardEditorTests(HarnessCase):
             workflow.run_with_junie(self.settings, "sample")
         verified.assert_called_once()
 
-    def test_live_edits_and_final_prompt_are_applied_before_build(self):
+    def test_large_live_edits_and_final_prompt_are_applied_before_build(self):
         prompts = []
-        remote = BASE.replace("First = 1", "First = 2")
-        local = BASE.replace("Last = 1", "Last = 3")
+        original = BASE + "// 日本語を保持する大きな移行先ファイル\n" * 12_000
+        self.assertGreater(len(original.encode("utf-8")), 512 * 1024)
+        (self.project / "Page.cs").write_bytes(original.replace("\n", "\r\n").encode("utf-8-sig"))
+        self.commit_project()
+        remote = original.replace("First = 1", "First = 2")
+        local = original.replace("Last = 1", "Last = 3")
         merged = remote.replace("Last = 1", "Last = 3")
 
         def junie(command, completion, token, targets, **kwargs):
             prompts.append(command[-1])
             if len(prompts) == 1:
                 state = self.request()
-                self.assertEqual(state["content"], BASE)
+                self.assertEqual(state["content"], original)
                 with self.assertRaises(HTTPError) as unauthorized:
                     self.queue_edit(state, local, target="../source.php")
                 self.assertEqual(unauthorized.exception.code, 409)
