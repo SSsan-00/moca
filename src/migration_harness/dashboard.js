@@ -626,7 +626,6 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
     download.textContent = "ワークスペースJSONを保存";
     showComparisonStatus(...(withAnchors && count === 0 ? ["対応行の候補はありませんでした。 "] : []),
       ...(!withAnchors ? ["現在の参照PHPと最新の移行先（保存済みの編集） · "] : []), open, " · ", download);
-    download.click();
     displayComparison(open.href, popup);
     if (withAnchors && migrationLedgerDialog.open) {
       await loadMigrationLedger();
