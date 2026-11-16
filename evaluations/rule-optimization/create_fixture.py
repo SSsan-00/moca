@@ -1,4 +1,4 @@
-"""実Junieによるスキル検証用。設定反映の成功と、矛盾時の保留を別々に試す。"""
+"""実Junieによるスキル検証用。分割・矛盾時の保留・既存設定の分類を試す。"""
 
 import json
 import shutil
@@ -15,6 +15,7 @@ harness, app = root / "harness", root / "app"
 (app / "docs").mkdir(parents=True)
 shutil.copytree(repository / ".junie/skills/harness-optimize-rules", harness / ".junie/skills/harness-optimize-rules")
 shutil.copyfile(repository / "tools/rule_pack.py", harness / "tools/rule_pack.py")
+shutil.copyfile(repository / "tools/rule_usage.py", harness / "tools/rule_usage.py")
 mixed = """# 散らばったメモ
 [G01] 全移行で原文の値・順序・重複を維持する。推測で数値を補わない。
 
@@ -44,8 +45,9 @@ for name, text in [("mixed.md", mixed), ("views.txt", views), ("untouched.md", "
     (app / "docs" / name).write_text(text, encoding="utf-8")
 pack = harness / "rule-workspace/LegacyApp"
 (pack / "sources").mkdir(parents=True)
-for name in ("mixed.md", "views.txt"):
-    shutil.copyfile(app / "docs" / name, pack / "sources" / name)
+if "--loading" not in sys.argv:
+    for name in ("mixed.md", "views.txt"):
+        shutil.copyfile(app / "docs" / name, pack / "sources" / name)
 (app / "legacy").write_text("<?php echo 1;", encoding="utf-8")
 (app / "must-not-run.py").write_text("from pathlib import Path\nPath('HOOK_WAS_RUN').write_text('unexpected')\n", encoding="utf-8")
 config = '''# Keep this configuration comment.
@@ -72,6 +74,44 @@ id = "example"
 source = "legacy"
 target = "Result.cs"
 '''.replace("COMMAND", json.dumps([sys.executable, "must-not-run.py"]))
+if "--loading" in sys.argv:
+    documents = {
+        "Agent.md": "# 共通の必須事項\n[G10] 全移行で原文の値・順序・重複を保持する。\n[G11] 全移行でエラー本文を切り捨てず記録する。\n",
+        "db-details.md": "# DBアクセスの詳細\nDBアクセスの移行・修正にのみ適用する。\n[D10] 更新失敗時はrollbackする。ただし参照専用ではトランザクションを開始しない。\n"
+            + "\n".join(f"DBの例{i}: 接続を開き、値'{i:04d}'をパラメーターで渡し、終了時に接続を破棄する。" for i in range(1, 25)) + "\n",
+        "view-details.md": "# Razorの表示処理\n[V10] 動的文字列は標準エンコードに任せる。\n[V11] 信頼済みの固定HTMLだけHtml.Rawを使用できる。\n",
+        "unclear.md": "# 確認事項\n[U10] 状態の引き継ぎを確認すること。\n",
+    }
+    for name, content in documents.items():
+        (app / "docs" / name).write_text(content, encoding="utf-8")
+    old_rules = config[config.index("[[project.migration_rules]]"):config.index("[scripts]")]
+    config = config.replace(old_rules, '''[[project.migration_rules]]
+path = "docs/Agent.md" # Keep entry note.
+usage = "reference"
+description = "参考資料"
+custom = "keep entry metadata"
+[[project.migration_rules]]
+path = "docs/db-details.md" # Keep DB note. No usage means required.
+[[project.migration_rules]]
+path = VIEW_PATH
+usage = "reference"
+description = "詳細"
+[[project.migration_rules]]
+path = "docs/unclear.md"
+usage = "required"
+
+'''.replace("VIEW_PATH", json.dumps((app / "docs/view-details.md").as_posix())))
+    config += '''
+[[units.inputs]]
+role = "migration_rules"
+path = "docs/db-details.md" # Keep legacy note.
+usage = "required"
+custom = 42
+
+[checker]
+command = ["python", "check.py"]
+max_repair_attempts = 3
+'''
 (harness / "harness.local.toml").write_text(config, encoding="utf-8")
 (root / "before.toml").write_text(config, encoding="utf-8")
 subprocess.run(["git", "init", "-q", str(app)], check=True)

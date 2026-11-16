@@ -11,7 +11,7 @@ description: WindowsでPHP→C# Migration Harnessを初めて導入するとき�
 
 ## ルール整理を依頼された場合
 
-散在するルールを必須の `Agent.md` と用途別の詳細へ分ける依頼は、[harness-optimize-rules](../harness-optimize-rules/SKILL.md) を読んで進める。Junieでは `/harness-optimize-rules 原文の場所を指定して、情報を落とさずルールを整理してください` と呼び出せる。通常の保存先はハーネス側の `rule-workspace/<project>/`。全行一致の検証と適用範囲・優先順位等の意味レビューが済むまで新ルールを有効化しない。`Agent.md` はファイル名だけで必須にはならず、`required` として登録する。
+散在するルールの整理や、**プロジェクト共通の移行ルールの読み込み方**を最適化する依頼は、[harness-optimize-rules](../harness-optimize-rules/SKILL.md) を読んで進める。既存設定なら `/harness-optimize-rules harness.local.toml の移行ルールの読み込み方を最適化して設定へ反映してください` と呼び出せる。原文を整理する場合の保存先はハーネス側の `rule-workspace/<project>/`。必須事項を保持し、詳細には具体的な読む場面を設定する。全行の保持と適用範囲・優先順位等の意味レビューが済むまで新ルールを有効化しない。`Agent.md` はファイル名だけで必須にはならず、`required` として登録する。
 
 案内だけならTOMLを変更しない。設定反映も依頼されていれば同スキルの手順で対象の旧ルールだけを置き換える。生成される `rules.toml` は断片であり、設定全体を上書きしない。**ルール整理・設定確認だけのために準備・移行を実行しない**（登録済みフックが動く）。
 

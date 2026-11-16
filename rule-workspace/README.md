@@ -26,6 +26,14 @@ Junieに任せる場合は、ハーネス直下で `junie` を起動し、`/skil
 
 設定を変えたくない場合は末尾を「TOMLは変更せず、設定方法だけ案内してください」に置き換えます。詳細な手順は [整理スキル](../.junie/skills/harness-optimize-rules/SKILL.md)、JSONの書式は [plan.jsonの形式](../.junie/skills/harness-optimize-rules/references/plan-format.md) を参照してください。
 
+登録済みのルールから見直す場合は、原文フォルダの代わりに設定を指定できます。
+
+```text
+/harness-optimize-rules harness.local.toml の「プロジェクト共通の移行ルール」の読み込み方を最適化して、設定へ反映してください。
+```
+
+すでに内容が分離されていれば、本文を保持して必須／詳細と読む場面の設定だけを更新します。必須と詳細が混在する場合は上の構成で分割します。設定のバックアップと見直し結果もこの作業領域に残します。
+
 ## 手動で進める場合
 
 全入力の実ファイルを `LegacyApp/sources/` にコピーし、コピー元のパスを記録します。入力はUTF-8（BOM可）の `.md`・`.markdown`・`.txt`。他の形式は元ファイルを残して変換し、内容を確認してから進めます。
