@@ -1,12 +1,16 @@
 """Copy a draft migration file to its configured destination in the Run worktree."""
 
 import argparse
+import sys
 from pathlib import Path
 from shutil import copyfile
 from tempfile import TemporaryDirectory
 
 
 def main() -> None:
+    # ハーネスはログをUTF-8で読む。Windowsのリダイレクト先でも日本語を出力する。
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="absolute path to the draft file")
     parser.add_argument("destination", type=Path, help="path relative to the Run worktree")

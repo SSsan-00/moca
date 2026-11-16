@@ -67,8 +67,9 @@ class ErrorFormattingTests(unittest.TestCase):
         error = subprocess.CalledProcessError(
             17, command, output=b"stdout token-private \xff", stderr=b"stderr prompt-private",
         )
-        details = format_error(error, cwd=Path("/work/project"), executable="/bin/git")
-        for expected in ("CalledProcessError", "Return code: 17", "stdout:", "stderr:", "Command: git", "status", "/work/project", "/bin/git", "\ufffd"):
+        cwd = Path("/work/project")
+        details = format_error(error, cwd=cwd, executable="/bin/git")
+        for expected in ("CalledProcessError", "Return code: 17", "stdout:", "stderr:", "Command: git", "status", str(cwd), "/bin/git", "\ufffd"):
             self.assertIn(expected, details)
         self.assertNotIn("token-private", details)
         self.assertNotIn("prompt-private", details)

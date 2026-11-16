@@ -233,7 +233,7 @@ class CapsulePreparationTests(HarnessCase):
             record_path = Path(config["run_root"]) / run_id / "run.json"
             record = self.read_json(record_path)
             self.assertEqual(record["status"], "script_failed")
-            self.assertEqual(record["script_phase"], "after_build")
+            self.assertEqual(record["script_phase"], "after_build", record["error"])
             self.assertIn("終了コード 7", record["error"])
             self.assertFalse(workflow.migration_ledger(config, run_id)["completion"]["verification_passed"])
             config["scripts"]["after_build"].pop()

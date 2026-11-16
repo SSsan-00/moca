@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -18,7 +19,7 @@ class ConfigFilePathTests(HarnessCase):
     def setUp(self):
         super().setUp()
         self.source = self.project / "注文.inc"
-        self.source.write_text("<?php\nfunction total() { return 42; }\n", encoding="utf-8")
+        self.source.write_bytes(b"<?php\nfunction total() { return 42; }\n")
         (self.project / "Page.cs").write_text("class Page { int Total() => 42; }\n", encoding="utf-8")
         (self.project / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk" />', encoding="utf-8")
         self.commit_project()
@@ -153,6 +154,9 @@ class ConfigFilePathTests(HarnessCase):
         self.assertEqual(config["scripts"]["before_migration"], [["@copy-migration-draft", str(draft), "Page.cs"]])
         prepared = workflow.prepare_run(config, "orders")
         worktree = Path(prepared["worktree_path"])
-        workflow._run_script_phase(config, "before_migration", worktree, Path(prepared["run_path"]))
+        with patch.dict(os.environ, {"PYTHONIOENCODING": "cp1252"}):
+            workflow._run_script_phase(config, "before_migration", worktree, Path(prepared["run_path"]))
+        log = Path(prepared["run_path"]) / "before_migration.log"
+        self.assertIn("配置しました: Page.cs", log.read_text(encoding="utf-8"))
         self.assertEqual((worktree / "Page.cs").read_bytes(), draft.read_bytes())
         self.assertNotEqual((self.project / "Page.cs").read_bytes(), draft.read_bytes())
