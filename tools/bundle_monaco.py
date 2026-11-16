@@ -22,7 +22,7 @@ def main() -> None:
         package = root / "node_modules" / "monaco-editor"
         source = "./node_modules/monaco-editor/esm/vs"
         features = (package / "esm/vs/editor/editor.main.js").read_text(encoding="utf-8")
-        # エディタ機能は公式エントリと同じものを使い、言語は C# だけを登録する。
+        # エディタ機能は公式エントリと同じものを使い、C#・Razor・PHP を登録する。
         contributions = features[features.index("import './contrib/anchorSelect"):].splitlines()
         imports = [
             line.replace(" './", f" '{source}/editor/").replace(" '../", f" '{source}/")
@@ -32,6 +32,8 @@ def main() -> None:
         entry.write_text("\n".join((
             f'import "{source}/nls/lang/ja.js";',
             f'import "{source}/languages/definitions/csharp/register.js";',
+            f'import "{source}/languages/definitions/razor/register.js";',
+            f'import "{source}/languages/definitions/php/register.js";',
             *imports,
             f'export * from "{source}/editor/editor.api.js";',
         )), encoding="utf-8")

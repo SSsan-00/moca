@@ -102,20 +102,25 @@
     .workspace-feedback:empty { display: none; }
     .editor-layout:not([hidden]) { display: grid; height: 100%; min-height: 360px; grid-template-columns: minmax(0, 1.9fr) minmax(230px, 1fr); grid-template-rows: minmax(0, 1fr); gap: 12px; padding: 2px; }
     .editor-layout .panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-    .editor-heading, .editor-footer, .editor-chat form { padding: 12px; }
+    .editor-heading, .editor-header, .editor-chat form { padding: 12px; }
     .editor-heading { border-bottom: 1px solid var(--line); }
-    .editor-heading :is(h2, p), .editor-footer p { margin: 0; }
+    .editor-heading :is(h2, p), .editor-header p { margin: 0; }
     .editor-heading h2 { font-size: 16px; }
-    #editor-target { width: min(calc(100% - 20px), 30ch); min-height: 34px; margin: 8px 10px; padding: 6px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+    #editor-php-source { width: min(100%, 30ch); min-height: 34px; padding: 6px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
     .editor-muted { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .editor-notice { margin: 10px 10px 0; padding: 8px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: var(--amber-soft); color: var(--amber-ink); }
     .editor-source { position: relative; flex: 1; min-height: 0; border-block: 1px solid var(--line); }
     .editor-source > div { position: absolute; inset: 0; }
-    .editor-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-    .editor-footer-actions { display: flex; gap: 8px; margin-inline-start: auto; }
-    #editor-diff-toggle[aria-pressed="true"] { color: var(--blue); border-color: var(--blue); }
+    .editor-header { display: grid; gap: 6px; }
+    .editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .editor-header-actions, .editor-languages { display: flex; gap: 6px; }
+    .editor-header-actions { margin-inline-start: auto; }
+    .editor-languages { flex-wrap: wrap; }
+    .editor-languages button { flex: 0 0 92px; padding-inline: 0; }
+    #editor-target-buttons { display: contents; }
+    .editor-languages button[aria-pressed="true"], #editor-diff-toggle[aria-pressed="true"] { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
     #editor-save, #editor-send { background: var(--blue); color: var(--blue-ink); border-color: var(--blue); }
-    #editor-save:disabled, #editor-send:disabled { background: var(--surface-muted); color: var(--muted); border-color: var(--line); }
+    #workspace-editor .button:disabled { background: var(--surface-muted); color: var(--muted); border-color: var(--line); }
     .editor-chat-body { flex: 1; min-height: 0; padding: 12px; overflow: auto; overflow-wrap: anywhere; }
     .editor-chat-body p, .editor-chat form p { margin: 0; }
     .editor-chat-list { display: grid; justify-items: end; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
@@ -128,6 +133,7 @@
     .editor-chat-actions > div { display: flex; gap: 6px; margin-inline-start: auto; }
     #editor-send:has([data-send-icon]:not([hidden])) { width: 38px; padding: 0; border-radius: 50%; font-size: 19px; }
     #workspace-editor .workspace-feedback { margin: 4px 12px 10px; }
+    .editor-layout:has(#editor-php-toggle[aria-pressed="true"]) #editor-error { display: none; }
     @media (max-width: 680px) {
       .editor-layout:not([hidden]) { height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
       .editor-source { flex: none; height: max(250px, 48dvh); }
@@ -298,6 +304,12 @@
     .state[data-state="waiting"] { background: var(--amber-soft); color: var(--amber); }
     .state-orb { width: 9px; height: 9px; border-radius: 50%; background: currentColor; transform-origin: center bottom; }
     .is-running .state-orb { animation: squash-bounce 1.175s ease-in-out infinite; }
+    #editor-junie-status { width: auto; max-width: 100%; min-height: 38px; height: auto; padding-block: 5px; border: 1px solid transparent; text-align: start; white-space: normal; }
+    #editor-junie-status:not(:disabled) { cursor: pointer; }
+    #editor-junie-status:not(:disabled):hover { border-color: currentColor; }
+    #editor-junie-status:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    #editor-junie-status .state-orb { flex-shrink: 0; }
+    .editor-chat-body #editor-junie-activity { margin-top: 6px; }
     .controls { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 7px; }
     #toggle { width: 128px; }
     [data-live] #toggle { width: auto; min-width: 128px; }
@@ -339,7 +351,7 @@
     .metric-label { color: var(--muted); font-size: 11px; }
     .metric-value { margin-top: 3px; font: 700 17px var(--mono); }
     .metric-value span { color: var(--muted); font: 11px system-ui, sans-serif; }
-    .side { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); gap: 16px; }
+    .side { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto minmax(0, 1.35fr); gap: 16px; }
     .side > .panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
     .activity { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 18px 14px; }
     .event { display: grid; grid-template-columns: 62px 9px 1fr; gap: 9px; min-height: 56px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); animation: arrive 240ms var(--ease) both; }
@@ -351,20 +363,21 @@
     .event.live .event-pin::before { background: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
     .event-text { color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .event-text strong { color: var(--ink); font-weight: 680; }
-    .capsule { padding: 14px 18px 17px; }
-    .run-token-summary { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .capsule { padding: 10px 18px 11px; }
+    .run-token-summary { margin-bottom: 7px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
     .run-token-summary h2 { margin: 0; font-size: 13px; }
     .run-token-summary h2 span, .run-token-summary p { color: var(--muted); font-size: 11px; font-weight: 400; }
-    .run-token-summary p { margin: 5px 0 0; }
-    .run-token-counts:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 6px 0 0; }
-    .run-token-counts dt { color: var(--muted); font-size: 11px; }
-    .run-token-counts dd { margin: 1px 0 0; font: 650 clamp(14px, 2vw, 19px) var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .run-token-summary p { margin: 3px 0 0; }
+    .run-token-counts:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 3px 0 0; }
+    .run-token-counts > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; }
+    .run-token-counts dt { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .run-token-counts dd { min-width: 0; margin: 0; font: 650 clamp(13px, 1.7vw, 16px) var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .capsule-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 10px; }
-    .capsule-title { display: grid; gap: 2px; }
+    .capsule-title { display: grid; min-width: 0; gap: 2px; overflow-wrap: anywhere; }
     .capsule-title h2 { margin: 0; font-size: 13px; }
     .capsule-title span { color: var(--muted); font-size: 10px; }
     .capsule-top span { color: var(--muted); font-size: 11px; }
-    .meter { height: 7px; margin: 12px 0 8px; overflow: hidden; border-radius: 6px; background: var(--meter-track); }
+    .meter { height: 6px; margin: 7px 0 4px; overflow: hidden; border-radius: 6px; background: var(--meter-track); }
     .meter-fill { width: 13%; height: 100%; border-radius: inherit; background: var(--blue); transition: width 700ms var(--ease); }
     .meter-label { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11px; }
     .meter-label strong { color: var(--ink); font-family: var(--mono); font-weight: 650; }
@@ -715,34 +728,39 @@
   <section class="workspace-pane" id="workspace-editor" role="tabpanel" aria-labelledby="tab-editor" tabindex="0" hidden>
     <p id="editor-empty" class="workspace-feedback" role="status">実行タブで移行を始めるか、保存済みの実行を開いてください。</p>
     <div class="editor-layout" id="editor-layout" hidden>
-      <section class="panel" aria-label="C# エディタ">
-        <select id="editor-target" aria-label="移行先ファイル" hidden></select>
-        <p class="editor-notice" id="editor-update" role="status" hidden></p>
-        <div class="editor-source"><div id="editor-code"></div><div id="editor-diff" hidden></div></div>
-        <div class="editor-footer">
-          <div><p id="editor-save-status" role="status"></p><p id="editor-save-timing" class="editor-muted"></p></div>
-          <div class="editor-footer-actions">
-            <button class="button" id="editor-save" type="button" disabled>保存</button>
-            <button class="button" id="editor-diff-toggle" type="button" aria-controls="editor-diff" aria-pressed="false" disabled>差分</button>
+      <section class="panel" aria-label="移行エディタ">
+        <header class="editor-header">
+          <div class="editor-toolbar">
+            <div class="editor-languages" role="group" aria-label="表示するソース">
+              <span id="editor-target-buttons"></span>
+              <button class="button" id="editor-php-toggle" type="button" aria-pressed="false">PHP</button>
+            </div>
+            <div class="editor-header-actions">
+              <button class="button" id="editor-save" type="button" disabled>保存</button>
+              <button class="button" id="editor-diff-toggle" type="button" aria-controls="editor-diff" aria-pressed="false" disabled>差分</button>
+            </div>
           </div>
-        </div>
+          <div><p id="editor-save-status" role="status"></p><p id="editor-save-timing" class="editor-muted"></p></div>
+          <select id="editor-php-source" aria-label="移行元 PHP ファイル" hidden></select>
+        </header>
+        <p class="editor-notice" id="editor-update" role="status" hidden></p>
         <p class="workspace-feedback" id="editor-error" role="alert" hidden></p>
+        <div class="editor-source"><div id="editor-code"></div><div id="editor-diff" hidden></div><div id="editor-php" hidden></div></div>
       </section>
       <aside class="panel editor-chat" aria-labelledby="editor-chat-title">
         <header class="editor-heading"><h2 id="editor-chat-title">Junie</h2></header>
         <div class="editor-chat-body">
-          <p id="editor-junie-status" role="status"></p>
+          <p role="status"><button class="state" id="editor-junie-status" type="button" disabled><span class="state-orb" aria-hidden="true"></span><span id="editor-junie-phase"></span></button></p>
           <p id="editor-junie-activity" class="editor-muted" hidden></p>
           <ol class="editor-chat-list" id="editor-prompts" aria-label="Junie への追加指示"></ol>
         </div>
         <form id="editor-prompt-form">
-          <label for="editor-prompt">Junie に指示</label>
-          <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder="追加の指示を入力" required aria-describedby="editor-prompt-timing"></textarea>
+          <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder="追加の指示を入力" required aria-label="Junie に指示" aria-describedby="editor-prompt-timing"></textarea>
           <div class="editor-chat-actions">
             <p class="editor-muted" id="editor-prompt-timing"></p>
             <div>
               <button class="button" id="editor-cancel-prompt" type="button" disabled>キャンセル</button>
-              <button class="button" id="editor-send" type="submit" aria-label="送信"><span data-send-icon aria-hidden="true">↑</span><span data-send-label hidden>変更を保存</span></button>
+              <button class="button" id="editor-send" type="submit" aria-label="送信" disabled><span data-send-icon aria-hidden="true">↑</span><span data-send-label hidden>変更を保存</span></button>
             </div>
           </div>
         </form>
@@ -788,21 +806,19 @@
               <fieldset class="settings-fields" id="settings-project-fields">
                 <legend>プロジェクト</legend>
                 <label for="settings-root">アプリのリポジトリ</label>
-                <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp" aria-describedby="settings-roots-help">
+                <input id="settings-root" data-setting="root" autocomplete="off" placeholder="例：C:/work/LegacyApp">
                 <div class="settings-pair">
                   <div>
                     <label for="settings-worktree-root">作業ツリーの保存先</label>
-                    <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees" aria-describedby="settings-roots-help">
+                    <input id="settings-worktree-root" data-setting="worktree_root" autocomplete="off" placeholder="例：C:/migration/worktrees">
                   </div>
                   <div>
                     <label for="settings-run-root">実行データの保存先</label>
-                    <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs" aria-describedby="settings-roots-help">
+                    <input id="settings-run-root" data-setting="run_root" autocomplete="off" placeholder="例：C:/migration/runs">
                   </div>
                 </div>
-                <p class="settings-material-range" id="settings-roots-help">絶対パス、または設定ファイルの場所からの相対パス。保存先2つは両リポジトリの外に置き、互いに入れ子にしません。</p>
                 <label for="settings-base-ref">作業ツリーの基準リビジョン</label>
                 <input id="settings-base-ref" data-section="project" data-setting="base_ref" placeholder="HEAD（既定）" autocomplete="off">
-                <p class="settings-material-range">必要に応じてブランチ名、タグ名、コミットIDを指定します。</p>
                 <div class="settings-pair">
                   <div>
                     <label for="settings-context-limit">カプセルの文字数上限</label>
@@ -819,23 +835,18 @@
                   <option value="false">使用しない</option>
                 </select>
                 <label for="settings-viewer-html">差分ビューアーのHTML</label>
-                <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off" aria-describedby="settings-viewer-html-help">
-                <p class="settings-material-range" id="settings-viewer-html-help">アプリルートからの相対パス、または外部ファイルの絶対パス。空欄なら比較とアンカー生成は無効です。</p>
+                <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off">
                 <label for="settings-anchor-reference">アンカーの参照JSON（任意）</label>
-                <textarea id="settings-anchor-reference" class="settings-command" data-section="diff_viewer" data-setting="anchor_reference" placeholder="references/orders.workspace.json&#10;references/products.workspace.json" spellcheck="false" aria-describedby="settings-anchor-reference-help"></textarea>
-                <p class="settings-material-range" id="settings-anchor-reference-help">Diff Viewerから保存したワークスペースJSONのパスを、1行に1つ入力してください。絶対パス、または設定ファイルからの相対パスが使えます。空欄なら同じRunの確認済みの対応例を使います。</p>
+                <textarea id="settings-anchor-reference" class="settings-command" data-section="diff_viewer" data-setting="anchor_reference" placeholder="references/orders.workspace.json&#10;references/products.workspace.json" spellcheck="false"></textarea>
               </fieldset>
               <fieldset class="settings-fields" id="settings-verification-fields">
                 <legend>ビルド・独自チェッカー</legend>
                 <label for="settings-build-project">ビルド対象</label>
-                <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj" aria-describedby="settings-build-help">
-                <p class="settings-material-range" id="settings-build-help">アプリルートからの相対パス、またはアプリ内の絶対パス（.csproj、.sln、.slnx）。作業ツリー内のパスに変換してビルドします。空欄ならルートでビルドします。</p>
+                <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj">
                 <label for="settings-checker-command">チェッカーの実行ファイルと引数</label>
-                <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" aria-describedby="settings-checker-help" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
-                <p class="settings-material-range" id="settings-checker-help">1行目に実行ファイル、2行目以降に引数を1つずつ入力します。空欄なら実行しません。</p>
+                <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
                 <label for="settings-checker-repairs">自動修正回数</label>
-                <input id="settings-checker-repairs" data-section="checker" data-setting="max_repair_attempts" inputmode="numeric" autocomplete="off" placeholder="2（既定）" aria-describedby="settings-repairs-help">
-                <p class="settings-material-range" id="settings-repairs-help">1回の移行実行でJunieが修正を試みる上限です。0を指定すると自動修正を行いません。</p>
+                <input id="settings-checker-repairs" data-section="checker" data-setting="max_repair_attempts" inputmode="numeric" autocomplete="off" placeholder="2（既定）">
               </fieldset>
             </details>
             <fieldset class="settings-fields" id="settings-unit-fields">
@@ -855,20 +866,15 @@
                   </div>
                   <div>
                     <label for="settings-unit-source">移行元PHP</label>
-                    <input id="settings-unit-source" data-setting="source" autocomplete="off" placeholder="例：php/orders.php" aria-describedby="settings-source-help">
+                    <input id="settings-unit-source" data-setting="source" autocomplete="off" placeholder="例：php/orders.php">
                   </div>
                 </div>
-                <p class="settings-material-range" id="settings-source-help">アプリルートからの相対パス、または外部ファイルの絶対パス。拡張子なしを含め、拡張子を問わず移行元PHPとして全文を読み込みます。</p>
                 <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
-                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml" aria-describedby="settings-targets-help"></textarea>
-                <p class="settings-material-range" id="settings-targets-help">アプリルートからの相対パス、またはアプリ内の絶対パス。作業ツリー内のパスに変換し、元のリポジトリには書き込みません。</p>
+                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
               </div>
             </fieldset>
             <fieldset class="settings-fields settings-materials" id="settings-draft-import-fields">
               <legend>仮C#の取り込み</legend>
-              <p>仮C#を登録済みの移行先にコピーしてから、Junieが編集します。先に「移行先」を登録してください。</p>
-              <p id="settings-draft-source-help">コピー元はアプリルートからの相対パス、または外部ファイルの絶対パスで指定できます。</p>
-              <p>取り込みは全移行単位に適用します。</p>
               <div id="settings-draft-imports"></div>
               <button class="button" id="settings-draft-import-add" type="button">仮C#の取り込みを追加</button>
             </fieldset>
@@ -876,20 +882,16 @@
           <div class="settings-field-pane settings-shared-pane">
             <section class="settings-materials" aria-labelledby="settings-rules-title">
               <h2 id="settings-rules-title">プロジェクト共通の移行ルール</h2>
-              <p>既存のルールは「毎回適用する必須事項」のまま、毎回全文を読みます。長い説明や例は別ファイルに分け、「必要時に読む詳細・例」として登録してください。内容の要約や分類は自動では行いません。</p>
-              <p>アプリルートからの相対パス、または外部ファイルの絶対パスを指定します。</p>
               <div id="settings-rules"></div>
               <button class="button" id="settings-rule-add" type="button">移行ルールを追加</button>
             </section>
             <section class="settings-materials" aria-labelledby="settings-references-title">
               <h2 id="settings-references-title">プロジェクト共通の参考実装</h2>
-              <p>元PHPと対応するC#／Razorを、アプリルートからの相対パス、または外部ファイルの絶対パスで指定します。準備時に全文を保存します。</p>
               <div id="settings-references"></div>
               <button class="button" id="settings-reference-add" type="button">参考実装ペアを追加</button>
             </section>
             <fieldset class="settings-fields settings-materials" id="settings-script-fields">
               <legend>自作スクリプト</legend>
-              <p>全移行単位に適用します。同じ工程のスクリプトは、上から順に実行します。</p>
               <div id="settings-scripts"></div>
               <button class="button" id="settings-script-add" type="button">スクリプトを追加</button>
             </fieldset>
@@ -1571,7 +1573,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
         const source = document.createElement("input");
         source.autocomplete = "off";
         source.spellcheck = false;
-        source.setAttribute("aria-describedby", "settings-draft-source-help");
         source.placeholder = "例：C:/migration/draft/generated/Services/MenuService.cs";
         source.value = sourcePath;
         source.addEventListener("input", () => {
@@ -2566,6 +2567,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
   // 工程の切り替えに合わせて、計測・表示・人の確認待ちを更新する。
   function updateStep(index) {
     toggle.removeAttribute("aria-haspopup");
+    toggle.removeAttribute("aria-controls");
     const now = performance.now();
     if (index !== current) {
       if (stepStartedAt && current < steps.length) stepElapsed[current] += now - stepStartedAt;
@@ -2807,6 +2809,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     toggle.hidden = false;
     stopButton.hidden = true;
     toggle.setAttribute("aria-haspopup", "dialog");
+    toggle.setAttribute("aria-controls", "review-dialog");
     openReviewDialog();
   }
 

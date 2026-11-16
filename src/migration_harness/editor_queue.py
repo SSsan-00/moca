@@ -9,6 +9,7 @@ from subprocess import run
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
+EDITOR_TARGET_SUFFIXES = frozenset({".cs", ".cshtml"})
 EDIT_BYTES = 512 * 1024
 QUEUE_PHASES = {"junie_running", "editor_checkpoint", "editor_followup", "interrupted", "junie_failed"}
 AGENT_PHASES = QUEUE_PHASES | {"repairing"}
@@ -45,11 +46,11 @@ def editor_target(root: Path, target: Path) -> tuple[bytes | None, str]:
     except FileNotFoundError:
         return None, ""
     if len(data) > EDIT_BYTES:
-        raise ValueError("512 KiB を超える C# ファイルは外部エディタで開いてください。")
+        raise ValueError("512 KiB を超える 移行先ファイルは外部エディタで開いてください。")
     try:
         return data, editor_text(data.decode("utf-8-sig"))
     except UnicodeDecodeError:
-        raise ValueError("UTF-8 の C# ファイルを選んでください。") from None
+        raise ValueError("UTF-8 の 移行先ファイルを選んでください。") from None
 
 
 def merge_edit(base: str, draft: str, current: str) -> str | None:

@@ -8,15 +8,15 @@
   const request = demo ? demo.request : workspaceRequest;
   const progress = demo ? () => demo.progress : () => snapshot;
   const assetPath = demo ? "./src/migration_harness/monaco/" : "monaco/";
-  const phaseNames = demo ? {
-    junie_running: "Junie で移行中", editor_checkpoint: "編集の確認待ち",
-  } : statusNames;
   const layout = find("#editor-layout");
-  const targetPicker = find("#editor-target");
+  const targetButtons = find("#editor-target-buttons");
+  const phpPicker = find("#editor-php-source");
+  const phpButton = find("#editor-php-toggle");
   const notice = find("#editor-update");
   const save = find("#editor-save");
   const codeHost = find("#editor-code");
   const diffHost = find("#editor-diff");
+  const phpHost = find("#editor-php");
   const diffButton = find("#editor-diff-toggle");
   const form = find("#editor-prompt-form");
   const prompt = find("#editor-prompt");
@@ -26,6 +26,10 @@
   const documents = new Map();
   let state;
   let current;
+  let language = "target";
+  let phpSource;
+  let phpEditor;
+  let phpRequest = 0;
   let diffOpen = false;
   let editor;
   let diff;
@@ -81,6 +85,27 @@
     if (target.textContent !== text) target.textContent = text;
   }
 
+  const progressBadge = find("#run-state");
+  const editorBadge = find("#editor-junie-status");
+  const progressReview = find("#toggle");
+  function syncPhaseBadge() {
+    setText("#editor-junie-phase", find("#state-label").textContent);
+    editorBadge.dataset.state = progressBadge.dataset.state;
+    editorBadge.classList.toggle("is-running", progressBadge.classList.contains("is-running"));
+    const canReview = progressReview.getAttribute("aria-controls") === "review-dialog"
+      && !progressReview.hidden && !progressReview.disabled;
+    editorBadge.disabled = !canReview;
+    if (canReview) editorBadge.setAttribute("aria-haspopup", "dialog");
+    else editorBadge.removeAttribute("aria-haspopup");
+  }
+  const phaseObserver = new MutationObserver(syncPhaseBadge);
+  phaseObserver.observe(progressBadge, {
+    attributes: true, attributeFilter: ["class", "data-state"], subtree: true, childList: true, characterData: true,
+  });
+  phaseObserver.observe(progressReview, {attributeFilter: ["aria-controls", "disabled", "hidden"]});
+  editorBadge.addEventListener("click", () => progressReview.click());
+  syncPhaseBadge();
+
   function readText(model) {
     return model.getValue(window.monaco.editor.EndOfLinePreference.LF);
   }
@@ -95,11 +120,22 @@
     }
   });
 
-  function showDiff(open) {
+  function showEditor(open) {
     diffOpen = open;
-    diffButton.setAttribute("aria-pressed", String(open));
-    codeHost.hidden = open;
-    diffHost.hidden = !open;
+    const showingPhp = language === "php";
+    for (const button of targetButtons.children) {
+      button.setAttribute("aria-pressed", String(!showingPhp && button.dataset.target === state.target));
+    }
+    phpButton.setAttribute("aria-pressed", String(showingPhp));
+    diffButton.setAttribute("aria-pressed", String(open && !showingPhp));
+    phpPicker.hidden = !showingPhp || (phpSource?.sources.length ?? 0) < 2;
+    codeHost.hidden = showingPhp || open;
+    diffHost.hidden = showingPhp || !open;
+    phpHost.hidden = !showingPhp;
+    if (showingPhp) {
+      phpEditor?.layout();
+      return;
+    }
     if (!editor || !current) return;
     if (open) {
       if (diff.getModel()?.modified !== current.model) diff.setModel({original: latest, modified: current.model});
@@ -110,10 +146,28 @@
     }
   }
 
+  function showTargets(targets) {
+    const shown = [...targetButtons.children].map(button => button.dataset.target);
+    if (shown.length === targets.length && targets.every((path, index) => path === shown[index])) return;
+    const extensions = targets.map(path => path.toLowerCase().match(/(?:\.cshtml)?\.cs$|\.cshtml$/)[0]);
+    targetButtons.replaceChildren(...targets.map((path, index) => {
+      const extension = extensions[index];
+      const repeated = extensions.indexOf(extension) !== extensions.lastIndexOf(extension);
+      const number = extensions.slice(0, index + 1).filter(value => value === extension).length;
+      const button = Object.assign(document.createElement("button"), {
+        className: "button", type: "button", title: path,
+        textContent: repeated ? `${extension} ${number}` : extension,
+      });
+      button.dataset.target = path;
+      if (repeated) button.setAttribute("aria-label", `${button.textContent} ${path}`);
+      return button;
+    }));
+  }
+
   layout.querySelector(".editor-source").addEventListener("keydown", event => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "f") return;
-    let activeEditor = editor;
-    if (diffHost.contains(event.target)) {
+    let activeEditor = language === "php" ? phpEditor : editor;
+    if (diffHost.contains(event.target) && diff) {
       const original = diff.getOriginalEditor();
       activeEditor = original.getDomNode()?.contains(event.target) ? original : diff.getModifiedEditor();
     }
@@ -127,12 +181,20 @@
   }, {capture: true});
 
   function showSaveState() {
-    if (!current) return;
-    const hasDiff = !state.read_error && readText(current.model) !== state.content;
+    const hasDiff = current && !state.read_error && readText(current.model) !== state.content;
     const restoreFocus = !hasDiff && (document.activeElement === diffButton || diffHost.contains(document.activeElement));
-    diffButton.disabled = !hasDiff;
-    if (!hasDiff && diffOpen) showDiff(false);
+    diffButton.disabled = !hasDiff || language === "php";
+    if (!hasDiff && diffOpen) showEditor(false);
     if (restoreFocus) editor.focus();
+    if (language === "php") {
+      save.disabled = notice.hidden = true;
+      save.textContent = "保存";
+      setText("#editor-save-status", "移行元 PHP（読み取り専用）");
+      setText("#editor-save-timing", phpSource?.loading ? "読み込み中"
+        : phpSource?.error || phpSource?.source || "この実行に移行元 PHP がありません。");
+      return;
+    }
+    if (!current) return;
     const conflict = state.edit?.status === "conflict";
     const updated = !state.read_error && state.content !== current.base;
     notice.hidden = !conflict && !updated;
@@ -149,6 +211,35 @@
       : state.edit ? "保存済み・ファイルへ反映待ち" : "ファイルに反映済み");
     setText("#editor-save-timing", !state.can_save ? "保存できる工程まで、入力内容は下書きに残ります。" : state.queued
       ? "Junie が現在の作業区間を終えたらファイルに反映します。" : "");
+  }
+
+  async function loadPhp(source) {
+    const version = ++phpRequest;
+    const query = new URLSearchParams({run_id: state.run_id});
+    if (source) query.set("source", source);
+    phpSource = {...phpSource, sources: phpSource?.sources ?? [], loading: true};
+    phpEditor?.setValue("");
+    showSaveState();
+    try {
+      const data = await request("editor-php?" + query);
+      if (version !== phpRequest) return;
+      phpSource = data;
+      if (!phpEditor) {
+        phpEditor = window.monaco.editor.create(phpHost, {
+          language: "php", readOnly: true, automaticLayout: true, minimap: {enabled: false},
+          ariaLabel: "移行元 PHP（読み取り専用）",
+        });
+      }
+      phpEditor.setValue(data.content);
+      phpPicker.replaceChildren(...data.sources.map(name => new Option(name, name)));
+      phpPicker.value = data.source ?? "";
+    } catch (error) {
+      if (version !== phpRequest) return;
+      phpSource = {...phpSource, loading: false, source, error: error.message};
+      phpEditor?.setValue("");
+    }
+    showEditor(diffOpen);
+    showSaveState();
   }
 
   async function saveDraft() {
@@ -179,14 +270,19 @@
     }
   }
 
+  function updateSendButton() {
+    sendButton.disabled = !state?.can_prompt || sending || !prompt.value.trim();
+  }
+
   function promptMode() {
     const active = Boolean(editPrompt);
-    form.querySelector("label").textContent = active ? "送信待ちの指示を編集" : "Junie に指示";
+    prompt.setAttribute("aria-label", active ? "送信待ちの指示を編集" : "Junie に指示");
     sendButton.querySelector("[data-send-icon]").hidden = active;
     sendButton.querySelector("[data-send-label]").hidden = !active;
     if (active) sendButton.removeAttribute("aria-label");
     else sendButton.setAttribute("aria-label", "送信");
     cancelEdit.disabled = !active || sending;
+    updateSendButton();
   }
 
   function finishPromptEdit() {
@@ -227,16 +323,13 @@
     renderPrompts();
     const showAgent = state.source === "agent-workspace";
     const snapshot = progress();
-    const status = phaseNames[state.status] || "Junie の作業領域を表示中";
-    const capsule = state.capsule && snapshot.context_capsules ? " · 区間 " + state.capsule + " / " + snapshot.context_capsules : "";
-    setText("#editor-junie-status", showAgent ? status + capsule : "現在の移行結果を表示しています。");
     const activity = find("#editor-junie-activity");
     activity.textContent = showAgent && !snapshot.ready ? snapshot.activity?.message || "" : "";
     activity.hidden = !activity.textContent;
     find("#editor-prompt-timing").textContent = !state.can_prompt ? "現在の工程では指示を登録できません。"
       : state.prompt_timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
       : "現在の作業区間が終わると Junie に渡します。";
-    sendButton.disabled = !state.can_prompt || sending;
+    updateSendButton();
     prompt.disabled = !state.can_prompt || sending;
     cancelEdit.disabled = !editPrompt || sending;
   }
@@ -246,21 +339,23 @@
     const previous = state;
     if (previous?.run_id !== data.run_id) {
       selectedTarget = undefined;
+      phpSource = undefined;
+      phpRequest++;
+      phpEditor?.setValue("");
+      language = data.targets.length ? "target" : "php";
       editPrompt = undefined;
       prompt.value = "";
       promptMode();
     }
     state = data;
-    if (!data.targets.length) {
+    if (!data.run_id) {
       current = undefined;
       layout.hidden = true;
       find("#editor-empty").hidden = false;
-      find("#editor-empty").textContent = data.run_id
-        ? "この実行には C# の移行先ファイルがありません。"
-        : "実行タブで移行を始めるか、保存済みの実行を開いてください。";
+      find("#editor-empty").textContent = "実行タブで移行を始めるか、保存済みの実行を開いてください。";
       return;
     }
-    if (!editor) setText("#editor-empty", "C# エディタを読み込んでいます。");
+    if (!editor) setText("#editor-empty", "エディタを読み込んでいます。");
     const monaco = await loadMonaco();
     if (expectedRevision !== revision || state !== data) return;
     layout.hidden = false;
@@ -268,7 +363,7 @@
     if (!editor) {
       const theme = () => monaco.editor.setTheme(document.documentElement.dataset.theme === "dark" ? "vs-dark" : "vs");
       const options = {automaticLayout: true, minimap: {enabled: false}, bracketPairColorization: {enabled: true}};
-      editor = monaco.editor.create(codeHost, {...options, model: null, ariaLabel: "C# の下書き"});
+      editor = monaco.editor.create(codeHost, {...options, model: null, ariaLabel: "移行先の下書き"});
       diff = monaco.editor.createDiffEditor(diffHost, {...options, renderSideBySide: false, ignoreTrimWhitespace: false});
       latest = monaco.editor.createModel("", "csharp");
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveDraft);
@@ -276,11 +371,21 @@
       new MutationObserver(theme).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
       theme();
     }
+    showTargets(data.targets);
+    if (!data.targets.length) {
+      current = undefined;
+      language = "php";
+      showEditor(false);
+      updateChat();
+      if (!phpSource) loadPhp();
+      return;
+    }
+    const fileLanguage = data.target.toLowerCase().endsWith(".cshtml") ? "razor" : "csharp";
     const key = JSON.stringify([data.run_id, data.target]);
     let file = documents.get(key);
     const saved = data.edit?.content ?? (data.read_error ? file?.saved : data.content) ?? "";
     if (!file) {
-      const model = monaco.editor.createModel(saved, "csharp");
+      const model = monaco.editor.createModel(saved, fileLanguage);
       file = {model, saved, base: data.edit?.base ?? data.content, editId: data.edit?.id ?? null};
       documents.set(key, file);
       model.onDidChangeContent(() => { if (file === current) showSaveState(); });
@@ -290,17 +395,15 @@
       file.editId = data.edit?.id ?? null;
       if (readText(file.model) !== saved) file.model.setValue(saved);
     }
-    if (JSON.stringify([...targetPicker.options].map(option => option.value)) !== JSON.stringify(data.targets)) {
-      targetPicker.replaceChildren(...data.targets.map(path => new Option(path, path)));
-    }
-    targetPicker.hidden = data.targets.length < 2;
-    selectedTarget = targetPicker.value = data.target;
+    selectedTarget = data.target;
+    if (latest.getLanguageId() !== fileLanguage) monaco.editor.setModelLanguage(latest, fileLanguage);
     if (readText(latest) !== data.content) latest.setValue(data.content);
     const different = current !== file;
     current = file;
-    showDiff(!different && diffOpen);
+    showEditor(!different && diffOpen);
     showSaveState();
     updateChat();
+    if (language === "php" && !phpSource) loadPhp();
     if (data.read_error || previous?.read_error) report("#editor-error", data.read_error);
   }
 
@@ -318,7 +421,7 @@
         if (layout.hidden) empty.textContent = error.message;
         else {
           state.can_save = state.can_prompt = false;
-          showDiff(diffOpen);
+          showEditor(diffOpen);
           showSaveState();
           updateChat();
           report("#editor-error", error);
@@ -330,17 +433,35 @@
   }
 
   diffButton.addEventListener("click", () => {
-    showDiff(!diffOpen);
+    showEditor(!diffOpen);
     showSaveState();
   });
-  targetPicker.addEventListener("change", () => {
-    selectedTarget = targetPicker.value;
-    revision++;
-    report("#editor-error");
-    refresh();
+  targetButtons.addEventListener("click", event => {
+    const target = event.target.dataset.target;
+    if (!target) return;
+    language = "target";
+    if (selectedTarget !== target) {
+      selectedTarget = target;
+      revision++;
+      report("#editor-error");
+    }
+    if (state.target === target) {
+      showEditor(diffOpen);
+      showSaveState();
+    } else {
+      refresh();
+    }
   });
+  phpButton.addEventListener("click", () => {
+    language = "php";
+    showEditor(diffOpen);
+    if (!phpSource || phpSource.error) loadPhp(phpSource?.source);
+    else showSaveState();
+  });
+  phpPicker.addEventListener("change", () => loadPhp(phpPicker.value));
   save.addEventListener("click", saveDraft);
   cancelEdit.addEventListener("click", finishPromptEdit);
+  prompt.addEventListener("input", updateSendButton);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const text = prompt.value.trim();

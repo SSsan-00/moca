@@ -772,6 +772,11 @@ function render() {
     : showReview ? "チェッカー出力を確認" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
   if (showReview || showBuildReview || waitingForJunie) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
+  if (showReview && data.status === "checker_needs_review" && !waitingForJunie && !data.stop_requested) {
+    reviewButton.setAttribute("aria-controls", "review-dialog");
+  } else {
+    reviewButton.removeAttribute("aria-controls");
+  }
   reviewButton.hidden = !waitingForJunie && !showReview && !showBuildReview
     && !((data.ready || data.generating_anchors) && data.resumable);
   const current = verificationFinished ? 6 : data.status === "checker_needs_review" && !showReview ? 5

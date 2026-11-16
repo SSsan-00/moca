@@ -1,14 +1,27 @@
 "use strict";
 
 window.harnessEditorDemo = (() => {
-  const target = "Pages/Orders/Index.cshtml.cs";
+  const codeBehind = "Pages/Orders/Index.cshtml.cs";
+  const razorPage = "Pages/Orders/Index.cshtml";
+  const phpPath = "php/orders.php";
+  const php = [
+    "<?php",
+    "",
+    "function format_date(DateTimeInterface $date): string",
+    "{",
+    "    return $date->format('d/m/Y');",
+    "}",
+    "",
+    "$orders = $repository->list();",
+    "foreach ($orders as $order) {",
+    "    echo format_date($order->createdAt);",
+    "}",
+  ].join("\n");
   const runId = "run-2026-11-14-001";
   const oldCall = "await _orders.ListAsync();";
-  const newCall = "await _orders.ListRecentAsync();";
-  const demo = {
-    run_id: runId,
-    targets: [target],
-    target,
+  const files = new Map([[codeBehind, {
+    before: oldCall,
+    after: "await _orders.ListRecentAsync();",
     content: [
       "public async Task OnGetAsync()",
       "{",
@@ -24,6 +37,27 @@ window.harnessEditorDemo = (() => {
       "",
     ].join("\n"),
     edit: null,
+  }], [razorPage, {
+    before: "<h1>注文一覧</h1>",
+    after: "<h1>最近の注文</h1>",
+    content: [
+      "@page",
+      "@model IndexModel",
+      "",
+      "<h1>注文一覧</h1>",
+      "<ul>",
+      "@foreach (var order in Model.Orders)",
+      "{",
+      "    <li>@order.Id</li>",
+      "}",
+      "</ul>",
+      "",
+    ].join("\n"),
+    edit: null,
+  }]]);
+  const demo = {
+    run_id: runId,
+    targets: [...files.keys()],
     exists: true,
     source: "agent-workspace",
     can_save: true,
@@ -41,17 +75,21 @@ window.harnessEditorDemo = (() => {
   let boundary;
   let updated = false;
 
-  async function request(_path, action) {
+  async function request(path, action) {
+    if (path.startsWith("editor-php?")) return {sources: [phpPath], source: phpPath, content: php};
+    const target = action?.target ?? new URLSearchParams(path.split("?")[1]).get("target") ?? codeBehind;
+    const file = files.get(target);
+    if (!file) throw new Error("設定された移行先ファイルを選んでください。");
     if (action?.kind === "save") {
-      if (demo.edit?.status === "conflict" && (!action.resolve || action.base !== demo.content)) {
+      if (file.edit?.status === "conflict" && (!action.resolve || action.base !== file.content)) {
         throw new Error("差分を確認してから競合を解消してください。");
       }
       if (demo.queued) {
-        demo.edit = {
+        file.edit = {
           id: String(nextId++), base: action.base, content: action.content, status: "queued",
         };
       } else {
-        demo.content = action.content;
+        file.content = action.content;
       }
     } else if (action?.kind === "prompt") {
       if (action.id) {
@@ -69,29 +107,34 @@ window.harnessEditorDemo = (() => {
         advance();
       }, 3800);
     }
-    return structuredClone(demo);
+    return structuredClone({...demo, target, content: file.content, edit: file.edit});
   }
 
   function update() {
-    demo.content = demo.content.replace(oldCall, newCall);
+    for (const file of files.values()) file.content = file.content.replace(file.before, file.after);
     updated = true;
-    progress.activity.message = "Junie が注文一覧の取得処理を更新しました。";
+    progress.activity.message = "Junie が注文一覧の取得処理と見出しを更新しました。";
   }
 
   function advance() {
-    const edit = demo.edit;
-    if (edit) {
-      const unchanged = edit.base === demo.content || edit.content === demo.content;
-      const separate = edit.base.includes(oldCall) && edit.base.replace(oldCall, newCall) === demo.content
-        && edit.content.includes(oldCall);
-      if (!unchanged && !separate) {
+    const merged = new Map();
+    for (const file of files.values()) {
+      const {edit, before, after, content} = file;
+      if (!edit) continue;
+      const unchanged = edit.base === content || edit.content === content;
+      const separate = edit.base.includes(before) && edit.base.replace(before, after) === content
+        && edit.content.includes(before);
+      if (edit.status === "conflict" || (!unchanged && !separate)) {
         edit.status = "conflict";
         demo.status = "editor_checkpoint";
         progress.activity.message = "同じ箇所の編集を確認してください。";
         return;
       }
-      demo.content = unchanged ? edit.content : edit.content.replace(oldCall, newCall);
-      demo.edit = null;
+      merged.set(file, unchanged ? edit.content : edit.content.replace(before, after));
+    }
+    for (const [file, content] of merged) {
+      file.content = content;
+      file.edit = null;
     }
     const sent = demo.prompts.filter(prompt => prompt.status === "queued");
     for (const prompt of sent) prompt.status = "sending";

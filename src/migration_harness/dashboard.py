@@ -22,8 +22,8 @@ from urllib.parse import parse_qs, urlsplit
 from tomlkit.exceptions import TOMLKitError
 
 from migration_harness.config import load_config
-from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
-from migration_harness.editor_queue import AGENT_PHASES, EDIT_BYTES, QUEUE_PHASES, add_prompt, editor_queue, editor_target, editor_text
+from migration_harness.diff_viewer import _inside_file, create_snapshot, review_html, snapshot_bytes
+from migration_harness.editor_queue import AGENT_PHASES, EDITOR_TARGET_SUFFIXES, EDIT_BYTES, QUEUE_PHASES, add_prompt, editor_queue, editor_target, editor_text
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset
@@ -299,6 +299,8 @@ class Dashboard:
                         self.send_body(200, content_type, asset)
                 elif self.path.partition("?")[0] == prefix + "editor":
                     self.send_editor()
+                elif self.path.partition("?")[0] == prefix + "editor-php":
+                    self.send_editor_php()
                 elif self.path == prefix + "events":
                     self.send_events()
                 elif self.path == prefix + "workspace":
@@ -356,6 +358,42 @@ class Dashboard:
                 except _ERRORS as exc:
                     self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8", errors="replace"))
 
+            def send_editor_php(self) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                run_id = dashboard.state.get("run_id")
+                try:
+                    if not run_id or query.get("run_id", [None])[0] != run_id:
+                        raise ValueError("表示中の実行が変わりました。")
+                    run_path, _, _, _ = _load_saved_run(config, run_id)
+                    capsule, manifest = _load_capsule_manifest(run_path)
+                    pinned = _pinned_php_sources(manifest)
+                    legacy: dict[str, str] = {}
+                    if pinned is None:
+                        for part in manifest["parts"]:
+                            for entry in part["sources"]:
+                                if _is_php_input(entry):
+                                    legacy.setdefault(Path(entry["path"]).as_posix(), entry["encoding"])
+                    sources = {Path(entry["path"]).as_posix(): entry for entry in (pinned or [])}
+                    names = list(sources if pinned is not None else legacy)
+                    name = query.get("source", names[:1] or [None])[0]
+                    if name is not None and name not in names:
+                        raise ValueError("この実行の移行元 PHP を選んでください。")
+                    content = ""
+                    error = None
+                    try:
+                        if name in sources:
+                            entry = sources[name]
+                            content = _read_pinned_php(capsule, entry).decode(entry["encoding"])
+                        elif name is not None:
+                            path = _inside_file(Path(config["project_root"]).resolve(), name)
+                            content = path.read_text(encoding=_input_encoding(path, legacy[name]))
+                    except (OSError, ValueError, LookupError) as exc:
+                        error = format_error(exc)
+                    payload = {"sources": names, "source": name, "content": content, "error": error}
+                    self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
+
             def send_editor(self, action: dict[str, Any] | None = None) -> None:
                 query = parse_qs(urlsplit(self.path).query)
                 state = dashboard.state
@@ -374,15 +412,15 @@ class Dashboard:
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
                             _, worktree, record, unit = _load_saved_run(config, run_id)
-                            targets = tuple(path for path in _target_paths(unit) if path.suffix.lower() == ".cs")
+                            targets = tuple(path for path in _target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
                             names = [path.as_posix() for path in targets]
                             name = query.get("target", names[:1] or [None])[0]
                             if action is not None and action.get("kind") == "save":
                                 name = action.get("target")
                                 if name not in names:
-                                    raise ValueError("設定された C# の移行先を選んでください。")
+                                    raise ValueError("設定された移行先ファイルを選んでください。")
                             elif name is not None and name not in names:
-                                raise ValueError("設定された C# の移行先を選んでください。")
+                                raise ValueError("設定された移行先ファイルを選んでください。")
                             phase = record["status"]
                             agent_root = run_path / "agent-workspace"
                             if agent_root.is_symlink():

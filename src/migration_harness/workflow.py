@@ -1055,13 +1055,13 @@ def _apply_editor_edits(
     record: dict[str, Any], record_path: Path,
 ) -> bool:
     """Junieの書き込みが止まっている区間の境目で、両者の変更を突き合わせる。"""
-    from migration_harness.editor_queue import editor_target, merge_edit
+    from migration_harness.editor_queue import EDITOR_TARGET_SUFFIXES, editor_target, merge_edit
 
     edits = queue["edits"]
     if not edits:
         return True
     merged = {}
-    names = {target.as_posix() for target in targets if target.suffix.lower() == ".cs"}
+    names = {target.as_posix() for target in targets if target.suffix.lower() in EDITOR_TARGET_SUFFIXES}
     for name, edit in edits.items():
         if name not in names:
             raise ValueError("エディタの保存先が設定された移行先と一致しません。")
@@ -1072,9 +1072,9 @@ def _apply_editor_edits(
         elif original is not None:
             merged[name] = (hashlib.sha256(original).hexdigest(), text)
         else:
-            raise ValueError("Junie の作業領域に C# ファイルがありません。")
+            raise ValueError("Junie の作業領域に移行先ファイルがありません。")
     if any(edit["status"] == "conflict" for edit in edits.values()):
-        record.update(status="editor_checkpoint", error="C# の編集が競合しました。エディタで解消してから再開してください。")
+        record.update(status="editor_checkpoint", error="移行先ファイルの編集が競合しました。エディタで解消してから再開してください。")
         _write_run_record(record_path, record, timing_stage=None)
         return False
     for name, (version, text) in merged.items():

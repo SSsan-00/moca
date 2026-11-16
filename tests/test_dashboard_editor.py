@@ -7,11 +7,12 @@ from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
 from migration_harness import dashboard, junie_cli, workflow
+from migration_harness.config import load_config
 
 BASE = "class Page\n{\n    int First = 1;\n    int Middle = 0;\n    int Last = 1;\n}\n"
 
@@ -52,6 +53,78 @@ class DashboardEditorTests(HarnessCase):
             "base": state["content"], "content": content, "edit_id": (state["edit"] or {}).get("id"),
             "resolve": resolve,
         })
+
+    def test_php_view_reads_the_run_snapshot_and_accepts_only_get(self):
+        other = self.project / "other.php"
+        other.write_bytes("<?php echo '注文';".encode("cp932"))
+        annotated = "<?php\n// 移行ツールのコメント\necho '注文';\n"
+        (self.project / "annotated.txt").write_bytes(annotated.encode("euc-jp"))
+        (self.project / "annotated").write_text(annotated, encoding="utf-8")
+        self.commit_project()
+        config_path = self.root / "test.toml"
+        with config_path.open("a", encoding="utf-8") as config:
+            for name, encoding in (("annotated.txt", "euc-jp"), ("annotated", "utf-8")):
+                config.write(f'\n[[units.inputs]]\nrole = "php"\npath = "{name}"\nencoding = "{encoding}"\nstart_line = 1\nend_line = 1\n')
+        self.settings.update(load_config(config_path))
+        inputs = self.settings["units"][0]["inputs"]
+        inputs.append({**inputs[0], "path": "other.php", "encoding": "cp932"})
+        prepared = workflow.prepare_run(self.settings, "sample")
+        (self.project / "source.php").write_text("<?php echo 'updated after preparation';", encoding="utf-8")
+        route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
+        source = self.request(route)
+        self.assertEqual(source["sources"], ["source.php", "annotated.txt", "annotated", "other.php"])
+        self.assertEqual(source["source"], "source.php")
+        self.assertEqual(source["content"], "<?php echo 1;")
+        other_source = self.request(route + "&" + urlencode({"source": "other.php"}))
+        self.assertEqual(other_source["content"], "<?php echo '注文';")
+        for name in ("annotated.txt", "annotated"):
+            with self.subTest(source=name):
+                annotated_source = self.request(route + "&" + urlencode({"source": name}))
+                self.assertEqual(annotated_source["source"], name)
+                self.assertEqual(annotated_source["content"], annotated)
+        with self.assertRaises(HTTPError) as denied:
+            self.request(route + "&" + urlencode({"source": "../Page.cs"}))
+        self.assertEqual(denied.exception.code, 409)
+        denied.exception.close()
+        with self.assertRaises(HTTPError) as method:
+            self.request("editor-php", {"kind": "save", "target": "source.php"})
+        self.assertEqual(method.exception.code, 404)
+        method.exception.close()
+
+    def test_razor_pair_saves_both_targets_at_the_checkpoint(self):
+        razor = "@page\n<h1>Orders</h1>\n\n<p>Details</p>\n"
+        originals = {"Index.cshtml": razor, "Index.cshtml.cs": BASE}
+        updated = {
+            "Index.cshtml": razor.replace("Details", "Local details"),
+            "Index.cshtml.cs": BASE.replace("Last = 1", "Last = 3"),
+        }
+        for name, content in originals.items():
+            (self.project / name).write_text(content, encoding="utf-8")
+        self.commit_project()
+        self.settings.update(self.config('targets = ["Index.cshtml", "Index.cshtml.cs"]'))
+
+        def junie(command, completion, token, targets, **kwargs):
+            for name, original in originals.items():
+                state = self.request("editor?" + urlencode({"target": name}))
+                self.assertEqual(state["targets"], list(originals))
+                self.assertEqual(state["content"], original)
+                self.assertEqual(self.queue_edit(state, updated[name], target=name)["edit"]["status"], "queued")
+            razor_target = next(path for path in targets if path.name == "Index.cshtml")
+            razor_target.write_text(razor.replace("Orders", "Recent orders"), encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        def build(config, unit, result, record):
+            worktree = Path(result["worktree_path"])
+            self.assertEqual((worktree / "Index.cshtml").read_text(encoding="utf-8"),
+                             updated["Index.cshtml"].replace("Orders", "Recent orders"))
+            self.assertEqual((worktree / "Index.cshtml.cs").read_text(encoding="utf-8"), updated["Index.cshtml.cs"])
+            return result
+
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=junie), \
+                patch.object(workflow, "_verify_worktree", side_effect=build) as verified:
+            workflow.run_with_junie(self.settings, "sample")
+        verified.assert_called_once()
 
     def test_live_edits_and_final_prompt_are_applied_before_build(self):
         prompts = []
