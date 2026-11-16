@@ -431,8 +431,9 @@
     #build-review-dialog { width: min(760px, calc(100vw - 20px)); max-height: none; overflow: hidden; }
     #build-review-form { display: flex; flex-direction: column; max-height: min(90dvh, 800px); }
     .build-review-body { min-height: 0; overflow: auto; padding: clamp(16px, 3vw, 22px); }
-    #build-review-dialog .review-code { max-height: 13rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-    #build-review-dialog .review-context .review-code { margin: 0 9px 9px; }
+    #checker-review-output, #build-review-dialog .review-code { max-height: 13rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #checker-output-section p:empty, #checker-output-section p:has(a[hidden]) { display: none; }
+    #checker-output-section .review-code, #build-review-dialog .review-context .review-code { margin: 0 9px 9px; }
     #build-review-dialog summary:focus-visible, #build-review-dialog select:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
     #build-review-dialog .build-editor { padding: 0 12px 12px; }
     #build-review-dialog .build-editor p { padding: 0; }
@@ -975,12 +976,25 @@
         <pre class="review-code"><code>ViewData["StatusText"] = GetStatusText(row.Status);</code></pre>
         <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
       </section>
-      <details class="review-context">
+      <details class="review-context" id="checker-output-section" open>
+        <summary>チェッカー出力</summary>
+        <pre class="review-code" id="checker-review-output" tabindex="0" aria-label="チェッカー出力">検査結果: 確認が必要です。
+注文の状態変換がページ内に残っています。</pre>
+        <p id="checker-output-status" role="status"></p>
+        <p><a id="checker-output-download" download="checker.log" hidden>出力をダウンロード</a></p>
+      </details>
+      <details class="review-context" id="review-demo-context">
         <summary>この指摘を判断する材料</summary>
         <p><strong>適用ルール:</strong> 複数ページで使う状態変換は共通関数にまとめる。<br><strong>確認点:</strong> <code>OrderStatusMap.ToLabel</code>の実装が共通 .cs にあり、変換処理が重複していないか確認する。</p>
       </details>
       <label class="review-note-label" for="review-note">判断メモ（任意）</label>
       <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
+      <label class="review-note-label" for="checker-instruction">Junie への追加指示（任意）</label>
+      <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2"
+                aria-describedby="checker-instruction-status"
+                placeholder="例：既存の共通関数を使って状態変換を修正してください。"></textarea>
+      <p class="review-caveat" id="checker-instruction-status" role="status"></p>
+      <button class="review-action" id="checker-open-editor" type="button">エディタで手修正</button>
       <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
       <div class="review-actions">
         <button class="review-action" id="review-later" type="button">あとで確認</button>
@@ -2825,7 +2839,9 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     applyLedgerFilter();
     updateReviewCount();
     closeReviewDialog();
-    logHumanAction("Junieに修正を依頼", "RZ-017 · 対象項目に戻して再確認");
+    const instruction = document.querySelector("#checker-instruction");
+    logHumanAction("Junieに修正を依頼", instruction.value.trim() || "RZ-017 · 対象項目に戻して再確認");
+    instruction.value = "";
     current = 3;
     stepStartedAt = 0;
     updateStep(current);
@@ -2859,6 +2875,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     correctionRequested = false;
     setReviewRow("judgment", "判断待ち", true);
     reviewNote.value = "";
+    document.querySelector("#checker-instruction").value = "";
     updateReviewCount();
     applyLedgerFilter();
   }
@@ -3100,6 +3117,10 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   document.querySelector("#review-later").addEventListener("click", closeReviewDialog);
   document.querySelector("#review-accept").addEventListener("click", acceptReview);
   document.querySelector("#review-fix").addEventListener("click", resumeForCorrection);
+  document.querySelector("#checker-open-editor").addEventListener("click", () => {
+    closeReviewDialog();
+    switchHarnessTab(harnessTabs.indexOf(document.querySelector("#tab-editor")), true);
+  });
   for (const comparison of document.querySelectorAll(".comparison-control")) {
     const status = document.querySelector(comparison.closest("dialog") ? "#review-anchor-status" : "#demo-anchor-status");
     const propose = comparison.querySelector("[data-propose-anchors]");
