@@ -848,10 +848,14 @@ def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]
 
 def _stage_migration_materials(
     capsule: Path, manifest: dict[str, Any], agent_root: Path, *,
-    targets: tuple[Path, ...] = (), selected: frozenset[str] = frozenset(), repair: bool = False,
+    targets: tuple[Path, ...] = (), selected: frozenset[str] | None = None, repair: bool = False,
 ) -> str:
     """準備時の資料を照合して、今回のJunieに読む順番を伝える。"""
     materials = manifest.get("materials", {})
+    omitted = set()
+    if selected is not None:
+        omitted = {item["file"] for item in detail_index(manifest)} - selected
+        omitted.add("rules.json")
     for name, digest in materials.items():
         if not re.fullmatch(r"shared\.md|references\.json|rules\.json|(?:reference|rule)-\d+\.txt", name):
             raise ValueError("invalid migration material filename")
@@ -859,19 +863,24 @@ def _stage_migration_materials(
         destination = _safe_target(agent_root, Path(".migration-materials") / name)
         if _target_hash(source) != digest or not source.is_file():
             raise ValueError(f"saved migration material changed or is missing: {name}")
+        if name in omitted:
+            destination.unlink(missing_ok=True)
+            continue
         if _target_hash(destination) != digest:
             destination.parent.mkdir(exist_ok=True)
             shutil.copyfile(source, destination)
     instructions = ""
     guidelines = _safe_target(agent_root, Path(".migration-materials/guidelines.md"))
-    text = render_guidelines(agent_root / ".migration-materials", manifest, targets=targets, selected=selected)
+    text = render_guidelines(capsule / "materials", manifest, targets=targets, selected=selected)
     if text:
         guidelines.parent.mkdir(exist_ok=True)
         guidelines.write_text(text, encoding="utf-8", newline="")
         instructions += (
             'Before making any edit, review the Junie guidelines for mandatory rules and any supplied target '
-            'details. Check the remaining detail index against this task and read the relevant saved files. '
+            'details. '
         )
+        if selected is None:
+            instructions += 'If there is a detail index, read applicable saved files before making edits. '
         report_activity(f"必須事項・該当する詳細・資料の索引を起動時の指示に設定しました（{len(text):,}文字）。")
     else:
         guidelines.unlink(missing_ok=True)
@@ -951,10 +960,10 @@ def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> s
 def _review_detail_applicability(
     run_path: Path, capsule: Path, manifest: dict[str, Any], targets: tuple[Path, ...],
     record: dict[str, Any], max_steps: int | None,
-) -> frozenset[str]:
+) -> frozenset[str] | None:
     index = detail_index(manifest)
     if not index:
-        return frozenset()
+        return None
     if "detail_applicability" in record:
         return selected_details(index, record["detail_applicability"])
     report_activity(f"移行前に詳細ルールの適用範囲をJunieで確認します（{len(index)}件）。")
@@ -1424,7 +1433,7 @@ def _repair_target(
         raise ValueError("saved Junie workspace is missing or unsafe")
     capsule, manifest = _load_capsule_manifest(run_path)
     selected = (selected_details(detail_index(manifest), record["detail_applicability"])
-                if "detail_applicability" in record else frozenset())
+                if "detail_applicability" in record else None)
     material_instructions = _stage_migration_materials(
         capsule, manifest, agent_root, targets=repair_targets, selected=selected, repair=True,
     )

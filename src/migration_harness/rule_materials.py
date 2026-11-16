@@ -68,7 +68,7 @@ def selected_details(index: list[dict], decisions: object) -> frozenset[str]:
 
 
 def render_guidelines(
-    directory: Path, manifest: dict, *, targets: tuple[Path, ...] = (), selected: frozenset[str] = frozenset(),
+    directory: Path, manifest: dict, *, targets: tuple[Path, ...] = (), selected: frozenset[str] | None = None,
 ) -> str:
     """照合済みの保存資料だけを使う。旧Runの断片も順に結合し省略しない。"""
     required, matched, details = [], [], []
@@ -91,8 +91,12 @@ def render_guidelines(
             required.append(content.decode("utf-8"))
         elif usage == "reference" and isinstance(entry.get("description"), str) and entry["description"].strip():
             body = content.decode("utf-8")
-            if name in selected or (mentions and (mentions.search(entry["description"]) or mentions.search(body))):
+            if (selected is not None and name in selected) or (
+                mentions and (mentions.search(entry["description"]) or mentions.search(body))
+            ):
                 matched.append(body)
+                continue
+            if selected is not None:
                 continue
             details.append(json.dumps({
                 "source": entry["path"], "when_to_read": entry["description"],

@@ -124,10 +124,13 @@ class RuleMaterialsTests(HarnessCase):
             self.assertEqual(junie.call_count, 2)
         agent = self.root / "agent"
         agent.mkdir()
+        workflow._stage_migration_materials(capsule, manifest, agent, targets=targets)
         workflow._stage_migration_materials(capsule, manifest, agent, targets=targets, selected=selected)
         guidelines = (agent / ".migration-materials/guidelines.md").read_text(encoding="utf-8")
         self.assertIn(body, guidelines)
         self.assertNotIn(irrelevant, guidelines)
+        self.assertFalse((agent / ".migration-materials" / entries[1]["file"]).exists())
+        self.assertNotIn("database.md", guidelines)
 
     def test_missing_or_changed_pinned_files_are_not_silently_ignored(self):
         capsule, manifest, agent = self.prepare()
