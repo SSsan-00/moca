@@ -81,7 +81,8 @@ class Dashboard:
         """停止要求は実行ごとのIDに結び付け、別のRunに持ち越さない。"""
         with self.condition:
             self.control = ExecutionControl(self.activity)
-            self.publish({**self.state, "ready": False, "cancellable": True,
+            state = {key: value for key, value in self.state.items() if key != "activity"}
+            self.publish({**state, "ready": False, "cancellable": True,
                           "operation_id": secrets.token_hex(16), "stop_requested": False})
 
     def activity(self, entry: dict[str, Any]) -> None:
@@ -125,7 +126,7 @@ class Dashboard:
                 operation = {key: self.state[key] for key in (
                     "operation_id", "cancellable", "stop_requested", "activity", "generating_anchors",
                     "diff_viewer_enabled",
-                ) if key in self.state}
+                ) if key in self.state and (key != "activity" or state.get("run_id") == self.state.get("run_id"))}
                 self.publish({**state, **operation, "token_usage": usage})
             elif usage != self.state.get("token_usage", []):
                 self.publish({**self.state, "token_usage": usage})

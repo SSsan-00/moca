@@ -676,7 +676,12 @@ stream.onmessage = event => {
   const accepted = data.message === "判断理由を記録しました。"
     && snapshot.review?.findings.some(item => item[0] === findings.value && !item[2])
     && data.review?.findings.some(item => item[0] === findings.value && item[2]);
-  if (snapshot.run_id !== data.run_id) showComparisonStatus();
+  if (snapshot.run_id !== data.run_id) {
+    showComparisonStatus();
+    activity.replaceChildren();
+    seenActivities.clear();
+    previousLog = "";
+  }
   snapshot = data;
   if (progressChanged) {
     migrationLedgerRequest++;

@@ -56,6 +56,7 @@ class ControlTests(unittest.TestCase):
         view.ready({}, {"status": "prepared"})
         self.assertFalse(view.request_stop({"operation_id": operation}))
         view.begin_operation()
+        self.assertNotIn("activity", view.state)
         self.assertFalse(view.request_stop({"operation_id": operation}))
         self.assertFalse(view.control.cancelled.is_set())
 
