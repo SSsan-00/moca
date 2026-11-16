@@ -12,10 +12,12 @@
 
 ```text
 python tools/rule_review.py start rule-workspace/LegacyApp harness.local.toml
-python tools/rule_review.py read rule-workspace/LegacyApp 1
+python tools/rule_review.py read rule-workspace/LegacyApp 1 2
 ```
 
-`start` は設定のバックアップ、原文のハッシュ付き棚卸し、全ページの一覧を保存する。**一覧順に `read PACK 番号` を1回ずつ実行し、終端表示まで確認する。** ツール出力が省略された場合はその場で読み直す。ヘッダーやキーワード検索だけで判断しない。各ページを読んだ直後に、PACKの `reading-review.json` に以下の形式で1件ずつ追記する。
+`start` は `config.before.toml` に設定のバックアップ、`loading-before.json` に原文のハッシュ付き棚卸しを保存し、全ページの一覧を表示する。この2ファイルを再作成せず、そのまま確認と設定反映に使う。**最大2ページずつ表示された本文を読み、各ページの終端まで確認する。** 最初が1ページだけなら `read` にはその番号だけを指定する。ツール出力が省略されたら該当ページを単独で読み直す。ヘッダーやキーワード検索だけで判断しない。
+
+**読んだ束の全ページを `record PACK JSON --next` で記録する。** ヘルパーが検証して `reading-review.json` に追記し、続けて次の未読2ページを表示する。この出力を確認して再び記録するため、次の束の `read` 呼び出しは不要。過去の記録の再出力や転記用スクリプトも不要。未記録の束があると次へ進めないが、引用を確認するための再読はできる。最後に新しいページが表示されなくなったら `check` に進む。
 
 ```json
 {
@@ -24,6 +26,16 @@ python tools/rule_review.py read rule-workspace/LegacyApp 1
 ```
 
 `required_lines` には、そのページで確認した全体向けの義務や適用範囲が曖昧な規約の原文行番号を入れる。該当行がなければ空配列。ページをまたぐ条件や例外は続きも読んでから判断し、必要なら前の記録を補う。読み取りと記録は内容の確認を伴う。記録をファイルから自動生成しない。
+
+例（1ページだけの束の場合。2ページなら両方の記録を渡す。引用・要点・行番号は実際に読んだ内容にし、JSONはシェルに合わせて引用する）:
+
+```text
+python tools/rule_review.py record rule-workspace/LegacyApp '{"1":{"end":"最後の原文行","note":"このページの適用条件・義務・例外","required_lines":[]}}' --next
+```
+
+WindowsなどでJSONの引用が扱いにくい場合は、読んだ束の記録だけをUTF-8の `batch-review.json` に書き、`record PACK "@batch-review.json" --next` で渡せる。既存の全記録を書き直す必要はない。確認済みの記録だけを訂正する場合は `--next` を付けない。
+
+`read` の出力をリダイレクトして隠したり、多数のページをループでまとめて取得したりしない。`record` が引用違いを示したら該当ページを再読して訂正する。意味の確認をせずに原文から引用・要点を一括生成して検査を通さない。
 
 ```text
 python tools/rule_review.py check rule-workspace/LegacyApp
@@ -54,6 +66,8 @@ python tools/rule_review.py check rule-workspace/LegacyApp
 例（原文にDB更新失敗時のrollbackと参照専用処理の例外がある場合）: 「DBの更新・参照処理を移行または修正するとき。rollbackと参照専用処理の例外を確認する」
 
 すべての詳細を「毎回読む」とすると全文読み込みと同じになる。用途に該当する場合や適用判断がつかない場合に原文を読む案内にする。既存の説明が具体的で正しければ変更しない。説明文だけで規約を守ったことにはならない。
+
+ハーネスは該当する詳細を選び、必須事項とともに原文を起動時に渡す。Agentの案内では提供済み本文の確認と、未提供の詳細ファイルの取得を区別する。確認済みの記録だけを目的とする再読や、除外された無関係な詳細の探索を指示しない。既存ルールの適用義務や原文は変更しない。
 
 ## 4. 反映し、設定と本文を照合する
 

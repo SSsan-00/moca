@@ -51,16 +51,25 @@ def inventory(pack: Path) -> tuple[Path, bytes, list]:
     return config, original, pages_for(report)
 
 
-def check_review(pack: Path, pages: list) -> set[tuple[Path, int]]:
+def review_records(pack: Path) -> dict:
     review_path = pack / "reading-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8")) if review_path.exists() else {}
     if not isinstance(review, dict):
         raise ValueError("reading-review.json はページ番号をキーにしたJSONオブジェクトにしてください。")
+    return review
+
+
+def check_review(pack: Path, pages: list, *, records: dict | None = None,
+                 numbers: set[int] | None = None) -> set[tuple[Path, int]]:
+    review = review_records(pack) if records is None else records
     if set(review) - {str(i) for i in range(1, len(pages) + 1)}:
         raise ValueError("確認記録に不明なページ番号があります。")
     mandatory = set()
     missing = []
+    reasons = []
     for i, (source, page) in enumerate(pages, 1):
+        if numbers is not None and i not in numbers:
+            continue
         entry = review.get(str(i), {})
         last = next((text for _, text in reversed(page) if text.strip()), "")
         if (
@@ -72,14 +81,28 @@ def check_review(pack: Path, pages: list) -> set[tuple[Path, int]]:
             or not isinstance(entry.get("required_lines"), list)
         ):
             missing.append(i)
+            if isinstance(entry, dict) and "end" in entry and entry["end"] != last:
+                reasons.append(f"ページ {i}: 末尾の引用が原文と一致しません。該当ページを再読して訂正してください。")
             continue
         for number in entry["required_lines"]:
             if type(number) != int or not any(n == number for n, _ in page):
                 raise ValueError(f"ページ {i} の必須行番号が範囲外です。")
             mandatory.add((source, number))
     if missing:
-        raise ValueError(f"未確認のページ: {', '.join(map(str, missing))}")
+        raise ValueError(f"未確認のページ: {', '.join(map(str, missing))}" +
+                         ("\n" + "\n".join(reasons) if reasons else ""))
     return mandatory
+
+
+def show_pages(pack: Path, pages: list, numbers: list[int]) -> None:
+    # 全文を1回で出すとツール側で省略される。小さい束でも確認記録はページごとに残す。
+    for index in numbers:
+        source, page = pages[index - 1]
+        print(f"ページ {index}/{len(pages)}: {source}")
+        for number, text in page:
+            print(f"{number:>6} | {text}")
+        print(f"ページ {index} 終端", flush=True)
+        (pack / "shown" / str(index)).touch()
 
 
 def without_rules(data: bytes) -> dict:
@@ -145,13 +168,16 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    for name in ("start", "read", "check", "apply"):
+    for name in ("start", "read", "record", "check", "apply"):
         command = commands.add_parser(name)
         command.add_argument("pack", type=Path)
         if name == "start":
             command.add_argument("config", type=Path)
         if name == "read":
-            command.add_argument("page", type=int)
+            command.add_argument("pages", type=int, nargs="+")
+        if name == "record":
+            command.add_argument("records", help="読んだ1〜2ページの確認記録（JSON、または@JSONファイル）")
+            command.add_argument("--next", action="store_true", help="記録後に次の未読2ページを表示")
         if name == "apply":
             command.add_argument("candidate", type=Path)
     args = parser.parse_args()
@@ -168,14 +194,34 @@ def main() -> None:
             return
         config, original, pages = inventory(pack)
         if args.action == "read":
-            if not 1 <= args.page <= len(pages):
+            if not 1 <= len(args.pages) <= 2 or len(set(args.pages)) != len(args.pages):
+                raise ValueError("一度に指定できるのは重複のない1〜2ページです。")
+            if any(not 1 <= number <= len(pages) for number in args.pages):
                 raise ValueError("ページ番号が範囲外です。")
-            source, page = pages[args.page - 1]
-            print(f"ページ {args.page}/{len(pages)}: {source}")
-            for number, text in page:
-                print(f"{number:>6} | {text}")
-            print(f"ページ {args.page} 終端", flush=True)
-            (pack / "shown" / str(args.page)).touch()
+            # 読み直しは許すが、未記録の束を積み残したまま次のページには進めない。
+            previous = {i for i in range(1, len(pages) + 1) if (pack / "shown" / str(i)).is_file()}
+            if set(args.pages) - previous:
+                check_review(pack, pages, numbers=previous)
+            show_pages(pack, pages, args.pages)
+            return
+        if args.action == "record":
+            data = (Path(args.records[1:]).read_text(encoding="utf-8-sig")
+                    if args.records.startswith("@") else args.records)
+            entries = json.loads(data)
+            if not isinstance(entries, dict) or not 1 <= len(entries) <= 2:
+                raise ValueError("読んだ1〜2ページの記録をJSONオブジェクトで指定してください。")
+            records = review_records(pack) | entries
+            check_review(pack, pages, records=records, numbers={int(key) for key in entries})
+            shown = {i for i in range(1, len(pages) + 1) if (pack / "shown" / str(i)).is_file()}
+            if args.next:
+                check_review(pack, pages, records=records, numbers=shown)
+            with NamedTemporaryFile(dir=pack, delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(json.dumps(records, ensure_ascii=False, indent=2).encode("utf-8"))
+            temporary.replace(pack / "reading-review.json")
+            print("確認記録を保存: " + ", ".join(entries))
+            if args.next:
+                show_pages(pack, pages, sorted(set(range(1, len(pages) + 1)) - shown)[:2])
             return
         mandatory = check_review(pack, pages)
         if args.action == "apply":
