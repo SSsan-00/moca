@@ -11,7 +11,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, editor_queue, junie_cli, workflow
+from migration_harness import dashboard, editor_queue, junie_cli, run_records, workflow
 from migration_harness.config import load_config
 
 BASE = "class Page\n{\n    int First = 1;\n    int Middle = 0;\n    int Last = 1;\n}\n"
@@ -36,8 +36,8 @@ class DashboardEditorTests(HarnessCase):
         self.addCleanup(server.server_close)
         self.addCleanup(thread.join)
         self.addCleanup(server.shutdown)
-        observer = workflow.run_observer.set(self.view.observe)
-        self.addCleanup(workflow.run_observer.reset, observer)
+        observer = run_records.run_observer.set(self.view.observe)
+        self.addCleanup(run_records.run_observer.reset, observer)
 
     def request(self, route="editor", payload=None):
         request = Request(
@@ -316,7 +316,7 @@ class DashboardEditorTests(HarnessCase):
             worktree = Path(result["worktree_path"])
             if phases == ["junie", "build"]:
                 record["status"] = "building"
-                workflow._write_run_record(Path(result["run_path"]) / "run.json", record)
+                run_records.write_run_record(Path(result["run_path"]) / "run.json", record)
                 state = self.request("prompts")
                 self.assertEqual(state["timing"], "resume")
                 with self.assertRaises(HTTPError) as stale:
@@ -330,7 +330,7 @@ class DashboardEditorTests(HarnessCase):
                 self.assertEqual(self.request("prompts")["prompts"][0]["status"], "sent")
                 self.assertEqual((worktree / "Page.cs").read_text(encoding="utf-8-sig"), repaired)
                 record.update(status="build_succeeded", build_exit_code=0)
-            workflow._write_run_record(Path(result["run_path"]) / "run.json", record)
+            run_records.write_run_record(Path(result["run_path"]) / "run.json", record)
             return {**result, "status": record["status"]}
 
         with (

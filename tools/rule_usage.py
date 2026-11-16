@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from migration_harness.config import load_config
-from migration_harness.workflow import _input_encoding
+from migration_harness.capsules import input_encoding
 
 
 def inspect_rules(config_path: Path) -> dict:
@@ -17,7 +17,7 @@ def inspect_rules(config_path: Path) -> dict:
         if item["role"] != "migration_rules":
             continue
         path = (Path(config["project_root"]) / item["path"]).resolve()
-        encoding = _input_encoding(path, item["encoding"])
+        encoding = input_encoding(path, item["encoding"])
         data = path.read_bytes()
         rules.append({
             "path": str(path), "usage": item["usage"], "description": item["description"],

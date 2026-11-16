@@ -126,7 +126,7 @@
       </button>
     </div>
     <h1>PHP → C# 移行ハーネス</h1>
-    <p class="lead">Windowsで動くPython製の移行ハーネスです。PHPを分割してJunieで移行し、ビルドと設定済みチェッカーで検証します。<a href="./progress-demo.html">進捗画面のデモ</a></p>
+    <p class="lead">Windowsで動くPython製の移行ハーネスです。PHPを分割してJunieで移行し、ビルドと設定済みチェッカーで検証します。<a href="./progress-demo.html">進捗画面のデモ</a> · <a href="https://github.com/SSsan-00/php-to-csharp-migration-harness/blob/main/SPEC.md">技術仕様</a></p>
   </header>
 
   <section>
@@ -203,7 +203,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>参照範囲の制限</h3>
-      <p>Junie用フォルダには、移行先の親フォルダとその隣のincフォルダ、指定した資料を配置します。移行先以外は参照専用です。JunieはOSで許可された他のパスにもアクセスできます。</p>
+      <p>Junie用フォルダには、移行先の親フォルダ、その隣のincフォルダ、incの一つ上の階層にあるLibs・Extensions、指定した資料を配置します。移行先以外は参照専用です。JunieはOSで許可された他のパスにもアクセスできます。</p>
     </div>
     <div class="callout">
       <h3>パスの指定</h3>
@@ -242,7 +242,7 @@ sequenceDiagram
       </article>
       <article class="card">
         <h3>画面からの操作</h3>
-        <p>実行中は「停止」で編集を保存して止め、同じRunを再開できます。worktree作成前の中断は準備からやり直します。Junieとの対話は起動した端末で行います。</p>
+        <p>実行中は「停止」で編集を保存して止め、同じRunを再開できます。worktree作成前の中断は準備からやり直します。Junieの信頼確認・操作許可は画面のダイアログで受け付けます。手修正への質問にはエディタから追加指示で回答できます。</p>
       </article>
       <article class="card">
         <h3>再接続と履歴</h3>
@@ -262,7 +262,7 @@ sequenceDiagram
     <p>移行台帳ではRunごとにPHPの範囲、処理状態、移行先の候補、記録済みの判断と理由を閲覧できます。確認済みや理由付きの対象外はCLIの <code>ledger-review</code> で記録します。</p>
     <div class="callout green">
       <h3>移行完了の判定</h3>
-      <p>PHPの全範囲が確認済みか理由付きの対象外で、現行の移行先がビルドと設定済みチェッカーの条件を満たせば完了です。確認後に移行先が変わった範囲は要再確認として記録します。</p>
+      <p>PHPの全範囲が確認済みか理由付きの対象外で、現在の入力でビルド、設定済みの検証スクリプトとチェッカーの条件を満たせば完了です。確認後に移行先が変わった範囲は要再確認として記録します。</p>
     </div>
     <div class="callout amber">
       <h3>分割と対応候補の範囲</h3>

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import workflow
+from migration_harness import run_records, workflow
 from migration_harness.diff_viewer import capture_workspace, save_workspace
 
 
@@ -34,7 +34,7 @@ class LedgerReviewTest(HarnessCase):
     def prepare_for_verification(self):
         record = json.loads(self.record_path.read_bytes())
         record.update(status="junie_finished", completed_capsules=1)
-        workflow._write_run_record(self.record_path, record)
+        run_records.write_run_record(self.record_path, record)
         workflow.review_migration_ranges(
             self.settings, self.run_id, ["1:1"], "confirmed", "Reviewed",
             confirmed_targets=[self.target.name],
@@ -63,7 +63,7 @@ class LedgerReviewTest(HarnessCase):
     def test_keeps_review_reason_and_flags_stale_after_edit(self):
         record = json.loads(self.record_path.read_text(encoding="utf-8"))
         record.update(status="build_succeeded", completed_capsules=1)
-        workflow._write_run_record(self.record_path, record)
+        run_records.write_run_record(self.record_path, record)
         hashes = {}
         run, payload = capture_workspace(self.settings, self.run_id, target_hashes=hashes)
         workspace = payload["workspace"]
@@ -100,7 +100,7 @@ class LedgerReviewTest(HarnessCase):
             sys.executable, "-m", "migration_harness.cli", "ledger-review",
             "--config", self.settings["config_path"], "--run-id", self.run_id, "--range", "1:1",
         ]
-        report = workflow.junie_usage_recorder(run_path, "anchors")
+        report = run_records.junie_usage_recorder(run_path, "anchors")
         report([18, 4, 5, 3, 1])
         subprocess.run([
             *review_command, "--state", "confirmed", "--reason", "Confirmed again", "--target", self.target.name,
@@ -121,7 +121,7 @@ class LedgerReviewTest(HarnessCase):
         workspace["anchors"]["manualAnchors"] = [{"leftLineNo": 0, "rightLineNo": 0}]
         snapshot = save_workspace(run_path, payload)
         workflow.record_migration_candidates(self.settings, self.run_id, snapshot, workspace, hashes)
-        workflow._write_run_record(self.record_path, stale_record)
+        run_records.write_run_record(self.record_path, stale_record)
 
         source = self.source()
         self.assertEqual(source["review"], {"state": "needs_review", "reason": "Different result"})
@@ -220,7 +220,7 @@ class LedgerReviewTest(HarnessCase):
         record = json.loads(self.record_path.read_bytes())
         self.assertTrue(self.completion()["complete"])
         del record["verification"]["input_fingerprint"]
-        workflow._write_run_record(self.record_path, record)
+        run_records.write_run_record(self.record_path, record)
         self.assertFalse(self.completion()["verification_passed"])
         self.verify()
         self.assertTrue(self.completion()["complete"])

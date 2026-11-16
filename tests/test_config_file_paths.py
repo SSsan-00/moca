@@ -7,7 +7,7 @@ from unittest.mock import patch
 import tomlkit
 
 from fixtures import HarnessCase
-from migration_harness import junie_cli, review_anchors, workflow
+from migration_harness import capsules, junie_cli, review_anchors, workflow
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace, review_html
 from migration_harness.settings_form import build_settings_draft
@@ -77,8 +77,8 @@ class ConfigFilePathTests(HarnessCase):
                 self.raw["units"][0]["source"] = name
                 source = self.load()["units"][0]["inputs"][0]
                 self.assertEqual(source["path"], name)
-                self.assertTrue(workflow._is_php_input(source))
-        self.assertTrue(workflow._is_php_input({"role": "legacy_custom_role", "path": "legacy.php"}))
+                self.assertTrue(capsules.is_php_input(source))
+        self.assertTrue(capsules.is_php_input({"role": "legacy_custom_role", "path": "legacy.php"}))
 
     def test_external_inputs_are_pinned_and_non_php_extension_reaches_review(self):
         external = self.root / "legacy template"
