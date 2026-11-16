@@ -4,6 +4,7 @@
 
 ```json
 {
+  "format_version": 2,
   "documents": [
     {
       "path": "Agent.md",
@@ -28,6 +29,7 @@
 
 | 項目 | 意味 |
 | --- | --- |
+| `format_version` | 新しい計画では `2`。提供済み本文を再取得させない参照案内を生成する。省略または `1` は旧PACKの再検証用で、既存計画・生成物は書き換えない。 |
 | `documents` | 出力文書の一覧。必須事項の `Agent.md` と、必要な詳細文書を指定する。 |
 | `path` | `generated/` からの相対出力パス。`Agent.md` または `details/<用途>.md`。用途名は英小文字・数字で始め、英小文字・数字・`_`・`-` のみ。`nul`・`con` 等のWindows予約名は不可。 |
 | `title` | 生成時に加える見出し。空でない1行の文字列。原文を置き換える要約ではない。 |
@@ -57,4 +59,4 @@ description = "DBアクセスを移行/修正するとき"
 
 この断片だけで `harness.local.toml` を置き換えない。設定反映の手順は [SKILL.md](../SKILL.md) に従う。
 
-Junieの起動時には、上の詳細の絶対パスが `Detail and example references` 内の `source` に対応する。同じ項目の `file`（例: `.migration-materials/rule-0002.txt`）が実際に読む場所であり、番号は登録順などで変わるため固定しない。元の相対リンクを辿る必要がある場合も、この対応と提供された資料を確認する。PACK内のフォルダ構成がRunへそのままコピーされる前提にしない。
+現在のRunでは、選択済みの詳細本文が `Applicable details` として起動時に提供される。その本文を確認すればよく、同じ資料をファイルから重ねて読む必要はない。索引だけが提供される場合は、上の絶対パスが `Detail and example references` の `source` に対応し、同じ項目の `file` が読む場所となる。番号やPACKの相対パスがRunでも同じだとは考えない。いずれも説明文を原文の代わりにせず、条件・例外を確認する。

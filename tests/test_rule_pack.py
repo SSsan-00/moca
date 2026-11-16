@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import tempfile
 import tomllib
@@ -49,6 +50,29 @@ class RulePackTests(unittest.TestCase):
             self.assertTrue(Path(item["path"]).is_file())
         coverage = json.loads((self.pack / "generated/coverage.json").read_text(encoding="utf-8"))
         self.assertEqual(sum(p["end"] - p["start"] + 1 for p in coverage["placements"]), 8)
+
+    def test_old_packs_still_verify_and_new_format_keeps_the_same_original_excerpts(self):
+        legacy = rule_pack.render(self.pack)
+        # 更新前に生成した案内のバイト列。既存PACKを「改変あり」と誤検知させない。
+        self.assertEqual(hashlib.sha256(legacy["Agent.md"]).hexdigest(),
+                         "08049c76ff6930143ff6bbd5afa9a7e4154adebb07e271f6a7d64d0f7eff6870")
+        rule_pack.build(self.pack)
+        rule_pack.verify(self.pack)
+        self.plan["format_version"] = 2
+        self.save_plan()
+        current = rule_pack.render(self.pack)
+        self.assertNotEqual(current["Agent.md"], legacy["Agent.md"])
+        for name in ("details/database.md", "coverage.json", "rules.toml"):
+            self.assertEqual(current[name], legacy[name])
+        self.assertIn("# 共通規約\r\n値を推測しない。\r\n\r\n".encode(), current["Agent.md"])
+        self.assertEqual((self.pack / "sources/mixed.md").read_bytes(), self.original)
+        with self.assertRaisesRegex(ValueError, "出力の変更"):
+            rule_pack.verify(self.pack)
+        for version in (0, 3, True, "2"):
+            self.plan["format_version"] = version
+            self.save_plan()
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "format_version"):
+                rule_pack.render(self.pack)
 
     def test_missing_and_overlapping_lines_block_generation_without_partial_output(self):
         for start, message in [(5, "未配置"), (3, "重複")]:
@@ -179,7 +203,7 @@ class RulePackHarnessTests(HarnessCase):
         (pack / "sources").mkdir(parents=True)
         (pack / "sources/rules.md").write_text("MANDATORY: keep original values.\nDETAIL: SQL rollback rules.\n", encoding="utf-8")
         rule_pack.snapshot(pack)
-        (pack / "plan.json").write_text(json.dumps({"documents": [
+        (pack / "plan.json").write_text(json.dumps({"format_version": 2, "documents": [
             {"path": "Agent.md", "title": "Common", "parts": [{"source": "rules.md", "start": 1, "end": 1}]},
             {"path": "details/database.md", "title": "Database", "description": "SQL migration",
              "parts": [{"source": "rules.md", "start": 2, "end": 2}]},
@@ -201,3 +225,8 @@ class RulePackHarnessTests(HarnessCase):
         self.assertIn(entry["path"], guidelines)
         self.assertIn(".migration-materials/" + entry["file"], guidelines)
         self.assertIn("DETAIL: SQL rollback rules.", (agent / ".migration-materials" / entry["file"]).read_text(encoding="utf-8"))
+        from migration_harness.rule_materials import render_guidelines
+
+        selected = render_guidelines(capsule / "materials", manifest, selected=frozenset({entry["file"]}))
+        self.assertEqual(selected.count("DETAIL: SQL rollback rules."), 1)
+        self.assertEqual(selected.count("MANDATORY: keep original values."), 1)

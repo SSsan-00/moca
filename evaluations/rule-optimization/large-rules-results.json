@@ -1,0 +1,669 @@
+{
+  "date": "2026-11-17",
+  "junie": "26.11.1 (4020.10), Junie Lite",
+  "runtime_base": "5a31852b08ac8932616c758882bf93f8e0adc384",
+  "skill_trials": [
+    {
+      "label": "before",
+      "session_id": "session-261117-063747-1xa7",
+      "seconds": 207.588,
+      "tokens": {
+        "inputTokens": 236753,
+        "cacheInputTokens": 2663104,
+        "cacheCreateTokens": 0,
+        "outputTokens": 18708,
+        "input": 2899857
+      },
+      "responses": 143,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 143
+      },
+      "terminal_calls": 40,
+      "failed_commands": 4,
+      "read_calls": 11,
+      "record_calls": 0,
+      "skill_resources": [
+        "SKILL.md",
+        "references/loading-policy.md",
+        "references/plan-format.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": false,
+      "config_changed": false,
+      "format_version": 1,
+      "exit_codes": [
+        "ExitMaxIter"
+      ],
+      "step_limit": 50
+    },
+    {
+      "label": "after",
+      "session_id": "session-261117-063929-geh9",
+      "seconds": 188.305,
+      "tokens": {
+        "inputTokens": 210991,
+        "cacheInputTokens": 2792304,
+        "cacheCreateTokens": 0,
+        "outputTokens": 13839,
+        "input": 3003295
+      },
+      "responses": 137,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 137
+      },
+      "terminal_calls": 37,
+      "failed_commands": 1,
+      "read_calls": 24,
+      "record_calls": 0,
+      "skill_resources": [
+        "SKILL.md",
+        "references/loading-policy.md",
+        "references/plan-format.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": true,
+      "config_changed": true,
+      "format_version": 2,
+      "exit_codes": [
+        "Submit"
+      ],
+      "step_limit": 50
+    },
+    {
+      "label": "final",
+      "session_id": "session-261117-064315-6yy7",
+      "seconds": 167.154,
+      "tokens": {
+        "inputTokens": 228524,
+        "cacheInputTokens": 2506976,
+        "cacheCreateTokens": 0,
+        "outputTokens": 12992,
+        "input": 2735500
+      },
+      "responses": 132,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 132
+      },
+      "terminal_calls": 46,
+      "failed_commands": 1,
+      "read_calls": 19,
+      "record_calls": 19,
+      "skill_resources": [
+        "SKILL.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": false,
+      "config_changed": false,
+      "format_version": null,
+      "exit_codes": [
+        "ExitMaxIter"
+      ],
+      "step_limit": 50
+    },
+    {
+      "label": "baseline",
+      "session_id": "session-261117-064856-14hk",
+      "seconds": 321.609,
+      "tokens": {
+        "inputTokens": 211922,
+        "cacheInputTokens": 3331680,
+        "cacheCreateTokens": 0,
+        "outputTokens": 18191,
+        "input": 3543602
+      },
+      "responses": 161,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 161
+      },
+      "terminal_calls": 44,
+      "failed_commands": 6,
+      "read_calls": 6,
+      "record_calls": 0,
+      "skill_resources": [
+        "SKILL.md",
+        "references/loading-policy.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": true,
+      "config_changed": true,
+      "format_version": 1,
+      "exit_codes": [
+        "Submit"
+      ],
+      "step_limit": 200
+    },
+    {
+      "label": "optimized",
+      "session_id": "session-261117-064857-79b8",
+      "seconds": 341.64,
+      "tokens": {
+        "inputTokens": 246330,
+        "cacheInputTokens": 4479024,
+        "cacheCreateTokens": 0,
+        "outputTokens": 20574,
+        "input": 4725354
+      },
+      "responses": 182,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 182
+      },
+      "terminal_calls": 59,
+      "failed_commands": 2,
+      "read_calls": 19,
+      "record_calls": 19,
+      "skill_resources": [
+        "SKILL.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": true,
+      "config_changed": true,
+      "format_version": 2,
+      "exit_codes": [
+        "Submit"
+      ],
+      "step_limit": 200
+    },
+    {
+      "label": "batched",
+      "session_id": "session-261117-065705-oagx",
+      "seconds": 188.994,
+      "tokens": {
+        "inputTokens": 211776,
+        "cacheInputTokens": 2758096,
+        "cacheCreateTokens": 0,
+        "outputTokens": 13504,
+        "input": 2969872
+      },
+      "responses": 137,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 137
+      },
+      "terminal_calls": 39,
+      "failed_commands": 3,
+      "read_calls": 1,
+      "record_calls": 19,
+      "skill_resources": [
+        "SKILL.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": true,
+      "config_changed": true,
+      "format_version": 2,
+      "exit_codes": [
+        "Submit"
+      ],
+      "step_limit": 200
+    },
+    {
+      "label": "streamlined",
+      "session_id": "session-261117-070220-1iey",
+      "seconds": 169.83,
+      "tokens": {
+        "inputTokens": 223077,
+        "cacheInputTokens": 2905984,
+        "cacheCreateTokens": 0,
+        "outputTokens": 15914,
+        "input": 3129061
+      },
+      "responses": 141,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 141
+      },
+      "terminal_calls": 42,
+      "failed_commands": 2,
+      "read_calls": 1,
+      "record_calls": 19,
+      "skill_resources": [
+        "SKILL.md",
+        "references/loading-policy.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": true,
+      "config_changed": true,
+      "format_version": 2,
+      "exit_codes": [
+        "Submit"
+      ],
+      "step_limit": 200
+    },
+    {
+      "label": "guarded",
+      "session_id": "session-261117-071524-ff6q",
+      "seconds": 163.744,
+      "tokens": {
+        "inputTokens": 207986,
+        "cacheInputTokens": 2461488,
+        "cacheCreateTokens": 0,
+        "outputTokens": 14830,
+        "input": 2669474
+      },
+      "responses": 122,
+      "models": {
+        "Qwen/Qwen3.6-27B-FP8": 122
+      },
+      "terminal_calls": 32,
+      "failed_commands": 0,
+      "read_calls": 1,
+      "record_calls": 19,
+      "skill_resources": [
+        "SKILL.md",
+        "references/loading-policy.md",
+        "references/plan-format.md"
+      ],
+      "shown": 37,
+      "recorded": 37,
+      "report_saved": true,
+      "config_changed": true,
+      "format_version": 2,
+      "exit_codes": [
+        "Submit"
+      ],
+      "step_limit": 200
+    }
+  ],
+  "migration_trials": [
+    {
+      "label": "after-8",
+      "run_id": "f92498d6-7199-439a-b375-3796ba5a0efc",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 0,
+        "checker_exit_code": 0,
+        "injected_faults": true
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 1,
+      "wall_seconds_including_trust_waits": 406.742,
+      "totals": {
+        "input": 3852213,
+        "output": 32337,
+        "cache_read": 3510960,
+        "cache_write": 0,
+        "normal_input": 341253,
+        "responses": 194,
+        "junie_seconds": 314.394
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 770173,
+          "output": 7981,
+          "cache_read": 670112,
+          "cache_write": 0,
+          "responses": 36,
+          "session_id": "session-261117-054201-1jmz",
+          "start": 1794861764823,
+          "junie_seconds": 72.379,
+          "read_files": [
+            "decisions.json",
+            "details.json",
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 100061
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 810406,
+          "output": 6191,
+          "cache_read": 727296,
+          "cache_write": 0,
+          "responses": 48,
+          "session_id": "session-261117-054359-1nez",
+          "start": 1794861863772,
+          "junie_seconds": 70.62,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py",
+            "rule-0001.txt",
+            "rule-0002.txt",
+            "rule-0003.txt",
+            "source-0001.md"
+          ],
+          "source_helper_commands": 3,
+          "normal_input": 83110
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 2173565,
+          "output": 16954,
+          "cache_read": 2035536,
+          "cache_write": 0,
+          "responses": 98,
+          "session_id": "session-261117-054536-1j8f",
+          "start": 1794861938416,
+          "junie_seconds": 157.949,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 8,
+          "normal_input": 138029
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 98069,
+          "output": 1211,
+          "cache_read": 78016,
+          "cache_write": 0,
+          "responses": 12,
+          "session_id": "session-261117-054827-11rr",
+          "start": 1794862109347,
+          "junie_seconds": 13.446,
+          "read_files": [
+            "OrderPage.cs",
+            "checker-findings-0eb8f76502c54c7c8d2444da41f07c19.txt"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 20053
+        }
+      ]
+    },
+    {
+      "label": "streamlined-migration-1",
+      "run_id": "b91c5554-5858-4824-ac8b-3ee21481532d",
+      "status": "junie_failed",
+      "initial_verification": null,
+      "completed_capsules": 0,
+      "initial_helpers_used": null,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 0,
+      "wall_seconds_including_trust_waits": 378.0552260875702,
+      "totals": {
+        "input": 1415017,
+        "output": 16970,
+        "cache_read": 1265136,
+        "cache_write": 0,
+        "normal_input": 149881,
+        "responses": 86,
+        "junie_seconds": 127.522
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 684795,
+          "output": 6025,
+          "cache_read": 615616,
+          "cache_write": 0,
+          "responses": 39,
+          "session_id": "session-261117-070610-y6h3",
+          "start": 1794866804737,
+          "junie_seconds": 54.446,
+          "read_files": [
+            "decisions.json",
+            "details.json",
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 69179
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 730222,
+          "output": 10945,
+          "cache_read": 649520,
+          "cache_write": 0,
+          "responses": 47,
+          "session_id": "session-261117-070741-9dsw",
+          "start": 1794867072707,
+          "junie_seconds": 73.076,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 80702
+        }
+      ],
+      "failure": "Junie rewrote the read-only .migration-materials/php_literals.py; the existing workspace check rejected it before applying capsule 1."
+    },
+    {
+      "label": "guarded-migration-1",
+      "run_id": "1fc4ccbe-bb69-4f57-a5c2-a4ef2b9cdd9a",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 0,
+        "checker_exit_code": 0,
+        "injected_faults": true
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 1,
+      "wall_seconds_including_trust_waits": 277.0311999320984,
+      "totals": {
+        "input": 3290459,
+        "output": 21621,
+        "cache_read": 2963776,
+        "cache_write": 0,
+        "normal_input": 326683,
+        "responses": 164,
+        "junie_seconds": 221.063
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 646587,
+          "output": 6223,
+          "cache_read": 566688,
+          "cache_write": 0,
+          "responses": 38,
+          "session_id": "session-261117-071912-pq1i",
+          "start": 1794867573380,
+          "junie_seconds": 57.782,
+          "read_files": [
+            "decisions.json",
+            "details.json",
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 79899
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 643340,
+          "output": 5506,
+          "cache_read": 559280,
+          "cache_write": 0,
+          "responses": 42,
+          "session_id": "session-261117-072033-he3k",
+          "start": 1794867645703,
+          "junie_seconds": 54.294,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py",
+            "rule-0001.txt",
+            "rule-0002.txt",
+            "rule-0003.txt",
+            "source-0001.md"
+          ],
+          "source_helper_commands": 3,
+          "normal_input": 84060
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 1901479,
+          "output": 8767,
+          "cache_read": 1773584,
+          "cache_write": 0,
+          "responses": 72,
+          "session_id": "session-261117-072141-1lbc",
+          "start": 1794867703643,
+          "junie_seconds": 93.48,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 2,
+          "normal_input": 127895
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 99053,
+          "output": 1125,
+          "cache_read": 64224,
+          "cache_write": 0,
+          "responses": 12,
+          "session_id": "session-261117-072326-1ibj",
+          "start": 1794867808997,
+          "junie_seconds": 15.507,
+          "read_files": [
+            "OrderPage.cs",
+            "checker-findings-2d55faf1a01f489fa8afc72ad12b8b3c.txt"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 34829
+        }
+      ]
+    }
+  ],
+  "skill_proof": {
+    "pages_reviewed": 37,
+    "raw_rules": 13,
+    "registered_rules": 14,
+    "required_rules": 2,
+    "tail_line_retained_as_required": 53,
+    "source_files_unchanged": {
+      "expected.json": "20c9a9db1c732209b6c1a227e7df5a974542d1894978819a0401c59b8d54545e",
+      "check.py": "a2f97fbac32d7a8c5a1e2d9a27809c8054d923d10f438b403f0c3749bcf42c66",
+      ".gitignore": "6c5082c7e6de3e350189c67a1aacf757485ecc26e0a3cf96683528565f3e5f12",
+      "Case.csproj": "7d454faf11b711520c437994d168d32a83c75b1c4dffb2a96e2f13fd454264d0",
+      "Program.cs": "52d1be4454bfb945137f31c45b74ed4a3fce6b1d05c063dad092b1d50425a569",
+      "break.py": "5469231d00adc8dd25ede72eab19c70fec33ef89761180078c62965c5de99239",
+      "legacy/order": "861c9dfe3fa3007b30a5158b83cf791c4efc7360e8b9c2bed8dab236b4c137da",
+      "rules/Agent.md": "8a31e59d662f5ca70f7bf25e1c20cd0418510e2e84d436b220bc74937ea36edb",
+      "rules/invoice-export.md": "b3220d75e76aa81177a642ddc6a3e9a562204c8852a8769b53f24d823ed7d2e4",
+      "rules/product-import.md": "c79f698a9de02773c1367239bd32ac5ccd3f2c0732d6bff2bc0c34993f36de4a",
+      "rules/csv-export.md": "2111b0155b47c13f5c28b77f18b2eb6e5356527c5ba6c33afaa54dd97bacd90f",
+      "rules/tax-rates.md": "a02cf9117cbd1918d513d27a8aa1c220a955ed4b871f001e0e3f2039dda2684b",
+      "rules/stock-adjustments.md": "106ed3c686d11e2aa603a6539148d508bdd08d0d951c88322d414896466f501d",
+      "rules/pdf-reports.md": "d45f7aa7952f63d82be5992c53b4880339b12c14aa6ad0dd529cf7ab4b6921b6",
+      "rules/image-thumbnails.md": "fbdb62c978717a68bd89ca57021d15fd38839d94362f0cad328d7f76bec4787c",
+      "rules/saml-login.md": "e168224ea269502b9034abfe403d595e8081bb3e4b99fccfd24a27e8d501f92b",
+      "rules/shipment-tracking.md": "904170e43ab619b26716f18dd97db82f64364af04cad26b123b8fbd95265a89d",
+      "rules/mail-delivery.md": "bb6c239af8e06a10fc67af48c843a946a8b15ff7233327e525e10c835695201b",
+      "rules/order-values.md": "93ca6d581877ceac9aac4737e7495ee10c63d20402ac586bda74c91ea55d52c9",
+      "rules/database-queries.md": "64d46a7d33cc26e612aef30c655e997c6147983101a0814a0db2c96a2b48d366",
+      "benchmark-rules/08.md": "d45f7aa7952f63d82be5992c53b4880339b12c14aa6ad0dd529cf7ab4b6921b6",
+      "benchmark-rules/09.md": "c79f698a9de02773c1367239bd32ac5ccd3f2c0732d6bff2bc0c34993f36de4a",
+      "benchmark-rules/06.md": "a02cf9117cbd1918d513d27a8aa1c220a955ed4b871f001e0e3f2039dda2684b",
+      "benchmark-rules/12.md": "2111b0155b47c13f5c28b77f18b2eb6e5356527c5ba6c33afaa54dd97bacd90f",
+      "benchmark-rules/02.md": "93ca6d581877ceac9aac4737e7495ee10c63d20402ac586bda74c91ea55d52c9",
+      "benchmark-rules/13.md": "106ed3c686d11e2aa603a6539148d508bdd08d0d951c88322d414896466f501d",
+      "benchmark-rules/03.md": "1daede9d93500ebe932fa60f8468f176911fed74131412660db5f5718850c859",
+      "benchmark-rules/07.md": "bb6c239af8e06a10fc67af48c843a946a8b15ff7233327e525e10c835695201b",
+      "benchmark-rules/10.md": "fbdb62c978717a68bd89ca57021d15fd38839d94362f0cad328d7f76bec4787c",
+      "benchmark-rules/14.md": "904170e43ab619b26716f18dd97db82f64364af04cad26b123b8fbd95265a89d",
+      "benchmark-rules/04.md": "58f8f7ed2983663d7f5794a31c404a9d7bc13ccf0554b2991ad799208c4e709d",
+      "benchmark-rules/05.md": "b3220d75e76aa81177a642ddc6a3e9a562204c8852a8769b53f24d823ed7d2e4",
+      "benchmark-rules/11.md": "e168224ea269502b9034abfe403d595e8081bb3e4b99fccfd24a27e8d501f92b",
+      "benchmark-rules/01.md": "8a31e59d662f5ca70f7bf25e1c20cd0418510e2e84d436b220bc74937ea36edb",
+      "Pages/inc/SharedSuffix.cs": "00908bbed2a91e979558f897ae079f0e706c3f953ab48c631cd168a66306ffa7",
+      "Pages/Orders/OrderPage.cs": "c17236075e07baf52773025812b963a4958103013496972782dde75182690288",
+      "Pages/Orders/LocalLabels.cs": "e96810c5d3ba811154450b20d68191fbf934a29552c790c3dec0394252b38e6a"
+    },
+    "required_chars": 1488,
+    "non_rule_config_unchanged": true,
+    "preparation_or_migration_started_by_skill": false
+  },
+  "measurement_notes": [
+    "Actual model for prior successful migration and current trials: Qwen/Qwen3.6-27B-FP8.",
+    "The old completed skill trial ran alongside the separate intermediate optimized trial; final skill trials ran serially. Timing comparisons include this potential load difference.",
+    "Only the skill and its helpers changed. Migration runtime was frozen at runtime_base for the trial."
+  ],
+  "migration_artifact_hashes": {
+    "rules": [
+      "7ad5e0f0c76df02a35a20f0d33ddb22cb3623be5463cb6e1d3c2c50bba866c86",
+      "69313d2a0513b4a184ac5e0a28b8b6c8a8fe22a6d316fab718105cf3edf0ae94",
+      "4c1093420d4ff7a56414985641f2d61c4419582ce4f74aa26286d5e5b44dc4ad",
+      "16dfa6e72c86666409b321ace194082fe3a50cc0e23fdcf32e381a2529db5a63",
+      "83f90187219cf545affe680bfe55207986353a6b43d3e84ed3a5729ddc8bf5ec",
+      "25daf372d6272d4f6726989cdbb6e08f79ccfc1571925b25dbf27427e8f8570c",
+      "7117568cddb1810cd5bee94ccf9f1ccccab8ce95dac737d60248de2247ad52a4",
+      "2ad750da74f7d3d40fdf7aa204712d51a825981925dec2c3653e80826f4860c0",
+      "2ace54f916df3560701894dff805d259ebdc2600b1ad12a63ad4411249426e0f",
+      "e6befec319893a5433d901ef4bf866dd5b760b856e3a518d00dc94ea87ab96c6",
+      "f0eefcd2245dcbd12cc15ba7d3444f7f64ab2cc834715bb598331190fe0c24fb",
+      "6a94659c614d3598619473c00df5e582b0c95a3877028992c85599b9cbf69912",
+      "56c9f8536be408db268a48f2fef11d1a28c1725a321b14655a22ed36601466ae",
+      "07f9e98f45504cb36266fe59e53bbf945e0b6b6b7d9548fa7ce0fe3df1cb22b2"
+    ],
+    "capsules": [
+      "5d24dc6481efd00495061039937b5599a62d7bdbb7f0a781b06a5d93613c9cbc",
+      "ec21d539692d86c5554774b298fb64c59671ef7eb8b0010dd3885a21272d9449"
+    ]
+  },
+  "independent_behavior": [
+    {
+      "label": "migration-1",
+      "stage": "initial",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "migration-1",
+      "stage": "final",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    }
+  ]
+}

@@ -70,7 +70,8 @@ python tools/rule_pack.py verify rule-workspace/LegacyApp
 - 並べ替えで優先順位が変わらず、矛盾や未解決事項が隠れていないか。適用判断を妨げる未解決事項があれば、有効化を止めて具体的に報告する。
 - 段落・コードフェンスが閉じ、分割や追加見出しで構造が壊れていないか。
 - 相対リンクが参照先に届くか。原文リンクを書き換えて検証をすり抜けず、登録済み資料との対応を確認する。参照できないリンクは未解決として報告する。
-- **実際のJunieでは登録ファイルが `.migration-materials/rule-NNNN.txt` に改名される。** 生成されたAgentの索引は、起動時の `Detail and example references` にある `source` から `file` を引いて読む案内になっているか。`generated/details/...` が `agent-workspace` に同じ相対パスで存在するとは考えない。移行・修正・再開の都度、用途に応じて原文を読む。
+- **起動時に提供された本文と、まだ本文を読んでいない索引を区別する。** `Mandatory text` と `Applicable details` は原文であり、確認済みの記録のためだけに同じファイルを開き直させない。索引だけの資料は `Detail and example references` の `source` → `file` で保存済みRunの本文を読む。登録ファイルは `.migration-materials/rule-NNNN.txt` に改名されるため、PACKの相対リンクをRunで直接辿らせない。提供方法の整理で、適用条件・例外や編集後の確認を省かない。
+- 生成した案内では、参照資料・付属ヘルパーを読み取り専用として扱い、独自の抽出・照合処理や中間データは `.migration-scratch/` に置く。資料の書き換えで検証を通させない。
 
 ## 4. 設定を案内する／依頼済みなら反映する
 
@@ -78,23 +79,7 @@ python tools/rule_pack.py verify rule-workspace/LegacyApp
 
 案内だけなら、対象の旧登録と置換する新登録を示す。ダッシュボードでは **プロジェクト共通の移行ルール** に絶対パスを入力し、Agentを **毎回適用する必須事項**、詳細を **必要時に読む詳細・例** にして **読む場面・内容** を入力する。
 
-登録済みルールの見直しは [確認と反映の手順](references/loading-policy.md#4-反映し設定と本文を照合する) に従う。以下は新たに整理した原文を登録する場合の手順。
-
-**書き込む前に、意味レビューで見つけた矛盾・未解決事項を確認する。** 同じ対象の相反する数値指定や義務・禁止などが未解決なら、整理済みファイルと設定案だけを残し、既存TOMLを変更せず利用者に判断を求める。たとえば同じタイムアウトに30秒と60秒の指定があれば、単に別ファイルへ配置しても解決していない。
-
-先に以下を実行する。設定とPACKのパスは実際の対象へ置き換える。`config.before.toml` が既にある場合は別名にし、既存バックアップを上書きしない。**コピーの成功とバイト一致を確認してからTOMLを編集する。**
-
-```text
-python -c "from pathlib import Path; p=Path('harness.local.toml'); b=Path('rule-workspace/LegacyApp/config.before.toml'); data=p.read_bytes(); f=b.open('xb'); f.write(data); f.close(); assert b.read_bytes()==data; print('backup OK')"
-```
-
-1. 旧ルールのパスをアプリルート基準で解決し、記録したコピー元の絶対パスとバイト単位のSHA-256を両方照合する。ファイル名の一致だけで判定しない。変換した入力は変換前後の対応と内容確認も必要。対応を証明できた旧ルール登録だけを置換対象にする。
-2. `tomlkit` または対象箇所だけのパッチで、旧ルールを新しい登録へ置き換える。設定全体を生成し直さず、`rules.toml` で上書きしない。単純追記による旧・新の二重適用を避ける。旧形式の `[[units.inputs]]` 内のルールを扱う場合も、対応するルール項目だけを変更する。
-3. バックアップとの比較で、対象外のルール、チェッカー、スクリプト、参考実装、移行単位、その他の設定とコメントの保持を確認する。案件外の設定不備も勝手に修正しない。
-4. ハーネスをインストールしたPythonで次を実行し、`load_config` で検証する。失敗時はエラーを報告し、今回の設定変更を戻す。設定確認を理由に準備・移行を実行しない。
-
-```text
-python -c "from pathlib import Path; from migration_harness.config import load_config; load_config(Path('harness.local.toml')); print('config OK')"
-```
+- **登録済みルールの見直し**: [確認と反映の手順](references/loading-policy.md#4-反映し設定と本文を照合する) の `rule_review.py apply` を使う。`start` が作った `config.before.toml` と `loading-before.json` を再利用し、バックアップや変更前の棚卸しをもう一度作らない。分割が必要だった場合も、この経路を使う。
+- **まだ登録していない原文から新規登録する場合だけ**: [新規登録の手順](references/register-new.md) を読み、対象を照合してバックアップ後に反映する。
 
 新設定は次に準備するRunから適用され、保存済みRunの資料は変わらない。PACKは登録後も同じ場所に保持する。報告にはPACK、生成ファイル、機械検証と意味レビューの結果、未解決事項、設定を案内したか反映したかを含める。未実行の確認は成功扱いにしない。

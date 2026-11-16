@@ -77,6 +77,10 @@ def render(pack: Path) -> dict[str, bytes]:
     if read_json(pack / "sources.json") != {"sources": inventory}:
         raise ValueError("原文の変更・追加・削除を検出しました。新しい作業領域でsnapshotからやり直してください。")
     plan = read_json(pack / "plan.json")
+    # 既存PACKの検証結果を変えず、新しい参照案内は明示した計画にだけ適用する。
+    version = plan.get("format_version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("format_versionは1または2にしてください。")
     documents = plan.get("documents")
     if not isinstance(documents, list) or not documents:
         raise ValueError("plan.jsonにdocumentsの配列が必要です。")
@@ -128,6 +132,21 @@ def render(pack: Path) -> dict[str, bytes]:
         "fileにある保存済みRunのファイルを読んでください。元の絶対パスや下の相対リンクを"
         "作業フォルダから直接開く必要はありません。\n\n"
     )
+    if version == 2:
+        routing = (
+            "\n## 詳細を読むとき\n\n"
+            "移行・修正・再開では、今回提供された必須事項と該当する詳細の条件・例外を適用します。"
+            "起動時のMandatory textとApplicable detailsにある原文を先に確認し、"
+            "同じ本文を確認済みの記録のためだけにファイルから読み直す必要はありません。"
+            "編集後は適用する義務と変更内容を照合してください。"
+            "参照資料と付属ヘルパーは読み取り専用です。独自の抽出・照合スクリプトや中間データは"
+            ".migration-scratch/に置き、既存ヘルパーを書き換えずに利用してください。\n\n"
+            "必要な本文が未提供なら、Detail and example referencesのsourceとfileを照合して"
+            "保存済みRunの資料を読みます。適用判断が不明な資料も確認します。"
+            "提供済み本文は索引だけの説明とは区別し、説明で原文を代用しないでください。"
+            "下のリンクはPACK内の索引です。Runに同じ相対パスがあるとは限らず、"
+            "無関係として除外された資料をリンクだけで探し直す必要はありません。\n\n"
+        )
     for name, description in details:
         routing += f"- [{name}]({name}): {description}\n"
     output["Agent.md"] += routing
