@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -11,6 +12,35 @@ from test_checker_resume_review_dashboard import SavedRunFixture
 
 
 class TaskGuidelinesTests(unittest.TestCase):
+    def test_accumulated_source_keeps_exact_assigned_rows_and_excludes_future_or_shared_data(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            capsule, agent = root / "capsule", root / "agent"
+            capsule.mkdir()
+            agent.mkdir()
+            prefix = "# Shared example: must not become migrated data 日本語\r\n"
+            contents = ["     1 | $values[] = '重複';\r\n", "     2 | $values[] = '重複';\r\n", "     3 | 'future';\n"]
+            manifest = {"segment_offset": len(prefix), "parts": []}
+            for index, body in enumerate(contents, 1):
+                source = capsule / f"{index}.md"
+                source.write_bytes((prefix + body).encode())
+                manifest["parts"].append({"index": index, "path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()})
+            (capsule / "boundary.md").write_text("     3 | 'future boundary';\n")
+            saved = agent / ".migration-materials"
+            workflow._stage_source_excerpts(capsule, manifest, agent, through_capsule=1)
+            self.assertEqual([p.name for p in saved.iterdir()], ["source-0001.md"])
+            self.assertEqual((saved / "source-0001.md").read_bytes(), contents[0].encode())
+            (saved / "source-0001.md").write_text("changed in agent workspace")
+            (saved / "source-0003.md").write_text("stale future data")
+            workflow._stage_source_excerpts(capsule, manifest, agent, through_capsule=2)
+            self.assertEqual(sorted(p.name for p in saved.iterdir()), ["source-0001.md", "source-0002.md"])
+            self.assertEqual(b"".join(p.read_bytes() for p in sorted(saved.iterdir())), "".join(contents[:2]).encode())
+            workflow._stage_source_excerpts(capsule, manifest, agent)
+            self.assertEqual(len(list(saved.iterdir())), 3)
+            (capsule / "1.md").write_text("corrupted original")
+            with self.assertRaisesRegex(ValueError, "saved verification source changed"):
+                workflow._stage_source_excerpts(capsule, manifest, agent, through_capsule=2)
+
     def test_progress_instructions_preserve_mixed_newlines(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

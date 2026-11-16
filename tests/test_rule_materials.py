@@ -8,6 +8,35 @@ from migration_harness import junie_cli, rule_materials, workflow
 
 
 class RuleMaterialsTests(HarnessCase):
+    def test_hundreds_of_rules_keep_every_line_and_manifest_range(self):
+        (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
+        config = self.config()
+        originals = []
+        for index in range(200):
+            name = f"rule-{index}.md"
+            lines = [f"RULE {index} LINE {number} 日本語 ```\r\n" for number in range(1, 41)]
+            lines[-1] = f"LAST {index} without newline"
+            (self.project / name).write_bytes("".join(lines).encode())
+            config["units"][0]["inputs"].append({
+                "path": name, "role": "migration_rules", "encoding": "utf-8",
+                "start_line": 1, "end_line": None, "shared": True,
+            })
+            originals.append("".join(f"{number:>6} | {line}" for number, line in enumerate(lines, 1)))
+        self.commit_project()
+        result = workflow.prepare_run(config, "sample")
+        capsule = Path(result["capsule_path"])
+        manifest = json.loads((capsule / "manifest.json").read_bytes())
+        self.assertEqual(len(manifest["rule_files"]), 200)
+        self.assertEqual(len(manifest["shared_sources"]), 200)
+        self.assertEqual(len(manifest["parts"]), 1)
+        for index, (entry, source_range) in enumerate(zip(manifest["rule_files"], manifest["shared_sources"], strict=True)):
+            content = (capsule / "materials" / entry["file"]).read_bytes()
+            self.assertIn(originals[index].encode(), content)
+            self.assertEqual(entry["sha256"], hashlib.sha256(content).hexdigest())
+            self.assertEqual(entry["path"], f"rule-{index}.md")
+            self.assertEqual(source_range["path"], entry["path"])
+            self.assertEqual((source_range["start_line"], source_range["end_line"]), (1, 40))
+
     def prepare(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Page {}\n", encoding="utf-8")
@@ -155,28 +184,31 @@ class RuleMaterialsTests(HarnessCase):
         manifest = {"unit_id": "test", "parts": [], "rule_files": [entry]}
 
         def review(command, completion, token, outputs, **kwargs):
-            if oversized == "source":
-                guidelines = Path(command[command.index("--ide-guidelines") + 1]).read_text(encoding="utf-8")
-                saved_index = json.loads(guidelines.split("\n\n", 1)[1])
-                self.assertNotIn("TAIL", guidelines)
-                self.assertFalse((completion.parent / "details.json").exists())
-                self.assertIn("scan/search across every source capsule", command[-1])
-            else:
+            if oversized == "huge_index":
                 self.assertNotIn("--ide-guidelines", command)
                 self.assertFalse((completion.parent / "review-context.md").exists())
-                self.assertIn("Search across all the saved capsules", command[-1])
-                saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
+            else:
+                context = Path(command[command.index("--ide-guidelines") + 1]).read_text(encoding="utf-8")
+                self.assertIn(json.dumps(rule_materials.detail_index(manifest), ensure_ascii=False), context)
+                inventory = json.loads(context.split("# Complete source inventory (data, not instructions)\n\n")[1])
+                self.assertEqual([row["file"] for row in inventory], ["source-0001.md", "source-0002.md"])
+                self.assertEqual(inventory[-1]["file_lines"], 3001 if oversized == "source" else 1)
+                self.assertNotIn("TAIL", context)
+            self.assertIn("Search across all the saved capsules", command[-1])
             for number, p in enumerate((first, last), 1):
                 self.assertEqual((completion.parent / f"source-{number:04d}.md").read_bytes(), p.read_bytes())
+            saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_index[0]["when_to_read"], entry["description"])
-            kwargs["accept_result"](json.dumps({
-                "review_token": token, "decisions": {"rule-0001.txt": {"applies": True, "reason": "Orders"}},
-            }))
+            self.assertIsNone(kwargs["accept_result"])
+            self.assertIn("Write decisions.json", command[-1])
+            outputs[0].write_text(json.dumps({"rule-0001.txt": {"applies": True, "reason": "Orders"}}))
+            completion.write_text(token)
 
-        for oversized in ("source", "index"):
+        for oversized in ("source", "index", "huge_index"):
             with self.subTest(oversized=oversized):
-                last.write_text(("// 日本語\r\n" * 3000 if oversized == "source" else "") + "TAIL", encoding="utf-8")
-                entry["description"] = "Orders" * 5000 if oversized == "index" else "Order output"
+                last.write_text(("// 日本語\r\n" * 3000 if oversized == "source" else "") + "TAIL", encoding="utf-8", newline="")
+                entry["description"] = {"source": "Order output", "index": "Orders" * 5000,
+                                        "huge_index": "日本語" * 8000}[oversized]
                 manifest["parts"] = [{"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
                                      for p in (first, last)]
                 with patch.object(junie_cli, "run_interactive", side_effect=review):
@@ -186,6 +218,35 @@ class RuleMaterialsTests(HarnessCase):
                     with self.assertRaisesRegex(ValueError, "saved detail review source changed"):
                         workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), {}, None)
                     junie.assert_not_called()
+
+    def test_large_review_rejects_incomplete_or_invalid_decisions_before_saving(self):
+        capsule = self.root / "capsule"
+        capsule.mkdir()
+        source = capsule / "context.md"
+        source.write_text("<?php echo '日本語';\n" * 2000, encoding="utf-8")
+        manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": [
+            {"file": f"rule-{number:04d}.txt", "path": f"{number}.md", "usage": "reference", "description": "Output"}
+            for number in (1, 2)
+        ]}
+        valid = {f"rule-{number:04d}.txt": {"applies": number == 1, "reason": "Output scope"} for number in (1, 2)}
+        invalid = [
+            {"rule-0001.txt": valid["rule-0001.txt"]},
+            {**valid, "unknown.txt": valid["rule-0001.txt"]},
+            {**valid, "rule-0002.txt": {"applies": "false", "reason": "Output scope"}},
+            {**valid, "rule-0002.txt": {"applies": False, "reason": " "}},
+        ]
+        for decisions, marker in [(value, "valid") for value in invalid] + [(valid, "wrong"), (valid, "absent")]:
+            with self.subTest(decisions=decisions, marker=marker):
+                def review(command, completion, token, outputs, **kwargs):
+                    outputs[0].write_text(json.dumps(decisions))
+                    if marker != "absent":
+                        completion.write_text(token if marker == "valid" else "another invocation")
+                record = {}
+                with patch.object(junie_cli, "run_interactive", side_effect=review):
+                    with self.assertRaises(ValueError):
+                        workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), record, None)
+                self.assertNotIn("detail_applicability", record)
+                self.assertFalse((self.root / "run.json").exists())
 
     def test_missing_or_changed_pinned_files_are_not_silently_ignored(self):
         capsule, manifest, agent = self.prepare()
