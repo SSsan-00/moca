@@ -40,6 +40,8 @@ class JunieDashboardAcpTests(unittest.TestCase):
                 commands = []
 
                 def launch_agent(argv, **streams):
+                    if argv == ["junie", "--help"]:
+                        return launch([sys.executable, "-c", "print('  --task=<text>  Task description')"], **streams)
                     commands.append(argv)
                     if argv[-1] == "--acp=true":
                         return launch([sys.executable, "-u", "-c", acp_agent], **streams)

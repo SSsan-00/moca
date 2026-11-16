@@ -147,6 +147,25 @@ class JunieEventTests(unittest.TestCase):
         with path.open("ab") as stream:
             stream.write(b"".join(map(line, entries)) + raw)
 
+    def test_headless_events_match_new_session_by_project_and_count_untagged_usage(self):
+        project = self.root / "anchor workspace"
+        usage = response()
+        del usage["taskId"]
+        old = self.write("old", task(), usage)
+        old.with_name("summary.json").write_bytes(line({"projectDir": str(project)}))
+        events = junie_cli._JunieSessionEvents("this-launch", headless_project=project)
+        self.append(old, usage)
+        unrelated = self.write("unrelated", task(), usage)
+        unrelated.with_name("summary.json").write_bytes(line({"projectDir": str(self.root / "elsewhere")}))
+        ours = self.write("ours", task(), usage)
+
+        self.assertFalse(events.read_new_events())
+        self.assertIsNone(events.path)
+        ours.with_name("summary.json").write_bytes(line({"projectDir": str(project)}))
+        self.assertFalse(events.read_new_events())
+        self.assertEqual(events.path, ours)
+        self.assertEqual(events.usage, [18, 4, 5, 3, 1])
+
     def test_only_fixed_metadata_is_reported_and_repeated_status_is_coalesced(self):
         events = junie_cli._JunieSessionEvents("this-launch")
         private = "PRIVATE thoughts prompt command arguments /private/path"

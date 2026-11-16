@@ -80,6 +80,7 @@
     .workspace-tabs button:hover { background: var(--surface-hover); }
     .workspace-tabs button[aria-selected="true"] { color: var(--blue); font-weight: 700; }
     .workspace-tabs button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .workspace-tabs button[hidden] { display: none; }
     .workspace-tab-indicator { position: absolute; inset: auto auto -3px 0; height: 4px; border-radius: 2px; background: var(--blue); pointer-events: none; transition: transform 250ms cubic-bezier(.65,0,.35,1), width 250ms cubic-bezier(.65,0,.35,1); }
     .workspace-panels { position: relative; min-width: 0; min-height: 0; }
     .workspace-pane { height: 100%; min-width: 0; overflow: hidden auto; }
@@ -99,6 +100,40 @@
     #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
     .workspace-feedback { min-width: 0; margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
     .workspace-feedback:empty { display: none; }
+    .editor-layout:not([hidden]) { display: grid; height: 100%; min-height: 360px; grid-template-columns: minmax(0, 1.9fr) minmax(230px, 1fr); grid-template-rows: minmax(0, 1fr); gap: 12px; padding: 2px; }
+    .editor-layout .panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .editor-heading, .editor-footer, .editor-chat form { padding: 12px; }
+    .editor-heading { border-bottom: 1px solid var(--line); }
+    .editor-heading :is(h2, p), .editor-footer p { margin: 0; }
+    .editor-heading h2 { font-size: 16px; }
+    #editor-target { width: min(calc(100% - 20px), 30ch); min-height: 34px; margin: 8px 10px; padding: 6px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+    .editor-muted { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .editor-notice { margin: 10px 10px 0; padding: 8px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: var(--amber-soft); color: var(--amber-ink); }
+    .editor-source { position: relative; flex: 1; min-height: 0; border-block: 1px solid var(--line); }
+    .editor-source > div { position: absolute; inset: 0; }
+    .editor-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .editor-footer-actions { display: flex; gap: 8px; margin-inline-start: auto; }
+    #editor-diff-toggle[aria-pressed="true"] { color: var(--blue); border-color: var(--blue); }
+    #editor-save, #editor-send { background: var(--blue); color: var(--blue-ink); border-color: var(--blue); }
+    #editor-save:disabled, #editor-send:disabled { background: var(--surface-muted); color: var(--muted); border-color: var(--line); }
+    .editor-chat-body { flex: 1; min-height: 0; padding: 12px; overflow: auto; overflow-wrap: anywhere; }
+    .editor-chat-body p, .editor-chat form p { margin: 0; }
+    .editor-chat-list { display: grid; justify-items: end; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
+    .editor-chat-list li { max-width: 95%; min-width: 0; padding: 8px 10px; border-radius: 10px 10px 2px 10px; background: var(--blue-soft); }
+    .editor-chat-list li p { white-space: pre-wrap; }
+    .editor-chat-list button { min-height: 28px; height: auto; padding-inline: 6px; margin-left: 6px; }
+    .editor-chat form { display: grid; gap: 6px; border-top: 1px solid var(--line); }
+    .editor-chat textarea { width: 100%; min-height: 64px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
+    .editor-chat-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; }
+    .editor-chat-actions > div { display: flex; gap: 6px; margin-inline-start: auto; }
+    #editor-send:has([data-send-icon]:not([hidden])) { width: 38px; padding: 0; border-radius: 50%; font-size: 19px; }
+    #workspace-editor .workspace-feedback { margin: 4px 12px 10px; }
+    @media (max-width: 680px) {
+      .editor-layout:not([hidden]) { height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+      .editor-source { flex: none; height: max(250px, 48dvh); }
+      .workspace-tabs:has(#tab-editor:not([hidden])) { gap: 2px; }
+      .workspace-tabs:has(#tab-editor:not([hidden])) button { padding-inline: 5px; font-size: 12px; }
+    }
     #workspace-progress-feedback { max-height: 25vh; overflow: auto; }
     .token-panel { display: grid; gap: 16px 20px; padding: 22px; }
     .token-run-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -404,6 +439,8 @@
     #build-review-dialog select { width: 100%; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
     #build-review-source { min-height: 11rem; margin-top: 8px; font: 13px/1.55 var(--mono); }
     #build-review-dialog .review-actions { display: flex; justify-content: flex-end; flex: 0 0 auto; margin: 0; padding: 10px clamp(16px, 3vw, 22px); border-top: 1px solid var(--line); }
+    #progress-prompt-dialog .review-actions { display: flex; justify-content: flex-end; }
+    #progress-prompt-list { max-height: 12rem; overflow: auto; overflow-wrap: anywhere; }
     .review-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
     @media (min-width: 650px) {
       :root:not([data-live]) .review-actions { grid-template-columns: minmax(0, 1fr) minmax(154px, 1fr) repeat(2, minmax(0, 1fr)); }
@@ -569,6 +606,7 @@
   </nav>
   <div class="workspace-tabs" role="tablist" aria-label="ハーネス操作">
     <button id="tab-progress" type="button" role="tab" aria-selected="true" aria-controls="workspace-progress">進捗</button>
+    <button id="tab-editor" type="button" role="tab" aria-selected="false" aria-controls="workspace-editor" tabindex="-1" hidden>エディタ</button>
     <button id="tab-runs" type="button" role="tab" aria-selected="false" aria-controls="workspace-runs" tabindex="-1">実行</button>
     <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="workspace-settings" tabindex="-1">設定</button>
     <button id="tab-tokens" type="button" role="tab" aria-selected="false" aria-controls="workspace-tokens" tabindex="-1">トークン使用量</button>
@@ -582,6 +620,7 @@
     <span class="state is-running" id="run-state" data-state="running" aria-live="polite"><span class="state-orb" aria-hidden="true"></span><span id="state-label">Junieが実行中</span></span>
     <div class="controls" aria-label="デモ操作">
       <button class="button" id="toggle" type="button" hidden>同じ実行を再開</button>
+      <button class="button" id="open-progress-prompt" type="button" aria-haspopup="dialog" hidden>Junie に指示</button>
       <button class="button" id="stop" type="button" title="編集内容を残して処理を停止します">停止</button>
       <button class="button" id="restart" type="button">最初から</button>
       <div class="comparison-control">
@@ -668,6 +707,44 @@
       </section>
     </div>
   </div>
+  </section>
+  <section class="workspace-pane" id="workspace-editor" role="tabpanel" aria-labelledby="tab-editor" tabindex="0" hidden>
+    <p id="editor-empty" class="workspace-feedback" role="status">実行タブで移行を始めるか、保存済みの実行を開いてください。</p>
+    <div class="editor-layout" id="editor-layout" hidden>
+      <section class="panel" aria-label="C# エディタ">
+        <select id="editor-target" aria-label="移行先ファイル" hidden></select>
+        <p class="editor-notice" id="editor-update" role="status" hidden></p>
+        <div class="editor-source"><div id="editor-code"></div><div id="editor-diff" hidden></div></div>
+        <div class="editor-footer">
+          <div><p id="editor-save-status" role="status"></p><p id="editor-save-timing" class="editor-muted"></p></div>
+          <div class="editor-footer-actions">
+            <button class="button" id="editor-save" type="button" disabled>保存</button>
+            <button class="button" id="editor-diff-toggle" type="button" aria-controls="editor-diff" aria-pressed="false" disabled>差分</button>
+          </div>
+        </div>
+        <p class="workspace-feedback" id="editor-error" role="alert" hidden></p>
+      </section>
+      <aside class="panel editor-chat" aria-labelledby="editor-chat-title">
+        <header class="editor-heading"><h2 id="editor-chat-title">Junie</h2></header>
+        <div class="editor-chat-body">
+          <p id="editor-junie-status" role="status"></p>
+          <p id="editor-junie-activity" class="editor-muted" hidden></p>
+          <ol class="editor-chat-list" id="editor-prompts" aria-label="Junie への追加指示"></ol>
+        </div>
+        <form id="editor-prompt-form">
+          <label for="editor-prompt">Junie に指示</label>
+          <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder="追加の指示を入力" required aria-describedby="editor-prompt-timing"></textarea>
+          <div class="editor-chat-actions">
+            <p class="editor-muted" id="editor-prompt-timing"></p>
+            <div>
+              <button class="button" id="editor-cancel-prompt" type="button" disabled>キャンセル</button>
+              <button class="button" id="editor-send" type="submit" aria-label="送信"><span data-send-icon aria-hidden="true">↑</span><span data-send-label hidden>変更を保存</span></button>
+            </div>
+          </div>
+        </form>
+        <p class="workspace-feedback" id="editor-prompt-error" role="alert" hidden></p>
+      </aside>
+    </div>
   </section>
   <section class="workspace-pane" id="workspace-runs" role="tabpanel" aria-labelledby="tab-runs" tabindex="0" hidden>
     <div class="panel workspace-tools">
@@ -918,6 +995,24 @@
         <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
       </div>
     </div>
+  </dialog>
+  <dialog class="review-dialog" id="progress-prompt-dialog" aria-labelledby="progress-prompt-title">
+    <form class="review-dialog-inner" id="progress-prompt-form">
+      <header class="review-heading">
+        <h2 id="progress-prompt-title">Junie に指示</h2>
+        <button class="review-close" id="close-progress-prompt" type="button" aria-label="閉じる">×</button>
+      </header>
+      <p class="review-intro" data-demo-only>指示の受付と作業区間での反映をサンプルで試せます。</p>
+      <label class="review-note-label" for="progress-prompt">追加の指示</label>
+      <textarea class="review-note" id="progress-prompt" rows="4" maxlength="4000"
+                aria-describedby="progress-prompt-timing" required></textarea>
+      <p class="review-intro" id="progress-prompt-timing" role="status"></p>
+      <p class="review-caveat" id="progress-prompt-feedback" role="alert" hidden></p>
+      <ol class="editor-chat-list" id="progress-prompt-list" aria-label="登録済みの指示" hidden></ol>
+      <div class="review-actions">
+        <button class="button primary" id="progress-prompt-submit" type="submit" disabled>指示を登録</button>
+      </div>
+    </form>
   </dialog>
   <dialog class="review-dialog" id="build-review-dialog" aria-labelledby="build-review-title">
     <form id="build-review-form">
@@ -1178,7 +1273,8 @@ function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
 }
 
 const workspaceTabs = document.querySelector(".workspace-tabs");
-const harnessTabs = [...workspaceTabs.querySelectorAll('[role="tab"]')];
+document.querySelector("#tab-editor").hidden = false;
+const harnessTabs = [...workspaceTabs.querySelectorAll('[role="tab"]:not([hidden])')];
 const tabIndicator = workspaceTabs.querySelector(".workspace-tab-indicator");
 const harnessPanes = harnessTabs.map(tab => document.getElementById(tab.getAttribute("aria-controls")));
 let activeHarnessTab = 0;
@@ -1861,8 +1957,8 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   reload.addEventListener("click", () => loadSettings(true));
   for (const control of [workspaceUnit, workspaceRunID]) control.addEventListener("input", workspaceControls);
   workspaceTabs.addEventListener("harnesstab", () => {
-    if (activeHarnessTab === 1) loadRuns();
-    if (activeHarnessTab === 2) loadSettings();
+    if (harnessTabs[activeHarnessTab].id === "tab-runs") loadRuns();
+    if (harnessTabs[activeHarnessTab].id === "tab-settings") loadSettings();
   });
   workspaceControls();
 }
@@ -2070,6 +2166,58 @@ function showMigrationLedger(ledger, snapshot, compare) {
   migrationCandidateComparison.querySelector("button").onclick = snapshotId ? () => compare(snapshotId) : null;
   updateMigrationLedgerStatuses(snapshot);
 }
+
+  function bindProgressPromptDialog({open, submit, inputChanged}) {
+    const button = document.querySelector("#open-progress-prompt");
+    const dialog = document.querySelector("#progress-prompt-dialog");
+    const input = document.querySelector("#progress-prompt");
+    const send = document.querySelector("#progress-prompt-submit");
+    const timingNote = document.querySelector("#progress-prompt-timing");
+    const feedback = document.querySelector("#progress-prompt-feedback");
+    const list = document.querySelector("#progress-prompt-list");
+    const labels = {queued: "送信待ち", sending: "Junie が実行中", sent: "反映済み"};
+    let renderedPrompts = "";
+    function showError(error) {
+      feedback.textContent = error?.message || "";
+      feedback.hidden = !error;
+    }
+    function render({timing, prompts = []} = {}, {available = true, loading = false, saving = false} = {}) {
+      if (!dialog.open) return;
+      const bytes = new TextEncoder().encode(input.value.trim()).length;
+      send.disabled = !available || !timing || saving || !bytes || bytes > 4_000;
+      input.readOnly = saving;
+      const message = bytes > 4_000 ? "指示を 4,000 バイト以下にしてください。"
+        : timing === "checkpoint" ? "現在の作業区間が終わると Junie に渡します。"
+        : timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
+        : loading ? "指示を読み込んでいます…" : "現在の工程では指示を登録できません。";
+      if (timingNote.textContent !== message) timingNote.textContent = message;
+      const key = JSON.stringify(prompts);
+      if (key === renderedPrompts) return;
+      renderedPrompts = key;
+      list.replaceChildren(...prompts.map(({text, status}) => {
+        const item = document.createElement("li");
+        item.append(
+          Object.assign(document.createElement("span"), {className: "editor-muted", textContent: labels[status]}),
+          Object.assign(document.createElement("p"), {textContent: text}),
+        );
+        return item;
+      }));
+      list.hidden = !prompts.length;
+    }
+    button.addEventListener("click", () => {
+      showError();
+      dialog.showModal();
+      input.focus();
+      open();
+    });
+    document.querySelector("#close-progress-prompt").addEventListener("click", () => dialog.close());
+    input.addEventListener("input", inputChanged);
+    document.querySelector("#progress-prompt-form").addEventListener("submit", event => {
+      event.preventDefault();
+      if (!send.disabled) submit(input.value.trim());
+    });
+    return {button, dialog, input, render, showError};
+  }
 </script>
 <!-- dashboard-script -->
 <script>
@@ -2987,5 +3135,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     scheduleNext();
   }
 </script>
+<script src="./src/migration_harness/dashboard_editor_demo.js" defer></script>
+<script src="./src/migration_harness/dashboard_editor.js" defer></script>
 </body>
 </html>
