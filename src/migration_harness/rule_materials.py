@@ -42,7 +42,34 @@ def _target_mentions(targets: tuple[Path, ...]) -> re.Pattern[str] | None:
     return re.compile("|".join(mentions)) if mentions else None
 
 
-def render_guidelines(directory: Path, manifest: dict, *, targets: tuple[Path, ...] = ()) -> str:
+def detail_index(manifest: dict) -> list[dict]:
+    return [
+        {"file": entry["file"], "source": entry["path"], "when_to_read": entry["description"]}
+        for entry in manifest.get("rule_files", ()) if entry.get("usage") == "reference"
+    ]
+
+
+def selected_details(index: list[dict], decisions: object) -> frozenset[str]:
+    """確認漏れや不明な資料のIDがあれば、移行に進めない。"""
+    if not isinstance(decisions, dict) or decisions.keys() != {item["file"] for item in index}:
+        raise ValueError("detail review must contain exactly one decision for every saved detail")
+    selected = set()
+    for name, decision in decisions.items():
+        if (
+            not isinstance(decision, dict)
+            or type(decision.get("applies")) is not bool
+            or not isinstance(decision.get("reason"), str)
+            or not decision["reason"].strip()
+        ):
+            raise ValueError(f"invalid applicability decision for saved detail: {name}")
+        if decision["applies"]:
+            selected.add(name)
+    return frozenset(selected)
+
+
+def render_guidelines(
+    directory: Path, manifest: dict, *, targets: tuple[Path, ...] = (), selected: frozenset[str] = frozenset(),
+) -> str:
     """照合済みの保存資料だけを使う。旧Runの断片も順に結合し省略しない。"""
     required, matched, details = [], [], []
     mentions = _target_mentions(targets)
@@ -64,7 +91,7 @@ def render_guidelines(directory: Path, manifest: dict, *, targets: tuple[Path, .
             required.append(content.decode("utf-8"))
         elif usage == "reference" and isinstance(entry.get("description"), str) and entry["description"].strip():
             body = content.decode("utf-8")
-            if mentions and (mentions.search(entry["description"]) or mentions.search(body)):
+            if name in selected or (mentions and (mentions.search(entry["description"]) or mentions.search(body))):
                 matched.append(body)
                 continue
             details.append(json.dumps({
@@ -86,7 +113,7 @@ def render_guidelines(directory: Path, manifest: dict, *, targets: tuple[Path, .
         "migration hints. Do not run a separate reader or re-open these guidelines just to acknowledge them. "
         "Before completion, check your changes against all applicable requirements and exceptions.\n\n"
         "## Mandatory text (verbatim saved excerpts)\n\n" + "".join(required) +
-        ("\n\n## Details naming a configured target (verbatim saved excerpts)\n\n"
+        ("\n\n## Applicable details (verbatim saved excerpts)\n\n"
          "Read these supplied details before editing. Apply their requirements and exceptions when their conditions hold.\n\n"
          + "\n".join(matched) if matched else "") +
         ("\n\n## Detail and example references\n\n"

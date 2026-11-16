@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from fixtures import HarnessCase
 from migration_harness import junie_cli, rule_materials, workflow
@@ -84,6 +85,49 @@ class RuleMaterialsTests(HarnessCase):
         self.assertNotIn(unrelated, guidelines)
         self.assertIn('"source": "other.md"', index)
         self.assertNotIn('"source": "order.md"', index)
+
+    def test_review_covers_every_detail_and_supplies_selected_body_on_resume(self):
+        capsule = self.root / "capsule"
+        capsule.mkdir()
+        body = "Use the existing prefix and suffix for each ordered identifier.\n"
+        irrelevant = "DB transactions use a fallback.\n"
+        entries = rule_materials.write_rule_files(capsule / "materials", [
+            ({"path": "orders.md", "usage": "reference", "description": "Order list output"}, body),
+            ({"path": "database.md", "usage": "reference", "description": "DB transactions"}, irrelevant),
+        ])
+        source = capsule / "context.md"
+        source.write_text("<?php echo json_encode($orders);", encoding="utf-8")
+        manifest = {
+            "unit_id": "test", "parts": [{"path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}],
+            "rule_files": entries, "materials": {**{row["file"]: row["sha256"] for row in entries},
+                "rules.json": hashlib.sha256((capsule / "materials/rules.json").read_bytes()).hexdigest()},
+        }
+        record = {"status": "junie_running"}
+        targets = (Path("SomeTarget.cs"),)
+
+        def review(command, completion, token, outputs, **kwargs):
+            self.assertEqual({p.name for p in completion.parent.iterdir()}, {"details.json", "source-0001.md"})
+            self.assertNotIn(body.strip(), (completion.parent / "details.json").read_text(encoding="utf-8"))
+            outputs[0].write_text(json.dumps(decisions), encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+
+        decisions = {entries[0]["file"]: {"applies": True, "reason": "Outputs orders"}}
+        with patch.object(junie_cli, "run_interactive", side_effect=review) as junie:
+            with self.assertRaisesRegex(ValueError, "every saved detail"):
+                workflow._review_detail_applicability(self.root, capsule, manifest, targets, record, None)
+            self.assertNotIn("detail_applicability", record)
+            decisions[entries[1]["file"]] = {"applies": False, "reason": "No database operations"}
+            selected = workflow._review_detail_applicability(self.root, capsule, manifest, targets, record, None)
+            saved = json.loads((self.root / "run.json").read_text(encoding="utf-8"))
+            self.assertEqual(workflow._review_detail_applicability(self.root, capsule, manifest, targets, saved, None),
+                             selected)
+            self.assertEqual(junie.call_count, 2)
+        agent = self.root / "agent"
+        agent.mkdir()
+        workflow._stage_migration_materials(capsule, manifest, agent, targets=targets, selected=selected)
+        guidelines = (agent / ".migration-materials/guidelines.md").read_text(encoding="utf-8")
+        self.assertIn(body, guidelines)
+        self.assertNotIn(irrelevant, guidelines)
 
     def test_missing_or_changed_pinned_files_are_not_silently_ignored(self):
         capsule, manifest, agent = self.prepare()

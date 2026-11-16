@@ -471,7 +471,7 @@ bindHarnessWorkspace({
   canAct: () => connected && snapshot.ready && !submitting,
 });
 const tokenRuns = bindTokenRuns(run => {
-  const phases = {build_repair: "ビルドの自動修正", checker_repair: "チェッカーの自動修正", anchors: "アンカー生成"};
+  const phases = {rule_review: "詳細ルールの事前確認", build_repair: "ビルドの自動修正", checker_repair: "チェッカーの自動修正", anchors: "アンカー生成"};
   const rows = (run?.token_usage || []).map(row => ({
     ...row, label: row.phase === "migration" ? `カプセル ${row.capsule}` : phases[row.phase],
   }));
