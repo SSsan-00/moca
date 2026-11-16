@@ -85,6 +85,7 @@ def stage_target_context(
         if not target.parts or target.anchor or ".." in target.parts or _reserved(target):
             raise ValueError(f"target conflicts with a reserved or invalid context path: {target}")
     roots = {path.parent for path in targets} | {path.parent.parent / "inc" for path in targets}
+    roots.update(path.parent.parent.parent / name for path in targets for name in ("Libs", "Extensions"))
     target_names = sorted(path.as_posix() for path in targets)
     snapshot = _safe(capsule, Path("target-context"))
     manifest_path = _safe(snapshot, Path("manifest.json"))
@@ -172,7 +173,8 @@ def stage_target_context(
     report_activity(f"固定した移行先の参照資料を復元しました（{len(manifest['files'])}ファイル）。")
     check_cancelled()
     return (
-        "The target parent directories and their sibling inc directories contain pinned, read-only reference files "
-        "at their original relative paths. Read relevant files to understand imports and surrounding behavior. "
+        "Pinned, read-only reference files are available at their original relative paths in the target parent "
+        "directories, their sibling inc directories, and Libs and Extensions one level above inc. "
+        "Read relevant files to understand imports and surrounding behavior. "
         "Do not edit these reference files or expand the assigned migration targets. "
     ) if manifest["files"] else ""

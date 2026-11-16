@@ -162,7 +162,7 @@ Junieを起動して対象ファイルを移行する場合:
 .\.venv\Scripts\php-to-csharp-harness.exe run --config harness.local.toml --unit "メニュー"
 ```
 
-`run`には対話ターミナル、`PATH`上のJunie CLI、移行先に対応する.NET SDKが必要です。Junie用作業フォルダには、設定した移行先ファイルの親フォルダと、その隣の `inc` フォルダ全体を、worktreeと同じ相対配置で取り込みます。たとえば `Pages/Orders/Index.cshtml.cs` なら `Pages/Orders/` と `Pages/inc/` です。移行先以外は参照専用で、初回移行時の内容を保存して再開・修正でも使います。Gitの管理情報は取り込みません。複数カプセルがある場合は、前の呼び出しで更新したファイルを次の呼び出しへ引き継ぎ、各呼び出し後にworktreeへ反映します。
+`run`には対話ターミナル、`PATH`上のJunie CLI、移行先に対応する.NET SDKが必要です。Junie用作業フォルダには、移行先ファイルの親フォルダ、その隣の `inc`、`inc` より1階層上の `Libs` と `Extensions` を、worktreeに存在するものだけフォルダごとに同じ相対配置で取り込みます。たとえば `src/Web/Pages/Orders/Index.cshtml.cs` なら `src/Web/Pages/Orders/`、`src/Web/Pages/inc/`、`src/Web/Libs/`、`src/Web/Extensions/` です。移行先以外は参照専用で、初回移行時の内容を保存して再開・修正でも使います。Gitの管理情報は取り込みません。複数カプセルがある場合は、前の呼び出しで更新したファイルを次の呼び出しへ引き継ぎ、各呼び出し後にworktreeへ反映します。
 
 Junieはカプセルの作業を終えると、作業フォルダに今回の起動専用の完了記録を残します。ハーネスが記録を検知すると対話画面を自動で閉じ、編集をworktreeへ反映して次のカプセルへ進みます。最後のカプセルを反映した後はビルドに進みます。有効な記録がない状態でJunieを閉じた場合は、部分編集を保存して現在のカプセルを保留します。終了コードは診断用で、自動終了時にも非ゼロになる場合があります。完了記録はJunieの自己申告で、移行結果は最後にworktreeの差分で確認してください。
 

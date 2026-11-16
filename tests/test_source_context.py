@@ -77,6 +77,33 @@ class TargetContextTests(unittest.TestCase):
                 self.assertFalse(path.stat().st_mode & stat.S_IWUSR)
                 self.assertTrue((self.worktree / entry["path"]).stat().st_mode & stat.S_IWUSR)
 
+    def test_libs_and_extensions_are_pinned_one_level_above_inc(self):
+        self.targets = (Path("src/Web/Pages/Orders/Index.cshtml.cs"),)
+        expected = {
+            "src/Web/Libs/nested/Shared.cs": b"library",
+            "src/Web/Extensions/Format.cs": b"extension",
+            "src/Web/Pages/inc/Helper.cs": b"include",
+        }
+        for name, content in expected.items():
+            self.put(name, content)
+        for name in ("src/Web/Pages/Libs/WrongLevel.cs", "src/Web/Pages/Extensions/WrongLevel.cs",
+                     "Libs/WrongRoot.cs", "Extensions/WrongRoot.cs"):
+            self.put(name)
+
+        instructions = self.stage()
+        self.assertIn("Libs and Extensions", instructions)
+        self.assertEqual({entry["path"] for entry in self.manifest()["files"]}, set(expected))
+        for name, content in expected.items():
+            with self.subTest(name=name):
+                path = self.agent / name
+                self.assertEqual(path.read_bytes(), content)
+                self.assertFalse(path.stat().st_mode & stat.S_IWUSR)
+                self.put(name, b"later worktree contents")
+                self.put(name, b"agent edit", root=self.agent)
+
+        self.stage()
+        self.assertEqual({name: (self.agent / name).read_bytes() for name in expected}, expected)
+
     def test_targets_and_interrupted_drafts_are_never_pinned_or_overwritten(self):
         self.put("Pages/Orders/helper.cs")
         for target in self.targets:
@@ -98,6 +125,7 @@ class TargetContextTests(unittest.TestCase):
         manifest_bytes = (self.capsule / "target-context/manifest.json").read_bytes()
         original.unlink()
         self.put("Pages/inc/new.cs", b"must not enter pinned context")
+        self.put("Libs/new.cs", b"must not enter pinned context")
         for tampering in (b"agent edit", None):
             with self.subTest(tampering=tampering):
                 self.put(relative, b"agent edit", root=self.agent)
@@ -106,6 +134,7 @@ class TargetContextTests(unittest.TestCase):
                 self.stage()
                 self.assertEqual((self.agent / relative).read_bytes(), b"after preparation scripts\x00\xff")
                 self.assertFalse((self.agent / "Pages/inc/new.cs").exists())
+                self.assertFalse((self.agent / "Libs/new.cs").exists())
                 self.assertEqual((self.capsule / "target-context/manifest.json").read_bytes(), manifest_bytes)
 
     def test_same_parent_and_overlapping_inc_are_deduplicated(self):
