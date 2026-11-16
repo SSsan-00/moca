@@ -34,7 +34,8 @@ class JunieDashboardAcpTests(unittest.TestCase):
 
                     assert read()["method"] == "initialize"
                     send(id=1, result={"protocolVersion": 1})
-                    assert read()["params"]["cwd"] == str(Path.cwd())
+                    # Windows may spell the same directory with a short path or different casing.
+                    assert Path(read()["params"]["cwd"]).samefile(Path.cwd())
                     send(id=2, result={"sessionId": "migration"})
                     assert read()["params"]["prompt"][0]["text"] == "migration prompt"
                     send(method="session/update", params={"sessionId": "migration", "update": {
