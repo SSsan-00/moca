@@ -1,0 +1,465 @@
+{
+  "date": "2026-11-17",
+  "environment": {
+    "os": "macOS",
+    "junie": "26.11.1 (4020.10), Junie Lite",
+    "dotnet_sdk": "10.0.201"
+  },
+  "timing": "Sum of TaskStartedEvent to the last event for the same taskId in each Junie events.jsonl; excludes trust waits, CLI startup, build and checker time.",
+  "tokens": "Actual run.json usage; input includes cache reads and writes. Cache creation is zero in every completed trial.",
+  "fixture": {
+    "php_lines": 27,
+    "ordered_values": 24,
+    "capsules": 2,
+    "max_context_chars": 1000,
+    "rule_files": 14,
+    "required_files": 2,
+    "detail_files": 12,
+    "numbered_rule_text_chars": 74369,
+    "php_sha256": "205d1f1d4cb1f944720d9bcbb81a30fb306c42a426c93b176748cd96c9f5dd3d",
+    "capsule_sha256": [
+      "c407905bf9b804a638e8916de4b447ebc519f1d3579a0630ed13beed8bc7a9b1",
+      "1ea33b80e7c239958c47f1f131a531f2f4fdf07d208688d65589ff596f4afb28"
+    ],
+    "rule_sha256": {
+      "rule-0001.txt": "d20af6ea57b2ae136bb6312db78db4d2cd6de7b862825348a755bc982fbfdbf4",
+      "rule-0002.txt": "f6e537f8ebb51aa6755bc09ab91af755fb44c8cbf1127d3a25637a78c84136a4",
+      "rule-0003.txt": "8fd2085d24b19410849dd3c112440abb4285f1ac264dd9d0acc8f4d5858ffc51",
+      "rule-0004.txt": "95bc33d753d8b5dc6d112be4e1bfd2145acb216bc9eea0abf4791353773c9b66",
+      "rule-0005.txt": "f3b8ee83b0b08cc6562329794bc6da14a249cc150143f7f64c2e99c65cf6543f",
+      "rule-0006.txt": "a65b3eeec04a2f56c4abb2f299dd01382c3085586b2fe8c1013f23b072e12d94",
+      "rule-0007.txt": "09fa48111031db436802112e36c31d97f4cbddd5101084fcb430dfbb38b751eb",
+      "rule-0008.txt": "d7ff6530ee7b258e13667a8f2bb2621a1e5593e61d01c2431cf519341f52684e",
+      "rule-0009.txt": "5253ebfe48d5df38372173e7b9f3c9bde584fbba2561b4c641ffb0c3ef5948d2",
+      "rule-0010.txt": "de87823173ad6d685a40c4c4d3c7e209440eebbe9d3a90c46be48417c5788e91",
+      "rule-0011.txt": "01c75d8e7953cb0464f4262142fc2e39af702d87c60c2db9e73883808ec197bc",
+      "rule-0012.txt": "027037fa17de5c77c36fc65dd705b52a0ce35b0141cc136969d6f0ddb4308338",
+      "rule-0013.txt": "2a3ff857c63b37cc67f4209da33c420022a097287248f0fc9e4d15eab21afec6",
+      "rule-0014.txt": "618d3d3a1574768ef58255780095e0e371785b814c462dce4a484809a9f60cf5"
+    },
+    "target_names_removed": [
+      "OrderPage",
+      "Values()"
+    ]
+  },
+  "trials": [
+    {
+      "label": "review-before-current",
+      "comparison": "primary",
+      "code_commit": "ce025b9751ad0c2f74542779d086c506ec9e3bd4",
+      "run_id": "645f338c-960f-4113-bf8a-c2e125f26d51",
+      "junie_seconds": 136.815,
+      "wall_seconds_including_manual_trust_waits": 271.1937789916992,
+      "totals": {
+        "input": 853403,
+        "output": 9835,
+        "cache_read": 718304,
+        "cache_write": 0,
+        "responses": 84,
+        "uncached": 135099
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 248142,
+          "output": 3689,
+          "cache_read": 211456,
+          "cache_write": 0,
+          "responses": 25,
+          "normal_input": 36686,
+          "junie_seconds": 49.348,
+          "session_id": "session-261117-031116-1s6d"
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 183685,
+          "output": 1944,
+          "cache_read": 145584,
+          "cache_write": 0,
+          "responses": 19,
+          "normal_input": 38101,
+          "junie_seconds": 29.283,
+          "session_id": "session-261117-031303-kmmg"
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 239294,
+          "output": 2233,
+          "cache_read": 200400,
+          "cache_write": 0,
+          "responses": 22,
+          "normal_input": 38894,
+          "junie_seconds": 33.908,
+          "session_id": "session-261117-031431-biqv"
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 182282,
+          "output": 1969,
+          "cache_read": 160864,
+          "cache_write": 0,
+          "responses": 18,
+          "normal_input": 21418,
+          "junie_seconds": 24.276,
+          "session_id": "session-261117-031517-1b7z"
+        }
+      ],
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "initial_order_constant": true,
+      "initial_global_correlation_constant": true,
+      "initial_helper_uses_each": 24,
+      "initial_checker_findings_after_injected_faults": [
+        "R4",
+        "ORD",
+        "T90"
+      ],
+      "completed_repairs": 1,
+      "final_checker": "PASS: 24 ordered values, 10 rule markers, both adjacent helpers"
+    },
+    {
+      "label": "review-after-1",
+      "comparison": "intermediate",
+      "run_id": "a184be05-110d-40cc-b0bc-a1099559f7c1",
+      "junie_seconds": 108.945,
+      "wall_seconds_including_manual_trust_waits": 298.73865699768066,
+      "totals": {
+        "input": 657420,
+        "output": 8791,
+        "cache_read": 534768,
+        "cache_write": 0,
+        "responses": 69,
+        "uncached": 122652
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 84284,
+          "output": 1853,
+          "cache_read": 56000,
+          "cache_write": 0,
+          "responses": 12,
+          "normal_input": 28284,
+          "junie_seconds": 22.11,
+          "session_id": "session-261117-031336-1ddw"
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 183757,
+          "output": 2345,
+          "cache_read": 146480,
+          "cache_write": 0,
+          "responses": 19,
+          "normal_input": 37277,
+          "junie_seconds": 25.048,
+          "session_id": "session-261117-031623-161h"
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 207447,
+          "output": 2282,
+          "cache_read": 172288,
+          "cache_write": 0,
+          "responses": 20,
+          "normal_input": 35159,
+          "junie_seconds": 30.436,
+          "session_id": "session-261117-031717-1c2c"
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 181932,
+          "output": 2311,
+          "cache_read": 160000,
+          "cache_write": 0,
+          "responses": 18,
+          "normal_input": 21932,
+          "junie_seconds": 31.351,
+          "session_id": "session-261117-031756-192p"
+        }
+      ],
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "initial_order_constant": true,
+      "initial_global_correlation_constant": true,
+      "initial_helper_uses_each": 24,
+      "initial_checker_findings_after_injected_faults": [
+        "R4",
+        "ORD",
+        "T90"
+      ],
+      "completed_repairs": 1,
+      "final_checker": "PASS: 24 ordered values, 10 rule markers, both adjacent helpers"
+    },
+    {
+      "label": "review-after-2",
+      "comparison": "intermediate",
+      "run_id": "927f2adf-f607-41a2-800d-38b0b81adbc7",
+      "junie_seconds": 121.756,
+      "wall_seconds_including_manual_trust_waits": 238.9435179233551,
+      "totals": {
+        "input": 737463,
+        "output": 10022,
+        "cache_read": 614752,
+        "cache_write": 0,
+        "responses": 72,
+        "uncached": 122711
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 80084,
+          "output": 1964,
+          "cache_read": 55792,
+          "cache_write": 0,
+          "responses": 11,
+          "normal_input": 24292,
+          "junie_seconds": 19.004,
+          "session_id": "session-261117-031856-f6x5"
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 211193,
+          "output": 3402,
+          "cache_read": 173152,
+          "cache_write": 0,
+          "responses": 20,
+          "normal_input": 38041,
+          "junie_seconds": 34.347,
+          "session_id": "session-261117-032012-1hzs"
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 264240,
+          "output": 2588,
+          "cache_read": 224048,
+          "cache_write": 0,
+          "responses": 23,
+          "normal_input": 40192,
+          "junie_seconds": 42.704,
+          "session_id": "session-261117-032125-k9oh"
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 181946,
+          "output": 2068,
+          "cache_read": 161760,
+          "cache_write": 0,
+          "responses": 18,
+          "normal_input": 20186,
+          "junie_seconds": 25.701,
+          "session_id": "session-261117-032218-ku0d"
+        }
+      ],
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "initial_order_constant": true,
+      "initial_global_correlation_constant": true,
+      "initial_helper_uses_each": 24,
+      "initial_checker_findings_after_injected_faults": [
+        "R4",
+        "ORD",
+        "T90"
+      ],
+      "completed_repairs": 1,
+      "final_checker": "PASS: 24 ordered values, 10 rule markers, both adjacent helpers"
+    },
+    {
+      "label": "review-final-1",
+      "comparison": "primary",
+      "code_commit": "48ef1e8c956f7b3baeaddb848d065c1f2baa895d",
+      "run_id": "b680bf7a-f04f-45c3-b170-eb966bd7a0d1",
+      "junie_seconds": 92.075,
+      "wall_seconds_including_manual_trust_waits": 224.40732073783875,
+      "totals": {
+        "input": 600445,
+        "output": 9313,
+        "cache_read": 484240,
+        "cache_write": 0,
+        "responses": 63,
+        "uncached": 116205
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 24172,
+          "output": 1375,
+          "cache_read": 6496,
+          "cache_write": 0,
+          "responses": 7,
+          "normal_input": 17676,
+          "junie_seconds": 7.695,
+          "session_id": "session-261117-032921-1qmb"
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 183664,
+          "output": 2579,
+          "cache_read": 146432,
+          "cache_write": 0,
+          "responses": 19,
+          "normal_input": 37232,
+          "junie_seconds": 29.548,
+          "session_id": "session-261117-033023-g2ss"
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 211138,
+          "output": 3349,
+          "cache_read": 172016,
+          "cache_write": 0,
+          "responses": 19,
+          "normal_input": 39122,
+          "junie_seconds": 32.083,
+          "session_id": "session-261117-033157-19by"
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 181471,
+          "output": 2010,
+          "cache_read": 159296,
+          "cache_write": 0,
+          "responses": 18,
+          "normal_input": 22175,
+          "junie_seconds": 22.749,
+          "session_id": "session-261117-033236-xkxj"
+        }
+      ],
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "initial_order_constant": true,
+      "initial_global_correlation_constant": true,
+      "initial_helper_uses_each": 24,
+      "initial_checker_findings_after_injected_faults": [
+        "R4",
+        "ORD",
+        "T90"
+      ],
+      "completed_repairs": 1,
+      "final_checker": "PASS: 24 ordered values, 10 rule markers, both adjacent helpers"
+    },
+    {
+      "label": "review-final-2",
+      "comparison": "primary",
+      "code_commit": "deec8b717e3cc8a312836bcbca4e3a18b1506840",
+      "run_id": "ce2d6cd2-9f09-4023-a16e-78a943a80e6a",
+      "junie_seconds": 96.538,
+      "wall_seconds_including_manual_trust_waits": 201.78416204452515,
+      "totals": {
+        "input": 562668,
+        "output": 9747,
+        "cache_read": 449696,
+        "cache_write": 0,
+        "responses": 59,
+        "uncached": 112972
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 22271,
+          "output": 1206,
+          "cache_read": 4832,
+          "cache_write": 0,
+          "responses": 6,
+          "normal_input": 17439,
+          "junie_seconds": 9.1,
+          "session_id": "session-261117-033327-1323"
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 265035,
+          "output": 4921,
+          "cache_read": 222048,
+          "cache_write": 0,
+          "responses": 22,
+          "normal_input": 42987,
+          "junie_seconds": 44.683,
+          "session_id": "session-261117-033434-xz23"
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 113624,
+          "output": 1703,
+          "cache_read": 81024,
+          "cache_write": 0,
+          "responses": 14,
+          "normal_input": 32600,
+          "junie_seconds": 18.821,
+          "session_id": "session-261117-033553-1ufo"
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 161738,
+          "output": 1917,
+          "cache_read": 141792,
+          "cache_write": 0,
+          "responses": 17,
+          "normal_input": 19946,
+          "junie_seconds": 23.934,
+          "session_id": "session-261117-033618-84rl"
+        }
+      ],
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "initial_order_constant": true,
+      "initial_global_correlation_constant": true,
+      "initial_helper_uses_each": 24,
+      "initial_checker_findings_after_injected_faults": [
+        "R4",
+        "ORD",
+        "T90"
+      ],
+      "completed_repairs": 1,
+      "final_checker": "PASS: 24 ordered values, 10 rule markers, both adjacent helpers"
+    }
+  ],
+  "incomplete_trials": [
+    {
+      "run_id": "422c64a5-adc8-44bc-8e9c-67bffb14df2d",
+      "reason": "TERM=dumb prevented interactive startup; no model execution; retried with TERM=xterm-256color."
+    },
+    {
+      "run_id": "571f5fc1-162a-4ecf-89dc-9fd243c457a9",
+      "session_id": "session-261117-032311-kdef",
+      "reason": "Intermediate implementation returned a prose classification without writing artifacts. Cancelled, not counted as success. Replaced agent file writes with host validation/saving of final JSON.",
+      "input": 43320,
+      "output": 743,
+      "cache_read": 20704,
+      "responses": 10
+    }
+  ],
+  "limitations": [
+    "One fixed synthetic case; two successful final runs are not a general accuracy guarantee.",
+    "Inputs larger than 24000 UTF-8 bytes retain the complete file/search route; this benchmark measures the compact-input route.",
+    "Final run 2 includes the concurrently merged checker-diagnostic changes from 9165d0f; review and migration inputs are unchanged."
+  ]
+}
