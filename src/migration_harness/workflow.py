@@ -935,8 +935,13 @@ _EXACT_SOURCE_DATA = (
     "PHP spelling or compare raw literal spelling as if it were a decoded value. Verify quotes, backslashes, "
     "non-ASCII characters and duplicates after decoding. Use a standard serializer to generate complete "
     "arrays or tables, including separators, instead of assembling escaping or delimiters by hand. "
+    "Serialize source data only: preserve the implementation requirements in the applicable rules. "
+    "If a rule requires a helper, shared constant, or API call, keep that reference in the generated code; "
+    "do not precompute its current result into literals even when the current output is identical. "
     "When appending to earlier capsules, validate the entire combined expression and its boundary separator, "
-    "not only the values in the new rows. "
+    "not only the values in the new rows. Preserve earlier rule-compliant calls and constants while extending "
+    "the data. Before completion, check the combined target against both mandatory and selected detail rules, "
+    "including required implementation choices as well as runtime values. "
 )
 
 
