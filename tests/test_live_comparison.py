@@ -163,3 +163,57 @@ class LiveComparisonTests(HarnessCase):
             with self.assertRaisesRegex(ValueError, "取得中にソースが変更"):
                 capture_workspace(config, result["run_id"], target_hashes=hashes)
         self.assertEqual(hashes, {"existing": "unchanged"})
+
+    def test_live_source_changes_are_rejected_when_windows_metadata_is_unchanged(self):
+        (self.project / "source.php").write_bytes(b"<?php echo 42;\r\n")
+        (self.project / "Page.cs").write_bytes(b"class Original {}")
+        self.commit_project()
+        config = self.config()
+        result = workflow.prepare_run(config, "sample")
+        run_path, worktree, record, _ = workflow._load_saved_run(config, result["run_id"])
+        agent = run_path / "agent-workspace"
+        agent.mkdir()
+        (agent / "Page.cs").write_bytes(b"class Original {}")
+        read_bytes, file_version = Path.read_bytes, diff_viewer._file_version
+
+        for source_kind in ("worktree", "draft", "legacy_php"):
+            with self.subTest(source_kind=source_kind):
+                record["status"] = "junie_running" if source_kind == "draft" else "prepared"
+                workflow._write_run_record(run_path / "run.json", record)
+                trigger = (agent if source_kind == "draft" else worktree) / "Page.cs"
+                changed = trigger
+                replacement = b"class Replaced {}"
+                if source_kind == "legacy_php":
+                    manifest_path = run_path / "capsule" / "manifest.json"
+                    manifest = json.loads(manifest_path.read_bytes())
+                    manifest.pop("php_sources")
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    changed = self.project / "source.php"
+                    replacement = b"<?php echo 43;\r\n"
+                before = changed.stat()
+                original_version = file_version(changed)
+                edits = []
+
+                def windows_version(path):
+                    version = file_version(path)
+                    # Windowsのctimeは作成日時なので、内容を書き換えても変わらない。
+                    return (*version[:-1], before.st_ctime_ns) if path == changed and version else version
+
+                def edit_after_read(path):
+                    content = read_bytes(path)
+                    if path == trigger:
+                        changed.write_bytes(replacement)
+                        os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
+                        self.assertEqual(windows_version(changed), original_version)
+                        edits.append(changed)
+                    return content
+
+                with (
+                    patch.object(diff_viewer, "_file_version", side_effect=windows_version),
+                    patch.object(Path, "read_bytes", edit_after_read),
+                ):
+                    # 通常比較でも、ハッシュの返却を要求せずに内容の整合性を検証する。
+                    with self.assertRaisesRegex(ValueError, "取得中にソースが変更"):
+                        create_snapshot(config, result["run_id"])
+                self.assertEqual(edits, [changed])
+                self.assertFalse((run_path / "review-snapshots").exists())

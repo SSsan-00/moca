@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from migration_harness.files import sha256_file
 from migration_harness.workflow import (
     _input_encoding, _is_php_input, _load_capsule_manifest, _load_saved_run, _pinned_php_sources, _read_pinned_php,
     worktree_source_lock,
@@ -104,10 +105,14 @@ def capture_workspace(
                 missing_files.append(name)
             else:
                 right_paths[name] = _inside_file(worktree, name)
-        left_files = [
-            (Path(name).as_posix(), path.read_text(encoding=_input_encoding(path, encoding)))
-            for path, name, encoding in legacy_paths
-        ]
+        source_hashes = {}
+        left_files = []
+        for path, name, encoding in legacy_paths:
+            encoding = _input_encoding(path, encoding)
+            content = path.read_bytes()
+            source_hashes[path] = hashlib.sha256(content).hexdigest()
+            text = content.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+            left_files.append((Path(name).as_posix(), text))
         for source in sources or []:
             text = _read_pinned_php(capsule_path, source).decode(source["encoding"])
             left_files.append((Path(source["path"]).as_posix(), text.replace("\r\n", "\n").replace("\r", "\n")))
@@ -118,13 +123,18 @@ def capture_workspace(
                 continue
             path = right_paths[name]
             content = path.read_bytes()
+            source_hashes[path] = hashlib.sha256(content).hexdigest()
             right_files.append((name, content.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")))
             if target_hashes is not None:
-                captured_hashes[name] = hashlib.sha256(content).hexdigest()
+                captured_hashes[name] = source_hashes[path]
+        # Windowsのctimeは作成日時なので、選択したライブファイルの内容も再照合する。
+        contents_changed = any(sha256_file(path) != digest for path, digest in source_hashes.items())
         # 外部のエディターと競合した場合も、不揃いなスナップショットを保存しない。
         after = [_file_version(path) for path in paths]
         _, _, latest, _ = _load_saved_run(config, run_id)
-        if before != after or any(record.get(key) != latest.get(key) for key in ("status", "target_apply_pending")):
+        if contents_changed or before != after or any(
+            record.get(key) != latest.get(key) for key in ("status", "target_apply_pending")
+        ):
             raise ValueError("取得中にソースが変更されました。もう一度お試しください。")
         if target_hashes is not None:
             target_hashes.update(captured_hashes)
