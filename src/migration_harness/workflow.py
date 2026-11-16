@@ -1088,6 +1088,11 @@ def _review_detail_applicability(
         token = uuid.uuid4().hex
         completion = review_root / f"review-complete-{token}.txt"
         output = review_root / "decisions.json"
+        if context is None:
+            # 判定は未入力のまま、照合に使うファイル名だけを固定する。
+            output.write_text(json.dumps({
+                item["file"]: {"applies": None, "reason": ""} for item in index
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
 
         def save_decisions(answer: str) -> None:
             lines = answer.strip().splitlines()
@@ -1104,9 +1109,11 @@ def _review_detail_applicability(
 
         names = ", ".join(path.as_posix() for path in targets)
         result_instruction = (
-            "Write decisions.json as a JSON object containing every file ID from the index as a key, "
-            "each with boolean applies and a brief reason. You may generate it with a workspace shell script. "
-            "Check that every index ID occurs exactly once and that no unknown ID is present. "
+            "Update the prepared decisions.json: keep every existing key exactly as provided, including its .txt "
+            "extension, and replace every null applies with a boolean and every empty reason with a brief reason. "
+            "Each key is the exact file value in the index, not its stem. You may use a workspace shell script. "
+            "Check the saved keys against the file values loaded from details.json, not a hand-written list. "
+            "Every index file must occur exactly once, with no unknown keys or unresolved decisions. "
             "Do not print the full JSON in tools or your final response. Do not edit the source files, "
             "details.json or guidelines. After saving and checking the complete decisions.json, "
             f"write exactly {token} as plain text to {completion.name} as your final file action. "
@@ -1114,7 +1121,7 @@ def _review_detail_applicability(
         ) if context is None else (
             "Return only a JSON object with keys review_token "
             f"(exactly {token}) and decisions. The decisions object must contain every file ID from the index "
-            "as a key, each with boolean applies and a brief reason. "
+            "as a key copied verbatim from its file value, including .txt, each with boolean applies and a brief reason. "
             "Do not write any files. The harness validates and saves your final JSON response. "
         )
         prompt = (

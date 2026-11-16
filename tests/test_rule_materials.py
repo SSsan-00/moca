@@ -200,7 +200,10 @@ class RuleMaterialsTests(HarnessCase):
             saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_index[0]["when_to_read"], entry["description"])
             self.assertIsNone(kwargs["accept_result"])
-            self.assertIn("Write decisions.json", command[-1])
+            self.assertEqual(json.loads(outputs[0].read_text(encoding="utf-8")), {
+                "rule-0001.txt": {"applies": None, "reason": ""},
+            })
+            self.assertIn("including its .txt", command[-1])
             outputs[0].write_text(json.dumps({"rule-0001.txt": {"applies": True, "reason": "Orders"}}))
             completion.write_text(token)
 
@@ -231,7 +234,9 @@ class RuleMaterialsTests(HarnessCase):
         valid = {f"rule-{number:04d}.txt": {"applies": number == 1, "reason": "Output scope"} for number in (1, 2)}
         invalid = [
             {"rule-0001.txt": valid["rule-0001.txt"]},
+            {name.removesuffix(".txt"): value for name, value in valid.items()},
             {**valid, "unknown.txt": valid["rule-0001.txt"]},
+            {**valid, "rule-0002.txt": {"applies": None, "reason": ""}},
             {**valid, "rule-0002.txt": {"applies": "false", "reason": "Output scope"}},
             {**valid, "rule-0002.txt": {"applies": False, "reason": " "}},
         ]
