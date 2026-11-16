@@ -159,6 +159,37 @@ class CycleRecoveryTests(SavedRunFixture):
         self.assertEqual(repair.call_count, 2)
         self.assertTrue(all(entry["kind"] == "build" for entry in self.record()["repair_history"]))
 
+    def test_large_repeated_build_errors_repair_once_and_keep_complete_log(self):
+        self.config["max_repair_attempts"] = 2
+        log = "".join(f"{self.target}({line},3): error CS1003: ',' expected\n" for line in range(1, 20001)).encode()
+        self.assertGreater(len(log), 65_536)
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(("dotnet", 1, log), self.build, self.success)
+        self.assertEqual(result["status"], "checker_succeeded")
+        repair.assert_called_once()
+        self.assertEqual(len(self.record()["repair_history"][0]["findings"]), 1)
+        self.assertIn("20000 log entries", repair.call_args.args[5])
+        self.assertEqual((self.run_path / "build-before-repair-1.log").read_bytes(), log)
+
+    def test_late_uneditable_or_unrecognized_error_in_large_log_still_blocks_repair(self):
+        self.config["max_repair_attempts"] = 2
+        repeated = f"{self.target}(1,3): error CS1003: ',' expected\n".encode() * 1200
+        for tail in (b"Other.cs(1,1): error CS1002: ; expected\n", b"error MSB1009: project missing\n",
+                     b"x" * 65_537 + b"\n"):
+            with self.subTest(tail=tail[:60]), patch.object(workflow, "_repair_target") as repair:
+                result = self.resume(("dotnet", 1, repeated + tail))
+                self.assertEqual(result["status"], "build_failed")
+                repair.assert_not_called()
+
+    def test_many_distinct_build_messages_still_require_review(self):
+        self.config["max_repair_attempts"] = 2
+        log = "".join(f"{self.target}({line},3): error CS0103: unknown name symbol{line:05d}\n"
+                      for line in range(1, 1001)).encode()
+        with patch.object(workflow, "_repair_target") as repair:
+            result = self.resume(("dotnet", 1, log))
+        self.assertEqual(result["status"], "build_failed")
+        repair.assert_not_called()
+
     def test_progress_does_not_reset_limit(self):
         self.config["max_repair_attempts"] = 1
         with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):

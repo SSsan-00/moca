@@ -155,12 +155,19 @@ class RuleMaterialsTests(HarnessCase):
         manifest = {"unit_id": "test", "parts": [], "rule_files": [entry]}
 
         def review(command, completion, token, outputs, **kwargs):
-            self.assertNotIn("--ide-guidelines", command)
-            self.assertFalse((completion.parent / "review-context.md").exists())
-            self.assertIn("Search across all the saved capsules", command[-1])
+            if oversized == "source":
+                guidelines = Path(command[command.index("--ide-guidelines") + 1]).read_text(encoding="utf-8")
+                saved_index = json.loads(guidelines.split("\n\n", 1)[1])
+                self.assertNotIn("TAIL", guidelines)
+                self.assertFalse((completion.parent / "details.json").exists())
+                self.assertIn("scan/search across every source capsule", command[-1])
+            else:
+                self.assertNotIn("--ide-guidelines", command)
+                self.assertFalse((completion.parent / "review-context.md").exists())
+                self.assertIn("Search across all the saved capsules", command[-1])
+                saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
             for number, p in enumerate((first, last), 1):
                 self.assertEqual((completion.parent / f"source-{number:04d}.md").read_bytes(), p.read_bytes())
-            saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_index[0]["when_to_read"], entry["description"])
             kwargs["accept_result"](json.dumps({
                 "review_token": token, "decisions": {"rule-0001.txt": {"applies": True, "reason": "Orders"}},
