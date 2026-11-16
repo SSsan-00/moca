@@ -9,6 +9,8 @@
   const progress = demo ? () => demo.progress : () => snapshot;
   const assetPath = demo ? "./src/migration_harness/monaco/" : "monaco/";
   const layout = find("#editor-layout");
+  const splitter = layout.querySelector(".editor-splitter");
+  const editorPane = find("#editor-pane");
   const targetButtons = find("#editor-target-buttons");
   const phpPicker = find("#editor-php-source");
   const phpButton = find("#editor-php-toggle");
@@ -43,6 +45,57 @@
   let saving = false;
   let sending = false;
   let revision = 0;
+
+  function splitBounds() {
+    const style = getComputedStyle(layout);
+    const width = layout.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const min = parseFloat(style.getPropertyValue("--editor-min-width"));
+    const max = width - splitter.offsetWidth - parseFloat(style.getPropertyValue("--junie-min-width"));
+    return {width, min, max};
+  }
+
+  function resizeEditor(width) {
+    const bounds = splitBounds();
+    const clamped = Math.max(bounds.min, Math.min(bounds.max, width));
+    layout.style.setProperty("--editor-width", `${clamped / bounds.width * 100}%`);
+  }
+
+  const splitObserver = new ResizeObserver(() => {
+    if (!splitter.offsetWidth) return;
+    const {width, min, max} = splitBounds();
+    splitter.setAttribute("aria-valuemin", String(Math.round(min / width * 100)));
+    splitter.setAttribute("aria-valuemax", String(Math.round(max / width * 100)));
+    splitter.setAttribute("aria-valuenow", String(Math.round(editorPane.offsetWidth / width * 100)));
+  });
+  splitObserver.observe(layout);
+  splitObserver.observe(editorPane);
+
+  let drag;
+  splitter.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    splitter.focus();
+    splitter.setPointerCapture(event.pointerId);
+    splitter.classList.add("is-dragging");
+    drag = {x: event.clientX, width: editorPane.getBoundingClientRect().width};
+  });
+  splitter.addEventListener("pointermove", event => {
+    if (drag && splitter.hasPointerCapture(event.pointerId)) {
+      resizeEditor(drag.width + event.clientX - drag.x);
+    }
+  });
+  splitter.addEventListener("lostpointercapture", () => {
+    drag = undefined;
+    splitter.classList.remove("is-dragging");
+  });
+  splitter.addEventListener("keydown", event => {
+    const width = editorPane.getBoundingClientRect().width;
+    const {min, max} = splitBounds();
+    const sizes = {ArrowLeft: width - 24, ArrowRight: width + 24, Home: min, End: max};
+    if (!Object.hasOwn(sizes, event.key)) return;
+    event.preventDefault();
+    resizeEditor(sizes[event.key]);
+  });
 
   function loadMonaco() {
     if (monacoLoading) return monacoLoading;

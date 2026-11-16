@@ -100,8 +100,21 @@
     #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
     .workspace-feedback { min-width: 0; margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
     .workspace-feedback:empty { display: none; }
-    .editor-layout:not([hidden]) { display: grid; height: 100%; min-height: 360px; grid-template-columns: minmax(0, 1.9fr) minmax(230px, 1fr); grid-template-rows: minmax(0, 1fr); gap: 12px; padding: 2px; }
+    .editor-layout:not([hidden]) {
+      --editor-min-width: 220px;
+      --junie-min-width: 230px;
+      --editor-divider-width: 14px;
+      display: grid; height: 100%; min-height: 360px; padding: 2px;
+      grid-template-columns: clamp(var(--editor-min-width), var(--editor-width, 65%), calc(100% - var(--junie-min-width) - var(--editor-divider-width)))
+        var(--editor-divider-width) minmax(var(--junie-min-width), 1fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
     .editor-layout .panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .editor-splitter { display: grid; place-items: center; border-radius: 5px; cursor: col-resize; touch-action: none; user-select: none; }
+    .editor-splitter::after { content: ""; width: 3px; height: 32px; border-radius: 3px; background: var(--muted); }
+    .editor-splitter:is(:hover, :focus-visible, .is-dragging) { background: var(--blue-soft); }
+    .editor-splitter:is(:hover, :focus-visible, .is-dragging)::after { background: var(--blue); }
+    .editor-splitter:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
     .editor-heading, .editor-header, .editor-chat form { padding: 12px; }
     .editor-heading { border-bottom: 1px solid var(--line); }
     .editor-heading :is(h2, p), .editor-header p { margin: 0; }
@@ -135,7 +148,8 @@
     #workspace-editor .workspace-feedback { margin: 4px 12px 10px; }
     .editor-layout:has(#editor-php-toggle[aria-pressed="true"]) #editor-error { display: none; }
     @media (max-width: 680px) {
-      .editor-layout:not([hidden]) { height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+      .editor-layout:not([hidden]) { height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; row-gap: 12px; }
+      .editor-splitter { display: none; }
       .editor-source { flex: none; height: max(250px, 48dvh); }
       .workspace-tabs:has(#tab-editor:not([hidden])) { gap: 2px; }
       .workspace-tabs:has(#tab-editor:not([hidden])) button { padding-inline: 5px; font-size: 12px; }
@@ -728,7 +742,7 @@
   <section class="workspace-pane" id="workspace-editor" role="tabpanel" aria-labelledby="tab-editor" tabindex="0" hidden>
     <p id="editor-empty" class="workspace-feedback" role="status">実行タブで移行を始めるか、保存済みの実行を開いてください。</p>
     <div class="editor-layout" id="editor-layout" hidden>
-      <section class="panel" aria-label="移行エディタ">
+      <section class="panel" id="editor-pane" aria-label="移行エディタ">
         <header class="editor-header">
           <div class="editor-toolbar">
             <div class="editor-languages" role="group" aria-label="表示するソース">
@@ -747,6 +761,8 @@
         <p class="workspace-feedback" id="editor-error" role="alert" hidden></p>
         <div class="editor-source"><div id="editor-code"></div><div id="editor-diff" hidden></div><div id="editor-php" hidden></div></div>
       </section>
+      <div class="editor-splitter" role="separator" aria-label="エディタとJunieの幅を調整"
+           aria-controls="editor-pane" aria-orientation="vertical" tabindex="0"></div>
       <aside class="panel editor-chat" aria-labelledby="editor-chat-title">
         <header class="editor-heading"><h2 id="editor-chat-title">Junie</h2></header>
         <div class="editor-chat-body">
