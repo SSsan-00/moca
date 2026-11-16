@@ -24,8 +24,33 @@ class JunieLaunchTests(unittest.TestCase):
         ):
             self.assertIs(junie_cli._launch_process(command), launch.return_value)
         lookup.assert_called_once_with("junie")
-        launch.assert_called_once_with([executable, *command[1:]], cwd=os.getcwd())
+        self.assertEqual(launch.call_count, 1)
+        self.assertEqual(launch.call_args.args, ([executable, *command[1:]],))
+        self.assertEqual(set(launch.call_args.kwargs), {"cwd", "env"})
+        self.assertEqual(launch.call_args.kwargs["cwd"], os.getcwd())
+        self.assertEqual(launch.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
         self.assertEqual(command[0], "junie")
+
+    def test_descendant_python_imports_pinned_helper_without_creating_bytecode(self):
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": "0"}):
+            root = Path(directory)
+            materials = root / ".migration-materials"
+            materials.mkdir()
+            original = Path(junie_cli.__file__).with_name("php_literals.py").read_bytes()
+            helper = materials / "php_literals.py"
+            helper.write_bytes(original)
+            child = f"import sys; sys.path.insert(0, {str(materials)!r}); import php_literals; assert callable(php_literals.decode_literal)"
+            launcher = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {child!r}], check=True)"
+            process = junie_cli._launch_process([sys.executable, "-c", launcher], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                _, error = process.communicate(timeout=15)
+                self.assertEqual(process.returncode, 0, error.decode(errors="replace"))
+            finally:
+                if process.poll() is None:
+                    junie_cli._close_junie(process)
+            self.assertEqual(os.environ["PYTHONDONTWRITEBYTECODE"], "0")
+            self.assertEqual(list(materials.iterdir()), [helper])
+            self.assertEqual(helper.read_bytes(), original)
 
     def test_missing_executable_reports_context_restores_terminal_and_does_not_retry(self):
         restored = Mock()
@@ -110,6 +135,7 @@ class JunieLaunchTests(unittest.TestCase):
                 self.assertIsInstance(launch.call_args.args[0], str)
                 self.assertEqual(set(launch.call_args.kwargs), {"executable", "cwd", "env"})
                 self.assertEqual(launch.call_args.kwargs["env"]["JUNIE_PROMPT"], "hello")
+                self.assertEqual(launch.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
 
     def test_windows_equals_options_and_root_project_preserve_values(self):
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
@@ -339,13 +365,14 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                 root.mkdir()
                 launcher = root / ("Junie." + extension)
                 capture = root / "capture.py"
+                (root / "fixture_helper.py").write_text("value = 1\n", encoding="utf-8")
                 result = root / "result.json"
                 launcher.write_bytes(
                     b'@echo off\r\n"%PHP_TO_CSHARP_TEST_PYTHON%" "%PHP_TO_CSHARP_TEST_CAPTURE%" %*\r\n'
                     b'@exit /b %errorlevel%\r\n'
                 )
                 capture.write_text(
-                    "import json, os, pathlib, sys\n"
+                    "import json, os, pathlib, sys, fixture_helper\n"
                     "pathlib.Path(os.environ['PHP_TO_CSHARP_TEST_RESULT']).write_text(json.dumps({\n"
                     "'argv': sys.argv[1:], 'prompt': os.environ.get('JUNIE_PROMPT'),\n"
                     "'project': os.environ.get('JUNIE_PROJECT'), 'cwd': os.getcwd(),\n"
@@ -376,6 +403,7 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                 self.assertEqual(data["argv"], ["--max-steps", "2", "--literal", literal])
                 self.assertEqual(data["cwd"], str(root))
                 self.assertFalse((root / "injected.txt").exists())
+                self.assertFalse((root / "__pycache__").exists())
 
 
 if __name__ == "__main__":

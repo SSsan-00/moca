@@ -191,9 +191,13 @@ def _launch_process(command: list[str], **streams: Any) -> subprocess.Popen:
         executable = _resolve_executable(command[0])
         resolved = [executable, *command[1:]]
         if sys.platform == "win32" and ntpath.splitext(executable)[1].lower() in {".bat", ".cmd"}:
-            line, interpreter, environment = _windows_batch_command(resolved)
-            return subprocess.Popen(line, executable=interpreter, cwd=cwd, env=environment, **streams)
-        return subprocess.Popen(resolved, cwd=cwd, **streams)
+            resolved, interpreter, environment = _windows_batch_command(resolved)
+            streams["executable"] = interpreter
+        else:
+            environment = os.environ.copy()
+        # Junie's Python tools may import pinned helpers; do not create caches beside read-only materials.
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        return subprocess.Popen(resolved, cwd=cwd, env=environment, **streams)
     except (OSError, ValueError) as exc:
         raise JunieLaunchError(command, cwd, executable, exc, interpreter=interpreter) from exc
 

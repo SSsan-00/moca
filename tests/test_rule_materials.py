@@ -140,7 +140,9 @@ class RuleMaterialsTests(HarnessCase):
 
         def review(command, completion, token, outputs, **kwargs):
             self.assertEqual({p.name for p in completion.parent.iterdir()},
-                             {"review-context.md"})
+                             {"review-context.md", "details"})
+            for entry, text in zip(entries, (body, irrelevant)):
+                self.assertEqual((completion.parent / "details" / entry["file"]).read_bytes(), text.encode())
             context = Path(command[command.index("--ide-guidelines") + 1]).read_bytes()
             for p in (source, last):
                 self.assertIn(p.read_bytes(), context)
@@ -175,12 +177,20 @@ class RuleMaterialsTests(HarnessCase):
         self.assertFalse((agent / ".migration-materials" / entries[1]["file"]).exists())
         self.assertNotIn("database.md", guidelines)
 
+        (capsule / "materials" / entries[1]["file"]).write_text("changed", encoding="utf-8")
+        with patch.object(junie_cli, "run_interactive") as junie:
+            with self.assertRaisesRegex(ValueError, "saved detail review material changed"):
+                workflow._review_detail_applicability(self.root, capsule, manifest, targets, {}, None)
+            junie.assert_not_called()
+
     def test_large_review_uses_complete_files_instead_of_inlining_only_a_prefix(self):
         capsule = self.root / "capsule"
         capsule.mkdir()
         first, last = capsule / "first.md", capsule / "last.md"
         first.write_text("<?php echo 'orders';\n", encoding="utf-8")
-        entry = {"file": "rule-0001.txt", "path": "rules.md", "usage": "reference", "description": "Order output"}
+        entry, = rule_materials.write_rule_files(capsule / "materials", [
+            ({"path": "rules.md", "usage": "reference", "description": "Order output"}, "Use every original order.\n"),
+        ])
         manifest = {"unit_id": "test", "parts": [], "rule_files": [entry]}
 
         def review(command, completion, token, outputs, **kwargs):
@@ -199,6 +209,8 @@ class RuleMaterialsTests(HarnessCase):
                 self.assertEqual((completion.parent / f"source-{number:04d}.md").read_bytes(), p.read_bytes())
             saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_index[0]["when_to_read"], entry["description"])
+            self.assertEqual((completion.parent / "details" / entry["file"]).read_text(encoding="utf-8"),
+                             "Use every original order.\n")
             self.assertIsNone(kwargs["accept_result"])
             self.assertEqual(json.loads(outputs[0].read_text(encoding="utf-8")), {
                 "rule-0001.txt": {"applies": None, "reason": ""},
@@ -227,10 +239,11 @@ class RuleMaterialsTests(HarnessCase):
         capsule.mkdir()
         source = capsule / "context.md"
         source.write_text("<?php echo '日本語';\n" * 2000, encoding="utf-8")
-        manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": [
-            {"file": f"rule-{number:04d}.txt", "path": f"{number}.md", "usage": "reference", "description": "Output"}
+        entries = rule_materials.write_rule_files(capsule / "materials", [
+            ({"path": f"{number}.md", "usage": "reference", "description": "Output"}, f"Rule {number}\n")
             for number in (1, 2)
-        ]}
+        ])
+        manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": entries}
         valid = {f"rule-{number:04d}.txt": {"applies": number == 1, "reason": "Output scope"} for number in (1, 2)}
         invalid = [
             {"rule-0001.txt": valid["rule-0001.txt"]},
