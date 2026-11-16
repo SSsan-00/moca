@@ -1,0 +1,1072 @@
+{
+  "fixture": {
+    "lines": 20000,
+    "values": 19997,
+    "rule_source_sha256": [
+      "8a31e59d662f5ca70f7bf25e1c20cd0418510e2e84d436b220bc74937ea36edb",
+      "93ca6d581877ceac9aac4737e7495ee10c63d20402ac586bda74c91ea55d52c9",
+      "1daede9d93500ebe932fa60f8468f176911fed74131412660db5f5718850c859",
+      "58f8f7ed2983663d7f5794a31c404a9d7bc13ccf0554b2991ad799208c4e709d",
+      "b3220d75e76aa81177a642ddc6a3e9a562204c8852a8769b53f24d823ed7d2e4",
+      "a02cf9117cbd1918d513d27a8aa1c220a955ed4b871f001e0e3f2039dda2684b",
+      "bb6c239af8e06a10fc67af48c843a946a8b15ff7233327e525e10c835695201b",
+      "d45f7aa7952f63d82be5992c53b4880339b12c14aa6ad0dd529cf7ab4b6921b6",
+      "c79f698a9de02773c1367239bd32ac5ccd3f2c0732d6bff2bc0c34993f36de4a",
+      "fbdb62c978717a68bd89ca57021d15fd38839d94362f0cad328d7f76bec4787c",
+      "e168224ea269502b9034abfe403d595e8081bb3e4b99fccfd24a27e8d501f92b",
+      "2111b0155b47c13f5c28b77f18b2eb6e5356527c5ba6c33afaa54dd97bacd90f",
+      "106ed3c686d11e2aa603a6539148d508bdd08d0d951c88322d414896466f501d",
+      "904170e43ab619b26716f18dd97db82f64364af04cad26b123b8fbd95265a89d"
+    ],
+    "php_sha256": "861c9dfe3fa3007b30a5158b83cf791c4efc7360e8b9c2bed8dab236b4c137da",
+    "expected_sha256": "20c9a9db1c732209b6c1a227e7df5a974542d1894978819a0401c59b8d54545e"
+  },
+  "versions": {
+    "base_commit": "2505f46c56c0ef92031ca9b37c798e6fe5a2db15",
+    "before_review_from": "ce025b9751ad0c2f74542779d086c506ec9e3bd4",
+    "before_review_sha256": "78cc1eb2c4663d61a7c11a19b6152d94c1b638ff0edc8bdb997bd902edb581c1",
+    "after_commit": "92cbf9b24c32a97623cdf2aacea7a088dc559478",
+    "after_3_4_base": "92cbf9b24c32a97623cdf2aacea7a088dc559478",
+    "after_3_4_change": "Preserve rule-required helper/constant/API references while serializing extracted data and extending earlier capsules",
+    "final_code_commit": "03e784c777d9fd476ff3de4ac897bbde33d336c8",
+    "helper_code_commit": "1d89df607af8f805bf688e6bf949fb742e3b660d",
+    "integrated_final_code_commit": "3631aa7d058b3178cd06e0b828578be0d7ae7374",
+    "after_6_commit": "3d711c70df2ff9bdf1dd6a8ab8e1eb0cde0a76e6"
+  },
+  "rule_snapshot_sha256": [
+    "7ad5e0f0c76df02a35a20f0d33ddb22cb3623be5463cb6e1d3c2c50bba866c86",
+    "69313d2a0513b4a184ac5e0a28b8b6c8a8fe22a6d316fab718105cf3edf0ae94",
+    "804db70b316937cba6b299ac6b543cfb5223e90caf528c25212e05e72641d672",
+    "d91908ede44bf26a78b7491d9db27d8796f344954c71cb5d973dd44fbabb675a",
+    "83f90187219cf545affe680bfe55207986353a6b43d3e84ed3a5729ddc8bf5ec",
+    "25daf372d6272d4f6726989cdbb6e08f79ccfc1571925b25dbf27427e8f8570c",
+    "7117568cddb1810cd5bee94ccf9f1ccccab8ce95dac737d60248de2247ad52a4",
+    "2ad750da74f7d3d40fdf7aa204712d51a825981925dec2c3653e80826f4860c0",
+    "2ace54f916df3560701894dff805d259ebdc2600b1ad12a63ad4411249426e0f",
+    "e6befec319893a5433d901ef4bf866dd5b760b856e3a518d00dc94ea87ab96c6",
+    "f0eefcd2245dcbd12cc15ba7d3444f7f64ab2cc834715bb598331190fe0c24fb",
+    "6a94659c614d3598619473c00df5e582b0c95a3877028992c85599b9cbf69912",
+    "56c9f8536be408db268a48f2fef11d1a28c1725a321b14655a22ed36601466ae",
+    "07f9e98f45504cb36266fe59e53bbf945e0b6b6b7d9548fa7ce0fe3df1cb22b2"
+  ],
+  "capsule_sha256": [
+    "5d24dc6481efd00495061039937b5599a62d7bdbb7f0a781b06a5d93613c9cbc",
+    "ec21d539692d86c5554774b298fb64c59671ef7eb8b0010dd3885a21272d9449"
+  ],
+  "runs": [
+    {
+      "label": "before",
+      "run_id": "ae162cd2-ef7e-49f3-9a2d-d59f6bc66c5c",
+      "status": "build_failed",
+      "initial_verification": {
+        "build_exit_code": 1,
+        "checker_exit_code": null,
+        "injected_faults": false
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 0,
+      "wall_seconds_including_trust_waits": 370.447,
+      "totals": {
+        "input": 2162509,
+        "output": 21115,
+        "cache_read": 1884896,
+        "cache_write": 0,
+        "normal_input": 277613,
+        "responses": 134,
+        "junie_seconds": 231.178
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 537184,
+          "output": 4430,
+          "cache_read": 465136,
+          "cache_write": 0,
+          "responses": 24,
+          "session_id": "session-261117-042246-mokx",
+          "start": 1794857012071,
+          "junie_seconds": 47.055,
+          "read_files": [
+            "details.json",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 72048
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 476027,
+          "output": 6283,
+          "cache_read": 377856,
+          "cache_write": 0,
+          "responses": 38,
+          "session_id": "session-261117-042421-drqz",
+          "start": 1794857137206,
+          "junie_seconds": 63.018,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 98171
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 1149298,
+          "output": 10402,
+          "cache_read": 1041904,
+          "cache_write": 0,
+          "responses": 72,
+          "session_id": "session-261117-042641-1loy",
+          "start": 1794857204187,
+          "junie_seconds": 121.105,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 107394
+        }
+      ]
+    },
+    {
+      "label": "after-1",
+      "run_id": "bde71fec-3afb-4bf9-a761-fee1c5948643",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 0,
+        "checker_exit_code": 0,
+        "injected_faults": true
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 1,
+      "wall_seconds_including_trust_waits": 394.646,
+      "totals": {
+        "input": 2593133,
+        "output": 23704,
+        "cache_read": 2318960,
+        "cache_write": 0,
+        "normal_input": 274173,
+        "responses": 164,
+        "junie_seconds": 262.417
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 480059,
+          "output": 4686,
+          "cache_read": 418832,
+          "cache_write": 0,
+          "responses": 25,
+          "session_id": "session-261117-043357-17rc",
+          "start": 1794857700682,
+          "junie_seconds": 60.926,
+          "read_files": [
+            "details.json",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 61227
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 628898,
+          "output": 7515,
+          "cache_read": 546400,
+          "cache_write": 0,
+          "responses": 45,
+          "session_id": "session-261117-043605-rbc6",
+          "start": 1794857800325,
+          "junie_seconds": 68.499,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 82498
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 1388932,
+          "output": 10583,
+          "cache_read": 1276560,
+          "cache_write": 0,
+          "responses": 82,
+          "session_id": "session-261117-043750-h02h",
+          "start": 1794857873341,
+          "junie_seconds": 118.264,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 112372
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 95244,
+          "output": 920,
+          "cache_read": 77168,
+          "cache_write": 0,
+          "responses": 12,
+          "session_id": "session-261117-044004-pd5c",
+          "start": 1794858007559,
+          "junie_seconds": 14.728,
+          "read_files": [
+            "OrderPage.cs",
+            "checker-findings-8152a9fb779547ed8eaf79fae69448d4.txt"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 18076
+        }
+      ]
+    },
+    {
+      "label": "after-2",
+      "run_id": "f543827b-2963-4307-9349-6afef19d7ed7",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 0,
+        "checker_exit_code": 1,
+        "injected_faults": false
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": false,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 2,
+      "wall_seconds_including_trust_waits": 533.206,
+      "totals": {
+        "input": 3884341,
+        "output": 42445,
+        "cache_read": 3467088,
+        "cache_write": 0,
+        "normal_input": 417253,
+        "responses": 250,
+        "junie_seconds": 405.504
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 446206,
+          "output": 3855,
+          "cache_read": 382000,
+          "cache_write": 0,
+          "responses": 27,
+          "session_id": "session-261117-044356-1tpj",
+          "start": 1794858266817,
+          "junie_seconds": 43.159,
+          "read_files": [
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 64206
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 718250,
+          "output": 8845,
+          "cache_read": 626704,
+          "cache_write": 0,
+          "responses": 58,
+          "session_id": "session-261117-044513-1dao",
+          "start": 1794858372550,
+          "junie_seconds": 87.798,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 91546
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 1171481,
+          "output": 13843,
+          "cache_read": 1063280,
+          "cache_write": 0,
+          "responses": 66,
+          "session_id": "session-261117-044742-12hj",
+          "start": 1794858464820,
+          "junie_seconds": 113.954,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 108201
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 1067707,
+          "output": 10429,
+          "cache_read": 975552,
+          "cache_write": 0,
+          "responses": 59,
+          "session_id": "session-261117-044947-1ulq",
+          "start": 1794858590356,
+          "junie_seconds": 101.625,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "OrderPage.cs",
+            "checker-findings-d08261297bc64c40934258af24efe935.txt",
+            "guidelines.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 92155
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 480697,
+          "output": 5473,
+          "cache_read": 419552,
+          "cache_write": 0,
+          "responses": 40,
+          "session_id": "session-261117-045140-1o3c",
+          "start": 1794858703028,
+          "junie_seconds": 58.968,
+          "read_files": [
+            "OrderPage.cs",
+            "checker-findings-03a7e4961fca4af0b27a6b4a52d22679.txt",
+            "source-0001.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 61145
+        }
+      ]
+    },
+    {
+      "label": "after-3",
+      "run_id": "0c18bc7a-9e9b-46dd-a59d-b50c33e9af90",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 0,
+        "checker_exit_code": 0,
+        "injected_faults": true
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 1,
+      "wall_seconds_including_trust_waits": 364.184,
+      "totals": {
+        "input": 2376507,
+        "output": 25855,
+        "cache_read": 2099680,
+        "cache_write": 0,
+        "normal_input": 276827,
+        "responses": 167,
+        "junie_seconds": 259.698
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 604168,
+          "output": 4923,
+          "cache_read": 526960,
+          "cache_write": 0,
+          "responses": 28,
+          "session_id": "session-261117-045435-1mgb",
+          "start": 1794858902955,
+          "junie_seconds": 49.638,
+          "read_files": [
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 77208
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 810485,
+          "output": 9621,
+          "cache_read": 720976,
+          "cache_write": 0,
+          "responses": 65,
+          "session_id": "session-261117-045555-xl2u",
+          "start": 1794859001396,
+          "junie_seconds": 96.838,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 89509
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 809929,
+          "output": 9410,
+          "cache_read": 725168,
+          "cache_write": 0,
+          "responses": 59,
+          "session_id": "session-261117-045820-lrws",
+          "start": 1794859103401,
+          "junie_seconds": 90.017,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 84761
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 151925,
+          "output": 1901,
+          "cache_read": 126576,
+          "cache_write": 0,
+          "responses": 15,
+          "session_id": "session-261117-050006-umv8",
+          "start": 1794859209320,
+          "junie_seconds": 23.205,
+          "read_files": [
+            "OrderPage.cs",
+            "checker-findings-a567d866ca4b4aef9d4677da9b318139.txt"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 25349
+        }
+      ]
+    },
+    {
+      "label": "after-4",
+      "run_id": "489f7f49-6a85-45cd-97a5-14ed152014e8",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 0,
+        "checker_exit_code": 1,
+        "injected_faults": false
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 1,
+      "wall_seconds_including_trust_waits": 360.001,
+      "totals": {
+        "input": 2412993,
+        "output": 28289,
+        "cache_read": 2097712,
+        "cache_write": 0,
+        "normal_input": 315281,
+        "responses": 170,
+        "junie_seconds": 276.45
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 353500,
+          "output": 3802,
+          "cache_read": 306608,
+          "cache_write": 0,
+          "responses": 23,
+          "session_id": "session-261117-050049-604n",
+          "start": 1794859275193,
+          "junie_seconds": 43.287,
+          "read_files": [
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 46892
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 603556,
+          "output": 8190,
+          "cache_read": 497584,
+          "cache_write": 0,
+          "responses": 48,
+          "session_id": "session-261117-050203-1r29",
+          "start": 1794859346892,
+          "junie_seconds": 83.736,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 105972
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 716710,
+          "output": 9488,
+          "cache_read": 629744,
+          "cache_write": 0,
+          "responses": 51,
+          "session_id": "session-261117-050353-f9eg",
+          "start": 1794859435837,
+          "junie_seconds": 83.568,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "migration-complete-c3f0b04d2228457985981bccf00930ce.txt"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 86966
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 739227,
+          "output": 6809,
+          "cache_read": 663776,
+          "cache_write": 0,
+          "responses": 48,
+          "session_id": "session-261117-050533-1e0h",
+          "start": 1794859537104,
+          "junie_seconds": 65.859,
+          "read_files": [
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "checker-findings-9cda76ecd8c54d988aaf62e90d4b662c.txt",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 75451
+        }
+      ]
+    },
+    {
+      "label": "after-5",
+      "run_id": "4524111d-d8b4-425b-9a2d-bc7d387b9461",
+      "status": "junie_failed",
+      "initial_verification": null,
+      "completed_capsules": 1,
+      "initial_helpers_used": null,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 0,
+      "wall_seconds_including_trust_waits": 333.75,
+      "totals": {
+        "input": 2547778,
+        "output": 26008,
+        "cache_read": 2271952,
+        "cache_write": 0,
+        "normal_input": 275826,
+        "responses": 148,
+        "junie_seconds": 252.477
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 511958,
+          "output": 4674,
+          "cache_read": 428320,
+          "cache_write": 0,
+          "responses": 25,
+          "session_id": "session-261117-051331-1bhs",
+          "start": 1794860059366,
+          "junie_seconds": 46.36,
+          "read_files": [
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 83638
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 702747,
+          "output": 11400,
+          "cache_read": 614816,
+          "cache_write": 0,
+          "responses": 45,
+          "session_id": "session-261117-051509-11s8",
+          "start": 1794860131994,
+          "junie_seconds": 79.982,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py"
+          ],
+          "source_helper_commands": 5,
+          "normal_input": 87931
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 1333073,
+          "output": 9934,
+          "cache_read": 1228816,
+          "cache_write": 0,
+          "responses": 78,
+          "session_id": "session-261117-051654-1el2",
+          "start": 1794860216370,
+          "junie_seconds": 126.135,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 104257
+        }
+      ]
+    },
+    {
+      "label": "after-6",
+      "run_id": "8979f38c-ff74-4f0d-bc0b-2fb806649b04",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 1,
+        "checker_exit_code": null,
+        "injected_faults": false
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 1,
+      "wall_seconds_including_trust_waits": 373.657,
+      "totals": {
+        "input": 2346063,
+        "output": 22902,
+        "cache_read": 2077616,
+        "cache_write": 0,
+        "normal_input": 268447,
+        "responses": 139,
+        "junie_seconds": 243.178
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 385612,
+          "output": 4589,
+          "cache_read": 333072,
+          "cache_write": 0,
+          "responses": 24,
+          "session_id": "session-261117-052624-1o8u",
+          "start": 1794860862992,
+          "junie_seconds": 46.072,
+          "read_files": [
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 52540
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 506635,
+          "output": 5060,
+          "cache_read": 440432,
+          "cache_write": 0,
+          "responses": 37,
+          "session_id": "session-261117-052831-1f6a",
+          "start": 1794860941225,
+          "junie_seconds": 57.562,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py"
+          ],
+          "source_helper_commands": 2,
+          "normal_input": 66203
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 1049991,
+          "output": 9398,
+          "cache_read": 946736,
+          "cache_write": 0,
+          "responses": 49,
+          "session_id": "session-261117-053000-1kvg",
+          "start": 1794861002837,
+          "junie_seconds": 95.808,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py"
+          ],
+          "source_helper_commands": 1,
+          "normal_input": 103255
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 403825,
+          "output": 3855,
+          "cache_read": 357376,
+          "cache_write": 0,
+          "responses": 29,
+          "session_id": "session-261117-053145-1rzo",
+          "start": 1794861107463,
+          "junie_seconds": 43.736,
+          "read_files": [
+            "OrderPage.cs",
+            "checker-findings-c44e3a7fda2944609c7b4949b1593fe4.txt",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 46449
+        }
+      ]
+    },
+    {
+      "label": "after-7",
+      "run_id": "807c3b4d-2717-48cb-932e-b58257b39c6f",
+      "status": "junie_failed",
+      "initial_verification": null,
+      "completed_capsules": 0,
+      "initial_helpers_used": null,
+      "selected_details": null,
+      "excluded_detail_count": null,
+      "completed_repairs": 0,
+      "wall_seconds_including_trust_waits": 92.987,
+      "totals": {
+        "input": 643420,
+        "output": 6028,
+        "cache_read": 572176,
+        "cache_write": 0,
+        "normal_input": 71244,
+        "responses": 38,
+        "junie_seconds": 63.078
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 643420,
+          "output": 6028,
+          "cache_read": 572176,
+          "cache_write": 0,
+          "responses": 38,
+          "session_id": "session-261117-053835-1nyg",
+          "start": 1794861542775,
+          "junie_seconds": 63.078,
+          "read_files": [
+            "details.json",
+            "review-context.md",
+            "source-0001.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 71244
+        }
+      ]
+    },
+    {
+      "label": "after-8",
+      "run_id": "f92498d6-7199-439a-b375-3796ba5a0efc",
+      "status": "checker_succeeded",
+      "initial_verification": {
+        "build_exit_code": 0,
+        "checker_exit_code": 0,
+        "injected_faults": true
+      },
+      "completed_capsules": 2,
+      "initial_helpers_used": true,
+      "selected_details": [
+        "rule-0002.txt"
+      ],
+      "excluded_detail_count": 11,
+      "completed_repairs": 1,
+      "wall_seconds_including_trust_waits": 406.742,
+      "totals": {
+        "input": 3852213,
+        "output": 32337,
+        "cache_read": 3510960,
+        "cache_write": 0,
+        "normal_input": 341253,
+        "responses": 194,
+        "junie_seconds": 314.394
+      },
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 770173,
+          "output": 7981,
+          "cache_read": 670112,
+          "cache_write": 0,
+          "responses": 36,
+          "session_id": "session-261117-054201-1jmz",
+          "start": 1794861764823,
+          "junie_seconds": 72.379,
+          "read_files": [
+            "decisions.json",
+            "details.json",
+            "review-context.md",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 100061
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 810406,
+          "output": 6191,
+          "cache_read": 727296,
+          "cache_write": 0,
+          "responses": 48,
+          "session_id": "session-261117-054359-1nez",
+          "start": 1794861863772,
+          "junie_seconds": 70.62,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py",
+            "rule-0001.txt",
+            "rule-0002.txt",
+            "rule-0003.txt",
+            "source-0001.md"
+          ],
+          "source_helper_commands": 3,
+          "normal_input": 83110
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 2173565,
+          "output": 16954,
+          "cache_read": 2035536,
+          "cache_write": 0,
+          "responses": 98,
+          "session_id": "session-261117-054536-1j8f",
+          "start": 1794861938416,
+          "junie_seconds": 157.949,
+          "read_files": [
+            ".migration-boundary.md",
+            ".migration-context.md",
+            "LocalLabels.cs",
+            "OrderPage.cs",
+            "SharedSuffix.cs",
+            "php_literals.py",
+            "source-0001.md",
+            "source-0002.md"
+          ],
+          "source_helper_commands": 8,
+          "normal_input": 138029
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 98069,
+          "output": 1211,
+          "cache_read": 78016,
+          "cache_write": 0,
+          "responses": 12,
+          "session_id": "session-261117-054827-11rr",
+          "start": 1794862109347,
+          "junie_seconds": 13.446,
+          "read_files": [
+            "OrderPage.cs",
+            "checker-findings-0eb8f76502c54c7c8d2444da41f07c19.txt"
+          ],
+          "source_helper_commands": 0,
+          "normal_input": 20053
+        }
+      ]
+    }
+  ],
+  "independent_output_checks": [
+    {
+      "label": "after-1",
+      "stage": "initial",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-1",
+      "stage": "final",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-2",
+      "stage": "initial",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": false
+    },
+    {
+      "label": "after-2",
+      "stage": "final",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-3",
+      "stage": "initial",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-3",
+      "stage": "final",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-4",
+      "stage": "initial",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [
+        15001,
+        19996
+      ],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-4",
+      "stage": "final",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-6",
+      "stage": "final",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-8",
+      "stage": "initial",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    },
+    {
+      "label": "after-8",
+      "stage": "final",
+      "value_count": 19997,
+      "mismatch_positions_zero_based": [],
+      "helper_changes_propagated": true
+    }
+  ],
+  "environment": {
+    "date": "2026-11-17",
+    "platform": "macOS",
+    "junie": "26.11.1 (4020.10)",
+    "model": "Junie Lite",
+    "dotnet_sdk": "10.0.201",
+    "capsules": 2,
+    "max_context_chars": 500000
+  },
+  "verification": {
+    "local_regression_tests": 250,
+    "local_regression_skipped": 2,
+    "local_regression_passed": true,
+    "final_schema_tests": 10,
+    "ci": "https://github.com/SSsan-00/php-to-csharp-migration-harness/actions/runs/43952525621",
+    "ci_jobs_passed": 5,
+    "manual_junie_instructions_added": false,
+    "time_basis": "Junie TaskStartedEvent through final recorded event; startup, trust waits and harness builds/checkers excluded",
+    "input_includes_cache": true,
+    "baseline_failed_before_repair": true,
+    "final_includes_deliberate_fault_repair": true
+  }
+}
