@@ -115,7 +115,7 @@ def build_command(project: Path, prompt: str, max_steps: int | None, *, guidelin
 
 
 def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]]:
-    """cmdの展開対象にプロンプトを含めず、Junieの公式環境変数で渡す。"""
+    """本文とファイルパスはBATの引数処理を避け、Junieの公式環境変数で渡す。"""
     environment = os.environ.copy()
     # os.environ is case-insensitive on Windows; its plain-dict copy is not.
     system_root = os.environ.get("SystemRoot")
@@ -128,7 +128,10 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
     remaining = iter(command[1:])
     for argument in remaining:
         option, separator, value = argument.partition("=")
-        variable = {"--prompt": "JUNIE_PROMPT", "--project": "JUNIE_PROJECT", "-p": "JUNIE_PROJECT"}.get(option)
+        variable = {
+            "--prompt": "JUNIE_PROMPT", "--project": "JUNIE_PROJECT", "-p": "JUNIE_PROJECT",
+            "--ide-guidelines": "JUNIE_IDE_GUIDELINES",
+        }.get(option)
         if variable:
             if not separator:
                 try:

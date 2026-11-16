@@ -70,11 +70,12 @@ class JunieLaunchTests(unittest.TestCase):
             for private in ("secret-token", "private", "second line", "unrelated-secret", "UNRELATED_PRIVATE_ENV"):
                 self.assertNotIn(private, report)
 
-    def test_windows_batch_transports_prompt_and_project_outside_cmd_text(self):
+    def test_windows_batch_transports_prompt_project_and_guidelines_outside_cmd_text(self):
         prompt = '日本語 "quoted" & echo bad > x | exit\n%PATH% !NAME! ^ ()\r\nnext'
         project = 'C:\\space & ()\\%NAME% !NAME! 日本語\\'
+        guidelines = project + '必須事項 & details.md'
         executable = r"C:\Junie Tools & (%)!^\Junie.BAT"
-        command = [executable, "--project", project, "--max-steps", "2", "--prompt", prompt]
+        command = [executable, "--project", project, "--ide-guidelines", guidelines, "--max-steps", "2", "--prompt", prompt]
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows", "JUNIE_PROMPT": "old", "JUNIE_PROJECT": "old"}):
             before = dict(os.environ)
             line, interpreter, environment = junie_cli._windows_batch_command(command)
@@ -84,9 +85,11 @@ class JunieLaunchTests(unittest.TestCase):
         self.assertTrue(line.endswith('""'))
         self.assertEqual(environment["JUNIE_PROMPT"], prompt)
         self.assertEqual(environment["JUNIE_PROJECT"], project)
+        self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], guidelines)
         self.assertEqual(environment["PHP_TO_CSHARP_JUNIE_LAUNCHER"], executable)
         self.assertNotIn(prompt, line)
         self.assertNotIn(project, line)
+        self.assertNotIn(guidelines, line)
         self.assertNotIn(executable, line)
         self.assertNotIn("--prompt", line)
 
@@ -108,14 +111,16 @@ class JunieLaunchTests(unittest.TestCase):
     def test_windows_equals_options_and_root_project_preserve_values(self):
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
             _, _, environment = junie_cli._windows_batch_command([
-                r"C:\Junie.CMD", "--project=C:\\", '--prompt=a "b"\nc',
+                r"C:\Junie.CMD", "--project=C:\\", '--prompt=a "b"\nc', '--ide-guidelines=C:\\資料 & rules.md',
             ])
         self.assertEqual(environment["JUNIE_PROJECT"], "C:\\")
         self.assertEqual(environment["JUNIE_PROMPT"], 'a "b"\nc')
+        self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], 'C:\\資料 & rules.md')
 
     def test_windows_batch_rejects_unsafe_or_silently_truncated_arguments(self):
         cases = (
             (["--prompt"], "requires a value"),
+            (["--ide-guidelines"], "requires a value"),
             (["--prompt", "a\0b"], "NUL"),
             (["--prompt", "a" * 8192], "batch launcher limit"),
             (["--prompt", "😀" * 4096], "batch launcher limit"),
@@ -330,14 +335,16 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                     "import json, os, pathlib, sys\n"
                     "pathlib.Path(os.environ['PHP_TO_CSHARP_TEST_RESULT']).write_text(json.dumps({\n"
                     "'argv': sys.argv[1:], 'prompt': os.environ.get('JUNIE_PROMPT'),\n"
-                    "'project': os.environ.get('JUNIE_PROJECT'), 'cwd': os.getcwd()\n"
+                    "'project': os.environ.get('JUNIE_PROJECT'), 'cwd': os.getcwd(),\n"
+                    "'guidelines': os.environ.get('JUNIE_IDE_GUIDELINES')\n"
                     "}), encoding='utf-8')\n"
                     "sys.exit(7)\n", encoding="utf-8",
                 )
                 prompt = '日本語 "quotes" & echo BAD > injected.txt | exit\n%JUNIE_TEST_EXPAND% !JUNIE_TEST_EXPAND! ^ ()\n' + "x" * 7000
                 project = str(root) + "\\"
+                guidelines = str(root / "必須事項 & details.md")
                 literal = "space &|<>^() %JUNIE_TEST_EXPAND% !JUNIE_TEST_EXPAND! tail\\"
-                command = ["junie", "--project", project, "--max-steps", "2", "--literal", literal, "--prompt", prompt]
+                command = ["junie", "--project", project, "--ide-guidelines", guidelines, "--max-steps", "2", "--literal", literal, "--prompt", prompt]
                 with patch.dict(os.environ, {
                     "PATH": str(root), "PATHEXT": ".COM;.EXE;.BAT;.CMD", "JUNIE_TEST_EXPAND": "SHOULD_NOT_EXPAND",
                     "PHP_TO_CSHARP_TEST_PYTHON": sys.executable,
@@ -352,6 +359,7 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                 data = json.loads(result.read_text(encoding="utf-8"))
                 self.assertEqual(data["prompt"], prompt)
                 self.assertEqual(data["project"], project)
+                self.assertEqual(data["guidelines"], guidelines)
                 self.assertEqual(data["argv"], ["--max-steps", "2", "--literal", literal])
                 self.assertEqual(data["cwd"], str(root))
                 self.assertFalse((root / "injected.txt").exists())
