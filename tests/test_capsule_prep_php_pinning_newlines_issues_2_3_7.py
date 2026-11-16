@@ -355,7 +355,11 @@ class CapsulePreparationTests(HarnessCase):
             workflow.prepare_run(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())
         self.assertEqual(self.git("worktree", "list", "--porcelain", "-z").stdout, original_worktrees)
-        self.assertEqual(list(Path(config["run_root"]).glob("*/run.json")), [])
+        record_path, = Path(config["run_root"]).glob("*/run.json")
+        record = json.loads(record_path.read_bytes())
+        self.assertEqual(record["status"], "preparation_failed")
+        self.assertNotIn("worktree_path", record)
+        self.assertIsNone(record["active_stage"])
 
     # 共通資料で余裕が少ない場合も、必須範囲を欠落させないことを検証する。
     def test_narrow_segment_budget_can_fit_focus_without_overlap(self):

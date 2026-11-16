@@ -1,0 +1,106 @@
+"""ダッシュボードの停止要求と、実処理から届く状況報告をつなぐ。"""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from threading import Event
+from typing import Callable, Iterator
+
+
+class OperationCancelled(KeyboardInterrupt):
+    """端末のCtrl+Cと同じ保存・再開処理を通る、画面からの停止要求。"""
+
+
+@dataclass
+class ExecutionControl:
+    on_activity: Callable[[dict], None]
+    cancelled: Event = field(default_factory=Event)
+
+
+_control: ContextVar[ExecutionControl | None] = ContextVar("execution_control", default=None)
+
+
+@contextmanager
+def control_scope(control: ExecutionControl | None) -> Iterator[None]:
+    token = _control.set(control)
+    try:
+        yield
+    finally:
+        _control.reset(token)
+
+
+def is_controlled() -> bool:
+    return _control.get() is not None
+
+
+def check_cancelled() -> None:
+    if (control := _control.get()) is not None and control.cancelled.is_set():
+        raise OperationCancelled("ダッシュボードから停止しました。")
+
+
+def report_activity(message: str, *, kind: str = "activity") -> None:
+    if (control := _control.get()) is not None:
+        control.on_activity({"at": time.time(), "kind": kind, "message": message})
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    # 子プロセスがファイルを書き続けないよう、専用のプロセス群ごと止める。
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+    finally:
+        # 親が先に終了しても、SIGTERMを無視する子を残さない。
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait()
+
+
+def run_process(command: list[str], *, label: str, cancellable: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    """待機中も停止を受け付ける。出力の内容と終了コードはsubprocess.runと同じ。"""
+    if not is_controlled():
+        return subprocess.run(command, **kwargs)
+    check_cancelled()
+    check = kwargs.pop("check", False)
+    if kwargs.pop("capture_output", False):
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    next_report = time.monotonic() + 10
+    with subprocess.Popen(command, **kwargs) as process:
+        try:
+            while True:
+                if cancellable:
+                    check_cancelled()
+                try:
+                    stdout, stderr = process.communicate(timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= next_report:
+                        report_activity(f"{label}のプロセスは起動中です。終了を待っています。", kind="heartbeat")
+                        next_report = time.monotonic() + 10
+        except BaseException:
+            _terminate_process_tree(process)
+            raise
+        if check and process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)

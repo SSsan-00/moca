@@ -217,7 +217,7 @@ class SavedRunFixture(unittest.TestCase):
         calls = []
         run_process = subprocess.run
 
-        def run(command, **kwargs):
+        def run(command, *, label, cancellable=True, **kwargs):
             """指定した順序と実行場所で呼ばれたことを確認し、結果を返す。"""
             if command[0] == "git":
                 return run_process(command, **kwargs)
@@ -230,7 +230,7 @@ class SavedRunFixture(unittest.TestCase):
             kwargs["stdout"].write(log)
             return subprocess.CompletedProcess(command, returncode)
 
-        return patch.object(workflow.subprocess, "run", side_effect=run), calls
+        return patch.object(workflow, "run_process", side_effect=run), calls
 
     def resume(self, *responses):
         """外部ツールを差し替えて通常の再開経路を実行する。"""
@@ -567,7 +567,11 @@ class SavedDashboardTests(SavedRunFixture):
                         ledger = json.load(response)
                         self.assertEqual(ledger["capsules"][0]["sources"][0]["path"], "example.php")
                         self.assertFalse(ledger["completion"]["complete"])
-                    with self.post(url, "comparison", {}) as response:
+                    with self.assertRaises(HTTPError) as stale_comparison:
+                        self.post(url, "comparison", {"run_id": "a-different-run"})
+                    with stale_comparison.exception as response:
+                        self.assertEqual(response.code, 409)
+                    with self.post(url, "comparison", {"run_id": self.run_id}) as response:
                         comparison = json.load(response)
                     with urlopen(f"{url}review/{comparison['run_id']}/{comparison['id']}.json", timeout=3) as response:
                         self.assertIn("class Original", json.load(response)["workspace"]["rightText"])

@@ -8,14 +8,17 @@ import ntpath
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .errors import format_error, safe_command
+from .execution import check_cancelled, is_controlled, report_activity
 from .files import has_symlink_component
 
 
@@ -24,6 +27,10 @@ USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
 
 class JunieConnectionError(OSError):
     """Junieがモデルサービスとの通信を再試行しても続行できなかった。"""
+
+
+class JunieStopError(OSError):
+    """終了を確認できなかったため、編集の反映や次の起動へ進めない。"""
 
 
 class JunieLaunchError(OSError):
@@ -152,6 +159,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
 
 
 def _launch_process(command: list[str]) -> subprocess.Popen:
+    check_cancelled()
     executable = None
     interpreter = None
     cwd = None
@@ -195,6 +203,25 @@ def _close_junie(process: subprocess.Popen) -> int:
                 check=True, capture_output=True, timeout=10,
             )
         else:
+            # Keep Junie in the foreground terminal group; kill only its own descendants.
+            listing = subprocess.run(
+                ["ps", "-eo", "pid=,ppid="], check=True, capture_output=True, text=True, timeout=10,
+            )
+            children: dict[int, list[int]] = {}
+            for row in listing.stdout.splitlines():
+                pid, parent = map(int, row.split())
+                children.setdefault(parent, []).append(pid)
+            descendants = []
+            pending = [process.pid]
+            while pending:
+                nested = children.get(pending.pop(), [])
+                descendants.extend(nested)
+                pending.extend(nested)
+            for pid in reversed(descendants):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             process.terminate()
         return process.wait(timeout=10)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -217,6 +244,42 @@ def _is_junie_connection_failure(entry: dict[str, Any]) -> bool:
     )
 
 
+@dataclass
+class _EventCursor:
+    identity: tuple[int, int]
+    offset: int = 0
+    pending: bytes = b""
+    startup_boundary: bool = False
+    discard: bool = False
+
+
+def _event_activity(entry: dict[str, Any]) -> str:
+    """イベントの自由入力を出さず、固定の種類名だけを通知する。"""
+    event = entry.get("event")
+    agent = event.get("agentEvent") if isinstance(event, dict) else None
+    if isinstance(agent, dict):
+        if event.get("state") == "INPUT_REQUIRED" and isinstance(agent.get("approvalRequest"), dict):
+            return "Junieが操作の確認を待っています。起動した端末で確認してください。"
+        kind = agent.get("kind")
+        if kind == "LlmResponseMetadataEvent":
+            return "Junieのモデル応答を受信しました。"
+        tool = {
+            "TerminalBlockUpdatedEvent": "terminal",
+            "ViewFilesBlockUpdatedEvent": "view_files",
+            "FileChangesBlockUpdatedEvent": "file_changes",
+        }.get(kind) if isinstance(kind, str) else None
+        if kind == "ToolBlockUpdatedEvent":
+            name = agent.get("toolType")
+            normalized = re.sub(r"[-_ ]", "", name).casefold() if isinstance(name, str) else ""
+            tool = {
+                "search": "search", "skill": "skill", "readfile": "read_file",
+                "writefile": "write_file", "editfile": "edit_file", "terminal": "terminal",
+            }.get(normalized, "tool")
+        if tool:
+            return f"Junieのツール実行: {tool}"
+    return "Junieのセッションに更新がありました。"
+
+
 class _JunieSessionEvents:
     """今回のプロンプトと照合できたJunieのセッションだけを監視する。"""
 
@@ -229,11 +292,19 @@ class _JunieSessionEvents:
         self.sessions = Path(os.environ.get("JUNIE_HOME") or Path.home() / ".junie").expanduser() / "sessions"
         self.logs = self.sessions.parent / "logs"
         self.existing_logs = set(self._log_paths())
-        self.existing = set(self._paths())
+        self.cursors: dict[Path, _EventCursor] = {}
+        for path in self._paths():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            self.cursors[path] = _EventCursor(
+                (stat.st_dev, stat.st_ino), stat.st_size, startup_boundary=bool(stat.st_size),
+            )
         self.path: Path | None = None
-        self.offset = 0
         self.task: str | None = None
         self.usage = [0] * len(USAGE_FIELDS)
+        self.last_event_at: float | None = None
 
     def _paths(self) -> Iterator[Path]:
         try:
@@ -303,39 +374,83 @@ class _JunieSessionEvents:
                 details.append("Could not read the startup log; check its file permissions.")
         return "\n".join(details)
 
-    def read_new_events(self) -> bool:
+    def _new_lines(self, path: Path, *, cancellable: bool) -> Iterator[bytes]:
+        stat = path.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        cursor = self.cursors.get(path)
+        if cursor is None or cursor.identity != identity or stat.st_size < cursor.offset:
+            cursor = self.cursors[path] = _EventCursor(identity)
+            if path == self.path:
+                # A replacement log must match the launch token again before being trusted.
+                self.path = None
+                self.task = None
+        if stat.st_size == cursor.offset:
+            return
+        with path.open("rb") as stream:
+            if cursor.startup_boundary:
+                stream.seek(cursor.offset - 1)
+                cursor.discard = stream.read(1) != b"\n"
+                cursor.startup_boundary = False
+            stream.seek(cursor.offset)
+            # Bound this poll to its initial size even if Junie keeps appending.
+            while cursor.offset < stat.st_size:
+                if cancellable:
+                    check_cancelled()
+                line = stream.readline(stat.st_size - cursor.offset)
+                if not line:
+                    break
+                cursor.offset = stream.tell()
+                if cursor.discard:
+                    cursor.discard = not line.endswith(b"\n")
+                    continue
+                line = cursor.pending + line
+                cursor.pending = b""
+                if not line.endswith(b"\n"):
+                    cursor.pending = line
+                    break
+                yield line
+
+    def read_new_events(self, *, cancellable: bool = True) -> bool:
         """今回のセッションの新着行から、使用量と通信失敗を読む。"""
-        paths = [self.path] if self.path else [path for path in self._paths() if path not in self.existing]
+        paths = [self.path] if self.path else self._paths()
+        reported: set[str] = set()
         for path in paths:
+            if cancellable:
+                check_cancelled()
             try:
-                with path.open("rb") as stream:
-                    stream.seek(self.offset if self.path else 0)
-                    for line in iter(stream.readline, b""):
-                        if not line.endswith(b"\n"):
-                            break
-                        try:
-                            entry = json.loads(line)
-                        except (ValueError, UnicodeError):
+                for line in self._new_lines(path, cancellable=cancellable):
+                    try:
+                        entry = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    kind = entry.get("kind")
+                    if not isinstance(kind, str) or not kind:
+                        continue
+                    if self.path is None:
+                        if kind != "UserPromptEvent":
                             continue
-                        if not isinstance(entry, dict):
+                        prompt = entry.get("prompt")
+                        if not isinstance(prompt, str) or self.token not in prompt:
                             continue
-                        kind = entry.get("kind")
-                        if self.path is None:
-                            # 別の端末で起動したJunieの使用量は、このRunに含めない。
-                            if kind != "UserPromptEvent":
-                                continue
-                            if self.token not in str(entry.get("prompt", "")):
-                                self.existing.add(path)
-                                break
-                            self.path = path
-                        self.offset = stream.tell()
-                        if kind == "TaskStartedEvent":
-                            self.task = entry.get("taskId")
-                        if self.task and entry.get("taskId") == self.task:
-                            if kind == "SessionA2uxEvent":
-                                self._count_usage(entry.get("event"))
-                            if _is_junie_connection_failure(entry):
-                                return True
+                        self.path = path
+                    if self.path != path:
+                        continue
+                    if kind == "TaskStartedEvent":
+                        self.task = entry.get("taskId")
+                    if entry.get("taskId") is not None and entry.get("taskId") != self.task:
+                        continue
+                    if self.task and entry.get("taskId") == self.task and kind == "SessionA2uxEvent":
+                        self._count_usage(entry.get("event"))
+                    self.last_event_at = time.monotonic()
+                    message = _event_activity(entry)
+                    # Coalesce repeated status updates in one poll; usage still counts every response.
+                    if message not in reported:
+                        report_activity(message)
+                        reported.add(message)
+                    if self.task and entry.get("taskId") == self.task and _is_junie_connection_failure(entry):
+                        return True
             except OSError:
                 continue
             if self.path is not None:
@@ -368,6 +483,7 @@ def run_interactive(
     """Junie自身の通信復旧が失敗したときは同じ作業場所で起動し直す。"""
     delays = (1, 3)
     for attempt in range(len(delays) + 1):
+        check_cancelled()
         try:
             invocation = command
             if attempt:
@@ -382,7 +498,15 @@ def run_interactive(
                     "Junie could not reach the model service after 2 retries. Resume this Run after the connection recovers."
                 ) from exc
             print(f"Retrying Junie after a connection failure ({attempt + 1}/{len(delays)})", flush=True)
-            time.sleep(delays[attempt])
+            report_activity("Junieの通信に失敗しました。再試行を待っています。")
+            check_cancelled()
+            if is_controlled():
+                for _ in range(delays[attempt] * 4):
+                    time.sleep(0.25)
+                    check_cancelled()
+            else:
+                time.sleep(delays[attempt])
+            check_cancelled()
 
 
 def _run_session(
@@ -390,12 +514,13 @@ def _run_session(
     *, report_usage: Callable[[list[int]], None] | None = None,
 ) -> int:
     """対話用の端末を引き継ぎ、成果物と完了記録がそろえばセッションを閉じる。"""
+    check_cancelled()
     root = completion_path.parent
     restore_terminal = _save_terminal_mode()
     process = None
 
-    def poll() -> bool:
-        failed = events.read_new_events()
+    def poll(*, cancellable: bool = True) -> bool:
+        failed = events.read_new_events(cancellable=cancellable)
         if report_usage is not None and any(events.usage):
             delta = events.usage
             events.usage = [0] * len(USAGE_FIELDS)
@@ -407,12 +532,16 @@ def _run_session(
         next_poll = time.monotonic()
         # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
         process = _launch_process(command)
+        started = time.monotonic()
+        next_heartbeat = started + 10
         if report_usage is not None:
             report_usage([0] * len(USAGE_FIELDS))
         while True:
+            check_cancelled()
             try:
                 exit_code = process.wait(timeout=0.25)
             except subprocess.TimeoutExpired:
+                check_cancelled()
                 if (
                     has_completion_record(completion_path, token)
                     and all(
@@ -427,7 +556,17 @@ def _run_session(
                     if poll():
                         _close_junie(process)
                         raise JunieConnectionError("Junie model service connection failed")
+                now = time.monotonic()
+                if now >= next_heartbeat and process.poll() is None:
+                    elapsed = int(now - (events.last_event_at if events.last_event_at is not None else started))
+                    detail = (
+                        f"最後のイベントから{elapsed}秒" if events.last_event_at is not None
+                        else f"起動から{elapsed}秒、セッションのイベントはまだ確認できていません"
+                    )
+                    report_activity(f"Junieのプロセスは起動中です（{detail}）。", kind="heartbeat")
+                    next_heartbeat = now + 10
             else:
+                check_cancelled()
                 if poll() and not has_completion_record(completion_path, token):
                     raise JunieConnectionError("Junie model service connection failed")
                 if events.path is None and not has_completion_record(completion_path, token):
@@ -435,14 +574,19 @@ def _run_session(
                         command, exit_code, events.startup_diagnostics(process.pid, command),
                     )
                 return exit_code
-    except (KeyboardInterrupt, OSError):
+    except (KeyboardInterrupt, OSError) as exc:
         if process is not None and process.poll() is None:
-            _close_junie(process)
+            try:
+                _close_junie(process)
+            except OSError as cleanup_error:
+                raise JunieStopError(
+                    "Junieの終了を確認できませんでした。起動した端末で終了してから再開してください。"
+                ) from cleanup_error
         raise
     finally:
         try:
             if process is not None and report_usage is not None:
-                poll()
+                poll(cancellable=False)
         finally:
             if process is None or process.poll() is not None:
                 restore_terminal()

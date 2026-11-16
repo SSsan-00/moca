@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import re
 import secrets
@@ -20,7 +21,9 @@ from tomlkit.exceptions import TOMLKitError
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
 from migration_harness.errors import format_error
+from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset
+from migration_harness.timings import freeze_timings
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.workflow import (
@@ -33,7 +36,7 @@ PROGRESS_FIELDS = (
     "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule",
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
     "build_exit_code", "build_log_path", "checker_exit_code", "checker_log_path", "error",
-    "script_phase", "script_logs",
+    "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
@@ -71,6 +74,32 @@ class Dashboard:
         self.state: dict[str, Any] = {}
         self.actions: Queue[dict[str, Any]] = Queue(maxsize=1)
         self.closed = False
+        self.control: ExecutionControl | None = None
+        self.activity_sequence = 0
+
+    def begin_operation(self) -> None:
+        """停止要求は実行ごとのIDに結び付け、別のRunに持ち越さない。"""
+        with self.condition:
+            self.control = ExecutionControl(self.activity)
+            self.publish({**self.state, "ready": False, "cancellable": True,
+                          "operation_id": secrets.token_hex(16), "stop_requested": False})
+
+    def activity(self, entry: dict[str, Any]) -> None:
+        with self.condition:
+            if not self.control or self.state.get("ready"):
+                return
+            self.activity_sequence += 1
+            self.publish({**self.state, "activity": {**entry, "sequence": self.activity_sequence}})
+
+    def request_stop(self, action: dict[str, Any]) -> bool:
+        with self.condition:
+            if (self.control is None or self.state.get("ready")
+                    or action.get("operation_id") != self.state.get("operation_id")):
+                return False
+            self.control.cancelled.set()
+            self.publish({**self.state, "stop_requested": True, "cancellable": False,
+                          "message": "停止しています。保存済みの編集を残して処理を終了します。"})
+            return True
 
     def publish(self, state: dict[str, Any]) -> None:
         """状態が変わったときだけ再送用の連番を付けて配信を通知する。"""
@@ -85,7 +114,7 @@ class Dashboard:
 
     def observe(self, record: dict[str, Any]) -> None:
         """Run記録から公開する項目を絞り、進捗に影響する変更だけを配信する。"""
-        state = {key: record[key] for key in PROGRESS_FIELDS if key in record}
+        state = {key: copy.deepcopy(record[key]) for key in PROGRESS_FIELDS if key in record}
         state["repair_count"] = len(record.get("repair_history", [])) + (
             record.get("status") == "repairing" and "repair_pending" in record
         )
@@ -93,7 +122,11 @@ class Dashboard:
             fields = (*PROGRESS_FIELDS, "repair_count")
             usage = [row.copy() for row in record.get("token_usage", [])]
             if state != {key: self.state[key] for key in fields if key in self.state}:
-                self.publish({**state, "token_usage": usage})
+                operation = {key: self.state[key] for key in (
+                    "operation_id", "cancellable", "stop_requested", "activity", "generating_anchors",
+                    "diff_viewer_enabled",
+                ) if key in self.state}
+                self.publish({**state, **operation, "token_usage": usage})
             elif usage != self.state.get("token_usage", []):
                 self.publish({**self.state, "token_usage": usage})
 
@@ -104,6 +137,8 @@ class Dashboard:
             "error_details": "",
             "resumable": can_resume_run(config, result),
             "diff_viewer_enabled": bool(config.get("diff_viewer_html")),
+            "cancellable": False, "stop_requested": False, "operation_id": None,
+            "stage_timings": freeze_timings(self.state), "active_stage": None,
         }
         state.pop("review_error", None)
         if result["status"] == "checker_needs_review":
@@ -111,15 +146,19 @@ class Dashboard:
                 state["review"] = review_checker(config, result["run_id"], None, None)
             except _ERRORS as exc:
                 state["review_error"] = format_error(exc)
+        self.control = None
         self.publish(state)
 
     def failed(self, error: BaseException) -> None:
         """Keep the workspace usable after an operation or saved-state failure."""
         details = format_error(error)
+        self.control = None
         self.publish({
             **self.state, "status": self.state.get("status", "idle"), "ready": True,
             "resumable": self.state.get("resumable", False), "generating_anchors": False, "error_details": details,
             "message": "操作を完了できませんでした。設定や実行ログを確認してください。\n" + details,
+            "cancellable": False, "stop_requested": False, "operation_id": None,
+            "stage_timings": freeze_timings(self.state), "active_stage": None,
         })
 
     def submit(self, action: dict[str, Any]) -> bool:
@@ -134,11 +173,13 @@ class Dashboard:
                 or (action["action"] == "accept" and self.state.get("status") != "checker_needs_review")
             ):
                 return False
-            self.actions.put_nowait(action)
             self.publish({
                 **self.state, "ready": False, "message": "", "generating_anchors": generating_anchors,
                 "error_details": "",
             })
+            if action["action"] in ("prepare", "run", "resume", "resume-run", "anchors"):
+                self.begin_operation()
+            self.actions.put_nowait(action)
             return True
 
     def server(
@@ -332,6 +373,8 @@ class Dashboard:
                         if not comparison_config.get("diff_viewer_html"):
                             raise ValueError("設定の差分ビューアーのHTMLを指定してください。")
                         run_id = state.get("run_id")
+                        if action.get("run_id", run_id) != run_id:
+                            raise ValueError("表示中のRunが変わりました。現在のRunで比較を開き直してください。")
                         if not run_id or not state.get("worktree_path"):
                             raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
                         snapshot_id = create_snapshot(comparison_config, run_id, focus=action.get("focus"))
@@ -343,7 +386,7 @@ class Dashboard:
                 try:
                     if type(action.get("revision")) is not int:
                         raise ValueError
-                    if action.get("action") not in ("accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run"):
+                    if action.get("action") not in ("stop", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run"):
                         raise ValueError
                     if action["action"] in ("prepare", "run", "open-run", "resume-run"):
                         name = action.get("run_id" if action["action"] in ("open-run", "resume-run") else "unit_id")
@@ -357,7 +400,12 @@ class Dashboard:
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
-                if action["action"] == "anchors":
+                if action["action"] == "stop":
+                    if dashboard.request_stop(action):
+                        self.send_body(202, "application/json", b"{}")
+                    else:
+                        self.send_error(409)
+                elif action["action"] == "anchors":
                     self.send_anchored_comparison(action)
                 elif dashboard.submit(action):
                     self.send_body(202, "application/json", b"{}")
@@ -388,7 +436,8 @@ class Dashboard:
                         config.pop("checker_from_cli", None)
                         config.pop("toml_checker_command", None)
                         config.update(updated)
-                        dashboard.publish({"status": "idle", "ready": True, "settings_revision": dashboard.revision + 1})
+                        dashboard.publish({"status": "idle", "ready": True, "settings_revision": dashboard.revision + 1,
+                                           "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
                 except _ERRORS as exc:
                     message = f"設定を保存できませんでした。内容を確認してください。\n{format_error(exc)}"
                     self.send_body(409, "text/plain; charset=utf-8", message.encode())
@@ -461,6 +510,7 @@ def run_dashboard(
     else:
         view.publish({"status": "idle", "ready": True})
         options += " data-workspace"
+    view.publish({**view.state, "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
     html += '<script src="dashboard.js" defer></script></body></html>'
     with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
@@ -469,9 +519,19 @@ def run_dashboard(
         token = run_observer.set(view.observe)
 
         def show_failure(error: BaseException) -> dict[str, Any] | None:
+            # 最終状態の公開まで操作受付を閉じ、新しい実行の状態を上書きしない。
+            with view.condition:
+                return finish_failure(error)
+
+        def finish_failure(error: BaseException) -> dict[str, Any] | None:
             failed = None
+            stopped = isinstance(error, RunInterrupted) or (
+                isinstance(error, RunScriptError) and bool(view.control and view.control.cancelled.is_set())
+            )
             failed_run_id = getattr(error, "run_id", None) or view.state.get("run_id")
-            if failed_run_id:
+            preparation_only = (view.state.get("status") in {"preparation_failed", "preparation_interrupted"}
+                                and not view.state.get("worktree_path"))
+            if failed_run_id and not preparation_only:
                 try:
                     _, _, failed, _ = _load_saved_run(config, failed_run_id)
                     view.observe(failed)
@@ -481,14 +541,33 @@ def run_dashboard(
                     return None
             elif isinstance(error, RunScriptError):
                 view.publish({"status": "script_failed"})
-            view.failed(error)
+            if stopped:
+                resumable = bool(failed and can_resume_run(config, failed))
+                view.control = None
+                view.publish({**view.state, "ready": True, "resumable": resumable,
+                              "cancellable": False, "stop_requested": False, "operation_id": None,
+                              "stage_timings": freeze_timings(view.state), "active_stage": None,
+                              "error_details": "", "message": (
+                                  "停止しました。同じRun IDで再開できます。" if resumable else
+                                  "準備を停止しました。実行タブから再度準備してください。"
+                              )})
+            else:
+                view.failed(error)
             return failed
+
+        def execute(function, *args, **kwargs):
+            with control_scope(view.control):
+                try:
+                    return function(*args, **kwargs)
+                except OperationCancelled:
+                    raise RunInterrupted(view.state.get("run_id", "")) from None
 
         try:
             # Junieは起動元の端末を必要とするため、HTTPスレッドは操作をキューに渡す。
             if unit_id is not None and config_error is None:
+                view.begin_operation()
                 try:
-                    result = run_with_junie(config, unit_id)
+                    result = execute(run_with_junie, config, unit_id)
                     view.ready(config, result)
                 except RunInterrupted as exc:
                     result = show_failure(exc)
@@ -507,39 +586,42 @@ def run_dashboard(
                     reply = action["reply"]
                     try:
                         source_run_id = view.state["run_id"]
-                        path, count = generate_anchors(
-                            config, source_run_id, focus=action.get("focus"),
+                        path, count = execute(
+                            generate_anchors, config, source_run_id, focus=action.get("focus"),
                         )
                     except KeyboardInterrupt:
                         reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))
+                        view.publish({**view.state, "message": "アンカー生成を停止しました。移行結果は保存されています。"})
                     except _ERRORS as exc:
-                        view.failed(exc)
+                        view.publish({**view.state, "error_details": format_error(exc),
+                                      "message": "アンカー生成に失敗しました。\n" + format_error(exc)})
                         reply.set_exception(exc)
                     else:
                         reply.set_result((source_run_id, path.stem, count))
                     finally:
-                        view.publish({**view.state, "ready": True, "generating_anchors": False})
+                        view.control = None
+                        view.publish({**view.state, "ready": True, "generating_anchors": False,
+                                      "cancellable": False, "stop_requested": False, "operation_id": None})
                     continue
                 try:
                     if action["action"] in ("open-run", "resume-run"):
                         _, _, result, _ = _load_saved_run(config, action["run_id"])
                         view.observe(result)
                         if action["action"] == "resume-run":
-                            result = resume_with_junie(config, action["run_id"])
+                            result = execute(resume_with_junie, config, action["run_id"])
                         view.ready(config, result)
                     elif action["action"] in ("prepare", "run"):
-                        view.publish({"status": "preparing", "unit_id": action["unit_id"]})
                         if action["action"] == "prepare":
-                            prepared = prepare_run(config, action["unit_id"])
+                            prepared = execute(prepare_run, config, action["unit_id"])
                             _, _, result, _ = _load_saved_run(config, prepared["run_id"])
                         else:
-                            result = run_with_junie(config, action["unit_id"])
+                            result = execute(run_with_junie, config, action["unit_id"])
                         view.ready(config, result)
                     elif action["action"] == "accept":
                         review_checker(config, view.state["run_id"], action["finding_id"], action["reason"])
                         view.ready(config, result, "判断理由を記録しました。")
                     else:
-                        result = resume_with_junie(config, view.state["run_id"])
+                        result = execute(resume_with_junie, config, view.state["run_id"])
                         view.ready(config, result)
                 except RunInterrupted as exc:
                     result = show_failure(exc)

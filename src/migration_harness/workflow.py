@@ -25,7 +25,9 @@ from typing import Any, Iterator
 from . import junie_cli
 from .config import REFERENCE_ROLES
 from .errors import format_error
+from .execution import check_cancelled, report_activity, run_process
 from .files import harness_asset, has_symlink_component, sha256_file
+from .timings import freeze_timings, update_timings
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
 worktree_source_lock = RLock()
@@ -74,6 +76,7 @@ def _is_php_input(source: dict[str, Any]) -> bool:
 
 def _create_worktree(
     config: dict[str, Any], unit: dict[str, Any], run_path: Path, context: dict[str, Any],
+    record: dict[str, Any] | None = None,
 ) -> Path:
     """指定リビジョンの分離したworktreeと初期Run記録を用意する。"""
     root = Path(config["project_root"])
@@ -82,17 +85,19 @@ def _create_worktree(
     worktree.parent.mkdir(parents=True, exist_ok=True)
     if worktree.exists():
         raise FileExistsError(f"worktree path already exists: {worktree}")
-    subprocess.run(
+    run_process(
         ["git", "-C", str(root), "worktree", "add", "--detach", str(worktree), config["base_ref"]],
+        label="worktree作成", cancellable=False,
         check=True,
         capture_output=True,
         text=True,
     )
-    record = {
+    record = {} if record is None else record
+    record.update({
         "run_id": run_id,
         "unit_id": unit["id"],
         "status": "prepared",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": record.get("created_at", datetime.now(timezone.utc).isoformat()),
         "project_root": config["project_root"],
         "worktree_path": str(worktree),
         "capsule_path": context["capsule_path"],
@@ -107,7 +112,7 @@ def _create_worktree(
         "target": unit["target"],
         "completed_capsules": 0,
         "current_capsule": 1,
-    }
+    })
     if "targets" in unit:
         record["targets"] = unit["targets"]
     if (log_path := run_path / "before_prepare.log").is_file():
@@ -157,6 +162,8 @@ def _selected_lines(path: Path, start: int, end: int | None, encoding: str) -> I
     reached_end = False
     with path.open("r", encoding=encoding, errors="strict", newline="") as stream:
         for number, line in enumerate(stream, start=1):
+            if number % 256 == 0:
+                check_cancelled()
             if number >= start:
                 selected_count += 1
                 yield number, line
@@ -293,6 +300,7 @@ def _prepare_inputs(
     prepared = []
     php_sources: dict[str, dict[str, str]] = {}
     for item in inputs:
+        check_cancelled()
         name = item["path"]
         source_path = (root / name).resolve()
         pin = None
@@ -413,6 +421,8 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
             "sha256": sha256_file(context_path),
             "sources": [_manifest_source(group) for group in groups],
         })
+        check_cancelled()
+        report_activity(f"カプセル {part_number} を準備しました（{len(context):,}文字）。")
         first, last = groups[0], groups[-1]
         if previous_tail and previous_tail[0] == first["input_index"]:
             previous_dir = Path(context_paths[-2]).parent
@@ -531,15 +541,41 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
     """入力を検証し、カプセルの作成が成功してから作業ツリーを作る。"""
     run_id = str(uuid.uuid4())
     run_path = Path(config["run_root"]) / run_id
-    run_path.parent.mkdir(parents=True, exist_ok=True)
     unit = _find_unit(config, unit_id)
+    run_path.mkdir(parents=True, exist_ok=False)
     project_root = Path(config["project_root"])
-    if config.get("scripts", {}).get("before_prepare") and (observer := run_observer.get()) is not None:
-        observer({"status": "script_running", "script_phase": "before_prepare", "unit_id": unit_id, "run_id": run_id})
-    _run_script_phase(config, "before_prepare", project_root, run_path)
-    _validate_inputs(project_root, unit)
-    context = _prepare_context(config, unit, run_path)
-    worktree = _create_worktree(config, unit, run_path, context)
+    record = {
+        "run_id": run_id, "unit_id": unit_id, "target": unit["target"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "preparing", "preparation_stage": 0,
+    }
+    record_path = run_path / "run.json"
+    _write_run_record(record_path, record)
+    try:
+        _run_script_phase(config, "before_prepare", project_root, run_path, record)
+        check_cancelled()
+        _validate_inputs(project_root, unit)
+        record.update(status="preparing", preparation_stage=1)
+        _write_run_record(record_path, record)
+        context = _prepare_context(config, unit, run_path)
+        check_cancelled()
+        record["preparation_stage"] = 2
+        _write_run_record(record_path, record)
+        worktree = _create_worktree(config, unit, run_path, context, record)
+        check_cancelled()
+    except KeyboardInterrupt:
+        # Gitが作成を終えていれば、このRunを準備済みとしてそのまま再開できる。
+        if record.get("worktree_path"):
+            _write_run_record(record_path, record)
+        else:
+            record.update(status="preparation_interrupted", error="準備を停止しました。実行タブから再度準備してください。")
+            _write_run_record(record_path, record)
+        raise RunInterrupted(run_id) from None
+    except (OSError, ValueError, RuntimeError):
+        if not record.get("worktree_path"):
+            record["status"] = "preparation_failed"
+            _write_run_record(record_path, record)
+        raise
     if config.get("scripts", {}).get("after_prepare"):
         record = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
         _run_script_phase(config, "after_prepare", worktree, run_path, record, once=True)
@@ -587,6 +623,7 @@ def _notify_run_observer(record: dict[str, Any]) -> None:
 
 def _write_run_record(path: Path, record: dict[str, Any]) -> None:
     """工程の進捗を保存し、独立して更新された使用量と台帳を引き継ぐ。"""
+    update_timings(record)
     with _lock_run_record(path):
         if path.is_file():
             saved = json.loads(path.read_text(encoding="utf-8"))
@@ -607,6 +644,7 @@ def _edit_run_record(path: Path) -> Iterator[tuple[dict[str, Any], dict[str, Any
         if not changes:
             return
         record.update(changes)
+        update_timings(record)
         _replace_run_record(path, record)
     _notify_run_observer(record)
 
@@ -668,7 +706,7 @@ def _run_script_phase(
                 if phase == "before_migration" and command[0] == "@copy-migration-draft":
                     script = harness_asset("tools/copy_migration_draft.py")
                     invocation = [sys.executable, str(script), *command[1:]]
-                completed = subprocess.run(invocation, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
+                completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
                 if record is not None and once:
@@ -1084,7 +1122,7 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
                     if not target.is_relative_to(worktree.resolve()) or not target.is_file():
                         raise ValueError(f"build project is missing or outside the worktree: {build_project}")
                     command.append(str(target))
-                completed = subprocess.run(command, cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
+                completed = run_process(command, label="ビルド", cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
             except (OSError, ValueError) as exc:
                 log.write((format_error(exc, command=command, cwd=worktree) + "\n").encode("utf-8"))
                 raise
@@ -1129,8 +1167,8 @@ def _run_checker(
         # stdoutとstderrをそのまま保存し、利用者のチェッカー固有の出力形式を保つ。
         with log_path.open("wb") as log:
             try:
-                completed = subprocess.run(
-                    command, cwd=result["worktree_path"], stdout=log, stderr=subprocess.STDOUT, check=False,
+                completed = run_process(
+                    command, label="チェッカー", cwd=result["worktree_path"], stdout=log, stderr=subprocess.STDOUT, check=False,
                 )
             except OSError as exc:
                 log.write((format_error(exc, command=command, cwd=result["worktree_path"]) + "\n").encode("utf-8"))
@@ -1263,7 +1301,7 @@ def _attempt_repair(
     _write_run_record(record_path, record)
     try:
         _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
-    except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError):
+    except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
         raise
     except (OSError, RuntimeError, ValueError):
         _charge_repair(record)
@@ -1338,7 +1376,7 @@ def _repair_target(
             command, completion_path, token, agent_targets,
             report_usage=junie_usage_recorder(run_path, phase),
         )
-    except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError):
+    except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
         attempt.pop("draft", None)
         try:
             if _unlisted_workspace_files(agent_root, allowed) == other_files:
@@ -2091,6 +2129,9 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
 def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = _load_saved_run(config, run_id)
+    if "stage_timings" in record:
+        record["stage_timings"] = freeze_timings(record)
+        record["active_stage"] = None
     status = record.get("status")
     if not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:

@@ -43,7 +43,7 @@ def _pane(files: list[tuple[str, str]]) -> tuple[str, list[dict[str, Any]]]:
 
 def capture_workspace(
     config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None,
-    target_hashes: dict[str, str] | None = None,
+    target_hashes: dict[str, str] | None = None, include_draft: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     """Runの参照PHPと移行先をそろえて読み、比較時点の内容を固定する。"""
     run_path, worktree, record, unit = _load_saved_run(config, run_id)
@@ -72,7 +72,22 @@ def capture_workspace(
         targets = [target + ".cs", target]
     else:
         targets = [target]
-    right_paths = {name: _inside_file(worktree, name) for name in targets}
+    right_paths = {}
+    draft_files = []
+    missing_files = []
+    agent_root = run_path / "agent-workspace"
+    use_draft = include_draft and record.get("status") in {"junie_running", "repairing"}
+    if use_draft and (agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve())):
+        raise ValueError("Junieの作業場所を安全に参照できません。")
+    for name in targets:
+        if use_draft and (agent_root / name).exists():
+            right_paths[name] = _inside_file(agent_root.resolve(), name)
+            draft_files.append(name)
+        elif include_draft and not (worktree / name).exists():
+            # まだ生成されていない移行先は空のペインにし、原文を先に確認できる。
+            missing_files.append(name)
+        else:
+            right_paths[name] = _inside_file(worktree, name)
     paths = [path for path, _, _ in legacy_paths] + list(right_paths.values())
     with worktree_source_lock:
         before = [path.stat() for path in paths]
@@ -84,7 +99,11 @@ def capture_workspace(
             text = _read_pinned_php(capsule_path, source).decode(source["encoding"])
             left_files.append((Path(source["path"]).as_posix(), text.replace("\r\n", "\n").replace("\r", "\n")))
         right_files = []
-        for name, path in right_paths.items():
+        for name in targets:
+            if name in missing_files:
+                right_files.append((name, ""))
+                continue
+            path = right_paths[name]
             content = path.read_bytes()
             right_files.append((name, content.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")))
             if target_hashes is not None:
@@ -101,7 +120,10 @@ def capture_workspace(
     payload = {
         "kind": "diff-viewer-workspace",
         "version": 1,
-        "snapshot": {"runId": run_id, "capturedAt": datetime.now(timezone.utc).isoformat()},
+        "snapshot": {
+            "runId": run_id, "capturedAt": datetime.now(timezone.utc).isoformat(),
+            "draftFiles": draft_files, "missingFiles": missing_files,
+        },
         "workspace": {
             "name": unit["id"].strip().encode("utf-16-le")[:50].decode("utf-16-le", errors="ignore"),
             "leftText": left_text, "rightText": right_text,
@@ -138,7 +160,7 @@ def save_workspace(run_path: Path, payload: dict[str, Any]) -> str:
 
 def create_snapshot(config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None) -> str:
     """アンカー生成を伴わない通常比較用のワークスペースを保存する。"""
-    return save_workspace(*capture_workspace(config, run_id, focus=focus))
+    return save_workspace(*capture_workspace(config, run_id, focus=focus, include_draft=True))
 
 
 def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> bytes:

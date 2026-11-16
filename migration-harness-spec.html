@@ -238,11 +238,11 @@ sequenceDiagram
     <div class="grid">
       <article class="card">
         <h3>進捗の配信</h3>
-        <p>Python標準ライブラリのHTTPサーバーを <code>127.0.0.1</code> で起動し、SSEでブラウザーに進捗とログを配信します。</p>
+        <p>SSEで工程の進捗とJunieの実行状況を配信します。約10秒ごとにプロセスの生存も通知します。工程時間はRunに保存し、停止中の待ち時間を除いて加算します。</p>
       </article>
       <article class="card">
         <h3>画面からの操作</h3>
-        <p>判断理由の記録と再開はHTTP POSTで送ります。Junieとの対話はハーネスを起動した端末で行います。</p>
+        <p>実行中は「停止」で編集を保存して止め、同じRunを再開できます。worktree作成前の中断は準備からやり直します。Junieとの対話は起動した端末で行います。</p>
       </article>
       <article class="card">
         <h3>再接続と履歴</h3>
@@ -355,7 +355,7 @@ flowchart TB
 
   <section>
     <h2>4. 差分レビューとアンカー連携</h2>
-    <p class="diagram-note">進捗画面の「比較ツールを開く」で、準備時のPHPと現在の移行先を比較し、ワークスペースJSONをダウンロードします。<code>targets</code> に <code>.cshtml</code> と <code>.cshtml.cs</code> を指定すると、同じRunで両方を移行・ビルドできます。</p>
+    <p class="diagram-note">「比較ツールを開く」で、準備時のPHPと最新の移行先を比較します。Junieの実行中は保存済みの編集中ファイルを表示し、取得時点のJSONを保存します。比較画面は移行処理に影響しません。</p>
     <div class="steps">
       <article class="step">
         <h3>差分ビューアーと対応例の設定</h3>
