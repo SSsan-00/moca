@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -150,6 +151,10 @@ def generate_anchors(
                     stream.write(f"{number}\t{line}\n")
         guide = {"examples": examples, "leftSegments": workspace["leftSegments"], "rightSegments": workspace["rightSegments"]}
         (agent / "guide.json").write_text(json.dumps(guide, ensure_ascii=False, indent=2), encoding="utf-8")
+        input_hashes = {
+            agent / name: hashlib.sha256((agent / name).read_bytes()).digest()
+            for name in ("left.txt", "right.txt", "guide.json")
+        }
         token = uuid.uuid4().hex
         completion = agent / f"anchor-complete-{token}.txt"
         result = agent / "anchors.json"
@@ -176,6 +181,11 @@ def generate_anchors(
         )
         if not junie_cli.has_completion_record(completion, token) or result.is_symlink() or not result.is_file():
             raise ValueError("Junieのアンカー作成が完了しませんでした。")
+        if any(
+            path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).digest() != digest
+            for path, digest in input_hashes.items()
+        ):
+            raise ValueError("アンカー作成中に入力が変更されました。比較を作り直してください。")
         anchors = _validated_anchors(result, left, right)
     workspace["anchors"]["manualAnchors"] = anchors
     snapshot_id = save_workspace(run_path, payload)

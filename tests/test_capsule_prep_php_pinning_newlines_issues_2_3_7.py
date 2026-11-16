@@ -15,6 +15,7 @@ from fixtures import HarnessCase
 from migration_harness import cli, junie_cli, review_anchors, workflow
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace
+from migration_harness.rule_materials import read_rule
 
 
 PHP = {"path": "Source.php", "role": "php", "start_line": 1, "end_line": 2}
@@ -164,14 +165,16 @@ class CapsulePreparationTests(HarnessCase):
             agent = self.root / f"agent-{unit_id}"
             agent.mkdir()
             prompt = workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
-            self.assertIn("shared.md", prompt)
+            self.assertTrue((agent / "migration-read-rules.py").is_file())
             self.assertIn("references.json", prompt)
             self.assertIn("last 5", (agent / ".migration-materials" / references[-1]["file"]).read_text())
+            rules = "".join((agent / ".migration-materials" / entry["file"]).read_text() for entry in manifest["rule_chunks"])
             for part in manifest["parts"]:
                 self.assertEqual([entry["path"] for entry in part["sources"]], [PHP["path"]])
                 context = Path(part["path"]).read_text(encoding="utf-8")
                 for index in range(2):
-                    self.assertIn(f"     1 | first {index}\n     2 | last {index}", context)
+                    self.assertIn(f"     1 | first {index}\n     2 | last {index}", rules)
+                    self.assertNotIn(f"first {index}", context)
                 self.assertNotIn("last 5", context)
             first, second = manifest["parts"][:2]
             following = Path(first["path"]).with_name("boundary.md").read_text()
@@ -290,6 +293,10 @@ class CapsulePreparationTests(HarnessCase):
         def junie(command, completion, token, targets, *, report_usage=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
+            chunks = self.read_json(completion.parent / ".migration-materials/rules.json")
+            with redirect_stdout(io.StringIO()):
+                for chunk in chunks:
+                    read_rule(completion.parent, token, chunk["file"])
             observed_contexts.append((target.parent / ".migration-context.md").read_bytes())
             if len(observed_contexts) == 2:
                 target.write_bytes(b"class Partial {}\n")
@@ -325,10 +332,12 @@ class CapsulePreparationTests(HarnessCase):
         self.assertEqual(result["completed_capsules"], len(parts))
         self.assertEqual(self.read_json(record_path)["resume_attempts"], 1)
         self.assertEqual([entry["path"] for entry in manifest["shared_sources"]], ["rules.md", "constraints.md"])
+        saved_rules = b"".join((run_path / "capsule/materials" / chunk["file"]).read_bytes() for chunk in manifest["rule_chunks"])
+        self.assertIn(b"REQUIRED_MIGRATION_RULE ````\r\n`````\n", saved_rules)
+        self.assertNotIn(b"CHANGED_RULE", saved_rules)
         focus_ranges = []
         for part, content in zip(parts, saved_contexts, strict=True):
-            self.assertEqual(content.count(b"REQUIRED_MIGRATION_RULE"), 1)
-            self.assertIn(b"REQUIRED_MIGRATION_RULE ````\r\n`````\n", content)
+            self.assertNotIn(b"REQUIRED_MIGRATION_RULE", content)
             self.assertEqual(content.count(b"REQUIRED_OUTPUT_CONSTRAINT"), 1)
             self.assertEqual(len(content.decode("utf-8")), part["chars"])
             self.assertLessEqual(part["chars"], config["max_context_chars"])
@@ -347,9 +356,9 @@ class CapsulePreparationTests(HarnessCase):
         self.assertFalse((Path(config["run_root"]) / "checkpoints.sqlite").exists())
 
     # 共通資料が上限を超えた場合にworktreeが残らないことを検証する。
-    def test_excess_shared_rules_fail_before_creating_a_worktree(self):
+    def test_excess_shared_constraints_fail_before_creating_a_worktree(self):
         (self.project / RULES["path"]).write_bytes(b"x" * 1001 + b"\n")
-        config = load_config(self.config_path(PHP, RULES))
+        config = load_config(self.config_path(PHP, {**CONSTRAINT, "path": RULES["path"]}))
         original_worktrees = self.git("worktree", "list", "--porcelain", "-z").stdout
         with self.assertRaisesRegex(ValueError, r"shared context exceeds max_context_chars \(1000\): rules.md"):
             workflow.prepare_run(config, "example")
@@ -366,7 +375,7 @@ class CapsulePreparationTests(HarnessCase):
         line = b"//" + b"x" * 120
         self.php.write_bytes(line + b"\r")
         (self.project / RULES["path"]).write_bytes(b"r" * 530 + b"\n")
-        config, result, manifest = self.prepare({**PHP, "end_line": 1}, RULES)
+        config, result, manifest = self.prepare({**PHP, "end_line": 1}, {**CONSTRAINT, "path": RULES["path"]})
         self.assertGreater(result["capsule_count"], 1)
         pieces = []
         for part in manifest["parts"]:

@@ -22,6 +22,15 @@ def _inside_file(root: Path, relative: str) -> Path:
     return path
 
 
+def _file_version(path: Path) -> tuple[Any, ...] | None:
+    """未作成ファイルと参照先の切替も、取得前後の比較に含める。"""
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return (path.resolve(), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def _pane(files: list[tuple[str, str]]) -> tuple[str, list[dict[str, Any]]]:
     """複数ファイルを連結し、Viewerが元のファイルと行へ戻れる境界情報を作る。"""
     parts = []
@@ -46,51 +55,55 @@ def capture_workspace(
     target_hashes: dict[str, str] | None = None, include_draft: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     """Runの参照PHPと移行先をそろえて読み、比較時点の内容を固定する。"""
-    run_path, worktree, record, unit = _load_saved_run(config, run_id)
-    if record.get("target_apply_pending"):
-        raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
-    capsule_path, manifest = _load_capsule_manifest(run_path)
-    sources = _pinned_php_sources(manifest)
-    legacy_paths = []
-    if sources is None:
-        # 保存済みPHPを持たない旧Runでは、manifestのパスと文字コードで現在の入力を読む。
-        project = Path(config["project_root"])
-        encodings: dict[str, str] = {}
-        for part in manifest["parts"]:
-            for source in part["sources"]:
-                if _is_php_input(source):
-                    encodings.setdefault(source["path"], source["encoding"])
-        legacy_paths = [(_inside_file(project, name), name, encoding) for name, encoding in encodings.items()]
-    if not (sources or legacy_paths):
-        raise ValueError("この実行の入力に参照PHPがありません。")
-    target = Path(unit["target"]).as_posix()
-    if "targets" in unit:
-        targets = unit["targets"]
-    elif target.lower().endswith(".cshtml.cs"):
-        targets = [target, target[:-3]]
-    elif target.lower().endswith(".cshtml"):
-        targets = [target + ".cs", target]
-    else:
-        targets = [target]
-    right_paths = {}
-    draft_files = []
-    missing_files = []
-    agent_root = run_path / "agent-workspace"
-    use_draft = include_draft and record.get("status") in {"junie_running", "repairing"}
-    if use_draft and (agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve())):
-        raise ValueError("Junieの作業場所を安全に参照できません。")
-    for name in targets:
-        if use_draft and (agent_root / name).exists():
-            right_paths[name] = _inside_file(agent_root.resolve(), name)
-            draft_files.append(name)
-        elif include_draft and not (worktree / name).exists():
-            # まだ生成されていない移行先は空のペインにし、原文を先に確認できる。
-            missing_files.append(name)
-        else:
-            right_paths[name] = _inside_file(worktree, name)
-    paths = [path for path, _, _ in legacy_paths] + list(right_paths.values())
     with worktree_source_lock:
-        before = [path.stat() for path in paths]
+        run_path, worktree, record, unit = _load_saved_run(config, run_id)
+        if record.get("target_apply_pending"):
+            raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
+        capsule_path, manifest = _load_capsule_manifest(run_path)
+        sources = _pinned_php_sources(manifest)
+        legacy_paths = []
+        if sources is None:
+            # 保存済みPHPを持たない旧Runでは、manifestのパスと文字コードで現在の入力を読む。
+            project = Path(config["project_root"])
+            encodings: dict[str, str] = {}
+            for part in manifest["parts"]:
+                for source in part["sources"]:
+                    if _is_php_input(source):
+                        encodings.setdefault(source["path"], source["encoding"])
+            legacy_paths = [(_inside_file(project, name), name, encoding) for name, encoding in encodings.items()]
+        if not (sources or legacy_paths):
+            raise ValueError("この実行の入力に参照PHPがありません。")
+        target = Path(unit["target"]).as_posix()
+        if "targets" in unit:
+            targets = unit["targets"]
+        elif target.lower().endswith(".cshtml.cs"):
+            targets = [target, target[:-3]]
+        elif target.lower().endswith(".cshtml"):
+            targets = [target + ".cs", target]
+        else:
+            targets = [target]
+        right_paths = {}
+        draft_files = []
+        missing_files = []
+        agent_root = run_path / "agent-workspace"
+        use_draft = include_draft and record.get("status") in {"junie_running", "repairing"}
+        if use_draft and (agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve())):
+            raise ValueError("Junieの作業場所を安全に参照できません。")
+        paths = [Path(config["project_root"]) / name for _, name, _ in legacy_paths]
+        paths.extend(worktree / name for name in targets)
+        if use_draft:
+            paths.extend(agent_root / name for name in targets)
+        before = [_file_version(path) for path in paths]
+        captured_hashes = {}
+        for name in targets:
+            if use_draft and (agent_root / name).exists():
+                right_paths[name] = _inside_file(agent_root.resolve(), name)
+                draft_files.append(name)
+            elif include_draft and not (worktree / name).exists():
+                # まだ生成されていない移行先は空のペインにし、原文を先に確認できる。
+                missing_files.append(name)
+            else:
+                right_paths[name] = _inside_file(worktree, name)
         left_files = [
             (Path(name).as_posix(), path.read_text(encoding=_input_encoding(path, encoding)))
             for path, name, encoding in legacy_paths
@@ -107,14 +120,14 @@ def capture_workspace(
             content = path.read_bytes()
             right_files.append((name, content.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")))
             if target_hashes is not None:
-                target_hashes[name] = hashlib.sha256(content).hexdigest()
+                captured_hashes[name] = hashlib.sha256(content).hexdigest()
         # 外部のエディターと競合した場合も、不揃いなスナップショットを保存しない。
-        after = [path.stat() for path in paths]
-    if any(
-        (old.st_ino, old.st_size, old.st_mtime_ns) != (new.st_ino, new.st_size, new.st_mtime_ns)
-        for old, new in zip(before, after, strict=True)
-    ):
-        raise ValueError("取得中にソースが変更されました。もう一度お試しください。")
+        after = [_file_version(path) for path in paths]
+        _, _, latest, _ = _load_saved_run(config, run_id)
+        if before != after or any(record.get(key) != latest.get(key) for key in ("status", "target_apply_pending")):
+            raise ValueError("取得中にソースが変更されました。もう一度お試しください。")
+        if target_hashes is not None:
+            target_hashes.update(captured_hashes)
     left_text, left_segments = _pane(left_files)
     right_text, right_segments = _pane(right_files)
     payload = {
@@ -189,43 +202,77 @@ def review_html(config: dict[str, Any], workspace: bytes) -> bytes:
     # ソースの文字列をHTMLとして実行せず、Viewerの通常のJSON取込に渡す。
     payload = workspace.replace(b"<", b"\\u003c")
     # 取込でカーソルが復元されても画面外に残るため、カード生成後にViewerの行ジャンプを使う。
-    bootstrap = b"""
-<script id="harness-review-workspace" type="application/json">""" + payload + b"""</script>
+    bootstrap = """
+<script id="harness-review-workspace" type="application/json">""" + payload.decode("utf-8") + """</script>
 <script>
-window.addEventListener("load", () => {
-  const input = document.querySelector("#workspace-import-file");
-  const payload = document.querySelector("#harness-review-workspace").textContent;
-  const {rightCursor, rightActiveFile, rightSegments} = JSON.parse(payload).workspace;
-  const segment = rightCursor && rightSegments?.find(item => item.fileName === rightActiveFile);
-  const cards = document.querySelector("#right-file-cards");
-  const gotoLine = document.querySelector("#right-goto-line-input");
-  if (segment && cards && gotoLine) {
-    const observer = new MutationObserver(() => {
-      const card = Array.from(cards.querySelectorAll("button[data-file]"))
-        .find(button => button.dataset.file === rightActiveFile);
-      if (!card) return;
-      observer.disconnect();
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        card.click();
-        document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "g", code: "KeyG", ctrlKey: true, bubbles: true, cancelable: true
-        }));
-        if (document.activeElement !== gotoLine) return;
-        gotoLine.value = String(rightCursor.lineNumber - segment.startLine + 1);
-        gotoLine.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "Enter", bubbles: true, cancelable: true
-        }));
-      }));
-    });
-    observer.observe(cards, {childList: true});
-    setTimeout(() => observer.disconnect(), 10000);
-  }
-  const transfer = new DataTransfer();
-  transfer.items.add(new File([payload], "review-workspace.json", {type: "application/json"}));
-  input.files = transfer.files;
-  input.dispatchEvent(new Event("change", {bubbles: true}));
-}, {once: true});
+(() => {
+  const message = document.createElement("p");
+  const failed = () => {
+    message.setAttribute("role", "alert");
+    message.textContent = "比較データを自動で読み込めませんでした。ページを再読み込みするか、保存したJSONを取り込んでください。";
+    document.body.prepend(message);
+  };
+  // The bundled Viewer awaits restoration before creating both editors;
+  // editor creation and import-handler registration share one synchronous turn.
+  const timer = setInterval(() => {
+    const input = document.querySelector("#workspace-import-file");
+    if (!input || !document.querySelector("#left-editor .monaco-editor")
+        || !document.querySelector("#right-editor .monaco-editor")) return;
+    clearInterval(timer);
+    clearTimeout(timeout);
+    message.remove();
+    let observer;
+    try {
+      const payload = document.querySelector("#harness-review-workspace").textContent;
+      const {rightCursor, rightActiveFile, rightSegments} = JSON.parse(payload).workspace;
+      const segment = rightCursor && rightSegments?.find(item => item.fileName === rightActiveFile);
+      const cards = document.querySelector("#right-file-cards");
+      const gotoLine = document.querySelector("#right-goto-line-input");
+      if (segment && cards && gotoLine) {
+        observer = new MutationObserver(() => {
+          const card = Array.from(cards.querySelectorAll("button[data-file]"))
+            .find(button => button.dataset.file === rightActiveFile);
+          if (!card) return;
+          observer.disconnect();
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            gotoLine.dispatchEvent(new KeyboardEvent("keydown", {
+              key: "Escape", bubbles: true, cancelable: true
+            }));
+            card.click();
+            document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", {
+              key: "g", code: "KeyG", ctrlKey: true, bubbles: true, cancelable: true
+            }));
+            if (document.activeElement !== gotoLine) return;
+            gotoLine.value = String(rightCursor.lineNumber - segment.startLine + 1);
+            gotoLine.dispatchEvent(new KeyboardEvent("keydown", {
+              key: "Enter", bubbles: true, cancelable: true
+            }));
+          }));
+        });
+        observer.observe(cards, {childList: true});
+        window.addEventListener("pagehide", () => observer.disconnect(), {once: true});
+      }
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([payload], "review-workspace.json", {type: "application/json"}));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", {bubbles: true}));
+    } catch (error) {
+      observer?.disconnect();
+      console.error("Workspace import failed:", error);
+      failed();
+    }
+  }, 50);
+  const timeout = setTimeout(() => {
+    message.setAttribute("role", "status");
+    message.textContent = "ビューアーの起動を待っています。起動後に比較データを自動で読み込みます。";
+    document.body.prepend(message);
+  }, 15000);
+  window.addEventListener("pagehide", () => {
+    clearInterval(timer);
+    clearTimeout(timeout);
+  }, {once: true});
+})();
 </script>
 """
     offset = closing[-1].start()
-    return html[:offset] + bootstrap + html[offset:]
+    return html[:offset] + bootstrap.encode("utf-8") + html[offset:]

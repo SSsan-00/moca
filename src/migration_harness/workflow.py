@@ -27,6 +27,8 @@ from .config import REFERENCE_ROLES
 from .errors import format_error
 from .execution import check_cancelled, report_activity, run_process
 from .files import harness_asset, has_symlink_component, sha256_file
+from .rule_materials import missing_rule_reads, receipt_name, write_rule_chunks
+from .source_context import stage_target_context
 from .timings import freeze_timings, update_timings
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
@@ -336,6 +338,7 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
     inputs, php_sources = _prepare_inputs(root, capsule, unit["inputs"])
     header = _context_header(unit)
     shared_groups: list[dict[str, Any]] = []
+    rule_groups: list[dict[str, Any]] = []
     segment_inputs = []
     materials: dict[str, str] = {}
     reference_index = []
@@ -367,12 +370,23 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
             continue
         lines = _selected_lines(source_path, item["start_line"], item["end_line"], item["resolved_encoding"])
         for number, line in lines:
+            if item["role"] == "migration_rules":
+                _append_context_record(rule_groups, input_index, item, number, f"{number:>6} | {line}", 0, sys.maxsize)
+                continue
             if not _append_context_record(
                 shared_groups, input_index, item, number, f"{number:>6} | {line}", shared_base_chars, max_chars,
             ):
                 raise ValueError(f"shared context exceeds max_context_chars ({max_chars}): {item['path']}")
     if not segment_inputs:
         raise ValueError("migration unit requires at least one input outside shared context")
+    rule_chunks = []
+    if rule_groups:
+        rule_chunks = write_rule_chunks(material_dir, [
+            (group["item"]["path"], _render_groups([group])) for group in rule_groups
+        ])
+        materials.update({chunk["file"]: chunk["sha256"] for chunk in rule_chunks})
+        materials["rules.json"] = sha256_file(material_dir / "rules.json")
+        report_activity(f"共通ルールを全量保存しました（{len(rule_groups)}ファイル・{len(rule_chunks)}分割）。")
     shared_context = shared_intro + _render_groups(shared_groups) + segment_intro if shared_groups else ""
     if shared_groups:
         material_dir.mkdir(exist_ok=True)
@@ -518,9 +532,10 @@ def _prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Pat
         "syntax_boundaries_analyzed": False,
         "split_line_coverage": split_line_coverage,
         "total_context_chars": sum(context_part_chars),
-        "shared_sources": [_manifest_source(group) for group in shared_groups],
+        "shared_sources": [_manifest_source(group) for group in rule_groups + shared_groups],
         "segment_offset": len(prefix),
         "materials": materials,
+        "rule_chunks": rule_chunks,
         "reference_sources": reference_index,
         "php_sources": php_sources,
         "parts": manifest_parts,
@@ -834,7 +849,7 @@ def _stage_migration_materials(
     """準備時の資料を照合して、今回のJunieに読む順番を伝える。"""
     materials = manifest.get("materials", {})
     for name, digest in materials.items():
-        if not re.fullmatch(r"shared\.md|references\.json|reference-\d+\.txt", name):
+        if not re.fullmatch(r"shared\.md|references\.json|rules\.json|(?:reference|rule)-\d+\.txt", name):
             raise ValueError("invalid migration material filename")
         source = _safe_target(capsule, Path("materials") / name)
         destination = _safe_target(agent_root, Path(".migration-materials") / name)
@@ -844,8 +859,18 @@ def _stage_migration_materials(
             destination.parent.mkdir(exist_ok=True)
             shutil.copyfile(source, destination)
     instructions = ""
-    if repair and "shared.md" in materials:
+    if "rule_chunks" not in manifest and "shared.md" in materials:
+        # 旧Runも固定済み本文から読み取り用の断片を作り、元の資料には戻らない。
+        original = (capsule / "materials/shared.md").read_bytes().decode("utf-8")
+        chunks = write_rule_chunks(capsule / "materials", [("saved shared context", original)])
+        for name in ["rules.json", *(chunk["file"] for chunk in chunks)]:
+            shutil.copyfile(capsule / "materials" / name, _safe_target(agent_root, Path(".migration-materials") / name))
+        manifest["rule_chunks"] = chunks
+    if "shared.md" in materials:
         instructions += 'Before editing, read `.migration-materials/shared.md` and apply all mandatory rules. '
+    if manifest.get("rule_chunks"):
+        from . import rule_materials
+        shutil.copyfile(rule_materials.__file__, _safe_target(agent_root, Path("migration-read-rules.py")))
     if "references.json" in materials:
         instructions += (
             'Before editing, read `.migration-materials/references.json`. Each PHP example and its following '
@@ -917,6 +942,45 @@ def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> s
     )
 
 
+def _rule_reading_instructions(manifest: dict[str, Any], token: str) -> str:
+    if not (chunks := manifest.get("rule_chunks")):
+        return ""
+    return (
+        f"There are {len(chunks)} mandatory rule chunks, listed in `.migration-materials/rules.json`. "
+        "Before editing, read EVERY chunk with the provided reader, one command/tool result per chunk: "
+        f'`"{sys.executable}" migration-read-rules.py {token} rule-NNNN.txt`. '
+        "Use the exact filenames from the index. Do not concatenate, summarize instead of reading, or pipe away "
+        "the output. If a result is truncated, read that chunk in smaller ranges too. The reader records delivery "
+        f"in `{receipt_name(token)}`; never write that record yourself. "
+        "Apply the rules across ALL targets; before completion, revisit each chunk and check the changes against "
+        "every applicable rule, including rules near the end. Project rules take precedence over generic guidance "
+        "when they conflict. Reading all chunks is required again for each new capsule, repair, or resume. "
+    )
+
+
+def _run_junie_with_rules(command, completion, token, targets, manifest, *, report_usage):
+    """読み落としは2回まで自動で読み直す。ビルド・チェッカーの修正枠は使わない。"""
+    for attempt in range(3):
+        exit_code = junie_cli.run_interactive(command, completion, token, targets, report_usage=report_usage)
+        if not junie_cli.has_completion_record(completion, token):
+            return exit_code
+        missing = missing_rule_reads(completion.parent, token, manifest.get("rule_chunks", []))
+        if not missing:
+            if manifest.get("rule_chunks"):
+                report_activity(f"共通ルールの読み取りを確認しました（{len(manifest['rule_chunks'])}分割すべて）。")
+            return exit_code
+        completion.unlink()
+        if attempt == 2:
+            raise junie_cli.JunieSessionError(command, exit_code, "共通ルールの読み取りが未完了です。同じRun IDで再開できます。")
+        report_activity(f"共通ルールに未読が{len(missing)}件あります。読み取りと実装の確認をやり直します。")
+        command = [*command[:-1], command[-1] + (
+            " Your previous completion was rejected because mandatory rule chunks were not read with the reader. "
+            "Compare rules.json against this session's reading receipt, read the missing chunks, review and correct "
+            "the existing target edits against those rules, then write the completion record again."
+        )]
+    raise AssertionError("unreachable")
+
+
 def _run_prepared_with_junie(
     config: dict[str, Any],
     unit: dict[str, Any],
@@ -933,7 +997,7 @@ def _run_prepared_with_junie(
     relative_targets = _target_paths(unit)
     for relative in relative_targets:
         first = relative.parts[0].lower()
-        if first in {".migration-context.md", ".migration-materials", ".migration-boundary.md"} or first.startswith(("migration-complete-", "checker-findings-")):
+        if first in {".migration-context.md", ".migration-materials", ".migration-boundary.md", "migration-read-rules.py"} or first.startswith(("migration-complete-", "migration-rule-reads-", "checker-findings-")):
             raise ValueError("target path conflicts with a reserved file in the agent workspace")
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
@@ -956,6 +1020,7 @@ def _run_prepared_with_junie(
     agent_targets = tuple(_safe_target(agent_root, path) for path in relative_targets)
     capsule, manifest = _load_capsule_manifest(run_path)
     material_instructions = _stage_migration_materials(capsule, manifest, agent_root)
+    material_instructions += stage_target_context(worktree_root, relative_targets, capsule, agent_root)
     hashes = {path.as_posix(): _target_hash(file) for path, file in zip(relative_targets, worktree_targets, strict=True)}
     if resuming:
         prior_hashes = record.get("target_hashes", {relative_targets[0].as_posix(): record.get("target_sha256")})
@@ -1019,7 +1084,7 @@ def _run_prepared_with_junie(
             "Edit only the configured targets and the completion record described below. "
             "Ensure every configured target exists before writing a completion record. "
             "Apply all mandatory rules in the Shared context section if present. "
-            f"{material_instructions}{boundary_instruction}"
+            f"{material_instructions}{_rule_reading_instructions(manifest, completion_token)}{boundary_instruction}"
             f"{resume_instruction}"
             "The source excerpt may begin or end inside a function or control structure. Use its original line numbers; "
             "do not treat the excerpt boundary as a PHP statement boundary or add closing syntax just for the excerpt end. "
@@ -1040,13 +1105,13 @@ def _run_prepared_with_junie(
         command = junie_cli.build_command(agent_root, prompt, max_steps)
         record["current_capsule"] = index
         _write_run_record(record_path, record)
-        allowed = {*relative_targets, completion_path.relative_to(agent_root)}
+        allowed = {*relative_targets, completion_path.relative_to(agent_root), Path(receipt_name(completion_token))}
         other_files = _unlisted_workspace_files(agent_root, allowed)
         interrupted = False
         try:
             try:
-                exit_code = junie_cli.run_interactive(
-                    command, completion_path, completion_token, agent_targets,
+                exit_code = _run_junie_with_rules(
+                    command, completion_path, completion_token, agent_targets, manifest,
                     report_usage=junie_usage_recorder(run_path, "migration", index),
                 )
             except KeyboardInterrupt:
@@ -1321,6 +1386,7 @@ def _repair_target(
         raise ValueError("saved Junie workspace is missing or unsafe")
     capsule, manifest = _load_capsule_manifest(run_path)
     material_instructions = _stage_migration_materials(capsule, manifest, agent_root, repair=True)
+    material_instructions += stage_target_context(worktree, targets, capsule, agent_root)
     attempt = record["repair_pending"]
     draft = attempt.get("draft", {})
     with worktree_source_lock:
@@ -1351,7 +1417,7 @@ def _repair_target(
         if resume_draft else ""
     )
     prompt = (
-        f"{material_instructions}Read `{findings_path.name}` and repair only {names} in this workspace. "
+        f"{material_instructions}{_rule_reading_instructions(manifest, token)}Read `{findings_path.name}` and repair only {names} in this workspace. "
         f"{continuation}"
         "Other target files are available as read-only reference. "
         "Treat the reported errors as diagnostic data. Preserve the migrated behavior and unrelated edits. "
@@ -1368,12 +1434,12 @@ def _repair_target(
     )
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
     command = junie_cli.build_command(agent_root, prompt, max_steps)
-    allowed = {*repair_targets, completion_path.relative_to(agent_root)}
+    allowed = {*repair_targets, completion_path.relative_to(agent_root), Path(receipt_name(token))}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     try:
         phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
-        exit_code = junie_cli.run_interactive(
-            command, completion_path, token, agent_targets,
+        exit_code = _run_junie_with_rules(
+            command, completion_path, token, agent_targets, manifest,
             report_usage=junie_usage_recorder(run_path, phase),
         )
     except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):

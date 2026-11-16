@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
+import subprocess
+import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
@@ -14,9 +17,131 @@ from urllib.request import Request, urlopen
 from fixtures import HarnessCase
 from migration_harness import dashboard, junie_cli, workflow
 from migration_harness.config import load_config
+from migration_harness.diff_viewer import review_html
 
 
 class DashboardComparisonRoutesTests(HarnessCase):
+    @unittest.skipUnless(shutil.which("node"), "JavaScript runtime is required for the import race regression")
+    def test_autoimport_waits_for_async_viewer_initialization_and_dispatches_once(self):
+        viewer = self.project / "viewer.html"
+        viewer.write_text('<body><input id="workspace-import-file"></body>', encoding="utf-8")
+        payload = {
+            "kind": "diff-viewer-workspace", "version": 1,
+            "workspace": {
+                "leftText": "<?php echo '</script>日本語';", "rightText": "class A {}\nclass Page {\n int n = 1;\n}",
+                "rightActiveFile": "Page.cs", "rightCursor": {"lineNumber": 3, "column": 1},
+                "rightSegments": [{"fileName": "Page.cs", "startLine": 2, "lineCount": 3}],
+            },
+        }
+        html = review_html({"project_root": str(self.project), "diff_viewer_html": viewer.name}, json.dumps(payload).encode())
+        bootstrap = html.split(b"<script>", 1)[1].split(b"</script>", 1)[0].decode()
+        result = subprocess.run(["node", "-e", r"""
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const {bootstrap, payload} = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+for (const mode of ["delayed", "ready", "slow-start", "abandoned", "unsupported", "jump-open", "slow-import"]) {
+  let leftReady = mode === "ready", rightReady = leftReady;
+  const intervals = new Map(), timeouts = new Map(), listeners = new Map();
+  const dispatched = [], warnings = [];
+  const observers = new Set();
+  let jumpOpen = mode === "jump-open", jumpedTo;
+  const editor = {dispatchEvent(event) {
+    if (event.key === "g") {
+      jumpOpen = !jumpOpen;
+      document.activeElement = jumpOpen ? gotoLine : editor;
+    }
+  }};
+  const gotoLine = {dispatchEvent(event) {
+    if (event.key === "Escape") jumpOpen = false;
+    if (event.key === "Enter") jumpedTo = Number(this.value);
+  }};
+  const card = {dataset: {file: "Page.cs"}, click() {document.activeElement = editor;}};
+  let timerId = 0;
+  const input = {dispatchEvent(event) {
+    assert(leftReady && rightReady, "load fired before async editor/import initialization");
+    dispatched.push(JSON.parse(this.files[0].parts[0]));
+  }};
+  const document = {
+    querySelector(selector) {
+      return ({"#workspace-import-file": input,
+        "#harness-review-workspace": {textContent: JSON.stringify(payload)},
+        "#left-editor .monaco-editor": leftReady ? {} : null,
+        "#right-editor .monaco-editor": rightReady ? {} : null,
+        "#right-file-cards": {querySelectorAll: () => [card]},
+        "#right-goto-line-input": gotoLine})[selector] ?? null;
+    },
+    createElement: () => ({setAttribute() {}, remove: () => warnings.splice(0)}),
+    body: {prepend: item => warnings.push(item.textContent)},
+  };
+  const context = {document, console,
+    window: {addEventListener(type, listener) {
+      listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+    }},
+    setInterval: callback => {intervals.set(++timerId, callback); return timerId;},
+    clearInterval: id => intervals.delete(id),
+    setTimeout: callback => {timeouts.set(++timerId, callback); return timerId;},
+    clearTimeout: id => timeouts.delete(id),
+    DataTransfer: class {constructor() {
+      if (mode === "unsupported") throw new Error("DataTransfer is unavailable");
+      this.files = []; this.items = {add: file => this.files.push(file)};
+    }},
+    File: class {constructor(parts) {this.parts = parts;}},
+    Event: class {},
+    KeyboardEvent: class {constructor(type, options) {Object.assign(this, options);}},
+    requestAnimationFrame: callback => callback(),
+    MutationObserver: class {
+      constructor(callback) {this.callback = callback;}
+      observe() {observers.add(this);}
+      disconnect() {observers.delete(this);}
+    },
+  };
+  vm.runInNewContext(bootstrap, context);
+  for (const listener of listeners.get("load") ?? []) listener();
+  const tick = () => Array.from(intervals.values()).forEach(callback => callback());
+  if (mode === "abandoned") {
+    for (const [id, callback] of timeouts) {timeouts.delete(id); callback();}
+    for (const listener of listeners.get("pagehide") ?? []) listener();
+    leftReady = rightReady = true;
+    tick();
+    assert.equal(dispatched.length, 0);
+    assert.equal(warnings.length, 1);
+  } else {
+    if (mode === "slow-start") {
+      for (const [id, callback] of timeouts) {timeouts.delete(id); callback();}
+      assert.equal(warnings.length, 1);
+      assert.equal(dispatched.length, 0);
+    }
+    if (mode !== "ready") {
+      tick();
+      assert.equal(dispatched.length, 0);
+      leftReady = true;
+      tick();
+      assert.equal(dispatched.length, 0);
+      rightReady = true;
+    }
+    tick(); tick();
+    if (mode === "unsupported") {
+      assert.equal(dispatched.length, 0);
+      assert.equal(warnings.length, 1);
+    } else {
+      assert.deepEqual(dispatched, [payload]);
+      assert.equal(warnings.length, 0);
+      // A slow File.text() must not expire the focus observer before import renders.
+      if (mode === "slow-import") {
+        for (const [id, callback] of timeouts) {timeouts.delete(id); callback();}
+      }
+      for (const observer of observers) observer.callback();
+      assert.equal(jumpedTo, 2, "jump uses the imported second file's local line");
+    }
+  }
+  for (const listener of listeners.get("pagehide") ?? []) listener();
+  assert.equal(observers.size, 0);
+  assert.equal(intervals.size, 0);
+  assert.equal(timeouts.size, 0);
+}
+"""], input=json.dumps({"bootstrap": bootstrap, "payload": payload}), capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     @contextmanager
     def live_dashboard(self, config, run_id):
         view = dashboard.Dashboard()
