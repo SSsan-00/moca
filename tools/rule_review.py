@@ -94,6 +94,7 @@ def without_rules(data: bytes) -> dict:
 
 
 def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: Path) -> None:
+    pack = pack.resolve()
     data = candidate.read_bytes()
     if without_rules(data) != without_rules(original):
         raise ValueError("移行ルール以外の設定が変更されています。")

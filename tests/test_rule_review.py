@@ -32,10 +32,10 @@ target = "One.cs"
         candidate = pack / "proposed.toml"
         tool = Path(__file__).resolve().parents[1] / "tools/rule_review.py"
 
-        def run(*arguments):
+        def run(*arguments, script=tool):
             return subprocess.run(
-                [sys.executable, str(tool), *map(str, arguments)],
-                capture_output=True, encoding="utf-8",
+                [sys.executable, str(script), *map(str, arguments)],
+                cwd=self.root, capture_output=True, encoding="utf-8",
                 env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             )
 
@@ -60,7 +60,23 @@ target = "One.cs"
         self.assertIn("変更されました", run("apply", pack, candidate).stderr)
         self.assertEqual(config.read_bytes(), original)
         detail.write_text(first + "\n" + "x" * 2700 + "\n" + last + "\n", encoding="utf-8")
-        result = run("apply", pack, candidate)
+        sources = pack / "sources"
+        sources.mkdir()
+        (sources / detail.name).write_bytes(detail.read_bytes())
+        rule_pack = tool.with_name("rule_pack.py")
+        self.assertEqual(run("snapshot", pack.name, script=rule_pack).returncode, 0)
+        plan = {"documents": [
+            {"path": "Agent.md", "title": "Required", "parts": [{"source": detail.name, "start": 3, "end": 3}]},
+            {"path": "details/views.md", "title": "Views", "description": "When migrating views",
+             "parts": [{"source": detail.name, "start": 1, "end": 2}]},
+        ]}
+        (pack / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        result = run("build", pack.name, script=rule_pack)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rules = (pack / "generated/rules.toml").read_bytes()
+        candidate.write_bytes(original[:original.index(b"[[project.migration_rules]]")] + rules
+                              + original[original.index(b"[[units]]"):])
+        result = run("apply", pack.name, candidate)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(config.read_bytes(), candidate.read_bytes())
         self.assertEqual((pack / "config.before.toml").read_bytes(), original)
