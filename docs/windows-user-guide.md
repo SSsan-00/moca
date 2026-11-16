@@ -174,17 +174,15 @@ tools/check-migration.ps1
 
 ### 別ディレクトリの仮C#を取り込む
 
-たとえば、**移行元PHP** に `legacy/menu.php`、**移行先** に `src/Web/Services/MenuService.cs` を指定します。**自作スクリプト** で工程に **Junie移行前** を選び、次のように入力します。3行目はハーネスに付属するスクリプトの絶対パス、4行目は仮C#の絶対パス、5行目は **移行先** と同じ相対パスです。
+たとえば、**移行元PHP** に `legacy/menu.php`、**移行先** に `src/Web/Services/MenuService.cs` を指定します。**自作スクリプト** で **仮C#の取り込みを追加** を押し、次の3項目を入力して **設定を保存** します。移行先が1ファイルの場合は、配置先にそのパスが入ります。
 
-```text
-py
--3
-C:/tools/PhpToCsharp/tools/copy_migration_draft.py
-C:/migration/draft/generated/module/Services/MenuService.cs
-src/Web/Services/MenuService.cs
-```
+| フォームの項目 | 入力例 |
+| --- | --- |
+| 取込スクリプトの絶対パス | `C:/tools/PhpToCsharp/tools/copy_migration_draft.py` |
+| 仮C#のコピー元（絶対パス） | `C:/migration/draft/generated/module/Services/MenuService.cs` |
+| 配置先（作業ツリー内の相対パス） | `src/Web/Services/MenuService.cs` |
 
-コピー先のフォルダは自動で作成し、ファイルがあればRunのworktree内で上書きします。コピー元が見つからない場合はJunie移行前の工程で停止します。Junieが編集したファイルは同じ配置先に反映され、ビルドに進みます。この設定例は移行単位が1つの場合です。自作スクリプトは設定内の全移行単位で実行されるため、移行単位ごとに異なる取り込み設定を使う場合はTOMLを分けます。
+取り込みは **Junie移行前** に実行されます。コピー先のフォルダは自動で作成し、ファイルがあればRunのworktree内で上書きします。コピー元が見つからない場合はその工程で停止します。Junieが編集したファイルは同じ配置先に反映され、ビルドに進みます。この設定例は移行単位が1つの場合です。自作スクリプトは設定内の全移行単位で実行されるため、移行単位ごとに異なる取り込み設定を使う場合はTOMLを分けます。進捗デモでは注文履歴の取り込み例を編集できます。
 
 ## 5. ダッシュボードから実行する
 
