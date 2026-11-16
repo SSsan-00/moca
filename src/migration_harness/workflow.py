@@ -1087,7 +1087,7 @@ def _apply_editor_edits(
 def _stage_operator_prompts(agent_root: Path, token: str, instruction: str) -> str:
     # 指示をファイルに置き、Windows のコマンドライン長制限を避ける。
     path = agent_root / f"checker-findings-{token}-operator.txt"
-    with path.open("x", encoding="utf-8") as stream:
+    with path.open("x", encoding="utf-8", newline="") as stream:
         stream.write(instruction + "\n")
     return path.name
 
@@ -1708,7 +1708,7 @@ def _repair_target(
     token = uuid.uuid4().hex
     completion_path = agent_root / f"migration-complete-{token}.txt"
     findings_path = agent_root / f"checker-findings-{token}.txt"
-    with findings_path.open("x", encoding="utf-8") as stream:
+    with findings_path.open("x", encoding="utf-8", newline="") as stream:
         stream.write(findings + "\n")
     inputs = [Path(findings_path.name)]
     inputs.extend(Path(".migration-materials") / f"source-{part['index']:04d}.md" for part in manifest["parts"])
@@ -1721,7 +1721,7 @@ def _repair_target(
     operator_instructions = ""
     if instruction:
         instruction_path = agent_root / f"checker-findings-{token}-instruction.txt"
-        with instruction_path.open("x", encoding="utf-8") as stream:
+        with instruction_path.open("x", encoding="utf-8", newline="") as stream:
             stream.write(instruction + "\n")
         inputs.append(Path(instruction_path.name))
         operator_instructions = (

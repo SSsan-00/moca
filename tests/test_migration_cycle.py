@@ -11,6 +11,13 @@ from test_checker_resume_review_dashboard import SavedRunFixture
 
 
 class TaskGuidelinesTests(unittest.TestCase):
+    def test_progress_instructions_preserve_mixed_newlines(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            instruction = "手修正を維持してください。\r\n値を変更してください。\n"
+            name = workflow._stage_operator_prompts(root, "newlines", instruction)
+            self.assertEqual((root / name).read_bytes(), (instruction + "\n").encode("utf-8"))
+
     def test_complete_inputs_keep_unicode_newlines_rules_and_short_windows_arguments(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -106,7 +113,7 @@ class CycleRecoveryTests(SavedRunFixture):
         self.target.write_text("class Example { const int Manual = 11; const int Requested = 0; }", encoding="utf-8")
         diagnostic = '{"expected": "reviewer value", "actual": 0}\r\n'
         self.checker_log.write_bytes(diagnostic.encode())
-        instruction = "手修正の11を維持して、Requestedを29にしてください。"
+        instruction = "手修正の11を維持してください。\r\nRequestedを29にしてください。"
 
         def junie(command, completion, token, targets, **kwargs):
             guidelines = Path(command[command.index("--ide-guidelines") + 1])

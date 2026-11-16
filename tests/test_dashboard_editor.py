@@ -59,7 +59,8 @@ class DashboardEditorTests(HarnessCase):
         other.write_bytes("<?php echo '注文';".encode("cp932"))
         annotated = "<?php\n// 移行ツールのコメント\necho '注文';\n"
         (self.project / "annotated.txt").write_bytes(annotated.encode("euc-jp"))
-        (self.project / "annotated").write_text(annotated, encoding="utf-8")
+        annotated_crlf = annotated.replace("\n", "\r\n")
+        (self.project / "annotated").write_bytes(annotated_crlf.encode("utf-8"))
         self.commit_project()
         config_path = self.root / "test.toml"
         with config_path.open("a", encoding="utf-8") as config:
@@ -81,7 +82,7 @@ class DashboardEditorTests(HarnessCase):
             with self.subTest(source=name):
                 annotated_source = self.request(route + "&" + urlencode({"source": name}))
                 self.assertEqual(annotated_source["source"], name)
-                self.assertEqual(annotated_source["content"], annotated)
+                self.assertEqual(annotated_source["content"], annotated if name == "annotated.txt" else annotated_crlf)
         with self.assertRaises(HTTPError) as denied:
             self.request(route + "&" + urlencode({"source": "../Page.cs"}))
         self.assertEqual(denied.exception.code, 409)
