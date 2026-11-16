@@ -22,7 +22,8 @@ from typing import Any
 
 from .errors import format_error, safe_command
 from .execution import (
-    HEARTBEAT_SECONDS, OperationCancelled, check_cancelled, is_controlled, junie_dashboard_control, report_activity,
+    HEARTBEAT_SECONDS, ExecutionControl, OperationCancelled, check_cancelled, is_controlled,
+    junie_dashboard_control, report_activity,
 )
 from .files import has_symlink_component
 
@@ -69,6 +70,10 @@ class JunieSessionError(OSError):
         )
 
 
+class JunieAcpModelUnavailable(JunieSessionError):
+    """ACPがモデル不足のためプロンプトを処理する前に拒否した。"""
+
+
 def _resolve_executable(name: str) -> str:
     executable = shutil.which(name)
     if executable is None:
@@ -91,11 +96,12 @@ def launch_diagnostics(
             executable = _resolve_executable(command[0])
         except (OSError, ValueError, IndexError):
             executable = "<not resolved>"
-    streams = (
-        "Junie runs over ACP. Check the dashboard for permission requests and the log file "
-        if junie_dashboard_control() else
-        "Junie inherits this terminal's stdin/stdout/stderr. Check its output and the log file "
-    )
+    if command[-2:-1] == ["--task"]:
+        streams = "Junie ran in headless mode. Check the terminal output and the log file "
+    elif junie_dashboard_control():
+        streams = "Junie runs over ACP. Check the dashboard for permission requests and the log file "
+    else:
+        streams = "Junie inherits this terminal's stdin/stdout/stderr. Check its output and the log file "
     return (
         f"Command: {safe_command(command)}\nCWD: {cwd}\nExecutable: {executable}\n"
         f"{streams}reported at startup (normally under JUNIE_HOME/logs or ~/.junie/logs)."
@@ -138,7 +144,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
     for argument in remaining:
         option, separator, value = argument.partition("=")
         variable = {
-            "--prompt": "JUNIE_PROMPT", "--project": "JUNIE_PROJECT", "-p": "JUNIE_PROJECT",
+            "--prompt": "JUNIE_PROMPT", "--task": "JUNIE_TASK", "--project": "JUNIE_PROJECT", "-p": "JUNIE_PROJECT",
             "--ide-guidelines": "JUNIE_IDE_GUIDELINES",
         }.get(option)
         if variable:
@@ -493,11 +499,31 @@ class _JunieSessionEvents:
                     self.usage[i] += value
 
 
+def _confirm_dashboard_launch(
+    dashboard: ExecutionControl, title: str, detail: str, option: str, label: str,
+) -> bool:
+    reply = dashboard.on_junie_request({
+        "title": title, "detail": detail,
+        "options": [
+            {"id": "stop", "label": "停止", "kind": "reject_once"},
+            {"id": option, "label": label, "kind": "allow_once"},
+        ],
+    })
+    check_cancelled()
+    if reply is None:
+        return False
+    while not reply.done():
+        dashboard.cancelled.wait(0.25)
+        check_cancelled()
+    check_cancelled()
+    return reply.result() == option
+
+
 def run_interactive(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
 ) -> int:
-    """Junie自身の通信復旧が失敗したときは同じ作業場所で起動し直す。"""
+    """同じ作業場所で通信を再試行し、ACPのモデル不足時は確認を求める。"""
     delays = (1, 3)
     for attempt in range(len(delays) + 1):
         check_cancelled()
@@ -508,7 +534,21 @@ def run_interactive(
                     " A model service connection failed in the previous session. Review the edits already in the "
                     "workspace and continue the remaining work without duplicating completed changes."
                 )]
-            return _run_session(invocation, completion_path, token, targets, report_usage=report_usage)
+            try:
+                return _run_session(invocation, completion_path, token, targets, report_usage=report_usage)
+            except JunieAcpModelUnavailable:
+                dashboard = junie_dashboard_control()
+                if dashboard is None or not _confirm_dashboard_launch(
+                    dashboard, "Junie を非対話モードで再試行",
+                    "ACP で利用できるモデルがありません。同じ作業フォルダーと指示で再試行できます。\n"
+                    "非対話モードでは、Junie の操作ごとの許可確認はダッシュボードに表示されません。\n\n"
+                    f"{completion_path.parent.resolve()}",
+                    "headless", "今回のみ非対話モードで再試行",
+                ):
+                    raise
+                report_activity("Junie を非対話モードで再試行します。")
+                command = [part for part in command[:-2] if part != "--brave"] + ["--task", command[-1]]
+            return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets, report_usage=report_usage)
         except JunieConnectionError as exc:
             if attempt == len(delays):
                 raise JunieConnectionError(
@@ -625,7 +665,10 @@ class _AcpSession:
                     self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
             elif not method and request_id in (1, 2, 3):
                 if "error" in message:
-                    code = message["error"].get("code")
+                    error = message["error"]
+                    code = error.get("code")
+                    if request_id == 3 and code == -32002 and (error.get("data") or {}).get("reason") == "model_not_available":
+                        raise JunieAcpModelUnavailable(self.command, 1, "Junie の ACP で利用できるモデルがありません。")
                     detail = ("Junie CLIでログインしてから再開してください。" if code == -32000 else
                               f"JunieのACP要求に失敗しました（要求 {request_id}、コード {code}）。")
                     raise JunieSessionError(self.command, 1, detail)
@@ -665,6 +708,7 @@ def _run_session(
     check_cancelled()
     root = completion_path.parent
     dashboard = junie_dashboard_control()
+    headless = command[-2:-1] == ["--task"]
     restore_terminal = _save_terminal_mode() if dashboard is None else None
     process = None
     acp = None
@@ -682,24 +726,18 @@ def _run_session(
             project = str(root.resolve())
             if project not in dashboard.trusted_junie_workspaces:
                 # ACPはプロジェクトの設定を信頼確認なしで読み込むため、起動前に確認する。
-                reply = dashboard.on_junie_request({
-                    "title": "Junie の作業フォルダーを確認",
-                    "detail": f"このフォルダーの設定を読み込んで Junie を実行します。\n\n{project}",
-                    "options": [
-                        {"id": "stop", "label": "停止", "kind": "reject_once"},
-                        {"id": "trust", "label": "信頼して続行", "kind": "allow_once"},
-                    ],
-                })
-                check_cancelled()
-                while not reply.done():
-                    dashboard.cancelled.wait(0.25)
-                    check_cancelled()
-                if reply.result() != "trust":
+                if not _confirm_dashboard_launch(
+                    dashboard, "Junie の作業フォルダーを確認",
+                    f"このフォルダーの設定を読み込んで Junie を実行します。\n\n{project}",
+                    "trust", "信頼して続行",
+                ):
                     raise OperationCancelled("Junieの作業フォルダーの確認を取り消しました。")
                 dashboard.trusted_junie_workspaces.add(project)
         events = _JunieSessionEvents(token)
         next_poll = time.monotonic()
-        if dashboard is None:
+        if headless:
+            process = _launch_process(command, stdin=subprocess.DEVNULL)
+        elif dashboard is None:
             process = _launch_process(command)
         else:
             acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]

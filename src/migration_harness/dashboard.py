@@ -15,6 +15,7 @@ from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 from threading import Condition, Thread
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from tomlkit.exceptions import TOMLKitError
 
@@ -27,7 +28,8 @@ from migration_harness.timings import freeze_timings
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.workflow import (
-    RunInterrupted, RunScriptError, _load_saved_run, can_resume_run, migration_ledger, prepare_run, resume_with_junie,
+    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _load_saved_run, build_failure_review, can_resume_run,
+    migration_ledger, prepare_run, resume_with_junie,
     review_checker, run_observer, run_with_junie,
 )
 
@@ -201,6 +203,8 @@ class Dashboard:
                 or action.get("revision") != self.revision
                 or (generating_anchors and not self.state.get("worktree_path"))
                 or (action["action"] == "resume" and not self.state.get("resumable"))
+                or (action["action"] == "build-response"
+                    and (self.state.get("status") != "build_failed" or not self.state.get("resumable")))
                 or (action["action"] == "accept" and self.state.get("status") != "checker_needs_review")
             ):
                 return False
@@ -208,7 +212,7 @@ class Dashboard:
                 **self.state, "ready": False, "message": "", "generating_anchors": generating_anchors,
                 "error_details": "",
             })
-            if action["action"] in ("prepare", "run", "resume", "resume-run", "anchors"):
+            if action["action"] in ("prepare", "run", "resume", "resume-run", "anchors", "build-response"):
                 self.begin_operation()
             self.actions.put_nowait(action)
             return True
@@ -258,6 +262,8 @@ class Dashboard:
                     self.send_workspace(include_usage=True)
                 elif self.path == prefix + "settings":
                     self.send_settings()
+                elif self.path.partition("?")[0] == prefix + "build-review":
+                    self.send_build_review()
                 elif self.path == prefix + "migration-ledger":
                     run_id = dashboard.state.get("run_id")
                     if run_id and dashboard.state.get("worktree_path"):
@@ -273,6 +279,22 @@ class Dashboard:
                     self.send_comparison()
                 else:
                     self.send_error(404)
+
+            def send_build_review(self) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                with dashboard.condition:
+                    state = dashboard.state
+                    if (not state.get("ready") or state.get("status") != "build_failed"
+                            or query.get("run_id") != [state.get("run_id")]):
+                        self.send_body(409, "text/plain; charset=utf-8", "現在の実行から確認画面を開き直してください。".encode())
+                        return
+                    current_config = config.copy()
+                try:
+                    review = build_failure_review(current_config, state["run_id"], query.get("target", [None])[0])
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                else:
+                    self.send_body(200, "application/json; charset=utf-8", json.dumps(review, ensure_ascii=False).encode())
 
             def send_workspace(self, *, include_usage: bool = False) -> None:
                 try:
@@ -370,7 +392,7 @@ class Dashboard:
 
             def do_POST(self) -> None:
                 """オリジンと操作内容を検証してから比較または端末側の操作へ渡す。"""
-                if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings"):
+                if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings", prefix + "build-response"):
                     self.send_error(404)
                     return
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
@@ -378,17 +400,25 @@ class Dashboard:
                     return
                 comparison = self.path == prefix + "comparison"
                 settings = self.path == prefix + "settings"
+                build_response = self.path == prefix + "build-response"
+                limit = 16_384
+                if settings:
+                    limit = 8 * 1024 * 1024
+                elif build_response:
+                    # JSON エスケープはソースの 1 バイトを最大 6 バイトに展開する。
+                    limit = 6 * BUILD_REVIEW_EDIT_BYTES + 256 * 1024
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if comparison and length == 0:
                         action = {}
                     else:
-                        limit = 8 * 1024 * 1024 if settings else 16_384
                         if not 0 < length <= limit or self.headers.get_content_type() != "application/json":
                             raise ValueError
                         self.connection.settimeout(5)
                         action = json.loads(self.rfile.read(length))
                         if not isinstance(action, dict):
+                            raise ValueError
+                        if build_response != (action.get("action") == "build-response"):
                             raise ValueError
                 except (OSError, ValueError):
                     self.send_error(400)
@@ -417,7 +447,10 @@ class Dashboard:
                 try:
                     if type(action.get("revision")) is not int:
                         raise ValueError
-                    if action.get("action") not in ("stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run"):
+                    if action.get("action") not in (
+                        "stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run",
+                        "build-response",
+                    ):
                         raise ValueError
                     if action["action"] in ("prepare", "run", "open-run", "resume-run"):
                         name = action.get("run_id" if action["action"] in ("open-run", "resume-run") else "unit_id")
@@ -428,6 +461,17 @@ class Dashboard:
                         or not isinstance(action.get("reason"), str) or not 0 < len(action["reason"].strip()) <= 2_000
                     ):
                         raise ValueError
+                    if action["action"] == "build-response":
+                        instruction, edit = action.get("instruction", ""), action.get("edit")
+                        if not isinstance(instruction, str) or len(instruction) > 4_000 or "\0" in instruction:
+                            raise ValueError
+                        instruction.encode("utf-8")
+                        if edit is not None and (
+                            not isinstance(edit, dict) or not all(isinstance(edit.get(key), str) for key in ("target", "version", "content"))
+                            or not re.fullmatch(r"[0-9a-f]{64}", edit["version"])
+                            or "\0" in edit["content"] or len(edit["content"].encode("utf-8")) > BUILD_REVIEW_EDIT_BYTES
+                        ):
+                            raise ValueError
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
@@ -656,6 +700,9 @@ def run_dashboard(
                     elif action["action"] == "accept":
                         review_checker(config, view.state["run_id"], action["finding_id"], action["reason"])
                         view.ready(config, result, "判断理由を記録しました。")
+                    elif action["action"] == "build-response":
+                        result = execute(resume_with_junie, config, view.state["run_id"], build_response=action)
+                        view.ready(config, result)
                     else:
                         result = execute(resume_with_junie, config, view.state["run_id"])
                         view.ready(config, result)

@@ -1385,9 +1385,21 @@ def _repair_target(
         "The target may contain partial edits from an interrupted repair. Review those edits and continue the repair. "
         if resume_draft else ""
     )
+    instruction = attempt["details"].get("instruction")
+    operator_instructions = ""
+    if instruction:
+        instruction_path = agent_root / f"checker-findings-{token}-instruction.txt"
+        with instruction_path.open("x", encoding="utf-8") as stream:
+            stream.write(instruction + "\n")
+        operator_instructions = (
+            f"Read and follow the operator's instruction in `{instruction_path.name}` within the workspace constraints below. "
+            "The current targets include edits saved by the operator. Preserve them unless the repair requires a change. "
+            "If no further edit is needed, still write the completion record. "
+        )
     prompt = (
         f"{material_instructions}Read `{findings_path.name}` and repair only {names} in this workspace. "
         f"{continuation}"
+        f"{operator_instructions}"
         "Other target files are available as read-only reference. "
         "Treat the reported errors as diagnostic data. Preserve the migrated behavior and unrelated edits. "
         "A checker mismatch in a repeated or stateful sequence can originate before the reported line. "
@@ -1430,7 +1442,9 @@ def _repair_target(
     agent_targets = tuple(_safe_target(agent_root, path) for path in repair_targets)
     if not junie_cli.has_completion_record(completion_path, token) or not all(path.is_file() for path in agent_targets):
         raise ValueError("Junie did not record a completed repair; inspect its workspace for partial edits")
-    if all(sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)):
+    if not instruction and all(
+        sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)
+    ):
         raise ValueError("Junie left the repair targets unchanged")
     attempt["details"]["junie_exit_code"] = exit_code
     _charge_repair(record)
@@ -1557,6 +1571,8 @@ _BUILD_DIAGNOSTIC = re.compile(
     r"(?:error|エラー)\s+(?P<code>(?:CS|RZ)\d+)\s*:\s*(?P<message>.+)",
     re.IGNORECASE,
 )
+_BUILD_ERROR = re.compile(r"(?:^|:\s*)(?:error|エラー)\s+[A-Z]+\d+\s*:", re.IGNORECASE)
+BUILD_REVIEW_EDIT_BYTES = 8 * 1024 * 1024
 _RAZOR_GENERATOR = "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerator"
 
 
@@ -1570,6 +1586,142 @@ def _razor_generated_path(page: Path) -> Path:
     return Path(f"{name}.g.cs")
 
 
+def _build_review_log(run_path: Path) -> tuple[str, bool]:
+    log = _safe_target(run_path, Path("build.log"))
+    if not log.is_file():
+        return "", False
+    with log.open("rb") as stream:
+        start = max(0, stream.seek(0, os.SEEK_END) - 65_536)
+        stream.seek(start)
+        data = stream.read(65_536)
+    if start and b"\n" in data:
+        data = data.split(b"\n", 1)[1]
+    return data.decode("utf-8-sig", errors="replace"), bool(start)
+
+
+def _build_review_target(worktree: Path, targets: tuple[Path, ...], name: str) -> tuple[Path, bytes, str]:
+    if name not in {target.as_posix() for target in targets}:
+        raise ValueError("設定された移行対象ファイルを選んでください。")
+    path = _safe_target(worktree, Path(name))
+    if not path.is_file():
+        raise ValueError("対象ファイルが見つかりません。作業ツリーで確認してください。")
+    with path.open("rb") as stream:
+        data = stream.read(BUILD_REVIEW_EDIT_BYTES + 1)
+    if len(data) > BUILD_REVIEW_EDIT_BYTES:
+        raise ValueError("8 MiB を超えるファイルは作業ツリーで編集してください。")
+    try:
+        content = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError("UTF-8 以外のファイルは作業ツリーで編集してください。") from None
+    if "\0" in content:
+        raise ValueError("テキストファイルを選んでください。")
+    return path, data, content
+
+
+def _build_review_newline(data: bytes) -> str:
+    if b"\r\n" in data:
+        return "\r\n"
+    if b"\r" in data and b"\n" not in data:
+        return "\r"
+    return "\n"
+
+
+def build_failure_review(config: dict[str, Any], run_id: str, target: str | None = None) -> dict[str, Any]:
+    """ビルド失敗時の出力と、選択した移行対象の編集用スナップショットを取得する。"""
+    run_path, worktree, record, unit = _load_saved_run(config, run_id)
+    if record["status"] != "build_failed":
+        raise ValueError("表示中の Run のビルド結果が変わりました。")
+    targets = _target_paths(unit)
+    if target is not None:
+        with worktree_source_lock:
+            _, data, content = _build_review_target(worktree, targets, target)
+        return {
+            "content": content, "version": hashlib.sha256(data).hexdigest(), "max_bytes": BUILD_REVIEW_EDIT_BYTES,
+            "crlf": _build_review_newline(data) == "\r\n", "bom_bytes": len(codecs.BOM_UTF8) if data.startswith(codecs.BOM_UTF8) else 0,
+        }
+    log, truncated = _build_review_log(run_path)
+    errors = []
+    preferred_target = None
+    for error in _build_error_lines(log):
+        match = _BUILD_DIAGNOSTIC.fullmatch(error)
+        if match:
+            path = (worktree / match["path"]).resolve()
+            if path.is_relative_to(worktree):
+                relative = path.relative_to(worktree)
+                if preferred_target is None and relative in targets:
+                    preferred_target = relative.as_posix()
+                message = re.sub(r" \[[^\r\n]+\.(?:csproj|vbproj|fsproj)\]$", "", match["message"])
+                error = f"{relative.as_posix()}({match['location']}): {match['code']}: {message}"
+        errors.append(error)
+    return {
+        "errors": list(dict.fromkeys(errors))[:30], "log": log, "truncated": truncated, "preferred_target": preferred_target,
+        "targets": [target.as_posix() for target in targets],
+    }
+
+
+def _build_error_lines(log: str) -> list[str]:
+    lines = (line.strip() for line in log.splitlines())
+    return list(dict.fromkeys(line for line in lines if _BUILD_ERROR.search(line)))
+
+
+def _save_build_review_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, str]) -> None:
+    with worktree_source_lock:
+        path, original, _ = _build_review_target(worktree, targets, edit["target"])
+        if hashlib.sha256(original).hexdigest() != edit["version"]:
+            raise ValueError("編集を開いた後に対象ファイルが更新されました。最新の内容を読み込み、編集を反映し直してください。")
+        text = edit["content"].replace("\r\n", "\n").replace("\r", "\n")
+        text = text.replace("\n", _build_review_newline(original))
+        data = text.encode("utf-8-sig" if original.startswith(codecs.BOM_UTF8) else "utf-8")
+        if len(data) > BUILD_REVIEW_EDIT_BYTES:
+            raise ValueError("編集後のファイルが 8 MiB を超えています。作業ツリーで編集してください。")
+        if data == original:
+            return
+        with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+        try:
+            temporary.write_bytes(data)
+            shutil.copymode(path, temporary)
+            if _target_hash(_safe_target(worktree, Path(edit["target"]))) != edit["version"]:
+                raise ValueError("対象ファイルが更新されました。最新の内容を読み込んでください。")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _respond_to_build_failure(
+    config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path,
+    record: dict[str, Any], response: dict[str, Any],
+) -> None:
+    record_path = run_path / "run.json"
+    _finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
+    check_cancelled()
+    if response.get("edit") is not None:
+        _save_build_review_edit(worktree, targets, response["edit"])
+    instruction = response.get("instruction", "").strip()
+    if not instruction:
+        return
+    log, _ = _build_review_log(run_path)
+    errors = _build_error_lines(log)
+    diagnostic = ("\n".join(errors) or log)[-8_000:]
+    findings = f"{record.get('error', '')}\n{diagnostic}".strip() or "The last build failed."
+    history = record.setdefault("repair_history", [])
+    details = {"kind": "build", "findings": [], "instruction": instruction}
+    if log:
+        archive = _safe_target(run_path, Path(f"build-before-repair-{len(history) + 1}.log"))
+        shutil.copyfile(run_path / "build.log", archive)
+        details["build_log_path"] = str(archive)
+    try:
+        _attempt_repair(config, targets, targets, worktree, run_path, findings, record, details)
+    except (OSError, RuntimeError, ValueError) as exc:
+        record.update(status="build_failed", error="Junie で修正できませんでした。\n" + format_error(exc))
+        _write_run_record(record_path, record)
+        raise
+    except KeyboardInterrupt:
+        record.update(status="build_failed", error="Junie による修正を停止しました。")
+        _write_run_record(record_path, record)
+        raise RunInterrupted(record["run_id"]) from None
+
+
 def _repair_build_failure(
     config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path, record: dict[str, Any],
 ) -> bool:
@@ -1577,7 +1729,8 @@ def _repair_build_failure(
     limit = config["max_repair_attempts"]
     history = record["repair_history"]
     log = run_path / "build.log"
-    if len(history) >= limit or not record.get("build_exit_code") or log.stat().st_size > 65_536:
+    automatic_attempts = sum("instruction" not in attempt for attempt in history)
+    if automatic_attempts >= limit or not record.get("build_exit_code") or log.stat().st_size > 65_536:
         return False
     findings = {}
     generated_model_errors = set()
@@ -1586,7 +1739,7 @@ def _repair_build_failure(
         line = line.strip()
         match = _BUILD_DIAGNOSTIC.fullmatch(line)
         if match is None:
-            if re.search(r"(?:^|:\s*)(?:error|エラー)\s+[A-Z]+\d+\s*:", line, re.IGNORECASE):
+            if _BUILD_ERROR.search(line):
                 return False
             continue
         resolved = (worktree / match["path"]).resolve()
@@ -1753,7 +1906,7 @@ def _run_verification(
             legacy_fingerprints = {finding.repair_fingerprint for finding in remaining}
             if any((fingerprints | legacy_fingerprints).intersection(attempt["findings"]) for attempt in history):
                 raise ValueError("a previous checker finding is still present")
-            if len(history) >= limit:
+            if sum("instruction" not in attempt for attempt in history) >= limit:
                 raise ValueError(f"automatic repair limit reached ({limit})")
             junie_cli.require_interactive_cli()
             attempt = len(history) + 1
@@ -2175,13 +2328,17 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     return status in _JUNIE_RESUME_STATUSES
 
 
-def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+def resume_with_junie(
+    config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = _load_saved_run(config, run_id)
     if "stage_timings" in record:
         record["stage_timings"] = freeze_timings(record)
         record["active_stage"] = None
     status = record.get("status")
+    if build_response is not None and status != "build_failed":
+        raise ValueError("表示中の Run のビルド結果が変わりました。")
     if not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
@@ -2248,6 +2405,8 @@ def resume_with_junie(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "max_context_chars": record["max_context_chars"],
     }
     if migration_complete:
+        if build_response is not None:
+            _respond_to_build_failure(config, _target_paths(unit), worktree_path, run_path, record, build_response)
         if script_retry:
             record.update(status="junie_finished")
             record.pop("error", None)

@@ -393,6 +393,17 @@
     .review-note { width: 100%; min-height: 66px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; }
     .review-note:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
     .review-note::placeholder { color: var(--soft); }
+    #build-review-dialog { width: min(760px, calc(100vw - 20px)); max-height: none; overflow: hidden; }
+    #build-review-form { display: flex; flex-direction: column; max-height: min(90dvh, 800px); }
+    .build-review-body { min-height: 0; overflow: auto; padding: clamp(16px, 3vw, 22px); }
+    #build-review-dialog .review-code { max-height: 13rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #build-review-dialog .review-context .review-code { margin: 0 9px 9px; }
+    #build-review-dialog summary:focus-visible, #build-review-dialog select:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
+    #build-review-dialog .build-editor { padding: 0 12px 12px; }
+    #build-review-dialog .build-editor p { padding: 0; }
+    #build-review-dialog select { width: 100%; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
+    #build-review-source { min-height: 11rem; margin-top: 8px; font: 13px/1.55 var(--mono); }
+    #build-review-dialog .review-actions { display: flex; justify-content: flex-end; flex: 0 0 auto; margin: 0; padding: 10px clamp(16px, 3vw, 22px); border-top: 1px solid var(--line); }
     .review-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
     @media (min-width: 650px) {
       :root:not([data-live]) .review-actions { grid-template-columns: minmax(0, 1fr) minmax(154px, 1fr) repeat(2, minmax(0, 1fr)); }
@@ -907,6 +918,42 @@
         <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
       </div>
     </div>
+  </dialog>
+  <dialog class="review-dialog" id="build-review-dialog" aria-labelledby="build-review-title">
+    <form id="build-review-form">
+      <div class="build-review-body">
+        <header class="review-heading">
+          <h2 id="build-review-title" tabindex="-1">ビルド失敗の詳細</h2>
+          <button class="review-close" id="build-review-close" type="button" aria-label="閉じる">×</button>
+        </header>
+        <p class="review-intro" id="build-review-intro"></p>
+        <pre class="review-code" id="build-review-errors" tabindex="0" aria-label="ビルドエラー"></pre>
+        <details class="review-context" id="build-review-log-section" hidden>
+          <summary id="build-review-log-label">ビルド出力</summary>
+          <pre class="review-code" id="build-review-log" tabindex="0" aria-label="ビルド出力"></pre>
+        </details>
+        <details class="review-context" id="build-review-editor" hidden>
+          <summary>移行対象ファイルを編集</summary>
+          <div class="build-editor">
+            <label class="review-note-label" for="build-review-target">編集するファイル</label>
+            <select id="build-review-target"></select>
+            <label class="review-note-label" for="build-review-source" id="build-review-source-label" hidden>ファイルの内容</label>
+            <textarea class="review-note" id="build-review-source" spellcheck="false" wrap="off" hidden></textarea>
+            <p class="review-caveat" id="build-review-file-status" role="status"></p>
+            <button class="review-action" id="build-review-reset" type="button" hidden>最新の内容を読み込み直す</button>
+          </div>
+        </details>
+        <label class="review-note-label" for="build-review-instruction">Junie への修正指示（任意）</label>
+        <textarea class="review-note" id="build-review-instruction" maxlength="4000" spellcheck="false"
+                  placeholder="例：エラーが出た型名を確認し、既存のモデルを使うように修正してください。"
+                  aria-describedby="build-review-hint"></textarea>
+        <p class="review-caveat" id="build-review-hint">編集内容は、この実行の作業ツリーに保存されます。指示を入力すると、Junie が修正した後に再ビルドします。</p>
+        <p class="review-caveat" id="build-review-feedback" role="status"></p>
+      </div>
+      <div class="review-actions">
+        <button class="button primary" id="build-review-submit" type="submit">再ビルド</button>
+      </div>
+    </form>
   </dialog>
 </main>
 <dialog class="viewer-preview" id="viewer-preview" aria-labelledby="viewer-preview-title">
