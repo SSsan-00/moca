@@ -265,6 +265,7 @@ class DashboardEditorTests(HarnessCase):
                 if len(calls) == 2:
                     report.write_text(json.dumps({"question": question}), encoding="utf-8")
                     targets[0].write_text(proposed, encoding="utf-8")
+                    return 0
                 elif len(calls) == 3:
                     self.assertIn(question, command[-1])
                     self.assertIn("4 でお願いします", (completion.parent / f"checker-findings-{token}-operator.txt")
