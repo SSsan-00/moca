@@ -103,8 +103,11 @@ def require_interactive_cli() -> None:
         raise JunieLaunchError(["junie"], None, None, exc) from exc
 
 
-def build_command(project: Path, prompt: str, max_steps: int | None) -> list[str]:
+def build_command(project: Path, prompt: str, max_steps: int | None, *, guidelines: Path | None = None) -> list[str]:
     command = ["junie", "--project", str(project)]
+    if guidelines is not None:
+        # 本文をコマンド引数に展開せず、既存のJunie指示に追加する（Windowsの長さ制限も回避）。
+        command.extend(["--ide-guidelines", str(guidelines)])
     if max_steps is not None:
         command.extend(["--max-steps", str(max_steps)])
     # 再試行時に続きを促す文を付けるため、プロンプトを末尾に置く。

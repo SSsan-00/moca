@@ -9,11 +9,17 @@ run_root = "C:/path/to/local-migration-runs"
 # 上限は文字数で指定する。トークン数の厳密な制限ではない。
 max_context_chars = 500000
 
-# ルールはRunに全文を固定し、各カプセル・修正で分割して全量を読む。参考実装は必要な範囲を読む。
+# 必須ルールは全文をJunie起動時の指示に渡す。詳細・例と参考実装は必要な範囲を読む。
 # ルールと参考実装は全行を読み込む。参考実装は元PHPの直後に対応するC#／Razorを並べる。
 # ファイルはアプリルートからの相対パス、または外部ファイルの絶対パス。
 # [[project.migration_rules]]
 # path = "docs/migration-rules.md"
+# usage = "required" # 省略時も必須事項。本文を省略せず毎回適用する。
+#
+# [[project.migration_rules]]
+# path = "docs/migration/razor-examples.md"
+# usage = "reference"
+# description = "Razor画面を移行・修正するときに読む、画面表示の詳細と例"
 #
 # [[project.references]]
 # role = "reference_php"

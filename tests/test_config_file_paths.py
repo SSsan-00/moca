@@ -101,7 +101,7 @@ class ConfigFilePathTests(HarnessCase):
         capsule = Path(prepared["capsule_path"])
         manifest = json.loads((capsule / "manifest.json").read_bytes())
         self.assertEqual({source["path"] for source in manifest["php_sources"]}, {external.as_posix(), reference_php.as_posix()})
-        rules = "".join((capsule / "materials" / chunk["file"]).read_text(encoding="utf-8") for chunk in manifest["rule_chunks"])
+        rules = "".join((capsule / "materials" / chunk["file"]).read_text(encoding="utf-8") for chunk in manifest["rule_files"])
         self.assertIn("Preserve the value 42.", rules)
         external.write_text("changed", encoding="utf-8")
         _, payload = capture_workspace(config, prepared["run_id"])

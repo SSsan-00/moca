@@ -15,7 +15,6 @@ from fixtures import HarnessCase
 from migration_harness import cli, junie_cli, review_anchors, workflow
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace
-from migration_harness.rule_materials import read_rule
 
 
 PHP = {"path": "Source.php", "role": "php", "start_line": 1, "end_line": 2}
@@ -165,10 +164,10 @@ class CapsulePreparationTests(HarnessCase):
             agent = self.root / f"agent-{unit_id}"
             agent.mkdir()
             prompt = workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
-            self.assertTrue((agent / "migration-read-rules.py").is_file())
+            self.assertTrue((agent / ".migration-materials/guidelines.md").is_file())
             self.assertIn("references.json", prompt)
             self.assertIn("last 5", (agent / ".migration-materials" / references[-1]["file"]).read_text())
-            rules = "".join((agent / ".migration-materials" / entry["file"]).read_text() for entry in manifest["rule_chunks"])
+            rules = "".join((agent / ".migration-materials" / entry["file"]).read_text() for entry in manifest["rule_files"])
             for part in manifest["parts"]:
                 self.assertEqual([entry["path"] for entry in part["sources"]], [PHP["path"]])
                 context = Path(part["path"]).read_text(encoding="utf-8")
@@ -293,10 +292,9 @@ class CapsulePreparationTests(HarnessCase):
         def junie(command, completion, token, targets, *, report_usage=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
-            chunks = self.read_json(completion.parent / ".migration-materials/rules.json")
-            with redirect_stdout(io.StringIO()):
-                for chunk in chunks:
-                    read_rule(completion.parent, token, chunk["file"])
+            guidelines = Path(command[command.index("--ide-guidelines") + 1])
+            self.assertIn(b"REQUIRED_MIGRATION_RULE", guidelines.read_bytes())
+            self.assertNotIn("migration-read-rules.py", command[-1])
             observed_contexts.append((target.parent / ".migration-context.md").read_bytes())
             if len(observed_contexts) == 2:
                 target.write_bytes(b"class Partial {}\n")
@@ -332,7 +330,7 @@ class CapsulePreparationTests(HarnessCase):
         self.assertEqual(result["completed_capsules"], len(parts))
         self.assertEqual(self.read_json(record_path)["resume_attempts"], 1)
         self.assertEqual([entry["path"] for entry in manifest["shared_sources"]], ["rules.md", "constraints.md"])
-        saved_rules = b"".join((run_path / "capsule/materials" / chunk["file"]).read_bytes() for chunk in manifest["rule_chunks"])
+        saved_rules = b"".join((run_path / "capsule/materials" / chunk["file"]).read_bytes() for chunk in manifest["rule_files"])
         self.assertIn(b"REQUIRED_MIGRATION_RULE ````\r\n`````\n", saved_rules)
         self.assertNotIn(b"CHANGED_RULE", saved_rules)
         focus_ranges = []

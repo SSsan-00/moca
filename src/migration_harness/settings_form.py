@@ -9,7 +9,7 @@ from typing import Any
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
-from .config import REFERENCE_ROLES, SCRIPT_PHASES
+from .config import REFERENCE_ROLES, SCRIPT_PHASES, validate_rule_usage
 
 
 _TABLE_FIELDS = {
@@ -27,6 +27,7 @@ _NUMERIC_FIELDS = {
     "end_line": (1, "終了行"),
 }
 _INPUT_FIELDS = ("path", "start_line", "end_line", "encoding", "symbol")
+_RULE_FIELDS = ("usage", "description")
 _UNIT_SETTINGS = ("id", "source", "targets")
 _REFERENCE_TARGET_ROLES = ("reference_csharp", "reference_razor")
 
@@ -45,7 +46,8 @@ def _material_form_entry(item: Any, index: int, key: str) -> dict[str, Any]:
     if isinstance(item, Mapping) and isinstance(item.get("path"), str):
         role = "migration_rules" if key == "migration_rules" else item.get("role")
         if key != "references" or role in REFERENCE_ROLES:
-            return {"index": index, "role": role or "", **{name: item[name] for name in _INPUT_FIELDS if name in item}}
+            fields = _INPUT_FIELDS + _RULE_FIELDS if role == "migration_rules" else _INPUT_FIELDS
+            return {"index": index, "role": role or "", **{name: item[name] for name in fields if name in item}}
     # フォームに出せない旧設定も、元の位置を保持して保存時に残す。
     return {"index": index}
 
@@ -84,6 +86,13 @@ def _apply_material_edits(container: Mapping, key: str, edits: Any) -> None:
         if not isinstance(path, str) or role not in roles:
             raise ValueError(error)
         values = {"path": path}
+        if common:
+            previous = inputs[index] if index is not None else {}
+            validate_rule_usage(
+                edit.get("usage", previous.get("usage", "required")),
+                edit.get("description", previous.get("description", "")),
+            )
+            values.update({name: edit[name] for name in _RULE_FIELDS if name in edit})
         if not common:
             values["role"] = role
         for name in _INPUT_FIELDS[1:]:

@@ -191,6 +191,8 @@
     .settings-materials > p, .settings-material-range { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
     .settings-material { min-inline-size: 0; margin: 8px 0; padding: 8px 10px 10px; border: 1px solid var(--line); border-radius: 8px; }
     .settings-material legend { margin: 0; padding-inline: 4px; }
+    .settings-material > [hidden] { display: none; }
+    .workspace-tools textarea.settings-rule-description { height: calc(3lh + 18px); min-height: calc(3lh + 18px); font: inherit; }
     .settings-details { margin: 8px 0 12px; }
     .settings-details > summary { cursor: pointer; color: var(--blue); padding-block: 5px; }
     .settings-details[open] > summary { margin-bottom: 8px; }
@@ -764,7 +766,8 @@
           <div class="settings-field-pane settings-shared-pane">
             <section class="settings-materials" aria-labelledby="settings-rules-title">
               <h2 id="settings-rules-title">プロジェクト共通の移行ルール</h2>
-              <p>すべての移行単位で全文を使います。アプリルートからの相対パス、または外部ファイルの絶対パスを指定します。</p>
+              <p>既存のルールは「毎回適用する必須事項」のまま、毎回全文を読みます。長い説明や例は別ファイルに分け、「必要時に読む詳細・例」として登録してください。内容の要約や分類は自動では行いません。</p>
+              <p>アプリルートからの相対パス、または外部ファイルの絶対パスを指定します。</p>
               <div id="settings-rules"></div>
               <button class="button" id="settings-rule-add" type="button">移行ルールを追加</button>
             </section>
@@ -1165,7 +1168,20 @@ const numericSettings = {
   max_repair_attempts: [0, "自動修正回数"], max_context_chars: [1000, "カプセルの文字数上限"],
   max_steps: [1, "Junieのステップ数上限"], start_line: [1, "開始行"], end_line: [1, "終了行"],
 };
-const hasInputContent = item => Boolean(item.path?.trim());
+const hasInputContent = item => Boolean(item.path?.trim() || item.description?.trim() || item.usage === "reference");
+function validateRuleUsage(item) {
+  const usage = item.usage === undefined ? "required" : item.usage;
+  const description = item.description === undefined ? "" : item.description;
+  if (!["required", "reference"].includes(usage)) {
+    throw new Error("移行ルールの読み込み方（usage）は「毎回適用する必須事項」（required）または「必要時に読む詳細・例」（reference）を指定してください。");
+  }
+  if (typeof description !== "string") {
+    throw new Error("移行ルールの「読む場面・内容」（description）は文字列で入力してください。");
+  }
+  if (usage === "reference" && !description.trim()) {
+    throw new Error("「必要時に読む詳細・例」には「読む場面・内容」を入力してください。空白だけでは保存できません。");
+  }
+}
 
 function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct}) {
   const newRun = document.querySelector("#workspace-new-run");
@@ -1250,6 +1266,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     if (rules.some(item => item.role && !item.path.trim())) {
       throw new Error("移行ルールのファイルパスを指定してください。");
     }
+    rules.filter(item => item.role === "migration_rules").forEach(validateRuleUsage);
     if (rules.length !== settingsForm.migrationRules.length) cleanup.migrationRules = rules;
 
     const references = [];
@@ -1480,6 +1497,37 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
         const title = `移行ルール ${++ruleNumber}`;
         const card = addCard(rules, title);
         inputField(card, item, "ルールファイル", removeButton(`${title}を削除`, () => remove([item], addRule)));
+        const usage = document.createElement("select");
+        usage.className = "workspace-select";
+        usage.append(new Option("毎回適用する必須事項", "required"), new Option("必要時に読む詳細・例", "reference"));
+        usage.value = item.usage === undefined ? "required" : item.usage;
+        const usageLabel = document.createElement("label");
+        usageLabel.append("読み込み方", usage);
+        const descriptionLabel = document.createElement("label");
+        const description = document.createElement("textarea");
+        description.className = "settings-rule-description";
+        description.rows = 2;
+        description.placeholder = "例：DBアクセスを移行するときに読む、トランザクション処理の詳細と例";
+        description.value = typeof item.description === "string" ? item.description : "";
+        descriptionLabel.append("読む場面・内容", description);
+        const descriptionHelp = document.createElement("p");
+        descriptionHelp.className = "settings-material-range";
+        descriptionHelp.id = `settings-rule-description-help-${ruleNumber}`;
+        descriptionHelp.textContent = "必須です。どの作業で読むか、何が書かれているかを入力してください。";
+        description.setAttribute("aria-describedby", descriptionHelp.id);
+        const showDescription = () => {
+          const reference = usage.value === "reference";
+          descriptionLabel.hidden = descriptionHelp.hidden = !reference;
+          description.setAttribute("aria-required", String(reference));
+        };
+        usage.addEventListener("change", () => {
+          item.usage = usage.value;
+          showDescription();
+          change();
+        });
+        description.addEventListener("input", () => { item.description = description.value; change(); });
+        showDescription();
+        card.append(usageLabel, descriptionLabel, descriptionHelp);
         continue;
       }
 
@@ -1509,7 +1557,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
 
   addRule.addEventListener("click", () => {
     const inputs = settingsForm.migrationRules;
-    const entry = newDraft({role: "migration_rules", path: ""});
+    const entry = newDraft({role: "migration_rules", path: "", usage: "required"});
     inputs.push(entry);
     showMaterials(inputs, "migrationRules").get(entry).focus();
     changeMaterials("migrationRules");
@@ -2091,7 +2139,10 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
     function replaceInputBlocks(previous, inputs, heading, insertion, commonRule = false) {
       const updated = inputs.map(({index, ...fields}) => {
         let block = index === undefined ? `\n${heading}\n` : blocks[previous[index]];
-        if (commonRule) delete fields.role;
+        if (commonRule) {
+          validateRuleUsage(fields);
+          delete fields.role;
+        }
         for (const key of ["start_line", "end_line", "encoding", "symbol"]) {
           if (fields[key] === "") {
             block = block.replace(fieldPattern(key), "");
@@ -2128,7 +2179,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
         const path = read(block, "path");
         return typeof path === "string"
           ? {index, role: role ?? "", path, ...Object.fromEntries(
-            ["start_line", "end_line", "encoding", "symbol"].map(key => [key, read(block, key)]),
+            ["start_line", "end_line", "encoding", "symbol", ...(commonRule ? ["usage", "description"] : [])].map(key => [key, read(block, key)]),
           )}
           : {index};
       });
@@ -2166,8 +2217,11 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
     readSettings: async () => ({path: "harness.local.toml（デモ内）", version: "demo", ...demoSettingsDraft(demoSettings)}),
     previewSettings: async (content, changes) => demoSettingsDraft(content, changes),
     saveSettings: async content => {
+      const form = demoSettingsDraft(content).form;
+      if (!form) throw new Error("TOMLの書式を修正してください。");
+      form.migrationRules.forEach(validateRuleUsage);
       demoSettings = content;
-      const viewer = demoSettingsDraft(content).form?.diff_viewer;
+      const viewer = form.diff_viewer;
       document.documentElement.toggleAttribute("data-viewer-enabled", !!viewer?.html?.trim() && viewer.enabled !== "false");
       return {version: "demo"};
     },

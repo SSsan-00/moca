@@ -22,6 +22,8 @@ def main() -> None:
     with TemporaryDirectory() as temporary:
         root = Path(temporary) / "Junie 日本語 & spaces"
         root.mkdir()
+        guidelines = root / "必須事項 & details.md"
+        guidelines.write_text("# Migration rules\nPreserve original values.\n", encoding="utf-8")
         for extension in ("BAT", "CMD"):
             launcher = root / f"Junie.{extension}"
             shutil.copyfile(installed, launcher)
@@ -33,7 +35,7 @@ def main() -> None:
                 assert resolved == launcher, (resolved, launcher)
                 for flag in ("--version", "--help"):
                     command = junie_cli.build_command(
-                        root, '起動確認 "quotes" & | %PATH% !NAME!\nsecond line', 2,
+                        root, '起動確認 "quotes" & | %PATH% !NAME!\nsecond line', 2, guidelines=guidelines,
                     )
                     command.insert(1, flag)
                     print(f"Launching {extension}: {flag}", flush=True)

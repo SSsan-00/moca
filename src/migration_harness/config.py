@@ -285,7 +285,24 @@ def _normalize_input(
     }
     if symbol is not None:
         normalized["symbol"] = symbol.strip()
+    if role == "migration_rules":
+        usage = item.get("usage", "required")
+        description = item.get("description", "")
+        validate_rule_usage(usage, description)
+        normalized.update(usage=usage, description=description)
     return normalized
+
+
+def validate_rule_usage(usage: Any, description: Any) -> None:
+    if not isinstance(usage, str) or usage not in {"required", "reference"}:
+        raise ValueError(
+            "移行ルールの読み込み方（usage）は「毎回適用する必須事項」（required）または"
+            "「必要時に読む詳細・例」（reference）を指定してください。"
+        )
+    if not isinstance(description, str):
+        raise ValueError("移行ルールの「読む場面・内容」（description）は文字列で入力してください。")
+    if usage == "reference" and not description.strip():
+        raise ValueError("「必要時に読む詳細・例」には「読む場面・内容」を入力してください。空白だけでは保存できません。")
 
 
 def validate_checker_command(command: Any) -> None:

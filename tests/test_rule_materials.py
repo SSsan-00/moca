@@ -1,10 +1,6 @@
-import io
+import hashlib
 import json
-import subprocess
-import sys
-from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
 
 from fixtures import HarnessCase
 from migration_harness import junie_cli, rule_materials, workflow
@@ -30,74 +26,79 @@ class RuleMaterialsTests(HarnessCase):
         workflow._stage_migration_materials(capsule, manifest, agent)
         return capsule, manifest, agent
 
-    def test_large_rules_are_complete_bounded_and_checked_per_invocation(self):
+    def test_large_existing_rules_are_provided_whole_without_reader_calls(self):
         capsule, manifest, agent = self.prepare()
-        chunks = manifest["rule_chunks"]
-        content = "".join((capsule / "materials" / item["file"]).read_bytes().decode() for item in chunks)
-        self.assertIn(self.original.replace("\r\n", "\r\n     2 | ", 1).split("LAST RULE")[0], content)
-        self.assertIn("LAST RULE", content)
-        self.assertTrue(all(len((capsule / "materials" / item["file"]).read_bytes().decode()) <= 3000 for item in chunks))
-        self.assertEqual(len(manifest["parts"]), 1)  # ルールだけでカプセル上限を使い切らない。
-        token = "a" * 32
-        output = subprocess.run([
-            sys.executable, str(agent / "migration-read-rules.py"), token, chunks[-1]["file"],
-        ], capture_output=True, check=True)
-        self.assertIn(b"LAST RULE", output.stdout)
-        self.assertEqual(rule_materials.missing_rule_reads(agent, token, chunks), [item["file"] for item in chunks[:-1]])
-        self.assertEqual(len(rule_materials.missing_rule_reads(agent, "b" * 32, chunks)), len(chunks))
-        (agent / ".migration-materials" / chunks[0]["file"]).write_text("changed", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "saved rule changed"):
-            rule_materials.read_rule(agent, token, chunks[0]["file"])
-        # 元ファイルを消しても、再開・修正には準備時のルールを再配置できる。
+        entries = manifest["rule_files"]
+        self.assertEqual(len(entries), 1)
+        content = (capsule / "materials" / entries[0]["file"]).read_bytes()
+        self.assertIn(self.original.replace("\r\n", "\r\n     2 | ", 1).split("LAST RULE")[0].encode(), content)
+        self.assertIn(b"LAST RULE", content)
+        self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
+        self.assertEqual(len(manifest["parts"]), 1)
+        self.assertFalse((agent / "migration-read-rules.py").exists())
+        command = junie_cli.build_command(agent, "migrate", 7, guidelines=agent / ".migration-materials/guidelines.md")
+        self.assertEqual(command[-2:], ["--prompt", "migrate"])
+        self.assertNotIn("FIRST RULE", " ".join(command))  # Windowsの引数には本文を展開しない。
+        self.assertIn("--ide-guidelines", command)
         (self.project / "rules.md").unlink()
+        (agent / ".migration-materials/guidelines.md").write_text("changed")
         workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
-        self.assertEqual((agent / ".migration-materials" / chunks[0]["file"]).read_bytes(), (capsule / "materials" / chunks[0]["file"]).read_bytes())
+        self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
 
-    def test_missing_reads_are_retried_without_manual_repair(self):
-        _, manifest, agent = self.prepare()
-        token = "c" * 32
-        completion = agent / f"migration-complete-{token}.txt"
-        target = agent / "Page.cs"
-        calls = []
+    def test_details_are_pinned_but_only_index_is_in_guidelines(self):
+        material = self.root / "materials"
+        mandatory = "禁止事項\r\n" + "😀" * 7000 + "\r\n例外は維持"
+        detail = "DETAIL_BODY\r\n" * 500
+        entries = rule_materials.write_rule_files(material, [
+            ({"path": "common.md"}, mandatory),
+            ({"path": "detail.md", "usage": "reference", "description": "Razorを扱う場合の説明と例"}, detail),
+        ])
+        self.assertEqual((material / entries[1]["file"]).read_bytes(), detail.encode())
+        guidelines = rule_materials.render_guidelines(material, {"rule_files": entries})
+        self.assertIn(mandatory, guidelines)
+        self.assertNotIn("DETAIL_BODY", guidelines)
+        self.assertIn("Razorを扱う場合", guidelines)
+        self.assertIn(".migration-materials/" + entries[1]["file"], guidelines)
+        (material / entries[1]["file"]).write_text("corrupted")
+        with self.assertRaisesRegex(ValueError, "saved rule changed"):
+            rule_materials.render_guidelines(material, {"rule_files": entries})
 
-        def run(command, complete, current_token, targets, **kwargs):
-            calls.append(command[-1])
-            target.write_text("class Page {}\n")
-            if len(calls) == 2:
-                with redirect_stdout(io.StringIO()):
-                    for chunk in manifest["rule_chunks"]:
-                        rule_materials.read_rule(agent, current_token, chunk["file"])
-            complete.write_text(current_token)
-            return 0
+    def test_missing_or_changed_pinned_files_are_not_silently_ignored(self):
+        capsule, manifest, agent = self.prepare()
+        material = capsule / "materials" / manifest["rule_files"][0]["file"]
+        for change in (lambda: material.write_text("changed"), material.unlink):
+            change()
+            with self.assertRaisesRegex(ValueError, "saved migration material"):
+                workflow._stage_migration_materials(capsule, manifest, agent)
 
-        with patch.object(junie_cli, "run_interactive", side_effect=run):
-            result = workflow._run_junie_with_rules(["junie", "--prompt", "migrate"], completion, token, (target,), manifest, report_usage=None)
-        self.assertEqual(result, 0)
-        self.assertEqual(len(calls), 2)
-        self.assertIn("previous completion was rejected", calls[-1])
-        self.assertTrue(junie_cli.has_completion_record(completion, token))
-        completion.unlink()
-        (agent / rule_materials.receipt_name(token)).unlink()
-        with patch.object(junie_cli, "run_interactive", side_effect=lambda *a, **kw: completion.write_text(token)) as runner:
-            with self.assertRaises(junie_cli.JunieSessionError):
-                workflow._run_junie_with_rules(["junie", "--prompt", "migrate"], completion, token, (target,), manifest, report_usage=None)
-        self.assertEqual(runner.call_count, 3)
-        self.assertFalse(completion.exists())
-
-    def test_chunk_concatenation_preserves_unicode_crlf_and_long_lines(self):
-        text = "a\r\n" + "日本語😀" * 2500 + "\r\nend"
-        chunks = rule_materials.write_rule_chunks(self.root, [("rule.md", text)])
-        self.assertEqual(b"".join((self.root / chunk["file"]).read_bytes() for chunk in chunks), text.encode())
-
-    def test_old_run_reads_pinned_shared_rules_in_chunks(self):
+    def test_old_chunked_run_joins_pinned_text_without_new_receipts(self):
         capsule = self.root / "capsule"
-        materials = capsule / "materials"
-        materials.mkdir(parents=True)
-        original = ("old mandatory rules\r\n" * 200).encode()
-        (materials / "shared.md").write_bytes(original)
+        material = capsule / "materials"
+        material.mkdir(parents=True)
+        chunks = []
+        contents = ["FIRST\r\n長い", "文章の途中\r\nLAST"]
+        for index, content in enumerate(contents, 1):
+            name = f"rule-{index:04d}.txt"
+            data = content.encode()
+            (material / name).write_bytes(data)
+            chunks.append({"file": name, "sha256": hashlib.sha256(data).hexdigest()})
+        manifest = {"materials": {item["file"]: item["sha256"] for item in chunks}, "rule_chunks": chunks}
         agent = self.root / "agent"
         agent.mkdir()
-        manifest = {"materials": {"shared.md": workflow.sha256_file(materials / "shared.md")}, "parts": []}
         workflow._stage_migration_materials(capsule, manifest, agent)
-        self.assertEqual(b"".join((agent / ".migration-materials" / chunk["file"]).read_bytes() for chunk in manifest["rule_chunks"]), original)
-        self.assertTrue((agent / "migration-read-rules.py").is_file())
+        self.assertIn("".join(contents), (agent / ".migration-materials/guidelines.md").read_bytes().decode())
+        self.assertFalse((agent / "migration-read-rules.py").exists())
+
+    def test_old_shared_run_and_no_rules(self):
+        capsule = self.root / "capsule"
+        material = capsule / "materials"
+        material.mkdir(parents=True)
+        original = ("old mandatory rules\r\n" * 200).encode()
+        (material / "shared.md").write_bytes(original)
+        agent = self.root / "agent"
+        agent.mkdir()
+        manifest = {"materials": {"shared.md": hashlib.sha256(original).hexdigest()}, "parts": []}
+        workflow._stage_migration_materials(capsule, manifest, agent)
+        self.assertIn(original, (agent / ".migration-materials/guidelines.md").read_bytes())
+        self.assertEqual(rule_materials.render_guidelines(material, {"rule_files": []}), "")
+        self.assertNotIn("--ide-guidelines", junie_cli.build_command(agent, "plain", None))
