@@ -442,6 +442,7 @@
     .review-severity { background: #d58b1b20; color: var(--amber); }
     .review-finding h3 { margin: 10px 0 5px; font-size: 14px; }
     .review-finding > p { margin: 0; color: var(--amber-ink); font-size: 12px; }
+    #checker-open-editor { margin-top: 12px; }
     .review-location { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 14px 0 10px; }
     .review-location div { min-width: 0; padding: 9px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); }
     .review-location small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
@@ -456,6 +457,30 @@
     .review-note { width: 100%; min-height: 66px; resize: vertical; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; }
     .review-note:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
     .review-note::placeholder { color: var(--soft); }
+    .prompt-field { position: relative; min-width: 0; }
+    .prompt-field textarea { display: block; caret-color: var(--blue); }
+    .prompt-field textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+    .prompt-example {
+      position: absolute; inset: 10px 12px auto; width: max-content; max-width: calc(100% - 24px);
+      color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; pointer-events: none; visibility: hidden;
+    }
+    .prompt-field:has(> textarea:placeholder-shown:enabled:not([readonly])) .prompt-example { visibility: visible; }
+    /* Typewriter #006: https://showheyohtaki.github.io/motion-prompt/#006 */
+    @media (prefers-reduced-motion: no-preference) {
+      .prompt-example { --typing-time: calc(var(--characters) * 55ms); }
+      .prompt-example > span { display: block; animation: prompt-type var(--typing-time) steps(var(--characters)) both; }
+      .prompt-example::after {
+        content: ""; position: absolute; top: 2px; width: 2px; height: 1em; background: #cf6557;
+        animation: prompt-caret var(--typing-time) steps(var(--characters)) both;
+      }
+      .prompt-field:focus-within .prompt-example::after { display: none; }
+    }
+    @keyframes prompt-type { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+    @keyframes prompt-caret { 0% { left: 0; } 99% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
+    #progress-prompt-submit:disabled {
+      background: var(--surface-muted); color: var(--muted); border-color: var(--line); opacity: 1; transform: none;
+    }
+    #editor-send:enabled:hover { background: var(--blue-hover); }
     #build-review-dialog { width: min(760px, calc(100vw - 20px)); max-height: none; overflow: hidden; }
     #build-review-form { display: flex; flex-direction: column; max-height: min(90dvh, 800px); }
     .build-review-body { min-height: 0; overflow: auto; padding: clamp(16px, 3vw, 22px); }
@@ -506,6 +531,7 @@
     .viewer-preview-body p { margin: 16px; }
     .viewer-preview-body iframe { display: block; width: 100%; height: 100%; border: 0; }
     [data-live] [data-demo-only] { display: none; }
+    :root:not([data-live]) [data-live-only] { display: none; }
     #open-migration-ledger { min-height: 36px; height: 36px; }
     .migration-ledger-target { margin: 4px 0 8px; color: var(--muted); overflow-wrap: anywhere; }
     .migration-ledger-target code { color: var(--ink); }
@@ -773,7 +799,10 @@
           <ol class="editor-chat-list" id="editor-prompts" aria-label="Junie への追加指示"></ol>
         </div>
         <form id="editor-prompt-form">
-          <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder="追加の指示を入力" required aria-label="Junie に指示" aria-describedby="editor-prompt-timing"></textarea>
+          <div class="prompt-field">
+            <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " required aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-prompt-example"></textarea>
+            <span class="prompt-example" id="editor-prompt-example" style="--characters: 14" aria-hidden="true"><span>例：日付の表示形式を維持する</span></span>
+          </div>
           <div class="editor-chat-actions">
             <p class="editor-muted" id="editor-prompt-timing"></p>
             <div>
@@ -1000,6 +1029,7 @@
         </div>
         <pre class="review-code"><code>ViewData["StatusText"] = GetStatusText(row.Status);</code></pre>
         <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
+        <button class="review-action" id="checker-open-editor" type="button">エディタで修正</button>
       </section>
       <details class="review-context" id="checker-output-section" open>
         <summary>チェッカー出力</summary>
@@ -1017,14 +1047,17 @@ RZ-017: a previous checker finding is still present</pre>
         <summary>この指摘を判断する材料</summary>
         <p><strong>適用ルール:</strong> 複数ページで使う状態変換は共通関数にまとめる。<br><strong>確認点:</strong> <code>OrderStatusMap.ToLabel</code>の実装が共通 .cs にあり、変換処理が重複していないか確認する。</p>
       </details>
-      <label class="review-note-label" for="review-note">判断メモ（任意）</label>
+      <div data-live-only>
+        <label class="review-note-label" for="review-note">判断理由（必須）</label>
       <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
+      </div>
       <label class="review-note-label" for="checker-instruction">Junie への追加指示（任意）</label>
-      <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2"
-                aria-describedby="checker-instruction-status"
-                placeholder="例：既存の共通関数を使って状態変換を修正してください。"></textarea>
+      <div class="prompt-field">
+        <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2" placeholder=" "
+                  aria-describedby="checker-instruction-status checker-instruction-example"></textarea>
+        <span class="prompt-example" id="checker-instruction-example" style="--characters: 14" aria-hidden="true"><span>例：状態変換を共通関数に移す</span></span>
+      </div>
       <p class="review-caveat" id="checker-instruction-status" role="status"></p>
-      <button class="review-action" id="checker-open-editor" type="button">エディタで手修正</button>
       <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
       <div class="review-actions">
         <button class="review-action" id="review-later" type="button">あとで確認</button>
@@ -1048,8 +1081,11 @@ RZ-017: a previous checker finding is still present</pre>
       </header>
       <p class="review-intro" data-demo-only>指示の受付と作業区間での反映をサンプルで試せます。</p>
       <label class="review-note-label" for="progress-prompt">追加の指示</label>
-      <textarea class="review-note" id="progress-prompt" rows="4" maxlength="4000"
-                aria-describedby="progress-prompt-timing" required></textarea>
+      <div class="prompt-field">
+        <textarea class="review-note" id="progress-prompt" rows="4" maxlength="4000" placeholder=" "
+                  aria-describedby="progress-prompt-timing progress-prompt-example" required></textarea>
+        <span class="prompt-example" id="progress-prompt-example" style="--characters: 13" aria-hidden="true"><span>例：注文の並び順を維持する</span></span>
+      </div>
       <p class="review-intro" id="progress-prompt-timing" role="status"></p>
       <p class="review-caveat" id="progress-prompt-feedback" role="alert" hidden></p>
       <ol class="editor-chat-list" id="progress-prompt-list" aria-label="登録済みの指示" hidden></ol>
@@ -1083,9 +1119,11 @@ RZ-017: a previous checker finding is still present</pre>
           </div>
         </details>
         <label class="review-note-label" for="build-review-instruction">Junie への修正指示（任意）</label>
-        <textarea class="review-note" id="build-review-instruction" maxlength="4000" spellcheck="false"
-                  placeholder="例：エラーが出た型名を確認し、既存のモデルを使うように修正してください。"
-                  aria-describedby="build-review-hint"></textarea>
+        <div class="prompt-field">
+          <textarea class="review-note" id="build-review-instruction" maxlength="4000" spellcheck="false" placeholder=" "
+                    aria-describedby="build-review-hint build-review-example"></textarea>
+          <span class="prompt-example" id="build-review-example" style="--characters: 12" aria-hidden="true"><span>例：既存のモデル型を使う</span></span>
+        </div>
         <p class="review-caveat" id="build-review-hint">編集内容は、この実行の作業ツリーに保存されます。指示を入力すると、Junie が修正した後に再ビルドします。</p>
         <p class="review-caveat" id="build-review-feedback" role="status"></p>
       </div>
@@ -2285,7 +2323,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
   const capsulePercent = document.querySelector("#capsule-percent");
   const reviewDialog = document.querySelector("#review-dialog");
   const reviewHeading = document.querySelector("#review-title");
-  const reviewNote = document.querySelector("#review-note");
   const reviewRow = document.querySelector('.ledger-row[data-status="judgment"]');
   const capsuleCalls = [
     { unit: "OrderHistoryPage", chars: 67240, time: "10:42:12", lines: [1, 3], inputTokens: 18420, outputTokens: 3240, cacheRead: 11000, cacheWrite: 960 },
@@ -2895,7 +2932,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     applyLedgerFilter();
     updateReviewCount();
     closeReviewDialog();
-    logHumanAction("人が指摘を確認", reviewNote.value.trim() || "問題なしとして記録");
+    logHumanAction("人が指摘を確認", "問題なしとして記録");
     playing = false;
     updateStep(steps.length);
   }
@@ -2905,7 +2942,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     humanReviewHandled = false;
     correctionRequested = false;
     setReviewRow("judgment", "判断待ち", true);
-    reviewNote.value = "";
     document.querySelector("#checker-instruction").value = "";
     updateReviewCount();
     applyLedgerFilter();

@@ -296,7 +296,7 @@ class CapsulePreparationTests(HarnessCase):
         config = load_config(self.config_path({**PHP, "end_line": 3}, CONSTRAINT, RULES))
         observed_contexts = []
 
-        def junie(command, completion, token, targets, *, report_usage=None):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
             guidelines = Path(command[command.index("--ide-guidelines") + 1])
@@ -448,7 +448,7 @@ class CapsulePreparationTests(HarnessCase):
         reference.write_text(json.dumps(edited), encoding="utf-8")
         config["diff_viewer_html"] = "viewer.html"
 
-        def junie(command, completion, token, targets, *, report_usage=None):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             proposal, = targets
             numbered_php = (proposal.parent / "left.txt").read_text(encoding="utf-8")
@@ -474,7 +474,7 @@ class CapsulePreparationTests(HarnessCase):
         record_path.write_text(json.dumps(record), encoding="utf-8")
         observed = []
 
-        def junie(command, completion, token, targets, *, report_usage=None):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
             proposal, = targets
             guide = self.read_json(proposal.parent / "guide.json")
             observed.append(guide["examples"])
@@ -524,7 +524,7 @@ class CapsulePreparationTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "Source.php"):
             capture_workspace(config, result["run_id"])
 
-        def junie(command, completion, token, targets, *, report_usage=None):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
             self.assertEqual((target.parent / ".migration-context.md").read_bytes(), expected_context)

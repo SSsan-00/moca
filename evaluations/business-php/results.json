@@ -1,0 +1,182 @@
+{
+  "fixture": {
+    "php_lines": 2000,
+    "php_bytes": 71845,
+    "policies": 16,
+    "functions": 24,
+    "conditional_statements": 347,
+    "validation": "static_only",
+    "application_executed": false,
+    "database_accessed": false,
+    "documents": 200,
+    "document_bytes": 1261352,
+    "expected_selected_details": [
+      "rule-0011.txt",
+      "rule-0029.txt",
+      "rule-0046.txt",
+      "rule-0063.txt",
+      "rule-0080.txt",
+      "rule-0097.txt",
+      "rule-0114.txt",
+      "rule-0131.txt",
+      "rule-0148.txt",
+      "rule-0183.txt"
+    ],
+    "php_sha256": "8181a4f0e303df0bb97ac1a8d3b690ef26c9f1e2cfaa5fbc3d82187a8457ebd3",
+    "policy_contract_sha256": "aeaf1f87857c4e3a5b11a8fb080c6ca2656f7de057ee84fda206632d10dc6066",
+    "generation_seconds": 0.194
+  },
+  "trials": [
+    {
+      "run_id": "6dc4f50b-bb35-472a-9b60-d1ce6c74a6b1",
+      "status": "checker_succeeded",
+      "wall_seconds": 374.396,
+      "build_exit_code": 0,
+      "checker_exit_code": 0,
+      "completed_capsules": 1,
+      "context_capsules": 1,
+      "page_errors": [],
+      "check": {
+        "validation": "static_only",
+        "application_executed": false,
+        "database_accessed": false,
+        "policies": 16,
+        "policy_fields": 416,
+        "sql_structures": 17,
+        "rejection_codes": 21,
+        "issues": 0,
+        "diagnostics": [],
+        "elapsed_seconds": 2.606
+      },
+      "label": "static-2000",
+      "phases": [
+        {
+          "phase": "rule_review",
+          "capsule": null,
+          "input": 1473216,
+          "output": 9833,
+          "cache_read": 1338464,
+          "cache_write": 0,
+          "responses": 79,
+          "sessions": [
+            {
+              "session_id": "session-261117-072939-1u0l",
+              "start_ms": 1794868181005,
+              "junie_seconds": 99.826,
+              "tool_steps": 21,
+              "models": [
+                "Qwen/Qwen3.6-27B-FP8"
+              ],
+              "usage": {
+                "input": 1473216,
+                "output": 9833,
+                "cache_read": 1338464,
+                "cache_write": 0,
+                "responses": 79
+              }
+            }
+          ],
+          "junie_seconds": 99.826,
+          "tool_steps": 21
+        },
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 3854380,
+          "output": 29404,
+          "cache_read": 3608800,
+          "cache_write": 0,
+          "responses": 125,
+          "sessions": [
+            {
+              "session_id": "session-261117-073128-mf1f",
+              "start_ms": 1794868289864,
+              "junie_seconds": 190.68,
+              "tool_steps": 21,
+              "models": [
+                "Qwen/Qwen3.6-27B-FP8"
+              ],
+              "usage": {
+                "input": 3854380,
+                "output": 29404,
+                "cache_read": 3608800,
+                "cache_write": 0,
+                "responses": 125
+              }
+            }
+          ],
+          "junie_seconds": 190.68,
+          "tool_steps": 21
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 486476,
+          "output": 4650,
+          "cache_read": 416992,
+          "cache_write": 0,
+          "responses": 32,
+          "sessions": [
+            {
+              "session_id": "session-261117-073450-iz1g",
+              "start_ms": 1794868492517,
+              "junie_seconds": 44.891,
+              "tool_steps": 14,
+              "models": [
+                "Qwen/Qwen3.6-27B-FP8"
+              ],
+              "usage": {
+                "input": 486476,
+                "output": 4650,
+                "cache_read": 416992,
+                "cache_write": 0,
+                "responses": 32
+              }
+            }
+          ],
+          "junie_seconds": 44.891,
+          "tool_steps": 14
+        }
+      ],
+      "totals": {
+        "input": 5814072,
+        "output": 43887,
+        "cache_read": 5364256,
+        "cache_write": 0,
+        "responses": 236,
+        "junie_seconds": 335.397,
+        "tool_steps": 56
+      },
+      "stage_seconds": {
+        "0": 0.0054819583892822266,
+        "1": 0.09768915176391602,
+        "2": 0.08262920379638672,
+        "3": 365.08315324783325,
+        "4": 4.965002775192261,
+        "5": 2.7129130363464355
+      },
+      "selected_details": [
+        "rule-0011.txt",
+        "rule-0029.txt",
+        "rule-0046.txt",
+        "rule-0063.txt",
+        "rule-0080.txt",
+        "rule-0097.txt",
+        "rule-0114.txt",
+        "rule-0131.txt",
+        "rule-0148.txt",
+        "rule-0183.txt"
+      ],
+      "repair_kinds": [
+        "build"
+      ],
+      "capsule_hashes": [
+        "b967366dfc446461ab93e552d26ef54a90055b21631803f2513d1ab9dcdd4bd4"
+      ],
+      "target_sha256": {
+        "Pages/Business/BusinessService.cs": "05ba493a6448f87043a4e3265c4be6dca9fbb68766bf74804e940e23184c74e3",
+        "Pages/Business/PolicyCatalog.cs": "4bd998619ef0c9bc398d510942c564b512388436b418f8bf2617aa517afd49c3"
+      }
+    }
+  ]
+}

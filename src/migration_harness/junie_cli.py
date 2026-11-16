@@ -577,8 +577,18 @@ def run_interactive(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
     accept_result: Callable[[str], None] | None = None,
+    prefer_task: bool = False,
 ) -> int:
     """Junieを選択したモードで起動し、通信障害時は同じ作業場所で再試行する。"""
+    task_supported = None
+    if prefer_task:
+        task_supported = _supports_task(command[0])
+        if task_supported:
+            command = _task_command(command)
+            report_activity("Junie を非対話モードで起動します。")
+        else:
+            require_interactive_cli()
+            report_activity("Junie の --task を確認できないため、従来のモードで起動します。")
     delays = (1, 3)
     for attempt in range(len(delays) + 1):
         check_cancelled()
@@ -594,7 +604,9 @@ def run_interactive(
                                     report_usage=report_usage, accept_result=accept_result)
             except JunieAcpModelUnavailable:
                 dashboard = junie_dashboard_control()
-                if dashboard is None or not _supports_task(command[0]):
+                if dashboard is None or task_supported is False:
+                    raise
+                if task_supported is None and not _supports_task(command[0]):
                     raise
                 if not _confirm_dashboard_launch(
                     dashboard, "Junie を非対話モードで再試行",

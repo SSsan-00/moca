@@ -76,7 +76,7 @@ class LiveComparisonTests(HarnessCase):
 
         for name in ("left.txt", "right.txt", "guide.json"):
             with self.subTest(name=name):
-                def junie(command, completion, token, targets, *, report_usage=None):
+                def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
                     proposal, = targets
                     (proposal.parent / name).write_text("changed input", encoding="utf-8")
                     proposal.write_text('[{"leftLineNo": 1, "rightLineNo": 1}]', encoding="utf-8")

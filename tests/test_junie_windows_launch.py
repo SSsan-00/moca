@@ -15,6 +15,34 @@ from migration_harness.errors import format_error
 
 
 class JunieLaunchTests(unittest.TestCase):
+    def test_preferred_task_checks_the_help_before_selecting_a_mode(self):
+        command = junie_cli.build_command(Path("project"), "anchor prompt", 7, guidelines=Path("rules.md"))
+        completion = Path("project/complete.txt")
+        for option in ("--task=<text>", "--task-file=<path>"):
+            with (
+                self.subTest(option=option),
+                patch.object(junie_cli, "_launch_process") as launch,
+                patch.object(junie_cli, "require_interactive_cli") as require_terminal,
+                patch.object(junie_cli, "_run_session", return_value=0) as run,
+            ):
+                launch.side_effect = lambda argv, **streams: subprocess.Popen(
+                    [sys.executable, "-c", f"print({('  ' + option)!r})"], **streams,
+                )
+                self.assertEqual(
+                    junie_cli.run_interactive(command, completion, "token", (), prefer_task=True), 0,
+                )
+                self.assertEqual(launch.call_args.args[0], ["junie", "--help"])
+                if option == "--task=<text>":
+                    require_terminal.assert_not_called()
+                    expected = [
+                        "junie", "--project", "project", "--ide-guidelines", "rules.md",
+                        "--max-steps", "7", "--task", "anchor prompt",
+                    ]
+                else:
+                    require_terminal.assert_called_once_with()
+                    expected = command
+                run.assert_called_once_with(expected, completion, "token", (), report_usage=None, accept_result=None)
+
     def test_native_launch_uses_resolved_path_and_inherits_terminal(self):
         executable = os.path.abspath("Junie Tools/junie.exe")
         command = ["junie", "--project", "space & (project)", "--prompt", 'say "hello"\n%PATH% & echo no']

@@ -242,7 +242,8 @@ html = "viewer.html"
         record.update(status="build_succeeded", completed_capsules=run_a["capsule_count"], build_exit_code=0)
         record_path.write_text(json.dumps(record), encoding="utf-8")
 
-        def junie(command, completion, token, targets, *, report_usage=None):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
+            self.assertTrue(prefer_task)
             proposal, = targets
             proposal.write_text('[{"leftLineNo": 1, "rightLineNo": 1}]', encoding="utf-8")
             completion.write_text(token, encoding="ascii")
