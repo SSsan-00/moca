@@ -1,0 +1,281 @@
+{
+  "date": "2026-11-17",
+  "environment": {
+    "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "junie": "26.11.1 (4020.10), Junie Lite",
+    "dotnet_sdk": "10.0.201",
+    "transport": "dashboard ACP -> approved --task fallback"
+  },
+  "baseline_commit": "f5de2af",
+  "timing": "Junie: TaskStartedEvent to last timestampMs in each matched fresh session; excludes startup, trust waits, build and checker. Wall time includes the whole dashboard run.",
+  "tokens": "input includes cache reads and writes; not a direct billing estimate.",
+  "fixture": {
+    "capsules": 2,
+    "php_lines": 27,
+    "values": 24,
+    "mandatory_rules": 4,
+    "rule_markers": 8,
+    "max_context_chars": 1000,
+    "source_sha256": "205d1f1d4cb1f944720d9bcbb81a30fb306c42a426c93b176748cd96c9f5dd3d",
+    "tree": "7550e0e803868f34eb8bd28e500486ae18cc60f3",
+    "config_sha256": "59d7e3b86455fd5c44592e10c440aecbc5cff989f1165f56a25b6747d57d1ef8",
+    "faults": [
+      "missing semicolon after Rule1Start",
+      "Rule4End changed from R4-END to R4-BROKEN"
+    ]
+  },
+  "trials": [
+    {
+      "label": "after-1",
+      "run_id": "8ad2c452-05c6-4506-8630-bc6bebdab743",
+      "wall_seconds": 106.04226493835449,
+      "build_exit_code": 0,
+      "checker_exit_code": 0,
+      "checker_output": "PASS: 24 ordered values, 8 rule markers, both adjacent helpers\n",
+      "capsule_hashes": [
+        "c407905bf9b804a638e8916de4b447ebc519f1d3579a0630ed13beed8bc7a9b1",
+        "1ea33b80e7c239958c47f1f131a531f2f4fdf07d208688d65589ff596f4afb28"
+      ],
+      "phases": [
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 218585,
+          "output": 3490,
+          "cache_read": 175840,
+          "cache_write": 0,
+          "responses": 22,
+          "session_id": "session-261117-035843-1vmg",
+          "start_ms": 1794855526368,
+          "junie_seconds": 35.953,
+          "tool_steps": 7
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 109274,
+          "output": 2177,
+          "cache_read": 78448,
+          "cache_write": 0,
+          "responses": 13,
+          "session_id": "session-261117-035928-1x4a",
+          "start_ms": 1794855570627,
+          "junie_seconds": 21.763,
+          "tool_steps": 3
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 89356,
+          "output": 1471,
+          "cache_read": 70080,
+          "cache_write": 0,
+          "responses": 12,
+          "session_id": "session-261117-040000-1ap8",
+          "start_ms": 1794855601881,
+          "junie_seconds": 14.173,
+          "tool_steps": 2
+        }
+      ],
+      "totals": {
+        "input": 417215,
+        "output": 7138,
+        "cache_read": 324368,
+        "cache_write": 0,
+        "responses": 47,
+        "junie_seconds": 71.88900000000001,
+        "tool_steps": 12
+      },
+      "repair_kinds": [
+        "build"
+      ],
+      "test_passes": 1,
+      "stages": {
+        "0": 0.0006022453308105469,
+        "1": 0.011161088943481445,
+        "2": 0.02876591682434082,
+        "3": 100.48134112358093,
+        "4": 4.241707801818848,
+        "5": 0.8067281246185303
+      }
+    },
+    {
+      "label": "after-2",
+      "run_id": "1fbfc8b4-39ea-4810-ab0e-c5a450fcdb37",
+      "wall_seconds": 144.5054349899292,
+      "build_exit_code": 0,
+      "checker_exit_code": 0,
+      "checker_output": "PASS: 24 ordered values, 8 rule markers, both adjacent helpers\n",
+      "capsule_hashes": [
+        "c407905bf9b804a638e8916de4b447ebc519f1d3579a0630ed13beed8bc7a9b1",
+        "1ea33b80e7c239958c47f1f131a531f2f4fdf07d208688d65589ff596f4afb28"
+      ],
+      "phases": [
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 246791,
+          "output": 2784,
+          "cache_read": 210576,
+          "cache_write": 0,
+          "responses": 23,
+          "session_id": "session-261117-040041-1k0i",
+          "start_ms": 1794855643613,
+          "junie_seconds": 38.975,
+          "tool_steps": 7
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 109214,
+          "output": 2117,
+          "cache_read": 79008,
+          "cache_write": 0,
+          "responses": 13,
+          "session_id": "session-261117-040128-7cjh",
+          "start_ms": 1794855690446,
+          "junie_seconds": 20.479,
+          "tool_steps": 3
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 108902,
+          "output": 1707,
+          "cache_read": 93024,
+          "cache_write": 0,
+          "responses": 14,
+          "session_id": "session-261117-040159-1mu5",
+          "start_ms": 1794855721650,
+          "junie_seconds": 17.911,
+          "tool_steps": 3
+        },
+        {
+          "phase": "checker_repair",
+          "capsule": null,
+          "input": 129222,
+          "output": 1682,
+          "cache_read": 111520,
+          "cache_write": 0,
+          "responses": 15,
+          "session_id": "session-261117-040230-3yf3",
+          "start_ms": 1794855752446,
+          "junie_seconds": 20.887,
+          "tool_steps": 4
+        }
+      ],
+      "totals": {
+        "input": 594129,
+        "output": 8290,
+        "cache_read": 494128,
+        "cache_write": 0,
+        "responses": 65,
+        "junie_seconds": 98.25200000000001,
+        "tool_steps": 17
+      },
+      "repair_kinds": [
+        "build",
+        "checker"
+      ],
+      "test_passes": 2,
+      "stages": {
+        "0": 0.0006561279296875,
+        "1": 0.01086115837097168,
+        "2": 0.029397010803222656,
+        "3": 134.36621165275574,
+        "4": 7.738395690917969,
+        "5": 2.0783560276031494
+      }
+    },
+    {
+      "label": "before",
+      "run_id": "73d1f7bd-9ed4-4554-86a1-b79f90be5ac4",
+      "wall_seconds": 139.14406871795654,
+      "build_exit_code": 0,
+      "checker_exit_code": 0,
+      "checker_output": "PASS: 24 ordered values, 8 rule markers, both adjacent helpers\n",
+      "capsule_hashes": [
+        "c407905bf9b804a638e8916de4b447ebc519f1d3579a0630ed13beed8bc7a9b1",
+        "1ea33b80e7c239958c47f1f131a531f2f4fdf07d208688d65589ff596f4afb28"
+      ],
+      "phases": [
+        {
+          "phase": "migration",
+          "capsule": 1,
+          "input": 232075,
+          "output": 3103,
+          "cache_read": 191824,
+          "cache_write": 0,
+          "responses": 23,
+          "session_id": "session-261117-035557-v27w",
+          "start_ms": 1794855359457,
+          "junie_seconds": 36.862,
+          "tool_steps": 8
+        },
+        {
+          "phase": "migration",
+          "capsule": 2,
+          "input": 215382,
+          "output": 2348,
+          "cache_read": 176672,
+          "cache_write": 0,
+          "responses": 22,
+          "session_id": "session-261117-035643-3488",
+          "start_ms": 1794855405803,
+          "junie_seconds": 33.975,
+          "tool_steps": 7
+        },
+        {
+          "phase": "build_repair",
+          "capsule": null,
+          "input": 195370,
+          "output": 2665,
+          "cache_read": 168448,
+          "cache_write": 0,
+          "responses": 21,
+          "session_id": "session-261117-035728-1fse",
+          "start_ms": 1794855450471,
+          "junie_seconds": 31.11,
+          "tool_steps": 6
+        }
+      ],
+      "totals": {
+        "input": 642827,
+        "output": 8116,
+        "cache_read": 536944,
+        "cache_write": 0,
+        "responses": 66,
+        "junie_seconds": 101.947,
+        "tool_steps": 21
+      },
+      "repair_kinds": [
+        "build"
+      ],
+      "test_passes": 1,
+      "stages": {
+        "0": 0.0005638599395751953,
+        "1": 0.009105205535888672,
+        "2": 0.027212142944335938,
+        "3": 133.34107971191406,
+        "4": 4.496071100234985,
+        "5": 0.7989201545715332
+      }
+    }
+  ],
+  "same_run_recheck": {
+    "run_id": "8ad2c452-05c6-4506-8630-bc6bebdab743",
+    "operation": "corrupt only Rule4End then use dashboard rebuild/check action",
+    "repairs_added": 1,
+    "build_exit_code": 0,
+    "checker_exit_code": 0,
+    "source_restored_exactly": true,
+    "included_in_comparison": false
+  },
+  "final_regression": {
+    "integration_base": "444dd01",
+    "tests": 234,
+    "passed": 232,
+    "skipped": 2,
+    "failed": 0
+  }
+}

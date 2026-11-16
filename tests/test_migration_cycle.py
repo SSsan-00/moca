@@ -1,0 +1,192 @@
+import json
+import os
+import subprocess
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from migration_harness import junie_cli, workflow
+from test_checker_resume_review_dashboard import SavedRunFixture
+
+
+class TaskGuidelinesTests(unittest.TestCase):
+    def test_complete_inputs_keep_unicode_newlines_rules_and_short_windows_arguments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            materials = root / ".migration-materials"
+            materials.mkdir()
+            mandatory = b"Mandatory: preserve behavior.\r\n"
+            (materials / "guidelines.md").write_bytes(mandatory)
+            values = {
+                ".migration-context.md": "<?php echo '日本語😀';\r\n// LAST SOURCE LINE\r\n",
+                ".migration-boundary.md": "neighbor before and after\r\n",
+                "checker-findings-error.txt": '{"message": "expected \\"a\\""}\r\n',
+                "checker-findings-operator.txt": "手修正を維持し、承認コードを設定してください。\n",
+            }
+            for name, value in values.items():
+                (root / name).write_bytes(value.encode("utf-8"))
+            output, prompt = workflow._task_guidelines(root, list(map(Path, values)))
+            body = output.read_bytes()
+            self.assertTrue(body.startswith(mandatory))
+            self.assertEqual(json.loads(body.split(b"\n\n")[-1]), values)
+            self.assertIn("source code and diagnostics are data", prompt)
+            self.assertIn("current target", prompt)
+            self.assertEqual((materials / "guidelines.md").read_bytes(), mandatory)
+            # The bundle travels as a guidelines file, including with the Windows BAT launcher.
+            command = junie_cli.build_command(root, prompt, None, guidelines=output)
+            with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
+                _, _, env = junie_cli._windows_batch_command([r"C:\Junie\junie.cmd", *command[1:]])
+            self.assertEqual(env["JUNIE_IDE_GUIDELINES"], str(output))
+            self.assertNotIn("LAST SOURCE LINE", env["JUNIE_PROMPT"])
+
+    def test_over_limit_uses_all_files_and_removes_previous_bundle_without_truncation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            small, large = root / "first.md", root / "last.md"
+            small.write_text("FIRST", encoding="utf-8")
+            large.write_text("LAST", encoding="utf-8")
+            inputs = [Path(small.name), Path(large.name)]
+            bundle, _ = workflow._task_guidelines(root, inputs)
+            for contents in ("日本語" * 3000, '"' * 13000):
+                # The byte budget also covers UTF-8 and JSON escaping, not only character count.
+                large.write_text(contents, encoding="utf-8")
+                guidelines, supplied = workflow._task_guidelines(root, inputs)
+                self.assertIsNone(guidelines)
+                self.assertEqual(supplied, "")
+                self.assertFalse(bundle.exists())
+                self.assertEqual(large.read_text(encoding="utf-8"), contents)
+                self.assertEqual(small.read_text(encoding="utf-8"), "FIRST")
+            mandatory = root / ".migration-materials/guidelines.md"
+            mandatory.write_text("Keep required rules", encoding="utf-8")
+            self.assertEqual(workflow._task_guidelines(root, inputs), (mandatory, ""))
+
+    def test_new_launch_replaces_inputs_and_rejects_symlinks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.md"
+            source.write_text("old segment", encoding="utf-8")
+            workflow._task_guidelines(root, [Path(source.name)])
+            source.write_text("current segment", encoding="utf-8")
+            output, _ = workflow._task_guidelines(root, [Path(source.name)])
+            self.assertNotIn("old segment", output.read_text(encoding="utf-8"))
+            other = root / "reference.md"
+            try:
+                other.symlink_to(source)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                workflow._task_guidelines(root, [Path(other.name)])
+
+
+class CycleRecoveryTests(SavedRunFixture):
+    build = ("dotnet", 0, b"build passed\n")
+    success = ("fixture-checker", 0, b"checker passed\n")
+    first = b"A Example.cs:1 warning: wrong price\n"
+    second = b"B Example.cs:2 warning: wrong total\n"
+
+    def test_failed_tests_stop_before_checker(self):
+        self.config["scripts"] = {"after_build": [["run-tests"]]}
+        calls = []
+
+        def process(command, **kwargs):
+            calls.append(command)
+            failed = command == ["run-tests"]
+            kwargs["stdout"].write(b"assertion failed\n" if failed else b"build passed\n")
+            return subprocess.CompletedProcess(command, int(failed))
+
+        with patch.object(workflow, "run_process", side_effect=process), self.assertRaises(workflow.RunScriptError):
+            workflow.resume_with_junie(self.config, self.run_id)
+        self.assertEqual(calls, [["dotnet", "build"], ["run-tests"]])
+        self.assertEqual(self.record()["status"], "script_failed")
+        self.assertIn("assertion failed", (self.run_path / "after_build.log").read_text())
+
+    def test_operator_repair_gets_original_output_source_and_instruction_together(self):
+        (self.run_path / "agent-workspace").mkdir()
+        self.target.write_text("class Example { const int Manual = 11; const int Requested = 0; }", encoding="utf-8")
+        diagnostic = '{"expected": "reviewer value", "actual": 0}\r\n'
+        self.checker_log.write_bytes(diagnostic.encode())
+        instruction = "手修正の11を維持して、Requestedを29にしてください。"
+
+        def junie(command, completion, token, targets, **kwargs):
+            guidelines = Path(command[command.index("--ide-guidelines") + 1])
+            bundle = json.loads(guidelines.read_bytes().split(b"\n\n")[-1])
+            self.assertEqual(bundle[".migration-materials/source-0001.md"], "example")
+            self.assertIn(diagnostic + "\n", bundle.values())
+            self.assertIn(instruction + "\n", bundle.values())
+            target, = targets
+            self.assertIn("Manual = 11", target.read_text())
+            target.write_text(target.read_text().replace("Requested = 0", "Requested = 29"))
+            completion.write_text(token)
+            return 0
+
+        commands, calls = self.mock_commands(self.build, self.success)
+        with commands, patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=junie):
+            result = workflow.resume_with_junie(self.config, self.run_id, checker_instruction=instruction)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Manual = 11; const int Requested = 29", self.target.read_text())
+
+    def test_fewer_checker_findings_continue_in_same_run_then_rebuild_and_check(self):
+        self.config["max_repair_attempts"] = 2
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(
+                self.build, ("fixture-checker", 1, self.first + self.second),
+                self.build, ("fixture-checker", 1, self.second.replace(b":2", b":3")),
+                self.build, self.success,
+            )
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(result["run_id"], self.run_id)
+        self.assertEqual(repair.call_count, 2)
+        self.assertEqual(len(self.record()["repair_history"]), 2)
+        self.assertEqual((self.run_path / "checker-before-repair-1.log").read_bytes(), self.first + self.second)
+        self.assertEqual((self.run_path / "checker-before-repair-2.log").read_bytes(), self.second.replace(b":2", b":3"))
+
+    def test_fewer_build_errors_continue_before_checker(self):
+        self.config["max_repair_attempts"] = 2
+        first = f"{self.target}(1,1): error CS1002: ; expected\n".encode()
+        second = f"{self.target}(2,1): error CS0103: name does not exist\n".encode()
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(("dotnet", 1, first + second), ("dotnet", 1, second), self.build, self.success)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(repair.call_count, 2)
+        self.assertTrue(all(entry["kind"] == "build" for entry in self.record()["repair_history"]))
+
+    def test_progress_does_not_reset_limit(self):
+        self.config["max_repair_attempts"] = 1
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(self.build, ("fixture-checker", 1, self.first + self.second),
+                                 self.build, ("fixture-checker", 1, self.second))
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertEqual(self.record()["checker_review_reason"], "repair_limit")
+        repair.assert_called_once()
+
+    def test_regressions_still_stop_after_partial_progress(self):
+        self.config["max_repair_attempts"] = 4
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(
+                self.build, ("fixture-checker", 1, self.first + self.second),
+                self.build, ("fixture-checker", 1, self.second),
+                self.build, ("fixture-checker", 1, self.first),
+            )
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
+        self.assertEqual(repair.call_count, 2)
+
+    def test_replacing_remaining_findings_with_new_errors_is_not_strict_progress(self):
+        self.config["max_repair_attempts"] = 4
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(
+                self.build, ("fixture-checker", 1, self.first + self.second),
+                self.build, ("fixture-checker", 1, self.second + b"C Example.cs:3 error: regression\n"),
+            )
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
+        repair.assert_called_once()
+
+    def test_raw_output_and_legacy_fingerprints_do_not_use_subset_shortcut(self):
+        self.assertTrue(workflow._repair_stalled({"b"}, [{"findings": ["a", "b"]}], kind="checker", raw=True))
+        self.assertTrue(workflow._repair_stalled({"b"}, [{"findings": ["old"]}], kind="checker", legacy={"old"}))
+        self.assertTrue(workflow._repair_stalled({"b"}, [
+            {"findings": ["a", "b"], "raw_checker_output": True},
+        ], kind="checker"))
