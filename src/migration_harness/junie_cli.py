@@ -1,4 +1,4 @@
-"""Junie CLIの対話起動、通信再試行、セッションイベントの読み取り。"""
+"""Junie CLIの起動、通信再試行、セッションイベントの読み取り。"""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class JunieLaunchError(OSError):
 
 
 class JunieSessionError(OSError):
-    """終了コードが0でも、対話セッションを開始できなかった終了を報告する。"""
+    """終了コードが0でも、セッションを開始できなかった終了を報告する。"""
 
     def __init__(self, command: list[str], exit_code: int, details: str) -> None:
         self.command = command.copy()
@@ -304,10 +304,11 @@ def _event_activity(entry: dict[str, Any]) -> str:
 
 
 class _JunieSessionEvents:
-    """今回のプロンプトと照合できたJunieのセッションだけを監視する。"""
+    """今回の起動と照合できたJunieのセッションだけを監視する。"""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, headless_project: Path | None = None) -> None:
         self.token = token
+        self.headless_project = headless_project
         try:
             self.launch_cwd = os.getcwd()
         except OSError:
@@ -316,7 +317,8 @@ class _JunieSessionEvents:
         self.logs = self.sessions.parent / "logs"
         self.existing_logs = set(self._log_paths())
         self.cursors: dict[Path, _EventCursor] = {}
-        for path in self._paths():
+        self.existing_events = set(self._paths())
+        for path in self.existing_events:
             try:
                 stat = path.stat()
             except OSError:
@@ -402,11 +404,11 @@ class _JunieSessionEvents:
         identity = (stat.st_dev, stat.st_ino)
         cursor = self.cursors.get(path)
         if cursor is None or cursor.identity != identity or stat.st_size < cursor.offset:
-            cursor = self.cursors[path] = _EventCursor(identity)
-            if path == self.path:
-                # A replacement log must match the launch token again before being trusted.
+            if cursor is not None and path == self.path:
+                # A replacement log must be matched to this launch again.
                 self.path = None
                 self.task = None
+            cursor = self.cursors[path] = _EventCursor(identity)
         if stat.st_size == cursor.offset:
             return
         with path.open("rb") as stream:
@@ -441,6 +443,20 @@ class _JunieSessionEvents:
             if cancellable:
                 check_cancelled()
             try:
+                if self.path is None and self.headless_project is not None:
+                    if path in self.existing_events:
+                        continue
+                    # --taskのイベントにはプロンプトや各行のtaskIdが含まれない版がある。
+                    try:
+                        summary = json.loads(path.with_name("summary.json").read_bytes())
+                    except (OSError, ValueError):
+                        continue
+                    if not isinstance(summary, dict):
+                        continue
+                    project = summary.get("projectDir")
+                    if not isinstance(project, str) or Path(project) != self.headless_project:
+                        continue
+                    self.path = path
                 for line in self._new_lines(path, cancellable=cancellable):
                     try:
                         entry = json.loads(line)
@@ -464,7 +480,8 @@ class _JunieSessionEvents:
                         self.task = entry.get("taskId")
                     if entry.get("taskId") is not None and entry.get("taskId") != self.task:
                         continue
-                    if self.task and entry.get("taskId") == self.task and kind == "SessionA2uxEvent":
+                    matches_task = self.task and (entry.get("taskId") == self.task or self.headless_project is not None)
+                    if matches_task and kind == "SessionA2uxEvent":
                         self._count_usage(entry.get("event"))
                     self.last_event_at = time.monotonic()
                     message = _event_activity(entry)
@@ -472,7 +489,7 @@ class _JunieSessionEvents:
                     if message not in reported:
                         report_activity(message)
                         reported.add(message)
-                    if self.task and entry.get("taskId") == self.task and _is_junie_connection_failure(entry):
+                    if matches_task and _is_junie_connection_failure(entry):
                         return True
             except OSError:
                 continue
@@ -519,11 +536,32 @@ def _confirm_dashboard_launch(
     return reply.result() == option
 
 
+def _supports_task(executable: str) -> bool:
+    """実行するランチャーのヘルプから、非対話オプションの有無を調べる。"""
+    process = _launch_process(
+        [executable, "--help"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    with process:
+        try:
+            output, _ = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            return False
+        finally:
+            if process.poll() is None:
+                _close_junie(process)
+            check_cancelled()
+    return process.returncode == 0 and re.search(rb"(?m)^[ \t]*--task(?:[= \t]|\r?$)", output) is not None
+
+
+def _task_command(command: list[str]) -> list[str]:
+    return [part for part in command[:-2] if part != "--brave"] + ["--task", command[-1]]
+
+
 def run_interactive(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
 ) -> int:
-    """同じ作業場所で通信を再試行し、ACPのモデル不足時は確認を求める。"""
+    """Junieを選択したモードで起動し、通信障害時は同じ作業場所で再試行する。"""
     delays = (1, 3)
     for attempt in range(len(delays) + 1):
         check_cancelled()
@@ -538,7 +576,9 @@ def run_interactive(
                 return _run_session(invocation, completion_path, token, targets, report_usage=report_usage)
             except JunieAcpModelUnavailable:
                 dashboard = junie_dashboard_control()
-                if dashboard is None or not _confirm_dashboard_launch(
+                if dashboard is None or not _supports_task(command[0]):
+                    raise
+                if not _confirm_dashboard_launch(
                     dashboard, "Junie を非対話モードで再試行",
                     "ACP で利用できるモデルがありません。同じ作業フォルダーと指示で再試行できます。\n"
                     "非対話モードでは、Junie の操作ごとの許可確認はダッシュボードに表示されません。\n\n"
@@ -547,7 +587,7 @@ def run_interactive(
                 ):
                     raise
                 report_activity("Junie を非対話モードで再試行します。")
-                command = [part for part in command[:-2] if part != "--brave"] + ["--task", command[-1]]
+                command = _task_command(command)
             return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets, report_usage=report_usage)
         except JunieConnectionError as exc:
             if attempt == len(delays):
@@ -709,7 +749,7 @@ def _run_session(
     root = completion_path.parent
     dashboard = junie_dashboard_control()
     headless = command[-2:-1] == ["--task"]
-    restore_terminal = _save_terminal_mode() if dashboard is None else None
+    restore_terminal = _save_terminal_mode() if dashboard is None and not headless else None
     process = None
     acp = None
 
@@ -733,7 +773,7 @@ def _run_session(
                 ):
                     raise OperationCancelled("Junieの作業フォルダーの確認を取り消しました。")
                 dashboard.trusted_junie_workspaces.add(project)
-        events = _JunieSessionEvents(token)
+        events = _JunieSessionEvents(token, headless_project=root.resolve() if headless else None)
         next_poll = time.monotonic()
         if headless:
             process = _launch_process(command, stdin=subprocess.DEVNULL)
@@ -756,7 +796,7 @@ def _run_session(
             except subprocess.TimeoutExpired:
                 check_cancelled()
                 if (
-                    has_completion_record(completion_path, token)
+                    not headless and has_completion_record(completion_path, token)
                     and all(
                         path.is_file() and not has_symlink_component(root, path.relative_to(root))
                         and path.resolve().is_relative_to(root.resolve())

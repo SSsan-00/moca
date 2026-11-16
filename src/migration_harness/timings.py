@@ -11,7 +11,7 @@ SCRIPT_STAGES = {
     "before_prepare": 0, "after_prepare": 2, "before_migration": 3, "after_migration": 3,
     "before_build": 4, "after_build": 4, "before_checker": 5, "after_checker": 5,
 }
-ACTIVE_STAGES = {"junie_running": 3, "repairing": 3, "building": 4, "checking": 5}
+ACTIVE_STAGES = {"junie_running": 3, "editor_followup": 3, "repairing": 3, "building": 4, "checking": 5}
 
 
 def update_timings(

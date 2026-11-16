@@ -120,6 +120,16 @@ class JunieLaunchTests(unittest.TestCase):
         self.assertEqual(environment["JUNIE_PROMPT"], 'a "b"\nc')
         self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], 'C:\\資料 & rules.md')
 
+    def test_windows_batch_transports_task_text_in_environment(self):
+        prompt = '対応行を提案してください。\n"quoted" & %PATH%'
+        with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
+            line, _, environment = junie_cli._windows_batch_command([
+                r"C:\Junie.CMD", "--task", prompt,
+            ])
+        self.assertEqual(environment["JUNIE_TASK"], prompt)
+        self.assertNotIn(prompt, line)
+        self.assertNotIn("--task", line)
+
     def test_windows_batch_rejects_unsafe_or_silently_truncated_arguments(self):
         cases = (
             (["--prompt"], "requires a value"),

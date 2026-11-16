@@ -30,7 +30,8 @@ steps[4].querySelector("h3").textContent = "ビルド";
 steps[6].querySelector("h3").textContent = "人の確認";
 const statusNames = {
   idle: "実行を選択してください", preparing: "準備中", prepared: "準備完了", junie_running: "Junieで移行中",
-  junie_finished: "Junieの編集完了", repairing: "Junieで修正中", building: "ビルド中",
+  junie_finished: "Junieの編集完了", editor_checkpoint: "編集・追加指示の反映", repairing: "Junieで修正中", building: "ビルド中",
+  editor_followup: "Junieが追加指示を実行中",
   build_succeeded: "ビルド成功", build_failed: "ビルド失敗", checking: "チェッカー実行中",
   checker_needs_review: "人の確認待ち", checker_failed: "チェッカー実行失敗",
   checker_succeeded: "チェッカー成功", checker_accepted: "チェッカーの指摘を承認済み",
@@ -42,7 +43,8 @@ const savedView = document.documentElement.hasAttribute("data-saved");
 const verifiedStatuses = new Set(["checker_succeeded", "checker_accepted", "build_succeeded"]);
 const statusStages = {
   preparing: 0, preparation_interrupted: 0, preparation_failed: 0,
-  prepared: 2, junie_running: 3, junie_finished: 3, interrupted: 3, junie_failed: 3,
+  prepared: 2, junie_running: 3, junie_finished: 3, editor_checkpoint: 3, interrupted: 3, junie_failed: 3,
+  editor_followup: 3,
   repairing: 3, building: 4, build_succeeded: 4, build_failed: 4, checking: 5, checker_failed: 5,
   checker_needs_review: 6, checker_succeeded: 6, checker_accepted: 6,
 };
@@ -155,6 +157,13 @@ let buildFile;
 let buildRequest = 0;
 let buildLoading = false;
 let buildEditSubmitted = false;
+const progressPrompt = bindProgressPromptDialog({
+  open: refreshProgressPrompts, submit: submitProgressPrompt, inputChanged: syncProgressPrompts,
+});
+let progressPrompts;
+let promptLoading = false;
+let promptSaving = false;
+let promptRequest = 0;
 
 // 判断に関する通知はメッセージがあるときだけ表示する。
 function showNotice(message) {
@@ -186,6 +195,53 @@ function syncActions() {
     button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
   }
   syncBuildReview(canAct);
+  syncProgressPrompts();
+}
+
+function syncProgressPrompts() {
+  progressPrompt.button.hidden = !snapshot.worktree_path;
+  progressPrompt.button.disabled = !connected;
+  progressPrompt.render(progressPrompts, {available: connected, loading: promptLoading, saving: promptSaving});
+}
+
+async function refreshProgressPrompts() {
+  if (!progressPrompt.dialog.open || !connected || promptLoading || promptSaving) return;
+  const request = ++promptRequest;
+  const runId = snapshot.run_id;
+  promptLoading = true;
+  syncProgressPrompts();
+  try {
+    const data = await workspaceRequest("prompts");
+    if (request === promptRequest && data.run_id === runId) progressPrompts = data;
+  } catch (error) {
+    if (request === promptRequest) {
+      progressPrompts = undefined;
+      progressPrompt.showError(error);
+    }
+  } finally {
+    promptLoading = false;
+    syncProgressPrompts();
+  }
+}
+
+async function submitProgressPrompt(text) {
+  const runId = snapshot.run_id;
+  const request = ++promptRequest;
+  promptSaving = true;
+  progressPrompt.showError();
+  syncProgressPrompts();
+  try {
+    const data = await workspaceRequest("prompts", {run_id: runId, text});
+    if (request === promptRequest && data.run_id === runId) {
+      progressPrompts = data;
+      progressPrompt.input.value = "";
+    }
+  } catch (error) {
+    if (request === promptRequest) progressPrompt.showError(error);
+  } finally {
+    promptSaving = false;
+    syncProgressPrompts();
+  }
 }
 
 function buildEditIsDirty() {
@@ -360,7 +416,7 @@ function renderJunieReview(request) {
     button.addEventListener("click", () => answerJunie(request.id, choice.id));
     junieChoices.append(button);
   }
-  openJunieReview();
+  if (!progressPrompt.dialog.open) openJunieReview();
 }
 
 async function answerJunie(requestId, optionId) {
@@ -550,7 +606,7 @@ function renderCheckerReview(data, showReview) {
   }
   showNotice(data.message || (data.ready ? data.error : "") || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
   if (data.junie_request) return;
-  if (showReview && data.ready && !prompted && activeHarnessTab === 0) {
+  if (showReview && data.ready && !prompted && activeHarnessTab === 0 && !progressPrompt.dialog.open) {
     prompted = true;
     openReview();
   } else if (!showReview) {
@@ -561,7 +617,7 @@ function renderCheckerReview(data, showReview) {
 
 function renderTokens() {
   const data = snapshot;
-  const usingJunie = !data.ready && (["junie_running", "repairing"].includes(data.status) || data.generating_anchors);
+  const usingJunie = !data.ready && (["junie_running", "editor_followup", "repairing"].includes(data.status) || data.generating_anchors);
   renderRunTokenSummary(data.token_usage, usingJunie);
   if (element("#tab-tokens").getAttribute("aria-selected") === "true") {
     tokenRuns.setActive(data.run_id ? {
@@ -925,6 +981,10 @@ stream.onmessage = event => {
     && snapshot.review?.findings.some(item => item[0] === findings.value && !item[2])
     && data.review?.findings.some(item => item[0] === findings.value && item[2]);
   if (snapshot.run_id !== data.run_id) {
+    promptRequest++;
+    progressPrompts = undefined;
+    progressPrompt.input.value = "";
+    progressPrompt.dialog.close();
     showComparisonStatus();
     activity.replaceChildren();
     seenActivities.clear();
@@ -949,5 +1009,6 @@ stream.onmessage = event => {
   if (progressChanged && snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
 };
 setInterval(renderElapsed, 1000);
+setInterval(refreshProgressPrompts, 1000);
 render();
 document.documentElement.dataset.liveReady = "true";

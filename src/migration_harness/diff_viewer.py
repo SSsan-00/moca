@@ -95,7 +95,7 @@ def capture_workspace(
         draft_files = []
         missing_files = []
         agent_root = run_path / "agent-workspace"
-        use_draft = include_draft and record.get("status") in {"junie_running", "repairing"}
+        use_draft = include_draft and record.get("status") in {"junie_running", "editor_followup", "repairing"}
         if use_draft and (agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve())):
             raise ValueError("Junieの作業場所を安全に参照できません。")
         paths = [Path(config["project_root"]) / name for _, name, _ in legacy_paths]

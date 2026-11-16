@@ -948,6 +948,87 @@ def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> s
     )
 
 
+def _apply_editor_edits(
+    queue: dict[str, Any], agent_root: Path, worktree: Path, targets: tuple[Path, ...],
+    record: dict[str, Any], record_path: Path,
+) -> bool:
+    """Junieの書き込みが止まっている区間の境目で、両者の変更を突き合わせる。"""
+    from migration_harness.editor_queue import editor_target, merge_edit
+
+    edits = queue["edits"]
+    if not edits:
+        return True
+    merged = {}
+    names = {target.as_posix() for target in targets if target.suffix.lower() == ".cs"}
+    for name, edit in edits.items():
+        if name not in names:
+            raise ValueError("エディタの保存先が設定された移行先と一致しません。")
+        original, current = editor_target(agent_root, Path(name))
+        text = None if edit["status"] == "conflict" else merge_edit(edit["base"], edit["content"], current)
+        if text is None:
+            edit["status"] = "conflict"
+        elif original is not None:
+            merged[name] = (hashlib.sha256(original).hexdigest(), text)
+        else:
+            raise ValueError("Junie の作業領域に C# ファイルがありません。")
+    if any(edit["status"] == "conflict" for edit in edits.values()):
+        record.update(status="editor_checkpoint", error="C# の編集が競合しました。エディタで解消してから再開してください。")
+        _write_run_record(record_path, record, timing_stage=None)
+        return False
+    for name, (version, text) in merged.items():
+        _save_build_review_edit(agent_root, targets, {"target": name, "version": version, "content": text})
+    _apply_agent_targets(agent_root, worktree, targets, record["target_hashes"], record, record_path)
+    edits.clear()
+    return True
+
+
+def _stage_operator_prompts(agent_root: Path, token: str, instruction: str) -> str:
+    # 指示をファイルに置き、Windows のコマンドライン長制限を避ける。
+    path = agent_root / f"checker-findings-{token}-operator.txt"
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(instruction + "\n")
+    return path.name
+
+
+def _run_editor_followup(
+    agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any],
+    record_path: Path, config: dict[str, Any], instruction: str,
+) -> bool:
+    """保留中の指示を、ビルド前に同じ移行先へ適用する。"""
+    token = uuid.uuid4().hex
+    completion = agent_root / f"migration-complete-{token}.txt"
+    instructions = _stage_operator_prompts(agent_root, token, instruction)
+    names = ", ".join(target.as_posix() for target in targets)
+    prompt = (
+        f"Read `{instructions}` and apply the operator's follow-up instructions to the completed migration. "
+        f"Read the current versions of the configured targets: {names}. "
+        "Consult the staged PHP source and migration rules when needed. "
+        "Preserve unrelated edits and the migration rules. Edit only these targets. "
+        "Do not access files outside this workspace or run builds, tests, or checkers. "
+        f"When finished, write exactly {token} to {completion.name} as the final file action."
+    )
+    guidelines = agent_root / ".migration-materials/guidelines.md"
+    command = junie_cli.build_command(agent_root, prompt, record.get("junie_max_steps", config["junie_max_steps"]),
+                                      guidelines=guidelines if guidelines.is_file() else None)
+    allowed = {*targets, completion.relative_to(agent_root)}
+    before = _unlisted_workspace_files(agent_root, allowed)
+    try:
+        junie_cli.run_interactive(
+            command, completion, token, tuple(_safe_target(agent_root, target) for target in targets),
+            report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
+        )
+    except KeyboardInterrupt:
+        raise RunInterrupted(record["run_id"]) from None
+    if _unlisted_workspace_files(agent_root, allowed) != before:
+        raise ValueError("追加指示の実行中に移行対象外のファイルが変更されました。")
+    if not junie_cli.has_completion_record(completion, token) or not all(
+        _safe_target(agent_root, target).is_file() for target in targets
+    ):
+        return False
+    _apply_agent_targets(agent_root, worktree, targets, record["target_hashes"], record, record_path)
+    return True
+
+
 def _run_prepared_with_junie(
     config: dict[str, Any],
     unit: dict[str, Any],
@@ -956,8 +1037,10 @@ def _run_prepared_with_junie(
     record: dict[str, Any],
     *,
     resuming: bool,
+    followup_only: bool = False,
 ) -> dict[str, Any]:
     """保存済みの編集と進捗から未完了のカプセルを順に処理する。"""
+    from migration_harness.editor_queue import dispatch_prompts, editor_queue, finish_prompts
     worktree_root = Path(result["worktree_path"]).resolve()
     if not worktree_root.is_dir() or not worktree_root.is_relative_to(Path(config["worktree_root"]).resolve()):
         raise ValueError(f"run worktree is missing or outside configured worktree root: {worktree_root}")
@@ -989,19 +1072,25 @@ def _run_prepared_with_junie(
     material_instructions = _stage_migration_materials(capsule, manifest, agent_root, targets=relative_targets)
     material_instructions += stage_target_context(worktree_root, relative_targets, capsule, agent_root)
     hashes = {path.as_posix(): _target_hash(file) for path, file in zip(relative_targets, worktree_targets, strict=True)}
-    if resuming:
+    if resuming and not followup_only:
         prior_hashes = record.get("target_hashes", {relative_targets[0].as_posix(): record.get("target_sha256")})
         if hashes != prior_hashes:
             raise ValueError("worktree targets changed since the last recorded Junie result; inspect and reconcile before resuming")
-    for worktree_target, agent_target in zip(worktree_targets, agent_targets, strict=True):
+    for relative, worktree_target, agent_target in zip(relative_targets, worktree_targets, agent_targets, strict=True):
         agent_target.parent.mkdir(parents=True, exist_ok=True)
-        if not agent_target.exists() and worktree_target.is_file():
+        if (followup_only or not agent_target.exists()) and worktree_target.is_file():
             shutil.copyfile(worktree_target, agent_target)
+        elif followup_only:
+            agent_target.unlink(missing_ok=True)
+        if followup_only and _target_hash(agent_target) != hashes[relative.as_posix()]:
+            raise ValueError("移行先ファイルが更新されました。もう一度再開してください。")
 
     record["agent_workspace_path"] = str(agent_root)
     if resuming:
         record["resume_attempts"] = resume_attempts + 1
-    record["status"] = "junie_running"
+    record["status"] = (
+        "editor_checkpoint" if followup_only or record["status"] in {"editor_checkpoint", "editor_followup"} else "junie_running"
+    )
     record.setdefault("completed_capsules", 0)
     record.setdefault("current_capsule", record["completed_capsules"] + 1)
     record["target_hashes"] = hashes
@@ -1011,7 +1100,9 @@ def _run_prepared_with_junie(
     _write_run_record(record_path, record)
 
     agent_context = agent_root / ".migration-context.md"
-    exit_code = None
+    exit_code = record.get("junie_exit_code")
+    with editor_queue(run_path) as queue:
+        finish_prompts(queue, False)
     start_index = record["completed_capsules"] + 1
     for index, context_path in enumerate(result["context_paths"][start_index - 1 :], start=start_index):
         part = manifest["parts"][index - 1]
@@ -1070,12 +1161,25 @@ def _run_prepared_with_junie(
         )
         max_steps = record.get("junie_max_steps", config["junie_max_steps"])
         guidelines = agent_root / ".migration-materials/guidelines.md"
-        command = junie_cli.build_command(agent_root, prompt, max_steps, guidelines=guidelines if guidelines.is_file() else None)
-        record["current_capsule"] = index
-        _write_run_record(record_path, record)
         allowed = {*relative_targets, completion_path.relative_to(agent_root)}
-        other_files = _unlisted_workspace_files(agent_root, allowed)
         interrupted = False
+        complete = False
+        with editor_queue(run_path) as queue:
+            if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
+                break
+            extra = dispatch_prompts(queue)
+            record.update(current_capsule=index, status="junie_running")
+            record.pop("error", None)
+            _write_run_record(record_path, record)
+        if extra:
+            instructions = _stage_operator_prompts(agent_root, completion_token, extra)
+            prompt = (
+                "Operator follow-up for this migration. Re-read the current target files and preserve"
+                " the operator's edits. Adjust previously migrated C# if the follow-up requests it."
+                f" Keep the PHP source range for this segment unchanged. Read `{instructions}`.\n\n{prompt}"
+            )
+        other_files = _unlisted_workspace_files(agent_root, allowed)
+        command = junie_cli.build_command(agent_root, prompt, max_steps, guidelines=guidelines if guidelines.is_file() else None)
         try:
             try:
                 exit_code = junie_cli.run_interactive(
@@ -1090,18 +1194,25 @@ def _run_prepared_with_junie(
                 agent_root, worktree_root, relative_targets,
                 record["target_hashes"], record, record_path,
             )
+            missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
+            complete = not interrupted and not missing and junie_cli.has_completion_record(
+                completion_path, completion_token,
+            )
         except (OSError, ValueError) as exc:
             record.update(status="junie_failed", error=format_error(exc, command=command))
             _write_run_record(record_path, record)
             raise
+        finally:
+            if extra:
+                with editor_queue(run_path) as queue:
+                    finish_prompts(queue, complete)
         if interrupted:
             record.update(status="interrupted", error="interrupted by user; current capsule can be resumed")
             _write_run_record(record_path, record)
             raise RunInterrupted(record["run_id"])
 
         record["junie_exit_code"] = exit_code
-        missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
-        if missing or not junie_cli.has_completion_record(completion_path, completion_token):
+        if not complete:
             record["status"] = "interrupted" if len(missing) < len(agent_targets) else "junie_failed"
             record["error"] = (
                 f"Junie did not produce configured targets: {', '.join(missing)}" if missing
@@ -1112,11 +1223,38 @@ def _run_prepared_with_junie(
 
         record["completed_capsules"] = index
         record["current_capsule"] = min(index + 1, result["capsule_count"])
-        record["status"] = "junie_finished" if index == result["capsule_count"] else "junie_running"
+        record["status"] = "editor_checkpoint" if index == result["capsule_count"] else "junie_running"
         record.pop("error", None)
         _write_run_record(record_path, record, timing_stage=3)
 
-    if exit_code is None:
+    while record["completed_capsules"] == result["capsule_count"] and record["status"] == "editor_checkpoint":
+        with editor_queue(run_path) as queue:
+            if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
+                break
+            extra = dispatch_prompts(queue)
+            if not extra:
+                record["status"] = "junie_finished"
+                record.pop("error", None)
+                _write_run_record(record_path, record, timing_stage=3)
+                break
+            record["status"] = "editor_followup"
+            _write_run_record(record_path, record)
+        completed = False
+        try:
+            completed = _run_editor_followup(
+                agent_root, worktree_root, relative_targets, record, record_path, config, extra,
+            )
+        finally:
+            with editor_queue(run_path) as queue:
+                finish_prompts(queue, completed)
+                record["status"] = "editor_checkpoint"
+                _write_run_record(record_path, record, timing_stage=3)
+        if not completed:
+            record["error"] = "Junie が追加指示を完了できませんでした。実行を再開するともう一度試します。"
+            _write_run_record(record_path, record, timing_stage=None)
+            break
+
+    if exit_code is None and record["completed_capsules"] != result["capsule_count"] and record["status"] != "editor_checkpoint":
         raise RuntimeError("context preparation produced no capsules")
     result = {
         **result,
@@ -2176,7 +2314,7 @@ def review_migration_ranges(
         manual_hashes[path.as_posix()] = digest
     with _edit_run_record(run_path / "run.json") as (record, changes):
         if record.get("target_apply_pending") or record.get("status") in {
-            "junie_running", "repairing", "building", "checking", "script_running",
+            "junie_running", "editor_followup", "repairing", "building", "checking", "script_running",
         }:
             raise ValueError("wait for migration, build or verification to finish before recording a range review")
         decisions = record.get("migration_reviews", {})
@@ -2225,7 +2363,9 @@ def record_migration_candidates(
         target, target_line = file_line(workspace["rightSegments"], anchor["rightLineNo"])
         by_source.setdefault(source, []).append((line, target, target_line))
     with _edit_run_record(run_path / "run.json") as (record, changes):
-        if not record.get("completed_capsules") or record.get("status") in {"junie_running", "repairing", "building", "checking"}:
+        if not record.get("completed_capsules") or record.get("status") in {
+            "junie_running", "editor_followup", "repairing", "building", "checking",
+        }:
             return
         mappings = {
             key: mapping for key, mapping in record.get("migration_mappings", {}).items()
@@ -2309,7 +2449,7 @@ def review_checker(
 _BUILD_RESUME_STATUSES = {"junie_finished", "building", "build_failed", "repairing"}
 _CHECKER_RESUME_STATUSES = {"checking", "checker_needs_review", "checker_failed"}
 VERIFIED_STATUSES = {"build_succeeded", "checker_succeeded", "checker_accepted"}
-_JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrupted"}
+_JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrupted", "editor_checkpoint", "editor_followup"}
 _SCRIPT_RESUME_STATUSES = {"script_running", "script_failed"}
 
 
@@ -2384,12 +2524,14 @@ def resume_with_junie(
         status in _BUILD_RESUME_STATUSES or status in _CHECKER_RESUME_STATUSES or status in VERIFIED_STATUSES
         or (script_retry and record.get("script_phase") not in {"after_prepare", "before_migration"})
     )
+    waiting_at_final_checkpoint = status in {"editor_checkpoint", "editor_followup"} and completed_capsules == len(context_paths)
     if (
         not isinstance(completed_capsules, int)
-        or (completed_capsules != len(context_paths) if migration_complete else not 0 <= completed_capsules < len(context_paths))
+        or (completed_capsules != len(context_paths) if migration_complete or waiting_at_final_checkpoint
+            else not 0 <= completed_capsules < len(context_paths))
     ):
         raise ValueError("run record has inconsistent capsule completion")
-    if not migration_complete and record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
+    if not migration_complete and not waiting_at_final_checkpoint and record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
         raise ValueError("run record has inconsistent capsule progress; inspect it before resuming")
 
     result = {
@@ -2412,6 +2554,12 @@ def resume_with_junie(
             record.update(status="junie_finished")
             record.pop("error", None)
             record.pop("script_phase", None)
+        from migration_harness.editor_queue import editor_queue
+        with editor_queue(run_path) as queue:
+            pending = any(prompt["status"] != "sent" for prompt in queue["prompts"])
+        if pending:
+            junie_cli.require_interactive_cli()
+            return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
         return _verify_worktree(config, unit, result, record)
     junie_cli.require_interactive_cli()
     record.pop("error", None)

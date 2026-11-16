@@ -21,6 +21,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
+from migration_harness.editor_queue import AGENT_PHASES, EDIT_BYTES, QUEUE_PHASES, add_prompt, editor_queue, editor_target, editor_text
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset
@@ -28,9 +29,9 @@ from migration_harness.timings import freeze_timings
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.workflow import (
-    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _load_saved_run, build_failure_review, can_resume_run,
+    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _load_saved_run, _save_build_review_edit, _target_paths, build_failure_review, can_resume_run,
     migration_ledger, prepare_run, resume_with_junie,
-    review_checker, run_observer, run_with_junie,
+    review_checker, run_observer, run_with_junie, worktree_source_lock,
 )
 
 
@@ -41,6 +42,22 @@ PROGRESS_FIELDS = (
     "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
+
+
+def _prompt_timing(config, state, run_path, record) -> str | None:
+    if state.get("stop_requested") or state.get("generating_anchors"):
+        return None
+    phase = record["status"]
+    if phase == "prepared" or phase in QUEUE_PHASES or (
+        phase in {"script_running", "script_failed"}
+        and record.get("script_phase") in {"after_prepare", "before_migration"}
+    ):
+        return "resume" if state.get("ready") else "checkpoint"
+    agent = run_path / "agent-workspace"
+    if (record.get("completed_capsules", 0) > 0 and record.get("completed_capsules") == record.get("context_capsules")
+            and not agent.is_symlink() and agent.is_dir() and can_resume_run(config, record)):
+        return "resume"
+    return None
 
 
 def _read_settings(path: Path) -> tuple[bytes, str]:
@@ -254,6 +271,26 @@ class Dashboard:
                     self.send_body(200, "text/html; charset=utf-8", html)
                 elif self.path == prefix + "dashboard.js":
                     self.send_body(200, "text/javascript; charset=utf-8", script)
+                elif self.path == prefix + "dashboard_editor.js":
+                    self.send_body(200, "text/javascript; charset=utf-8", Path(__file__).with_name("dashboard_editor.js").read_bytes())
+                elif self.path.startswith(prefix + "monaco/"):
+                    name = self.path.removeprefix(prefix + "monaco/")
+                    content_type = {
+                        "editor.js": "text/javascript",
+                        "worker.js": "text/javascript",
+                        "editor.css": "text/css",
+                    }.get(name)
+                    if content_type is None:
+                        self.send_error(404)
+                        return
+                    try:
+                        asset = (Path(__file__).with_name("monaco") / name).read_bytes()
+                    except OSError:
+                        self.send_error(404)
+                    else:
+                        self.send_body(200, content_type, asset)
+                elif self.path.partition("?")[0] == prefix + "editor":
+                    self.send_editor()
                 elif self.path == prefix + "events":
                     self.send_events()
                 elif self.path == prefix + "workspace":
@@ -262,6 +299,8 @@ class Dashboard:
                     self.send_workspace(include_usage=True)
                 elif self.path == prefix + "settings":
                     self.send_settings()
+                elif self.path == prefix + "prompts":
+                    self.send_prompts()
                 elif self.path.partition("?")[0] == prefix + "build-review":
                     self.send_build_review()
                 elif self.path == prefix + "migration-ledger":
@@ -279,6 +318,119 @@ class Dashboard:
                     self.send_comparison()
                 else:
                     self.send_error(404)
+
+            def send_prompts(self, action: dict[str, Any] | None = None) -> None:
+                state = dashboard.state
+                run_id = state.get("run_id")
+                payload = {"run_id": run_id, "timing": None, "prompts": []}
+                try:
+                    if action is not None and action.get("run_id") != run_id:
+                        raise ValueError("表示中の実行が変わりました。")
+                    if run_id and state.get("worktree_path"):
+                        run_path, _, _, _ = _load_saved_run(config, run_id)
+                        with editor_queue(run_path) as queue:
+                            with dashboard.condition:
+                                state = dashboard.state
+                                if state.get("run_id") != run_id:
+                                    raise ValueError("表示中の実行が変わりました。")
+                                _, _, record, _ = _load_saved_run(config, run_id)
+                                timing = _prompt_timing(config, state, run_path, record)
+                                if action is not None:
+                                    if timing is None:
+                                        raise ValueError("現在の工程では指示を登録できません。")
+                                    add_prompt(queue, action)
+                            payload.update(timing=timing, prompts=queue["prompts"])
+                    elif action is not None:
+                        raise ValueError("移行の実行を開いてから指示を登録してください。")
+                    self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8", errors="replace"))
+
+            def send_editor(self, action: dict[str, Any] | None = None) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                state = dashboard.state
+                run_id = state.get("run_id")
+                try:
+                    if not run_id or not state.get("worktree_path"):
+                        if action is not None:
+                            raise ValueError("移行の実行を開いてから保存してください。")
+                        payload = {"run_id": None, "targets": [], "prompts": [], "can_prompt": False}
+                    else:
+                        if action is not None and action.get("run_id") != run_id:
+                            raise ValueError("表示中の実行が変わりました。")
+                        run_path, _, _, _ = _load_saved_run(config, run_id)
+                        with editor_queue(run_path) as queue:
+                            state = dashboard.state
+                            if state.get("run_id") != run_id:
+                                raise ValueError("表示中の実行が変わりました。")
+                            _, worktree, record, unit = _load_saved_run(config, run_id)
+                            targets = tuple(path for path in _target_paths(unit) if path.suffix.lower() == ".cs")
+                            names = [path.as_posix() for path in targets]
+                            name = query.get("target", names[:1] or [None])[0]
+                            if action is not None and action.get("kind") == "save":
+                                name = action.get("target")
+                                if name not in names:
+                                    raise ValueError("設定された C# の移行先を選んでください。")
+                            elif name is not None and name not in names:
+                                raise ValueError("設定された C# の移行先を選んでください。")
+                            phase = record["status"]
+                            agent_root = run_path / "agent-workspace"
+                            if agent_root.is_symlink():
+                                raise ValueError("Junie の作業場所がシンボリックリンクです。")
+                            from_agent = phase in AGENT_PHASES and agent_root.is_dir()
+                            root = agent_root if from_agent else worktree
+                            busy_other = state.get("generating_anchors") or state.get("stop_requested")
+                            queued = bool(from_agent and phase in QUEUE_PHASES and not busy_other)
+                            direct = bool(state.get("ready") and not busy_other and phase not in AGENT_PHASES)
+                            prompt_timing = _prompt_timing(config, state, run_path, record)
+                            read_error = None
+                            try:
+                                original, content = editor_target(root, Path(name)) if name else (None, "")
+                            except (OSError, ValueError) as exc:
+                                if action is not None and action.get("kind") == "save":
+                                    raise
+                                original, content = None, ""
+                                read_error = format_error(exc)
+                            edit = queue["edits"].get(name)
+                            if action is not None:
+                                if action.get("kind") == "prompt" and prompt_timing:
+                                    add_prompt(queue, action)
+                                elif action.get("kind") == "save" and name and original is not None and (queued or direct):
+                                    base = editor_text(action.get("base"))
+                                    draft = editor_text(action.get("content"))
+                                    if action.get("edit_id") != (edit["id"] if edit else None):
+                                        raise ValueError("保存済みの編集が別の画面で変更されました。")
+                                    if queued:
+                                        if edit and edit["status"] == "conflict" and (
+                                            not action.get("resolve") or base != content
+                                        ):
+                                            raise ValueError("Junie の最新版を確認してから競合を解消してください。")
+                                        edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
+                                        queue["edits"][name] = edit
+                                    else:
+                                        if content != base:
+                                            raise ValueError("ファイルが更新されました。差分を確認してください。")
+                                        with worktree_source_lock, dashboard.condition:
+                                            if dashboard.state.get("run_id") != run_id or not dashboard.state.get("ready"):
+                                                raise ValueError("処理が始まりました。終了後に保存してください。")
+                                            _save_build_review_edit(worktree, targets, {
+                                                "target": name, "version": hashlib.sha256(original).hexdigest(), "content": draft,
+                                            })
+                                        content = draft
+                                else:
+                                    raise ValueError("現在の工程ではこの操作を受け付けられません。")
+                            payload = {
+                                "run_id": run_id, "targets": names, "target": name, "content": content, "edit": edit,
+                                "source": "agent-workspace" if from_agent else "worktree",
+                                "can_save": bool(original is not None and (queued or direct)), "queued": queued,
+                                "exists": original is not None, "read_error": read_error,
+                                "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,
+                                "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
+                                "status": phase,
+                            }
+                    self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
 
             def send_build_review(self) -> None:
                 query = parse_qs(urlsplit(self.path).query)
@@ -392,7 +544,8 @@ class Dashboard:
 
             def do_POST(self) -> None:
                 """オリジンと操作内容を検証してから比較または端末側の操作へ渡す。"""
-                if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings", prefix + "build-response"):
+                if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
+                                      prefix + "build-response", prefix + "editor", prefix + "prompts"):
                     self.send_error(404)
                     return
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
@@ -401,12 +554,18 @@ class Dashboard:
                 comparison = self.path == prefix + "comparison"
                 settings = self.path == prefix + "settings"
                 build_response = self.path == prefix + "build-response"
+                editor = self.path == prefix + "editor"
+                prompts = self.path == prefix + "prompts"
                 limit = 16_384
                 if settings:
                     limit = 8 * 1024 * 1024
                 elif build_response:
                     # JSON エスケープはソースの 1 バイトを最大 6 バイトに展開する。
                     limit = 6 * BUILD_REVIEW_EDIT_BYTES + 256 * 1024
+                elif editor:
+                    limit = 12 * EDIT_BYTES + 16_384
+                elif prompts:
+                    limit = 32_768
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if comparison and length == 0:
@@ -425,6 +584,12 @@ class Dashboard:
                     return
                 if settings:
                     self.save_settings(action)
+                    return
+                if editor:
+                    self.send_editor(action)
+                    return
+                if prompts:
+                    self.send_prompts(action)
                     return
                 if comparison:
                     with dashboard.condition:
@@ -592,7 +757,7 @@ def run_dashboard(
         options += " data-workspace"
     view.publish({**view.state, "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
-    html += '<script src="dashboard.js" defer></script></body></html>'
+    html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>'
     with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
