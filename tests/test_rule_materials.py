@@ -63,6 +63,28 @@ class RuleMaterialsTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "saved rule changed"):
             rule_materials.render_guidelines(material, {"rule_files": entries})
 
+    def test_details_naming_the_target_are_supplied_whole_and_other_details_stay_indexed(self):
+        material = self.root / "materials"
+        body = "Implement OrderPage.Values() with existing helpers.\r\nKeep the final exception.\r\n"
+        razor = "Use Razor's standard encoding.\r\n"
+        unrelated = "OtherOrderPage.Values() uses this separate behavior.\n"
+        entries = rule_materials.write_rule_files(material, [
+            ({"path": "order.md", "usage": "reference", "description": "注文処理の詳細"}, body),
+            ({"path": "view.md", "usage": "reference",
+              "description": r"Pages\Orders\Index.cshtml の表示を変更する場合"}, razor),
+            ({"path": "other.md", "usage": "reference", "description": "別画面の詳細"}, unrelated),
+        ])
+        guidelines = rule_materials.render_guidelines(
+            material, {"rule_files": entries},
+            targets=(Path("Pages/Orders/OrderPage.cs"), Path("Pages/Orders/Index.cshtml")),
+        )
+        supplied, index = guidelines.split("## Detail and example references")
+        self.assertIn(body, supplied)
+        self.assertIn(razor, supplied)
+        self.assertNotIn(unrelated, guidelines)
+        self.assertIn('"source": "other.md"', index)
+        self.assertNotIn('"source": "order.md"', index)
+
     def test_missing_or_changed_pinned_files_are_not_silently_ignored(self):
         capsule, manifest, agent = self.prepare()
         material = capsule / "materials" / manifest["rule_files"][0]["file"]

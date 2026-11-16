@@ -847,7 +847,8 @@ def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]
 
 
 def _stage_migration_materials(
-    capsule: Path, manifest: dict[str, Any], agent_root: Path, *, repair: bool = False,
+    capsule: Path, manifest: dict[str, Any], agent_root: Path, *,
+    targets: tuple[Path, ...] = (), repair: bool = False,
 ) -> str:
     """準備時の資料を照合して、今回のJunieに読む順番を伝える。"""
     materials = manifest.get("materials", {})
@@ -863,15 +864,15 @@ def _stage_migration_materials(
             shutil.copyfile(source, destination)
     instructions = ""
     guidelines = _safe_target(agent_root, Path(".migration-materials/guidelines.md"))
-    text = render_guidelines(agent_root / ".migration-materials", manifest)
+    text = render_guidelines(agent_root / ".migration-materials", manifest, targets=targets)
     if text:
         guidelines.parent.mkdir(exist_ok=True)
         guidelines.write_text(text, encoding="utf-8", newline="")
         instructions += (
-            'Project migration rules are supplied through Junie guidelines. Apply their mandatory text '
-            'and consult the listed detail files when relevant; no reading receipt is required. '
+            'Before making any edit, review the Junie guidelines for mandatory rules and any supplied target '
+            'details. Check the remaining detail index against this task and read the relevant saved files. '
         )
-        report_activity(f"必須事項と詳細資料の索引をJunieの起動時の指示に設定しました（{len(text):,}文字）。")
+        report_activity(f"必須事項・移行先を指定した詳細・資料の索引を起動時の指示に設定しました（{len(text):,}文字）。")
     else:
         guidelines.unlink(missing_ok=True)
     if "shared.md" in materials and ("rule_files" in manifest or "rule_chunks" in manifest):
@@ -985,7 +986,7 @@ def _run_prepared_with_junie(
     worktree_targets = tuple(_safe_target(worktree_root, path) for path in relative_targets)
     agent_targets = tuple(_safe_target(agent_root, path) for path in relative_targets)
     capsule, manifest = _load_capsule_manifest(run_path)
-    material_instructions = _stage_migration_materials(capsule, manifest, agent_root)
+    material_instructions = _stage_migration_materials(capsule, manifest, agent_root, targets=relative_targets)
     material_instructions += stage_target_context(worktree_root, relative_targets, capsule, agent_root)
     hashes = {path.as_posix(): _target_hash(file) for path, file in zip(relative_targets, worktree_targets, strict=True)}
     if resuming:
@@ -1354,7 +1355,7 @@ def _repair_target(
     if agent_root.is_symlink() or not agent_root.is_dir():
         raise ValueError("saved Junie workspace is missing or unsafe")
     capsule, manifest = _load_capsule_manifest(run_path)
-    material_instructions = _stage_migration_materials(capsule, manifest, agent_root, repair=True)
+    material_instructions = _stage_migration_materials(capsule, manifest, agent_root, targets=repair_targets, repair=True)
     material_instructions += stage_target_context(worktree, targets, capsule, agent_root)
     attempt = record["repair_pending"]
     draft = attempt.get("draft", {})

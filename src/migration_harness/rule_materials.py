@@ -1,4 +1,4 @@
-"""必須事項を起動時の指示に渡し、詳細・例は原文への索引で案内する。"""
+"""必須事項と対象が明記された詳細を渡し、ほかの詳細は索引で案内する。"""
 
 from __future__ import annotations
 
@@ -30,9 +30,22 @@ def write_rule_files(directory: Path, sources: list[tuple[dict, str]]) -> list[d
     return entries
 
 
-def render_guidelines(directory: Path, manifest: dict) -> str:
+def _target_mentions(targets: tuple[Path, ...]) -> re.Pattern[str] | None:
+    mentions = []
+    for target in targets:
+        path = r"[\\/]".join(re.escape(part) for part in target.parts)
+        mentions.append(rf"(?<![\w./\\-]){path}(?![\w/\\-]|\.[\w-])")
+        # RazorのPageModelは .cshtml.cs で、型名には .cshtml が付かない。
+        name = target.stem.removesuffix(".cshtml")
+        if target.suffix == ".cs" and name.isidentifier():
+            mentions.append(rf"(?<!\w){re.escape(name)}\.[A-Z]\w*\b")
+    return re.compile("|".join(mentions)) if mentions else None
+
+
+def render_guidelines(directory: Path, manifest: dict, *, targets: tuple[Path, ...] = ()) -> str:
     """照合済みの保存資料だけを使う。旧Runの断片も順に結合し省略しない。"""
-    required, details = [], []
+    required, matched, details = [], [], []
+    mentions = _target_mentions(targets)
     if "rule_files" in manifest:
         entries = json.loads((directory / "rules.json").read_text(encoding="utf-8")) if manifest["rule_files"] else []
         if entries != manifest["rule_files"]:
@@ -50,6 +63,10 @@ def render_guidelines(directory: Path, manifest: dict) -> str:
         if usage == "required":
             required.append(content.decode("utf-8"))
         elif usage == "reference" and isinstance(entry.get("description"), str) and entry["description"].strip():
+            body = content.decode("utf-8")
+            if mentions and (mentions.search(entry["description"]) or mentions.search(body)):
+                matched.append(body)
+                continue
             details.append(json.dumps({
                 "source": entry["path"], "when_to_read": entry["description"],
                 "file": f".migration-materials/{name}",
@@ -60,7 +77,7 @@ def render_guidelines(directory: Path, manifest: dict) -> str:
     legacy_shared = "rule_files" not in manifest and "rule_chunks" not in manifest and "shared.md" in manifest.get("materials", {})
     if legacy_shared:
         required.append((directory / "shared.md").read_bytes().decode("utf-8"))
-    if not required and not details:
+    if not required and not matched and not details:
         return ""
     return (
         "# Project migration instructions\n\n"
@@ -69,9 +86,13 @@ def render_guidelines(directory: Path, manifest: dict) -> str:
         "migration hints. Do not run a separate reader or re-open these guidelines just to acknowledge them. "
         "Before completion, check your changes against all applicable requirements and exceptions.\n\n"
         "## Mandatory text (verbatim saved excerpts)\n\n" + "".join(required) +
+        ("\n\n## Details naming a configured target (verbatim saved excerpts)\n\n"
+         "Read these supplied details before editing. Apply their requirements and exceptions when their conditions hold.\n\n"
+         + "\n".join(matched) if matched else "") +
         ("\n\n## Detail and example references\n\n"
          "The following descriptions are an index, not a substitute for the original details. "
-         "When relevant to the source, targets or diagnostic, read the listed file before implementing or repairing. "
+         "Before editing, review this index against the current source, targets and any diagnostic. "
+         "Read each applicable file before implementing or repairing. "
          "Re-evaluate applicability for each new capsule, repair or resume. Existing target code is not a "
          "substitute for reading the details of the behavior you are about to change. "
          "If applicability is unclear, inspect it. Use bounded ranges for long files and follow relevant links "
