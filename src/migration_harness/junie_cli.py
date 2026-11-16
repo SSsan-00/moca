@@ -13,12 +13,17 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
 from typing import Any
 
 from .errors import format_error, safe_command
-from .execution import HEARTBEAT_SECONDS, check_cancelled, is_controlled, report_activity
+from .execution import (
+    HEARTBEAT_SECONDS, OperationCancelled, check_cancelled, is_controlled, junie_dashboard_control, report_activity,
+)
 from .files import has_symlink_component
 
 
@@ -86,16 +91,20 @@ def launch_diagnostics(
             executable = _resolve_executable(command[0])
         except (OSError, ValueError, IndexError):
             executable = "<not resolved>"
+    streams = (
+        "Junie runs over ACP. Check the dashboard for permission requests and the log file "
+        if junie_dashboard_control() else
+        "Junie inherits this terminal's stdin/stdout/stderr. Check its output and the log file "
+    )
     return (
         f"Command: {safe_command(command)}\nCWD: {cwd}\nExecutable: {executable}\n"
-        "Junie inherits this terminal's stdin/stdout/stderr. Check its output and the log file "
-        "reported at startup (normally under JUNIE_HOME/logs or ~/.junie/logs)."
+        f"{streams}reported at startup (normally under JUNIE_HOME/logs or ~/.junie/logs)."
     )
 
 
 def require_interactive_cli() -> None:
-    """実行前に対話端末とJunie CLIが利用できることを確認する。"""
-    if not sys.stdin.isatty():
+    """Junie CLIと、ダッシュボードなしの実行に必要な対話端末を確認する。"""
+    if junie_dashboard_control() is None and not sys.stdin.isatty():
         raise RuntimeError("Junie run requires an interactive terminal")
     try:
         _resolve_executable("junie")
@@ -164,7 +173,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
     return line, interpreter, environment
 
 
-def _launch_process(command: list[str]) -> subprocess.Popen:
+def _launch_process(command: list[str], **streams: Any) -> subprocess.Popen:
     check_cancelled()
     executable = None
     interpreter = None
@@ -177,8 +186,8 @@ def _launch_process(command: list[str]) -> subprocess.Popen:
         resolved = [executable, *command[1:]]
         if sys.platform == "win32" and ntpath.splitext(executable)[1].lower() in {".bat", ".cmd"}:
             line, interpreter, environment = _windows_batch_command(resolved)
-            return subprocess.Popen(line, executable=interpreter, cwd=cwd, env=environment)
-        return subprocess.Popen(resolved, cwd=cwd)
+            return subprocess.Popen(line, executable=interpreter, cwd=cwd, env=environment, **streams)
+        return subprocess.Popen(resolved, cwd=cwd, **streams)
     except (OSError, ValueError) as exc:
         raise JunieLaunchError(command, cwd, executable, exc, interpreter=interpreter) from exc
 
@@ -265,6 +274,8 @@ def _event_activity(entry: dict[str, Any]) -> str:
     agent = event.get("agentEvent") if isinstance(event, dict) else None
     if isinstance(agent, dict):
         if event.get("state") == "INPUT_REQUIRED" and isinstance(agent.get("approvalRequest"), dict):
+            if junie_dashboard_control() is not None:
+                return "Junieが操作の確認を待っています。"
             return "Junieが操作の確認を待っています。起動した端末で確認してください。"
         kind = agent.get("kind")
         if kind == "LlmResponseMetadataEvent":
@@ -515,15 +526,148 @@ def run_interactive(
             check_cancelled()
 
 
+class _AcpSession:
+    """ダッシュボード実行をACPの標準入出力につなぐ。"""
+
+    def __init__(self, process: subprocess.Popen, command: list[str], project: Path, show_request: Callable) -> None:
+        self.process = process
+        self.command = command
+        self.project = project
+        self.show_request = show_request
+        self.messages: Queue[bytes] = Queue()
+        self.session_id = None
+        self.tool_calls: dict[str, dict] = {}
+        self.pending: tuple[int | str, Future[str]] | None = None
+        self.startup_deadline = time.monotonic() + 30
+        self.reader = Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self) -> None:
+        try:
+            for line in self.process.stdout:
+                self.messages.put(line)
+        finally:
+            self.messages.put(b"")
+
+    def send(self, **message: Any) -> None:
+        self.process.stdin.write((json.dumps({"jsonrpc": "2.0", **message}) + "\n").encode("utf-8"))
+        self.process.stdin.flush()
+
+    def request(self, request_id: int, method: str, **params: Any) -> None:
+        self.send(id=request_id, method=method, params=params)
+
+    def permission(self, request_id: int | str, params: dict) -> None:
+        tool = params["toolCall"]
+        details = {**self.tool_calls.get(tool["toolCallId"], {}), **tool}
+        content = []
+        for item in details.get("content") or []:
+            block = item.get("content", {})
+            if item.get("type") == "content" and block.get("type") == "text":
+                content.append(block["text"])
+        for location in details.get("locations") or []:
+            content.append(location["path"])
+        if details.get("rawInput") is not None:
+            content.append(json.dumps(details["rawInput"], ensure_ascii=False, indent=2))
+        options = [
+            {"id": option["optionId"], "label": option["name"], "kind": option["kind"]}
+            for option in params["options"] if isinstance(option.get("optionId"), str)
+        ]
+        if not options:
+            self.send(id=request_id, error={"code": -32602, "message": "No permission options"})
+            return
+        reply = self.show_request({
+            "title": "Junie の操作を確認",
+            "detail": "\n\n".join([details.get("title") or "Junie が操作の許可を求めています。", *content]),
+            "options": options,
+        })
+        if reply is None:
+            check_cancelled()
+            self.send(id=request_id, result={"outcome": {"outcome": "cancelled"}})
+        else:
+            self.pending = request_id, reply
+
+    def advance(self) -> bool:
+        """受信済みのメッセージを処理し、プロンプトの終了時にTrueを返す。"""
+        if self.pending:
+            request_id, reply = self.pending
+            if not reply.done():
+                return False
+            check_cancelled()
+            self.send(id=request_id, result={"outcome": {"outcome": "selected", "optionId": reply.result()}})
+            self.pending = None
+        for _ in range(128):
+            check_cancelled()
+            try:
+                line = self.messages.get_nowait()
+            except Empty:
+                break
+            if not line:
+                raise JunieSessionError(self.command, self.process.poll() or 1, "JunieのACP接続が終了しました。")
+            try:
+                message = json.loads(line)
+                if not isinstance(message, dict):
+                    raise ValueError
+            except (UnicodeError, ValueError):
+                raise JunieSessionError(self.command, 1, "JunieのACP応答を読み取れませんでした。") from None
+            request_id = message.get("id")
+            method = message.get("method")
+            params = message.get("params", {})
+            if method and request_id is not None:
+                if method == "session/request_permission" and params.get("sessionId") == self.session_id:
+                    self.permission(request_id, params)
+                    if self.pending:
+                        return False
+                else:
+                    self.send(id=request_id, error={"code": -32601, "message": "Method not supported"})
+            elif method == "session/update" and params.get("sessionId") == self.session_id:
+                update = params.get("update", {})
+                if update.get("sessionUpdate") in ("tool_call", "tool_call_update") and "toolCallId" in update:
+                    self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
+            elif not method and request_id in (1, 2, 3):
+                if "error" in message:
+                    code = message["error"].get("code")
+                    detail = ("Junie CLIでログインしてから再開してください。" if code == -32000 else
+                              f"JunieのACP要求に失敗しました（要求 {request_id}、コード {code}）。")
+                    raise JunieSessionError(self.command, 1, detail)
+                result = message.get("result", {})
+                if request_id == 1 and result.get("protocolVersion") == 1:
+                    self.request(2, "session/new", cwd=str(self.project), mcpServers=[])
+                elif request_id == 2 and result.get("sessionId"):
+                    self.session_id = result["sessionId"]
+                    self.request(3, "session/prompt", sessionId=self.session_id,
+                                 prompt=[{"type": "text", "text": self.command[-1]}])
+                elif request_id == 3:
+                    return True
+                else:
+                    raise JunieSessionError(self.command, 1, "JunieのACP初期化応答が無効です。")
+        if self.session_id is None and time.monotonic() >= self.startup_deadline:
+            raise JunieSessionError(self.command, 1, "JunieのACP接続がタイムアウトしました。Junie CLIのバージョンとログを確認してください。")
+        return False
+
+    def cancel(self) -> None:
+        if self.pending:
+            self.send(id=self.pending[0], result={"outcome": {"outcome": "cancelled"}})
+        if self.session_id:
+            self.send(method="session/cancel", params={"sessionId": self.session_id})
+
+    def close(self) -> None:
+        self.process.stdin.close()
+        self.reader.join(timeout=1)
+        if not self.reader.is_alive():
+            self.process.stdout.close()
+
+
 def _run_session(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
 ) -> int:
-    """対話用の端末を引き継ぎ、成果物と完了記録がそろえばセッションを閉じる。"""
+    """成果物と完了記録がそろえばJunieのセッションを閉じる。"""
     check_cancelled()
     root = completion_path.parent
-    restore_terminal = _save_terminal_mode()
+    dashboard = junie_dashboard_control()
+    restore_terminal = _save_terminal_mode() if dashboard is None else None
     process = None
+    acp = None
 
     def poll(*, cancellable: bool = True) -> bool:
         failed = events.read_new_events(cancellable=cancellable)
@@ -534,10 +678,34 @@ def _run_session(
         return failed
 
     try:
+        if dashboard is not None:
+            project = str(root.resolve())
+            if project not in dashboard.trusted_junie_workspaces:
+                # ACPはプロジェクトの設定を信頼確認なしで読み込むため、起動前に確認する。
+                reply = dashboard.on_junie_request({
+                    "title": "Junie の作業フォルダーを確認",
+                    "detail": f"このフォルダーの設定を読み込んで Junie を実行します。\n\n{project}",
+                    "options": [
+                        {"id": "stop", "label": "停止", "kind": "reject_once"},
+                        {"id": "trust", "label": "信頼して続行", "kind": "allow_once"},
+                    ],
+                })
+                check_cancelled()
+                while not reply.done():
+                    dashboard.cancelled.wait(0.25)
+                    check_cancelled()
+                if reply.result() != "trust":
+                    raise OperationCancelled("Junieの作業フォルダーの確認を取り消しました。")
+                dashboard.trusted_junie_workspaces.add(project)
         events = _JunieSessionEvents(token)
         next_poll = time.monotonic()
-        # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
-        process = _launch_process(command)
+        if dashboard is None:
+            process = _launch_process(command)
+        else:
+            acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
+            process = _launch_process(acp_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request)
+            acp.request(1, "initialize", protocolVersion=1, clientCapabilities={})
         started = time.monotonic()
         report_activity("Junieのプロセスを起動しました。")
         next_heartbeat = started + HEARTBEAT_SECONDS
@@ -563,6 +731,20 @@ def _run_session(
                     if poll():
                         _close_junie(process)
                         raise JunieConnectionError("Junie model service connection failed")
+                if acp is not None:
+                    try:
+                        finished = acp.advance()
+                    except (JunieSessionError, KeyError, TypeError, AttributeError) as exc:
+                        if poll() and not has_completion_record(completion_path, token):
+                            raise JunieConnectionError("Junie model service connection failed") from exc
+                        if isinstance(exc, JunieSessionError):
+                            raise
+                        raise JunieSessionError(command, 1, "JunieのACP応答に必要な項目がありません。") from None
+                    if finished:
+                        _close_junie(process)
+                        if poll() and not has_completion_record(completion_path, token):
+                            raise JunieConnectionError("Junie model service connection failed")
+                        return 0
                 now = time.monotonic()
                 if now >= next_heartbeat and process.poll() is None:
                     elapsed = int(now - (events.last_event_at if events.last_event_at is not None else started))
@@ -584,6 +766,11 @@ def _run_session(
     except (KeyboardInterrupt, OSError) as exc:
         if process is not None and process.poll() is None:
             try:
+                if acp is not None and isinstance(exc, KeyboardInterrupt):
+                    try:
+                        acp.cancel()
+                    except OSError:
+                        pass
                 _close_junie(process)
             except OSError as cleanup_error:
                 raise JunieStopError(
@@ -592,10 +779,14 @@ def _run_session(
         raise
     finally:
         try:
+            if dashboard is not None:
+                dashboard.on_junie_request(None)
+            if acp is not None and process.poll() is not None:
+                acp.close()
             if process is not None and report_usage is not None:
                 poll(cancellable=False)
         finally:
-            if process is None or process.poll() is not None:
+            if restore_terminal is not None and (process is None or process.poll() is not None):
                 restore_terminal()
 
 

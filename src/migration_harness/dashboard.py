@@ -75,12 +75,17 @@ class Dashboard:
         self.actions: Queue[dict[str, Any]] = Queue(maxsize=1)
         self.closed = False
         self.control: ExecutionControl | None = None
+        self.junie_reply: Future[str] | None = None
+        self.trusted_junie_workspaces: set[str] = set()
         self.activity_sequence = 0
 
     def begin_operation(self) -> None:
         """停止要求は実行ごとのIDに結び付け、別のRunに持ち越さない。"""
         with self.condition:
-            self.control = ExecutionControl(self.activity)
+            self.control = ExecutionControl(
+                self.activity, on_junie_request=self.show_junie_request,
+                trusted_junie_workspaces=self.trusted_junie_workspaces,
+            )
             state = {key: value for key, value in self.state.items() if key != "activity"}
             self.publish({**state, "ready": False, "cancellable": True,
                           "operation_id": secrets.token_hex(16), "stop_requested": False})
@@ -92,12 +97,37 @@ class Dashboard:
             self.activity_sequence += 1
             self.publish({**self.state, "activity": {**entry, "sequence": self.activity_sequence}})
 
+    def show_junie_request(self, request: dict | None) -> Future[str] | None:
+        with self.condition:
+            state = self.state.copy()
+            state.pop("junie_request", None)
+            self.junie_reply = None
+            if request is not None and self.control and not self.control.cancelled.is_set():
+                state["junie_request"] = {**request, "id": secrets.token_hex(16)}
+                self.junie_reply = Future()
+            self.publish(state)
+            return self.junie_reply
+
+    def answer_junie(self, action: dict) -> bool:
+        with self.condition:
+            request = self.state.get("junie_request")
+            option = action.get("option_id")
+            if (self.junie_reply is None or request is None
+                    or action.get("operation_id") != self.state.get("operation_id")
+                    or action.get("request_id") != request["id"]
+                    or not any(option == choice["id"] for choice in request["options"])):
+                return False
+            self.junie_reply.set_result(option)
+            self.show_junie_request(None)
+            return True
+
     def request_stop(self, action: dict[str, Any]) -> bool:
         with self.condition:
             if (self.control is None or self.state.get("ready")
                     or action.get("operation_id") != self.state.get("operation_id")):
                 return False
             self.control.cancelled.set()
+            self.show_junie_request(None)
             self.publish({**self.state, "stop_requested": True, "cancellable": False,
                           "message": "停止しています。保存済みの編集を残して処理を終了します。"})
             return True
@@ -125,7 +155,7 @@ class Dashboard:
             if state != {key: self.state[key] for key in fields if key in self.state}:
                 operation = {key: self.state[key] for key in (
                     "operation_id", "cancellable", "stop_requested", "activity", "generating_anchors",
-                    "diff_viewer_enabled",
+                    "diff_viewer_enabled", "junie_request",
                 ) if key in self.state and (key != "activity" or state.get("run_id") == self.state.get("run_id"))}
                 self.publish({**state, **operation, "token_usage": usage})
             elif usage != self.state.get("token_usage", []):
@@ -387,7 +417,7 @@ class Dashboard:
                 try:
                     if type(action.get("revision")) is not int:
                         raise ValueError
-                    if action.get("action") not in ("stop", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run"):
+                    if action.get("action") not in ("stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run"):
                         raise ValueError
                     if action["action"] in ("prepare", "run", "open-run", "resume-run"):
                         name = action.get("run_id" if action["action"] in ("open-run", "resume-run") else "unit_id")
@@ -403,6 +433,11 @@ class Dashboard:
                     return
                 if action["action"] == "stop":
                     if dashboard.request_stop(action):
+                        self.send_body(202, "application/json", b"{}")
+                    else:
+                        self.send_error(409)
+                elif action["action"] == "junie-answer":
+                    if dashboard.answer_junie(action):
                         self.send_body(202, "application/json", b"{}")
                     else:
                         self.send_error(409)
@@ -476,7 +511,7 @@ def run_dashboard(
     config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None,
     config_error: str | None = None,
 ) -> dict[str, Any] | None:
-    """サーバーを開き、対話が必要な作業を起動元の端末で処理する。"""
+    """サーバーを開き、ブラウザーで移行の進捗と確認操作を公開する。"""
     if unit_id is not None and run_id is not None:
         raise ValueError("choose a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent
@@ -564,7 +599,7 @@ def run_dashboard(
                     raise RunInterrupted(view.state.get("run_id", "")) from None
 
         try:
-            # Junieは起動元の端末を必要とするため、HTTPスレッドは操作をキューに渡す。
+            # 実行とRunの保存はHTTPスレッドの外で行う。
             if unit_id is not None and config_error is None:
                 view.begin_operation()
                 try:

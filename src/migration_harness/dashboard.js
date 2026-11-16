@@ -124,6 +124,24 @@ element(".review-finding").replaceChildren(findings, findingLocation, diagnostic
 const connection = document.createElement("span");
 connection.setAttribute("role", "status");
 element("#activity-title").after(connection);
+const reviewTitle = element("#review-title");
+const checkerReviewBody = document.createElement("div");
+const modalHeading = dialog.querySelector(".review-heading");
+checkerReviewBody.append(...Array.from(modalHeading.parentElement.children).slice(1));
+modalHeading.after(checkerReviewBody);
+const junieReviewBody = document.createElement("div");
+const junieDetail = document.createElement("pre");
+junieDetail.className = "review-code";
+const junieChoices = document.createElement("div");
+junieChoices.className = "review-actions junie-choices";
+const junieNotice = document.createElement("p");
+junieNotice.className = "review-caveat";
+junieNotice.setAttribute("role", "status");
+junieReviewBody.append(junieDetail, junieNotice, junieChoices);
+checkerReviewBody.after(junieReviewBody);
+junieReviewBody.hidden = true;
+let junieRequestId;
+let junieSubmitting;
 
 // 判断に関する通知はメッセージがあるときだけ表示する。
 function showNotice(message) {
@@ -139,7 +157,10 @@ function syncActions() {
   const selected = snapshot.review?.findings[findings.selectedIndex];
   accept.disabled = !canAct || !canReview || !selected || selected[2] || !note.value.trim();
   resume.disabled = !canAct || !snapshot.resumable;
-  reviewButton.disabled = !canAct || !(canReview || snapshot.resumable);
+  reviewButton.disabled = snapshot.junie_request ? !connected : !canAct || !(canReview || snapshot.resumable);
+  for (const button of junieChoices.children) {
+    button.disabled = !connected || junieSubmitting === junieRequestId || !!snapshot.stop_requested;
+  }
   const stopping = snapshot.stop_requested || (stopPendingOperation !== undefined && stopPendingOperation === snapshot.operation_id);
   stopButton.hidden = !snapshot.cancellable && !stopping;
   stopButton.disabled = !connected || submitting || !snapshot.cancellable || stopping;
@@ -164,6 +185,10 @@ function renderSelectedFinding() {
 
 // 選択した指摘を見せ、別の指摘の判断理由が残らないようにする。
 function openReview(index = findings.selectedIndex) {
+  if (snapshot.junie_request) {
+    openJunieReview();
+    return;
+  }
   if (index !== findings.selectedIndex) {
     findings.selectedIndex = index;
     note.value = "";
@@ -172,7 +197,63 @@ function openReview(index = findings.selectedIndex) {
   syncActions();
   if (!dialog.open) {
     dialog.showModal();
-    element("#review-title").focus();
+    reviewTitle.focus();
+  }
+}
+
+function openJunieReview() {
+  if (!dialog.open) dialog.showModal();
+  reviewTitle.focus();
+}
+
+function renderJunieReview(request) {
+  if (request?.id === junieRequestId) return;
+  junieRequestId = request?.id;
+  checkerReviewBody.hidden = !!request;
+  junieReviewBody.hidden = !request;
+  reviewTitle.textContent = request?.title || "チェッカーの指摘を確認";
+  junieNotice.textContent = "";
+  junieChoices.replaceChildren();
+  if (!request) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  junieDetail.textContent = request.detail;
+  const labels = {
+    allow_once: "今回のみ許可", reject_once: "今回のみ拒否",
+    allow_always: "今後も許可", reject_always: "今後も拒否",
+  };
+  for (const choice of request.options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "review-action";
+    button.textContent = request.title === "Junie の操作を確認" && labels[choice.kind]
+      ? `${labels[choice.kind]}（${choice.label}）` : choice.label;
+    button.addEventListener("click", () => answerJunie(request.id, choice.id));
+    junieChoices.append(button);
+  }
+  openJunieReview();
+}
+
+async function answerJunie(requestId, optionId) {
+  if (!connected || snapshot.junie_request?.id !== requestId || junieSubmitting === requestId) return;
+  junieSubmitting = requestId;
+  junieNotice.textContent = "回答を送信しています。";
+  syncActions();
+  try {
+    const response = await fetch("control", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: "junie-answer", revision: dashboardRevision,
+        operation_id: snapshot.operation_id, request_id: requestId, option_id: optionId}),
+    });
+    if (!response.ok) throw await responseError(response);
+    if (junieRequestId === requestId) junieNotice.textContent = "回答を送信しました。";
+  } catch (error) {
+    if (junieRequestId === requestId) {
+      junieNotice.textContent = `回答を送信できませんでした。接続を確認して、もう一度お試しください。\n${error.message}`;
+    }
+    if (junieSubmitting === requestId) junieSubmitting = undefined;
+    syncActions();
   }
 }
 
@@ -340,6 +421,7 @@ function renderCheckerReview(data, showReview) {
     renderSelectedFinding();
   }
   showNotice(data.message || (data.ready ? data.error : "") || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
+  if (data.junie_request) return;
   if (showReview && data.ready && !prompted && activeHarnessTab === 0) {
     prompted = true;
     openReview();
@@ -366,6 +448,7 @@ function render() {
   renderTokens();
   document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
   const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
+  const waitingForJunie = !!data.junie_request;
   const verificationFinished = data.ready && verifiedStatuses.has(data.status);
   const stopped = data.ready && !verificationFinished
     && (data.resumable || showReview || ["checker_failed", "script_failed", "interrupted", "junie_failed", "preparation_interrupted", "preparation_failed"].includes(data.status));
@@ -379,16 +462,16 @@ function render() {
   if (verificationFinished && migrationCompletion) {
     label = done ? "移行完了" : migrationCompletion.verification_passed ? "移行台帳の確認待ち" : "ビルド・チェックの再確認が必要";
   }
-  element("#state-label").textContent = data.stop_requested ? "停止待ち" : label;
+  element("#state-label").textContent = data.stop_requested ? "停止待ち" : waitingForJunie ? "Junie の確認待ち" : label;
   element("#run-state").title = element("#state-label").textContent;
   const state = element("#run-state");
   state.classList.toggle("is-running", !data.ready);
   element("#flow").classList.toggle("is-paused", !!data.ready);
-  state.dataset.state = done ? "complete" : showReview || verificationFinished ? "waiting" : stopped ? "paused" : "running";
-  reviewButton.textContent = showReview ? "判断が必要です" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
-  if (showReview) reviewButton.setAttribute("aria-haspopup", "dialog");
+  state.dataset.state = done ? "complete" : showReview || waitingForJunie || verificationFinished ? "waiting" : stopped ? "paused" : "running";
+  reviewButton.textContent = waitingForJunie ? "Junie の確認を開く" : showReview ? "判断が必要です" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
+  if (showReview || waitingForJunie) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
-  reviewButton.hidden = !showReview && !((data.ready || data.generating_anchors) && data.resumable);
+  reviewButton.hidden = !waitingForJunie && !showReview && !((data.ready || data.generating_anchors) && data.resumable);
   const current = verificationFinished ? 6 : data.status === "checker_needs_review" && !showReview ? 5
     : data.active_stage ?? scriptStages[data.script_phase] ?? statusStages[data.status] ?? 0;
   const total = data.context_capsules ?? 0;
@@ -405,6 +488,7 @@ function render() {
       ? stopped && !showReview ? "停止中" : data.ready ? "確認待ち" : "処理中" : "待機中";
   });
   renderCapsuleProgress(data, total, completed);
+  renderJunieReview(data.junie_request);
   renderCheckerReview(data, showReview);
   syncActions();
   renderElapsed();
@@ -597,7 +681,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   const line = Number(reported?.line);
   const focus = Number.isSafeInteger(line) && line > 0 ? {path: reported.path, line} : undefined;
   const progress = withAnchors
-    ? "Junieでアンカーを生成中です。確認が表示されたら起動元の端末で操作してください。"
+    ? "Junieでアンカーを生成中です。確認が必要な場合は、進捗画面のダイアログで回答してください。"
     : "現在の参照PHPと最新の保存済み移行先を取得中";
   const popup = reserveComparisonTab(progress);
   snapshotting = true;
@@ -651,7 +735,11 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
 viewer.addEventListener("click", () => openSnapshot({fromReview: true}));
 dashboardViewer.addEventListener("click", () => openSnapshot());
 element("#migration-ledger-compare").addEventListener("click", () => openSnapshot());
-reviewButton.addEventListener("click", () => snapshot.status === "checker_needs_review" ? openReview() : send("resume"));
+reviewButton.addEventListener("click", () => {
+  if (snapshot.junie_request) openJunieReview();
+  else if (snapshot.status === "checker_needs_review") openReview();
+  else send("resume");
+});
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
 const stream = new EventSource("events");
 stream.onopen = () => {

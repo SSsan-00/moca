@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import time
+from concurrent.futures import Future
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ class OperationCancelled(KeyboardInterrupt):
 class ExecutionControl:
     on_activity: Callable[[dict], None]
     cancelled: Event = field(default_factory=Event)
+    on_junie_request: Callable[[dict | None], Future[str] | None] | None = None
+    trusted_junie_workspaces: set[str] = field(default_factory=set)
 
 
 _control: ContextVar[ExecutionControl | None] = ContextVar("execution_control", default=None)
@@ -40,6 +43,11 @@ def control_scope(control: ExecutionControl | None) -> Iterator[None]:
 
 def is_controlled() -> bool:
     return _control.get() is not None
+
+
+def junie_dashboard_control() -> ExecutionControl | None:
+    control = _control.get()
+    return control if control is not None and control.on_junie_request is not None else None
 
 
 def check_cancelled() -> None:
