@@ -744,7 +744,7 @@
             </fieldset>
             <fieldset class="settings-fields settings-materials" id="settings-draft-import-fields">
               <legend>仮C#の取り込み</legend>
-              <p>Junieが編集するファイルは「移行先」で指定します。仮C#はそのファイルの初期内容としてコピーするので、配置先には同じパスを指定してください。</p>
+              <p>仮C#を登録済みの移行先にコピーしてから、Junieが編集します。先に「移行先」を登録してください。</p>
               <p>取り込みは全移行単位に適用します。</p>
               <div id="settings-draft-imports"></div>
               <button class="button" id="settings-draft-import-add" type="button">仮C#の取り込みを追加</button>
@@ -1144,10 +1144,6 @@ const scriptPhases = {
   before_build: "ビルド前", after_build: "ビルド成功後",
   before_checker: "チェッカー実行前", after_checker: "チェッカー実行後",
 };
-const draftImportFields = [
-  ["仮C#のコピー元（絶対パス）", "C:/migration/draft/generated/Services/MenuService.cs"],
-  ["配置先（作業ツリー内の相対パス）", "src/Web/Services/MenuService.cs"],
-];
 const draftImportCommand = "@copy-migration-draft";
 const isDraftImport = ({phase, command}) => phase === "before_migration" && (
   (command.length === 3 && command[0] === draftImportCommand) ||
@@ -1192,6 +1188,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   let readingTOML = false;
   let busy = false;
   let lastRunRequest = 0;
+  const draftTargets = () => [...new Set(settingsForm?.units.flatMap(entry => entry.targets) ?? [])];
   workspaceControls = () => {
     const available = canAct() && !busy;
     for (const control of newRun.querySelectorAll("button")) control.disabled = !available || !workspaceUnit.value;
@@ -1201,6 +1198,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     workspaceConfig.readOnly = !available || !settingsVersion || (previewPending && !readingTOML);
     editToggle.disabled = !available || !settingsVersion || previewPending || (!workspaceConfig.hidden && !settingsForm);
     for (const fieldset of fields.querySelectorAll("fieldset")) fieldset.disabled = !available || readingTOML;
+    addDraftImport.disabled = !draftTargets().length;
     reload.disabled = busy;
   };
 
@@ -1259,8 +1257,13 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
 
     const scripts = settingsForm.scripts.filter(entry =>
       !added.has(entry) || entry.phase || entry.command.some(argument => argument.trim()));
-    if (scripts.some(entry => isDraftImport(entry) && entry.command.slice(-2).some(path => !path.trim()))) {
-      throw new Error("仮C#の取り込みに、コピー元と配置先のパスを指定してください。");
+    const targets = draftTargets();
+    for (const entry of scripts.filter(isDraftImport)) {
+      const [source, target] = entry.command.slice(-2);
+      if (!source.trim()) throw new Error("仮C#のコピー元を入力してください。");
+      if (!targets.includes(target)) {
+        throw new Error("仮C#の取り込み先を、登録済みの移行先から選んでください。");
+      }
     }
     if (scripts.some(entry => !entry.phase || !entry.command[0]?.trim())) {
       throw new Error("入力途中のスクリプトの実行工程と実行ファイルを指定してください。");
@@ -1310,6 +1313,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   function showScripts() {
     scriptList.replaceChildren();
     draftImportList.replaceChildren();
+    const targets = draftTargets();
     return settingsForm.scripts.map((script, index) => {
       const card = document.createElement("fieldset");
       card.className = "settings-material";
@@ -1327,24 +1331,41 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       list.append(card);
       if (draftImport) {
         card.append(title);
-        const paths = script.command.slice(-2);
-        const inputs = draftImportFields.map(([text, example], position) => {
-          const label = document.createElement("label");
-          const input = document.createElement("input");
-          input.autocomplete = "off";
-          input.spellcheck = false;
-          input.placeholder = `例：${example}`;
-          input.value = paths[position];
-          input.addEventListener("input", () => {
-            paths[position] = input.value.trim();
-            script.command = [draftImportCommand, ...paths];
+        const [sourcePath, targetPath] = script.command.slice(-2);
+        const source = document.createElement("input");
+        source.autocomplete = "off";
+        source.spellcheck = false;
+        source.placeholder = "例：C:/migration/draft/generated/Services/MenuService.cs";
+        source.value = sourcePath;
+        source.addEventListener("input", () => {
+          script.command = [draftImportCommand, source.value.trim(), script.command.at(-1)];
+          changeScripts();
+        });
+        if (targets.length === 1 && targets[0] === targetPath) {
+          const note = document.createElement("p");
+          note.className = "settings-material-range";
+          note.style.overflowWrap = "anywhere";
+          note.textContent = `移行先 ${targetPath}`;
+          card.append(note);
+        } else {
+          const target = document.createElement("select");
+          target.className = "workspace-select";
+          const missing = targetPath && !targets.includes(targetPath);
+          const prompt = missing ? `再選択してください（旧移行先 ${targetPath}）` : "移行先を選択";
+          target.append(new Option(prompt, ""), ...targets.map(path => new Option(path, path)));
+          target.value = missing ? "" : targetPath;
+          target.addEventListener("change", () => {
+            script.command = [draftImportCommand, source.value.trim(), target.value];
             changeScripts();
           });
-          label.append(text, input);
-          card.append(position === 1 ? fieldWithRemove(label, remove) : label);
-          return input;
-        });
-        return inputs[0];
+          const targetLabel = document.createElement("label");
+          targetLabel.append("移行先ファイル", target);
+          card.append(targetLabel);
+        }
+        const sourceLabel = document.createElement("label");
+        sourceLabel.append("仮C#のコピー元（絶対パス）", source);
+        card.append(fieldWithRemove(sourceLabel, remove));
+        return source;
       }
       const phase = document.createElement("select");
       phase.className = "workspace-select";
@@ -1376,8 +1397,9 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   });
 
   addDraftImport.addEventListener("click", () => {
-    const targets = settingsForm.units[Number(unit.value)]?.targets;
-    const destination = targets?.length === 1 ? targets[0] : "";
+    const currentTargets = settingsForm.units[Number(unit.value)]?.targets;
+    const targets = currentTargets?.length ? currentTargets : draftTargets();
+    const destination = targets.length === 1 ? targets[0] : "";
     settingsForm.scripts.push({phase: "before_migration", command: [draftImportCommand, "", destination]});
     showScripts().at(-1).focus();
     changeScripts();
@@ -1672,6 +1694,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     changes.units[index] ??= {};
     changes.units[index][key] = settingsForm.units[index][key] = value;
     if (key === "id") unit.selectedOptions[0].text = value || `移行単位 ${index + 1}`;
+    if (key === "targets") showScripts();
     schedulePreview();
   });
   unit.addEventListener("change", showUnit);
