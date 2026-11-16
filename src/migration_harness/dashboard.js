@@ -6,6 +6,11 @@ const dialog = element("#review-dialog");
 const note = element("#review-note");
 const accept = element("#review-accept");
 const resume = element("#review-fix");
+const checkerInstruction = element("#checker-instruction");
+const checkerOutput = element("#checker-review-output");
+const checkerOutputStatus = element("#checker-output-status");
+const checkerDownload = element("#checker-output-download");
+let checkerOutputRequest = 0;
 const viewer = element("#open-diff-viewer");
 const dashboardViewer = element(".runbar [data-compare]");
 for (const button of [viewer, dashboardViewer]) {
@@ -97,12 +102,12 @@ ledger.replaceChildren();
 element(".work-summary .metric-label").textContent = "カプセル総数";
 element(".work-summary .metric:nth-child(2) .metric-label").textContent = "移行済み";
 element(".review-eyebrow").hidden = true;
-element(".review-intro").textContent = "指摘を選び、問題なしと判断した理由を記録してください。再開するとビルドとチェッカーを再実行します。";
+element(".review-intro").textContent = "出力を確認し、必要に応じて Junie に追加指示を渡せます。問題なしと判断した指摘には理由を記録できます。";
 element(".review-note-label").textContent = "判断理由（必須）";
 note.placeholder = "例：共通関数へ委譲していることを差分で確認済み";
 note.required = true;
 note.maxLength = 2000;
-element(".review-context").hidden = true;
+element("#review-demo-context").hidden = true;
 element("#review-later").hidden = true;
 accept.textContent = "問題なしとして記録";
 resume.textContent = "同じ実行を再開";
@@ -178,7 +183,15 @@ function syncActions() {
   const canReview = snapshot.status === "checker_needs_review";
   const selected = snapshot.review?.findings[findings.selectedIndex];
   accept.disabled = !canAct || !canReview || !selected || selected[2] || !note.value.trim();
-  resume.disabled = !canAct || !snapshot.resumable;
+  const instruction = checkerInstruction.value.trim();
+  const instructionTooLong = new TextEncoder().encode(instruction).length > 4_000;
+  resume.disabled = !canAct || !snapshot.resumable || instructionTooLong;
+  resume.textContent = instruction ? "指示を送って再開" : "同じ実行を再開";
+  checkerInstruction.readOnly = !canAct || !snapshot.resumable;
+  element("#checker-open-editor").disabled = !canAct;
+  element("#checker-instruction-status").textContent = instructionTooLong
+    ? "追加指示を 4,000 バイト以下にしてください。"
+    : "指示を送ると、Junie が出力と指示を確認してから再ビルドします。";
   reviewButton.disabled = snapshot.junie_request ? !connected
     : !canAct || !(canReview || snapshot.resumable || snapshot.status === "build_failed");
   for (const button of junieChoices.children) {
@@ -382,6 +395,26 @@ function openReview(index = findings.selectedIndex) {
   if (!dialog.open) {
     dialog.showModal();
     reviewTitle.focus();
+    loadCheckerOutput();
+  }
+}
+
+async function loadCheckerOutput() {
+  const request = ++checkerOutputRequest;
+  const path = `checker-output?run_id=${encodeURIComponent(snapshot.run_id)}`;
+  checkerOutput.textContent = "";
+  checkerDownload.hidden = true;
+  checkerOutputStatus.textContent = "出力を読み込んでいます…";
+  try {
+    const data = await workspaceRequest(path);
+    if (request !== checkerOutputRequest) return;
+    checkerOutput.textContent = data.output || "チェッカーの出力はありません。";
+    checkerOutputStatus.textContent = data.truncated ? "出力の末尾 64 KiB を表示しています。" : "";
+    checkerDownload.href = `${path}&download=1`;
+    checkerDownload.hidden = !data.output;
+  } catch {
+    if (request === checkerOutputRequest) checkerOutputStatus.textContent =
+      "出力を読み込めませんでした。画面を開き直すか、実行ログを確認してください。";
   }
 }
 
@@ -632,7 +665,8 @@ function render() {
   const data = snapshot;
   renderTokens();
   document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
-  const showReview = data.status === "checker_needs_review" && (data.ready || data.generating_anchors || dialog.open);
+  const showReview = ["checker_needs_review", "checker_failed"].includes(data.status)
+    && (data.ready || data.generating_anchors || dialog.open);
   const showBuildReview = data.ready && data.status === "build_failed";
   if (!showBuildReview && buildDialog.open) buildDialog.close();
   if (data.ready && buildEditSubmitted) {
@@ -660,7 +694,7 @@ function render() {
   element("#flow").classList.toggle("is-paused", !!data.ready);
   state.dataset.state = done ? "complete" : showReview || waitingForJunie || verificationFinished ? "waiting" : stopped ? "paused" : "running";
   reviewButton.textContent = waitingForJunie ? "Junie の確認を開く" : showBuildReview ? "ビルド失敗を確認"
-    : showReview ? "判断が必要です" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
+    : showReview ? "チェッカー出力を確認" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
   if (showReview || showBuildReview || waitingForJunie) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
   reviewButton.hidden = !waitingForJunie && !showReview && !showBuildReview
@@ -821,7 +855,18 @@ pendingFilter.addEventListener("click", () => {
 });
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
-resume.addEventListener("click", () => send("resume"));
+checkerInstruction.addEventListener("input", syncActions);
+resume.addEventListener("click", async () => {
+  const text = checkerInstruction.value.trim();
+  if (await send("resume", text ? {checker_instruction: text} : {})) {
+    checkerInstruction.value = "";
+    syncActions();
+  }
+});
+element("#checker-open-editor").addEventListener("click", () => {
+  dialog.close();
+  switchHarnessTab(harnessTabs.indexOf(element("#tab-editor")), true);
+});
 stopButton.addEventListener("click", () => send("stop"));
 
 function comparisonPath(runId, snapshotId) {
@@ -933,7 +978,7 @@ element("#migration-ledger-compare").addEventListener("click", () => openSnapsho
 reviewButton.addEventListener("click", () => {
   if (snapshot.junie_request) openJunieReview();
   else if (snapshot.status === "build_failed") openBuildReview();
-  else if (snapshot.status === "checker_needs_review") openReview();
+  else if (["checker_needs_review", "checker_failed"].includes(snapshot.status)) openReview();
   else send("resume");
 });
 element("#build-review-close").addEventListener("click", () => buildDialog.close());
@@ -981,6 +1026,9 @@ stream.onmessage = event => {
     && snapshot.review?.findings.some(item => item[0] === findings.value && !item[2])
     && data.review?.findings.some(item => item[0] === findings.value && item[2]);
   if (snapshot.run_id !== data.run_id) {
+    checkerOutputRequest++;
+    checkerInstruction.value = "";
+    dialog.close();
     promptRequest++;
     progressPrompts = undefined;
     progressPrompt.input.value = "";

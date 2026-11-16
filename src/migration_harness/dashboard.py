@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import copy
+import os
 import json
 import re
 import secrets
+import shutil
 import time
 from collections import deque
 from concurrent.futures import Future
@@ -29,7 +31,9 @@ from migration_harness.timings import freeze_timings
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.workflow import (
-    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _load_saved_run, _save_build_review_edit, _target_paths, build_failure_review, can_resume_run,
+    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _load_saved_run, _review_log, _safe_target,
+    _save_build_review_edit, _target_paths, build_failure_review, can_resume_run,
+    _input_encoding, _is_php_input, _load_capsule_manifest, _pinned_php_sources, _read_pinned_php,
     migration_ledger, prepare_run, resume_with_junie,
     review_checker, run_observer, run_with_junie, worktree_source_lock,
 )
@@ -222,6 +226,9 @@ class Dashboard:
                 or (action["action"] == "resume" and not self.state.get("resumable"))
                 or (action["action"] == "build-response"
                     and (self.state.get("status") != "build_failed" or not self.state.get("resumable")))
+                or ("checker_instruction" in action and self.state.get("status") not in {
+                    "checker_needs_review", "checker_failed",
+                })
                 or (action["action"] == "accept" and self.state.get("status") != "checker_needs_review")
             ):
                 return False
@@ -301,6 +308,8 @@ class Dashboard:
                     self.send_settings()
                 elif self.path == prefix + "prompts":
                     self.send_prompts()
+                elif self.path.partition("?")[0] == prefix + "checker-output":
+                    self.send_checker_output()
                 elif self.path.partition("?")[0] == prefix + "build-review":
                     self.send_build_review()
                 elif self.path == prefix + "migration-ledger":
@@ -431,6 +440,46 @@ class Dashboard:
                     self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 except _ERRORS as exc:
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
+
+            def send_checker_output(self) -> None:
+                query = parse_qs(urlsplit(self.path).query)
+                with dashboard.condition:
+                    state = dashboard.state
+                    current_config = config.copy()
+                run_id = state.get("run_id")
+                if (not run_id or query.get("run_id") != [run_id] or not state.get("ready")
+                        or state.get("status") not in {"checker_needs_review", "checker_failed"}):
+                    self.send_body(409, "text/plain; charset=utf-8", "現在の実行から確認画面を開き直してください。".encode())
+                    return
+                try:
+                    run_path, _, record, _ = _load_saved_run(current_config, run_id)
+                    if record["status"] not in {"checker_needs_review", "checker_failed"}:
+                        raise ValueError("チェッカーの結果が変わりました。確認画面を開き直してください。")
+                    if query.get("download") != ["1"]:
+                        output, truncated = _review_log(run_path, "checker.log")
+                        body = json.dumps({"output": output, "truncated": truncated}, ensure_ascii=False).encode()
+                        self.send_body(200, "application/json; charset=utf-8", body)
+                        return
+                    path = _safe_target(run_path, Path("checker.log"))
+                    if not path.is_file():
+                        raise ValueError("チェッカーの出力ファイルが見つかりません。")
+                    stream = path.open("rb")
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8", errors="replace"))
+                    return
+                with stream:
+                    self.connection.settimeout(5)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Disposition", 'attachment; filename="checker.log"')
+                    self.send_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    try:
+                        shutil.copyfileobj(stream, self.wfile)
+                    except OSError:
+                        return
 
             def send_build_review(self) -> None:
                 query = parse_qs(urlsplit(self.path).query)
@@ -626,6 +675,9 @@ class Dashboard:
                         or not isinstance(action.get("reason"), str) or not 0 < len(action["reason"].strip()) <= 2_000
                     ):
                         raise ValueError
+                    if "checker_instruction" in action:
+                        if action["action"] != "resume" or not editor_text(action["checker_instruction"], 4_000).strip():
+                            raise ValueError
                     if action["action"] == "build-response":
                         instruction, edit = action.get("instruction", ""), action.get("edit")
                         if not isinstance(instruction, str) or len(instruction) > 4_000 or "\0" in instruction:
@@ -869,7 +921,11 @@ def run_dashboard(
                         result = execute(resume_with_junie, config, view.state["run_id"], build_response=action)
                         view.ready(config, result)
                     else:
-                        result = execute(resume_with_junie, config, view.state["run_id"])
+                        if "checker_instruction" in action:
+                            result = execute(resume_with_junie, config, view.state["run_id"],
+                                             checker_instruction=action["checker_instruction"])
+                        else:
+                            result = execute(resume_with_junie, config, view.state["run_id"])
                         view.ready(config, result)
                 except RunInterrupted as exc:
                     result = show_failure(exc)
