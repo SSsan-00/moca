@@ -172,6 +172,9 @@ def _apply_table_edits(document: Any, changes: dict[str, Any]) -> None:
             if key == "command":
                 if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
                     raise ValueError("チェッカーのコマンドと引数を確認してください。")
+            elif key == "anchor_reference":
+                if not isinstance(value, list) or any(not isinstance(path, str) or not path.strip() for path in value):
+                    raise ValueError("アンカーの参照JSONは1行に1つのファイルパスを入力してください。")
             elif not isinstance(value, str):
                 raise ValueError("設定フォームの入力内容を確認してください。")
             if key in _NUMERIC_FIELDS and value:

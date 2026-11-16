@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import format_error, safe_command
-from .execution import check_cancelled, is_controlled, report_activity
+from .execution import HEARTBEAT_SECONDS, check_cancelled, is_controlled, report_activity
 from .files import has_symlink_component
 
 
@@ -533,7 +533,8 @@ def _run_session(
         # 標準入出力を引き継ぎ、承認や追加入力はJunieの画面で受け付ける。
         process = _launch_process(command)
         started = time.monotonic()
-        next_heartbeat = started + 10
+        report_activity("Junieのプロセスを起動しました。")
+        next_heartbeat = started + HEARTBEAT_SECONDS
         if report_usage is not None:
             report_usage([0] * len(USAGE_FIELDS))
         while True:
@@ -552,7 +553,7 @@ def _run_session(
                 ):
                     return _close_junie(process)
                 if time.monotonic() >= next_poll:
-                    next_poll = time.monotonic() + 1
+                    next_poll = time.monotonic() + 0.5
                     if poll():
                         _close_junie(process)
                         raise JunieConnectionError("Junie model service connection failed")
@@ -564,7 +565,7 @@ def _run_session(
                         else f"起動から{elapsed}秒、セッションのイベントはまだ確認できていません"
                     )
                     report_activity(f"Junieのプロセスは起動中です（{detail}）。", kind="heartbeat")
-                    next_heartbeat = now + 10
+                    next_heartbeat = now + HEARTBEAT_SECONDS
             else:
                 check_cancelled()
                 if poll() and not has_completion_record(completion_path, token):

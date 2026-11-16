@@ -413,15 +413,15 @@ class JunieControlTests(unittest.TestCase):
         clock = [0.0]
         process = Mock(returncode=None)
         process.poll.side_effect = lambda: process.returncode
-        ticks = iter([5, 10, 12, 20, 30, 31])
+        ticks = iter([2, 3, 4, 6, 9, 10])
 
         def wait(timeout):
             clock[0] = next(ticks)
-            if clock[0] == 12:
+            if clock[0] == 4:
                 path = self.root / "sessions" / "ours" / "events.jsonl"
                 path.parent.mkdir(parents=True)
                 path.write_bytes(line(prompt()) + line(task()) + line(response()))
-            if clock[0] == 31:
+            if clock[0] == 10:
                 process.returncode = 0
                 return 0
             raise subprocess.TimeoutExpired("junie", timeout)
@@ -434,9 +434,9 @@ class JunieControlTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         heartbeats = [entry["message"] for entry in self.messages if entry["kind"] == "heartbeat"]
         self.assertEqual(heartbeats, [
-            "Junieのプロセスは起動中です（起動から10秒、セッションのイベントはまだ確認できていません）。",
-            "Junieのプロセスは起動中です（最後のイベントから8秒）。",
-            "Junieのプロセスは起動中です（最後のイベントから18秒）。",
+            "Junieのプロセスは起動中です（起動から3秒、セッションのイベントはまだ確認できていません）。",
+            "Junieのプロセスは起動中です（最後のイベントから2秒）。",
+            "Junieのプロセスは起動中です（最後のイベントから5秒）。",
         ])
         self.assertNotIn("PRIVATE", json.dumps(self.messages))
         self.restored.assert_called_once_with()

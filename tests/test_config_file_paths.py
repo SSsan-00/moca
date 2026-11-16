@@ -115,12 +115,18 @@ class ConfigFilePathTests(HarnessCase):
         self.assertEqual(workflow.migration_ledger(config, prepared["run_id"])["capsules"][0]["sources"][0]["review"]["state"], "excluded")
 
     def test_configured_reference_is_passed_to_junie_and_errors_are_not_ignored(self):
+        second_reference = self.root / "another.json"
+        second_reference.write_text(self.reference.read_text(encoding="utf-8").replace("example", "other").replace("Example", "Other"), encoding="utf-8")
+        self.raw["diff_viewer"]["anchor_reference"] = [self.reference.name, str(second_reference)]
         config = self.load()
         prepared = workflow.prepare_run(config, "orders")
 
         def junie(command, completion, token, targets, **kwargs):
             guide = json.loads((completion.parent / "guide.json").read_bytes())
-            self.assertEqual(guide["examples"], [{"left": "function example() {}", "right": "void Example() {}"}])
+            self.assertEqual(guide["examples"], [
+                {"left": "function example() {}", "right": "void Example() {}"},
+                {"left": "function other() {}", "right": "void Other() {}"},
+            ])
             targets[0].write_text('[{"leftLineNo":2,"rightLineNo":1}]', encoding="utf-8")
             completion.write_text(token, encoding="ascii")
             return 0
@@ -129,22 +135,24 @@ class ConfigFilePathTests(HarnessCase):
             output, count = review_anchors.generate_anchors(config, prepared["run_id"])
         self.assertEqual(count, 1)
         self.assertEqual(json.loads(output.read_bytes())["workspace"]["anchors"]["manualAnchors"], [{"leftLineNo": 1, "rightLineNo": 0}])
-        self.reference.write_text("invalid", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, self.reference.name):
+        second_reference.write_text("invalid", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, second_reference.name):
             review_anchors._automatic_examples(config, prepared["run_id"])
-        config["diff_viewer_anchor_reference"] = None
+        config["diff_viewer_anchor_reference"] = []
         with patch.object(review_anchors, "_reviewed_examples", return_value=[{"left": "saved", "right": "saved"}]) as automatic:
             self.assertEqual(review_anchors._automatic_examples(config, prepared["run_id"]), automatic.return_value)
 
     def test_reference_form_round_trip_and_clear(self):
         content = tomlkit.dumps(self.raw)
-        changed = build_settings_draft(content, {"diff_viewer": {"anchor_reference": str(self.reference)}})
-        self.assertEqual(changed["form"]["diff_viewer"]["anchor_reference"], str(self.reference))
+        self.assertEqual(self.load()["diff_viewer_anchor_reference"], [self.reference])
+        paths = [str(self.reference), "another.json"]
+        changed = build_settings_draft(content, {"diff_viewer": {"anchor_reference": paths}})
+        self.assertEqual(changed["form"]["diff_viewer"]["anchor_reference"], paths)
         self.raw = tomlkit.parse(changed["content"]).unwrap()
-        self.assertEqual(self.load()["diff_viewer_anchor_reference"], self.reference)
-        cleared = build_settings_draft(changed["content"], {"diff_viewer": {"anchor_reference": ""}})
+        self.assertEqual(self.load()["diff_viewer_anchor_reference"], [self.reference, self.root / "another.json"])
+        cleared = build_settings_draft(changed["content"], {"diff_viewer": {"anchor_reference": []}})
         self.raw = tomlkit.parse(cleared["content"]).unwrap()
-        self.assertIsNone(self.load()["diff_viewer_anchor_reference"])
+        self.assertEqual(self.load()["diff_viewer_anchor_reference"], [])
 
     def test_relative_draft_copy_source_and_absolute_destination(self):
         draft = self.root / "Draft.cs"

@@ -710,8 +710,8 @@
                 <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off" aria-describedby="settings-viewer-html-help">
                 <p class="settings-material-range" id="settings-viewer-html-help">アプリルートからの相対パス、または外部ファイルの絶対パス。空欄なら比較とアンカー生成は無効です。</p>
                 <label for="settings-anchor-reference">アンカーの参照JSON（任意）</label>
-                <input id="settings-anchor-reference" data-section="diff_viewer" data-setting="anchor_reference" placeholder="例：references/previous.workspace.json" autocomplete="off" aria-describedby="settings-anchor-reference-help">
-                <p class="settings-material-range" id="settings-anchor-reference-help">Junieが対応行の手本にするDiff ViewerのワークスペースJSONを優先して使います。絶対パス、または設定ファイルの場所からの相対パス。空欄なら同じRunの確認済み対応例を自動参照します。指定ファイルがない・不正な場合はエラーになります。</p>
+                <textarea id="settings-anchor-reference" class="settings-command" data-section="diff_viewer" data-setting="anchor_reference" placeholder="references/orders.workspace.json&#10;references/products.workspace.json" spellcheck="false" aria-describedby="settings-anchor-reference-help"></textarea>
+                <p class="settings-material-range" id="settings-anchor-reference-help">Diff Viewerから保存したワークスペースJSONのパスを、1行に1つ入力してください。絶対パス、または設定ファイルからの相対パスが使えます。空欄なら同じRunの確認済みの対応例を使います。</p>
               </fieldset>
               <fieldset class="settings-fields" id="settings-verification-fields">
                 <legend>ビルド・独自チェッカー</legend>
@@ -1694,7 +1694,9 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   });
   for (const field of tableFields) field.addEventListener("input", () => {
     const {section, setting} = field.dataset;
-    const value = setting === "command" ? (field.value.trim() ? commandLines(field.value) : []) : field.value.trim();
+    let value = field.value.trim();
+    if (setting === "command") value = value ? commandLines(field.value) : [];
+    if (setting === "anchor_reference") value = field.value.split("\n").map(path => path.trim()).filter(Boolean);
     changes[section] ??= {};
     changes[section][setting] = settingsForm[section][setting] = value;
     schedulePreview();

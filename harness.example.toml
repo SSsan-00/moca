@@ -53,10 +53,10 @@ max_context_chars = 500000
 # html = "tools/dist/index.min.html"
 # HTMLのパスを保存したまま無効にする場合に指定する。
 # enabled = false
-# Junieの対応行の手本にするDiff ViewerワークスペースJSON。指定時はこちらを優先する。
+# Junieの対応行の手本にするDiff ViewerワークスペースJSON。複数指定した場合はすべて使う。
 # 絶対パス、または設定ファイルの場所からの相対パス。空欄・省略時は同じRunの確認済み対応例を自動参照。
 # 指定ファイルがない・JSONが不正な場合はエラーになり、自動参照へは切り替えない。
-# anchor_reference = "references/previous.workspace.json"
+# anchor_reference = ["references/orders.workspace.json", "references/products.workspace.json"]
 
 [[units]]
 id = "メニュー"

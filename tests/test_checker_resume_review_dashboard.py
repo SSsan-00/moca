@@ -177,7 +177,7 @@ class SavedRunFixture(unittest.TestCase):
             "max_repair_attempts": 0,
             "junie_max_steps": None,
             "diff_viewer_html": "viewer.html",
-            "diff_viewer_anchor_reference": root / "reference.json",
+            "diff_viewer_anchor_reference": [root / "reference.json"],
         }
         capsule = self.run_path / "capsule"
         capsule.mkdir(parents=True)

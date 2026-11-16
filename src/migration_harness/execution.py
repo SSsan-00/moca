@@ -13,6 +13,9 @@ from threading import Event
 from typing import Callable, Iterator
 
 
+HEARTBEAT_SECONDS = 3
+
+
 class OperationCancelled(KeyboardInterrupt):
     """端末のCtrl+Cと同じ保存・再開処理を通る、画面からの停止要求。"""
 
@@ -85,9 +88,10 @@ def run_process(command: list[str], *, label: str, cancellable: bool = True, **k
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    next_report = time.monotonic() + 10
     with subprocess.Popen(command, **kwargs) as process:
         try:
+            report_activity(f"{label}のプロセスを起動しました。")
+            next_report = time.monotonic() + HEARTBEAT_SECONDS
             while True:
                 if cancellable:
                     check_cancelled()
@@ -97,7 +101,7 @@ def run_process(command: list[str], *, label: str, cancellable: bool = True, **k
                 except subprocess.TimeoutExpired:
                     if time.monotonic() >= next_report:
                         report_activity(f"{label}のプロセスは起動中です。終了を待っています。", kind="heartbeat")
-                        next_report = time.monotonic() + 10
+                        next_report = time.monotonic() + HEARTBEAT_SECONDS
         except BaseException:
             _terminate_process_tree(process)
             raise
