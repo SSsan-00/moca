@@ -8,13 +8,28 @@
 
 旧形式の `[[units.inputs]]` に `role = "migration_rules"` があれば、それも全移行単位に共通適用される。見落とすと詳細に変更した同じ資料が必須として残る。旧形式の登録位置も記録し、同じファイルの読み込み方を整合させる。PHPや参考実装など別roleは変更しない。
 
-PACKを作り、ハーネスをインストールしたPythonで、**設定編集前に**次を実行する。パスは対象に合わせる。実効設定に基づく分類、元バイトのSHA-256、文字コード、文字数が保存される。前回の記録があれば別名のPACKを使い、既存の記録は上書きしない。
+既存設定の確認はハーネスにインストール済みのPythonで次の順に行う。過去の記録がある場合は新しいPACKを使う。**全ページの確認が通るまで分類・分割の計画や設定案を作らない。使用中のTOMLはヘルパーの `apply` だけで更新する。**
 
 ```text
-python tools/rule_usage.py harness.local.toml --output rule-workspace/LegacyApp/loading-before.json
+python tools/rule_review.py start rule-workspace/LegacyApp harness.local.toml
+python tools/rule_review.py read rule-workspace/LegacyApp 1
 ```
 
-原文を、設定された文字コードで全範囲読む。長いファイルは範囲を分け、出力の省略を読了扱いにしない。この記録は内容の分類判断の代わりにはならない。読めないファイルを無視して一括更新しない。
+`start` は設定のバックアップ、原文のハッシュ付き棚卸し、全ページの一覧を保存する。**一覧順に `read PACK 番号` を1回ずつ実行し、終端表示まで確認する。** ツール出力が省略された場合はその場で読み直す。ヘッダーやキーワード検索だけで判断しない。各ページを読んだ直後に、PACKの `reading-review.json` に以下の形式で1件ずつ追記する。
+
+```json
+{
+  "1": {"end": "ページ内で最後の空白でない原文行（行番号を除く）", "note": "この範囲の条件・義務・例外の要点", "required_lines": [12]}
+}
+```
+
+`required_lines` には、そのページで確認した全体向けの義務や適用範囲が曖昧な規約の原文行番号を入れる。該当行がなければ空配列。ページをまたぐ条件や例外は続きも読んでから判断し、必要なら前の記録を補う。読み取りと記録は内容の確認を伴う。記録をファイルから自動生成しない。
+
+```text
+python tools/rule_review.py check rule-workspace/LegacyApp
+```
+
+未取得ページ、末尾の引用や要点がないページ、確認開始後に変わった設定・原文がある場合は先へ進まない。機械検証はページと記録の対応を確認する。意味の判断は本文のレビューで行う。
 
 ## 2. 原文の内容で分類する
 
@@ -42,13 +57,14 @@ python tools/rule_usage.py harness.local.toml --output rule-workspace/LegacyApp/
 
 ## 4. 反映し、設定と本文を照合する
 
-スキル本文4の意味レビュー・バックアップ・対象だけのTOML編集・`load_config`検証を行う。分類だけなら原文のSHA-256が変更前と同じこと、分割した場合は `rule_pack.py verify` で全行の対応を確認する。スクリプト、チェッカー、参考実装、上限値などを高速化の名目で変更しない。
-
-編集後に同じツールで実効設定を確認する。設定ファイルを読むだけで、フックや移行は実行しない。
+意味レビューと原文・出力の照合はスキル本文に従う。案内だけの場合も、分類案は全ページ確認後に示す。反映を依頼された場合は、`config.before.toml` を元にPACK内へ `config.proposed.toml` を作り、対象のルール登録だけを編集する。相対パスは元の設定ファイルの場所を基準にしたままにする。既存のコメントも維持する。分割した場合は先に `rule_pack.py verify` を実行して全行の対応を確認する。矛盾や未解決事項があれば反映を保留する。
 
 ```text
+python tools/rule_review.py apply rule-workspace/LegacyApp rule-workspace/LegacyApp/config.proposed.toml
 python tools/rule_usage.py harness.local.toml --output rule-workspace/LegacyApp/loading-after.json
 ```
+
+`apply` は全ページの確認を再検証し、確認記録にある必須行が必須登録に原文のまま残ること、対象外の設定が同じこと、設定案が読み込めることを確認してから反映する。分割時は、置換する原文と分割元の一致、生成ファイルの検証、必須・詳細の登録も照合する。失敗した場合は原因を解消するまで使用中のTOMLを直接編集しない。
 
 必須事項がrequiredに残り、詳細のreferenceと説明が揃い、旧形式の同じ資料がrequiredとして残っていないか確認する。分割した原文の旧登録が、新しいAgentや詳細と重複して残っていないことも対応表と照合する。編集は生TOMLの対象箇所に行い、正規化済み設定でファイル全体を置き換えない。
 

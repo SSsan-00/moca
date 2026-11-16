@@ -15,7 +15,8 @@ harness, app = root / "harness", root / "app"
 (app / "docs").mkdir(parents=True)
 shutil.copytree(repository / ".junie/skills/harness-optimize-rules", harness / ".junie/skills/harness-optimize-rules")
 shutil.copyfile(repository / "tools/rule_pack.py", harness / "tools/rule_pack.py")
-shutil.copyfile(repository / "tools/rule_usage.py", harness / "tools/rule_usage.py")
+for name in ("rule_usage.py", "rule_review.py"):
+    shutil.copyfile(repository / "tools" / name, harness / "tools" / name)
 mixed = """# 散らばったメモ
 [G01] 全移行で原文の値・順序・重複を維持する。推測で数値を補わない。
 
@@ -45,7 +46,7 @@ for name, text in [("mixed.md", mixed), ("views.txt", views), ("untouched.md", "
     (app / "docs" / name).write_text(text, encoding="utf-8")
 pack = harness / "rule-workspace/LegacyApp"
 (pack / "sources").mkdir(parents=True)
-if "--loading" not in sys.argv:
+if "--loading" not in sys.argv and "--tail-required" not in sys.argv:
     for name in ("mixed.md", "views.txt"):
         shutil.copyfile(app / "docs" / name, pack / "sources" / name)
 (app / "legacy").write_text("<?php echo 1;", encoding="utf-8")
@@ -74,7 +75,7 @@ id = "example"
 source = "legacy"
 target = "Result.cs"
 '''.replace("COMMAND", json.dumps([sys.executable, "must-not-run.py"]))
-if "--loading" in sys.argv:
+if "--loading" in sys.argv or "--tail-required" in sys.argv:
     documents = {
         "Agent.md": "# 共通の必須事項\n[G10] 全移行で原文の値・順序・重複を保持する。\n[G11] 全移行でエラー本文を切り捨てず記録する。\n",
         "db-details.md": "# DBアクセスの詳細\nDBアクセスの移行・修正にのみ適用する。\n[D10] 更新失敗時はrollbackする。ただし参照専用ではトランザクションを開始しない。\n"
@@ -82,6 +83,11 @@ if "--loading" in sys.argv:
         "view-details.md": "# Razorの表示処理\n[V10] 動的文字列は標準エンコードに任せる。\n[V11] 信頼済みの固定HTMLだけHtml.Rawを使用できる。\n",
         "unclear.md": "# 確認事項\n[U10] 状態の引き継ぎを確認すること。\n",
     }
+    if "--tail-required" in sys.argv:
+        documents["view-details.md"] += "\n" + "".join(
+            f"Razor display example {i:02d}: render the original value as encoded text.\n"
+            for i in range(1, 60)
+        ) + '\n## Project-wide obligations\n[T90] Every migration and repair must preserve error correlation IDs verbatim.\n'
     for name, content in documents.items():
         (app / "docs" / name).write_text(content, encoding="utf-8")
     old_rules = config[config.index("[[project.migration_rules]]"):config.index("[scripts]")]
