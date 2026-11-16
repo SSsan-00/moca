@@ -42,7 +42,8 @@ from migration_harness.workflow import (
 PROGRESS_FIELDS = (
     "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule",
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
-    "build_exit_code", "build_log_path", "checker_exit_code", "checker_log_path", "error",
+    "build_exit_code", "build_log_path",
+    "checker_exit_code", "checker_log_path", "checker_review_reason", "error",
     "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)

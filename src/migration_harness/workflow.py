@@ -1361,7 +1361,7 @@ def _build_worktree(
     command = ["dotnet", "build"]
 
     record.update(status="building", build_exit_code=None, build_log_path=str(log_path))
-    for key in ("error", "checker_exit_code", "checker_log_path", "review_file_hashes"):
+    for key in ("error", "checker_exit_code", "checker_log_path", "review_file_hashes", "checker_review_reason"):
         record.pop(key, None)
     _write_run_record(record_path, record)
     print(f"Building in {worktree} (log: {log_path})", flush=True)
@@ -1403,6 +1403,22 @@ def _build_worktree(
     }
 
 
+class CheckerRepairBlocked(ValueError):
+    """画面で案内する理由と、診断用の原文を保持する。"""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def _checker_repair_reason(error: BaseException) -> str:
+    if isinstance(error, CheckerRepairBlocked):
+        return error.reason
+    if isinstance(error, (junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieConnectionError)):
+        return "junie_unavailable"
+    return "repair_error"
+
+
 def _run_checker(
     command: list[str], result: dict[str, Any], record: dict[str, Any],
 ) -> tuple[dict[str, Any], list[CheckerFinding], bool]:
@@ -1414,6 +1430,7 @@ def _run_checker(
     use_raw_output = False
     record.update(status="checking", checker_exit_code=None, checker_log_path=str(log_path), review_file_hashes={})
     record.pop("error", None)
+    record.pop("checker_review_reason", None)
     _write_run_record(record_path, record)
     print(f"Running checker in {result['worktree_path']} (log: {log_path})", flush=True)
     try:
@@ -1440,13 +1457,14 @@ def _run_checker(
                 if unrecognized:
                     record["error"] = "checker output includes unrecognized text. Inspect checker.log before resuming."
             except (OSError, RuntimeError, ValueError) as exc:
-                record["error"] = format_error(exc)
+                record.update(checker_review_reason="output_error", error=format_error(exc))
         elif completed.returncode < 0:
-            record["error"] = "checker did not complete normally"
+            record.update(checker_review_reason="checker_incomplete", error="checker did not complete normally")
     except OSError as exc:
-        record.update(status="checker_failed", error=format_error(exc, command=command, cwd=result["worktree_path"]))
+        record.update(status="checker_failed", checker_review_reason="checker_incomplete",
+                      error=format_error(exc, command=command, cwd=result["worktree_path"]))
     except KeyboardInterrupt:
-        record.update(status="checker_failed", error="checker interrupted by user")
+        record.update(status="checker_failed", checker_review_reason="checker_interrupted", error="checker interrupted by user")
         _write_run_record(record_path, record)
         raise RunInterrupted(record["run_id"]) from None
 
@@ -1666,14 +1684,14 @@ def _repair_target(
             pass
         raise
     if _unlisted_workspace_files(agent_root, allowed) != other_files:
-        raise ValueError("Junie changed files outside the repair targets; inspect the agent workspace")
+        raise CheckerRepairBlocked("unexpected_changes", "Junie changed files outside the repair targets; inspect the agent workspace")
     agent_targets = tuple(_safe_target(agent_root, path) for path in repair_targets)
     if not junie_cli.has_completion_record(completion_path, token) or not all(path.is_file() for path in agent_targets):
-        raise ValueError("Junie did not record a completed repair; inspect its workspace for partial edits")
+        raise CheckerRepairBlocked("repair_incomplete", "Junie did not record a completed repair; inspect its workspace for partial edits")
     if not instruction and all(
         sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)
     ):
-        raise ValueError("Junie left the repair targets unchanged")
+        raise CheckerRepairBlocked("unchanged", "Junie left the repair targets unchanged")
     attempt["details"]["junie_exit_code"] = exit_code
     _charge_repair(record)
     _apply_agent_targets(agent_root, worktree, repair_targets, before, record, run_path / "run.json")
@@ -2107,10 +2125,7 @@ def _run_verification(
         elif scripts:
             record["verification"]["scripts_passed"] = True
             _write_run_record(record_path, record, timing_stage=5)
-        if (
-            checked["status"] != "checker_needs_review" or (checked["error"] and not use_raw_output)
-            or (not limit and not record.get("checker_reviews"))
-        ):
+        if checked["status"] != "checker_needs_review" or (checked["error"] and not use_raw_output):
             return checked
         try:
             accepted = _accepted_findings(record, findings, record.get("review_file_hashes", {}))
@@ -2121,37 +2136,39 @@ def _run_verification(
                 save_verification()
                 return {**checked, "status": record["status"]}
             if not limit:
+                record["checker_review_reason"] = "repair_disabled"
+                _write_run_record(record_path, record, timing_stage=5)
                 return checked
             log = _safe_target(run_path, Path("checker.log"))
             if log.stat().st_size > 65_536:
-                raise ValueError("checker output is too large for automatic repair")
+                raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
             reported_paths = {Path(finding.path) for finding in remaining}
             if not reported_paths.issubset(targets):
-                raise ValueError("checker reported a finding outside the configured migration targets")
+                raise CheckerRepairBlocked("outside_targets", "checker reported a finding outside the configured migration targets")
             fingerprints = {finding.finding_id for finding in remaining}
             legacy_fingerprints = {finding.repair_fingerprint for finding in remaining}
             if use_raw_output:
                 with log.open("rb") as stream:
                     raw = stream.read(65_537)
                 if len(raw) > 65_536:
-                    raise ValueError("checker output is too large for automatic repair")
+                    raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
                 try:
                     diagnostic = raw.decode("utf-8-sig")
                 except UnicodeDecodeError:
-                    raise ValueError("unrecognized checker output encoding; inspect checker.log") from None
+                    raise CheckerRepairBlocked("output_encoding", "unrecognized checker output encoding; inspect checker.log") from None
                 if not diagnostic.strip() or "\0" in diagnostic:
-                    raise ValueError("unrecognized checker output has no readable diagnostic; inspect checker.log")
+                    raise CheckerRepairBlocked("output_unreadable", "unrecognized checker output has no readable diagnostic; inspect checker.log")
                 fingerprints.add(hashlib.sha256(" ".join(diagnostic.split()).encode("utf-8")).hexdigest())
                 repair_targets = targets
             else:
                 if sum(len(finding.diagnostic) + 1 for finding in remaining) > 8_000:
-                    raise ValueError("checker findings contain too much text for automatic repair")
+                    raise CheckerRepairBlocked("output_too_large", "checker findings contain too much text for automatic repair")
                 diagnostic = "\n".join(finding.diagnostic for finding in remaining)
                 repair_targets = tuple(path for path in targets if path in reported_paths)
             if any((fingerprints | legacy_fingerprints).intersection(attempt["findings"]) for attempt in history):
-                raise ValueError("a previous checker finding is still present")
+                raise CheckerRepairBlocked("finding_repeated", "a previous checker finding is still present")
             if sum("instruction" not in attempt for attempt in history) >= limit:
-                raise ValueError(f"automatic repair limit reached ({limit})")
+                raise CheckerRepairBlocked("repair_limit", f"automatic repair limit reached ({limit})")
             junie_cli.require_interactive_cli()
             attempt = len(history) + 1
             checker_log = _safe_target(run_path, Path(f"checker-before-repair-{attempt}.log"))
@@ -2162,11 +2179,13 @@ def _run_verification(
                 details["raw_checker_output"] = True
             _attempt_repair(config, targets, repair_targets, worktree, run_path, diagnostic, record, details)
         except (OSError, RuntimeError, ValueError) as exc:
-            record.update(status="checker_needs_review", error=format_error(exc))
+            record.update(status="checker_needs_review", checker_review_reason=_checker_repair_reason(exc),
+                          error=format_error(exc))
             _write_run_record(record_path, record)
             return {**checked, "error": record["error"]}
         except KeyboardInterrupt:
-            record.update(status="checker_needs_review", error="repair interrupted; inspect Junie's workspace")
+            record.update(status="checker_needs_review", checker_review_reason="repair_interrupted",
+                          error="repair interrupted; inspect Junie's workspace")
             _write_run_record(record_path, record)
             raise RunInterrupted(record["run_id"]) from None
 
@@ -2673,11 +2692,11 @@ def resume_with_junie(
             try:
                 _attempt_repair(config, targets, targets, worktree_path, run_path, diagnostic, record, details)
             except (OSError, RuntimeError, ValueError) as exc:
-                record.update(status=status, error=format_error(exc))
+                record.update(status=status, checker_review_reason=_checker_repair_reason(exc), error=format_error(exc))
                 _write_run_record(record_path, record)
                 raise
             except KeyboardInterrupt:
-                record.update(status=status, error="Junie による修正を停止しました。")
+                record.update(status=status, checker_review_reason="repair_interrupted", error="Junie による修正を停止しました。")
                 _write_run_record(record_path, record)
                 raise RunInterrupted(run_id) from None
         if script_retry:

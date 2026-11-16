@@ -449,6 +449,18 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         repair.assert_called_once()
         self.assertEqual(result["status"], "checker_needs_review")
         self.assertIn("previous checker finding", result["error"])
+        self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
+
+    def test_checker_repair_limit_records_the_review_reason(self):
+        self.config["max_repair_attempts"] = 1
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(
+                self.build, ("fixture-checker", 1, b"first diagnostic\n"),
+                self.build, ("fixture-checker", 1, b"second diagnostic\n"),
+            )
+        repair.assert_called_once()
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertEqual(self.record()["checker_review_reason"], "repair_limit")
 
     def test_unreadable_checker_output_requires_review(self):
         self.config["max_repair_attempts"] = 2
@@ -597,10 +609,14 @@ class SavedDashboardTests(SavedRunFixture):
     def test_checker_dashboard_displays_raw_output_and_resumes_with_instruction(self):
         raw = b'{"expected": 42, "actual": 0}\n'
         self.checker_log.write_bytes(raw)
+        self.save_record({**self.record(), "checker_review_reason": "finding_repeated",
+                          "error": "a previous checker finding is still present"})
         instruction = "Keep the shared conversion and correct the returned value."
 
         def send_instruction(url):
-            revision, _ = self.get_ready_event(url)
+            revision, state = self.get_ready_event(url)
+            self.assertEqual(state["checker_review_reason"], "finding_repeated")
+            self.assertIn("previous checker finding", state["error"])
             route = url + "checker-output?run_id=" + self.run_id
             with self.assertRaises(HTTPError) as stale:
                 urlopen(url + "checker-output?run_id=wrong", timeout=3)
@@ -619,6 +635,7 @@ class SavedDashboardTests(SavedRunFixture):
         with mock, patch.object(workflow, "_repair_target") as repair:
             result = self.open_dashboard(send_instruction, resume=True)
         self.assertEqual(result["status"], "checker_succeeded")
+        self.assertNotIn("checker_review_reason", self.record())
         self.assertEqual(len(calls), 2)
         self.assertEqual(repair.call_args.args[5], raw.decode())
         self.assertEqual(self.record()["repair_history"][0]["instruction"], instruction)
