@@ -113,7 +113,7 @@ def require_interactive_cli() -> None:
 
 
 def build_command(project: Path, prompt: str, max_steps: int | None, *, guidelines: Path | None = None) -> list[str]:
-    command = ["junie", "--project", str(project)]
+    command = ["junie", "--project", str(project), "--brave"]
     if guidelines is not None:
         # 本文をコマンド引数に展開せず、既存のJunie指示に追加する（Windowsの長さ制限も回避）。
         command.extend(["--ide-guidelines", str(guidelines)])

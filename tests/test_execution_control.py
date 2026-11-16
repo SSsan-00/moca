@@ -78,6 +78,54 @@ class ExecutionIntegrationTests(HarnessCase):
         self.commit_project()
         self.settings = self.config()
 
+    def test_migration_and_verification_keep_counting_through_transitions(self):
+        config = {**self.settings, "checker_command": ["checker"]}
+        clock = 100
+        updates = []
+        run_command = workflow.run_process
+
+        def observe(record):
+            updates.append((record["status"], record.get("active_stage")))
+
+        def migrate(_command, completion, token, targets, **_kwargs):
+            nonlocal clock
+            targets[0].write_text("class Page {}", encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+            clock += 13
+            return 0
+
+        def fingerprint(*_args):
+            nonlocal clock
+            clock += 5
+            return "same-input"
+
+        def execute(command, **_kwargs):
+            nonlocal clock
+            if command[0] == "git":
+                return run_command(command, **_kwargs)
+            clock += 7 if command[0] == "dotnet" else 11
+            return subprocess.CompletedProcess(command, 0)
+
+        observer = workflow.run_observer.set(observe)
+        self.addCleanup(workflow.run_observer.reset, observer)
+        with (
+            patch.object(workflow, "update_timings",
+                         side_effect=lambda record, **kwargs: update_timings(record, now=clock, **kwargs)),
+            patch.object(workflow.junie_cli, "require_interactive_cli"),
+            patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate),
+            patch.object(workflow, "_verification_fingerprint", side_effect=fingerprint),
+            patch.object(workflow, "run_process", side_effect=execute),
+        ):
+            result = workflow.run_with_junie(config, "sample")
+
+        record = json.loads((Path(result["run_path"]) / "run.json").read_bytes())
+        self.assertEqual(record["status"], "checker_succeeded")
+        self.assertIn(("junie_finished", 3), updates)
+        self.assertIn(("junie_finished", 4), updates)
+        self.assertIn(("build_succeeded", 5), updates)
+        self.assertEqual(updates[-1], ("checker_succeeded", None))
+        self.assertEqual([record["stage_timings"][str(i)]["elapsed_seconds"] for i in (3, 4, 5)], [13, 12, 16])
+
     def test_stop_during_capsule_preparation_does_not_create_worktree(self):
         control = ExecutionControl(lambda _event: control.cancelled.set())
         with control_scope(control), self.assertRaises(workflow.RunInterrupted):

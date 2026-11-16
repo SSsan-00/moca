@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from . import junie_cli
 from .config import REFERENCE_ROLES
@@ -636,9 +636,11 @@ def _notify_run_observer(record: dict[str, Any]) -> None:
         observer(record)
 
 
-def _write_run_record(path: Path, record: dict[str, Any]) -> None:
+def _write_run_record(
+    path: Path, record: dict[str, Any], *, timing_stage: int | None | Literal["status"] = "status",
+) -> None:
     """工程の進捗を保存し、独立して更新された使用量と台帳を引き継ぐ。"""
-    update_timings(record)
+    update_timings(record, stage=timing_stage)
     with _lock_run_record(path):
         if path.is_file():
             saved = json.loads(path.read_text(encoding="utf-8"))
@@ -659,7 +661,7 @@ def _edit_run_record(path: Path) -> Iterator[tuple[dict[str, Any], dict[str, Any
         if not changes:
             return
         record.update(changes)
-        update_timings(record)
+        update_timings(record, stage=record.get("active_stage"))
         _replace_run_record(path, record)
     _notify_run_observer(record)
 
@@ -696,6 +698,7 @@ def _run_script_phase(
     log_path = run_path / f"{phase}.log"
     record_path = run_path / "run.json"
     previous_status = record["status"] if record is not None else "preparing"
+    previous_stage = record.get("active_stage") if record is not None else None
     command_ids = []
     start = 0
     if record is not None and once:
@@ -744,7 +747,7 @@ def _run_script_phase(
             record.get("script_command_progress", {}).pop(phase, None)
         record["status"] = previous_status
         record.pop("script_phase", None)
-        _write_run_record(record_path, record)
+        _write_run_record(record_path, record, timing_stage=previous_stage)
 
 
 def _safe_target(root: Path, relative: Path) -> Path:
@@ -1110,7 +1113,7 @@ def _run_prepared_with_junie(
         record["current_capsule"] = min(index + 1, result["capsule_count"])
         record["status"] = "junie_finished" if index == result["capsule_count"] else "junie_running"
         record.pop("error", None)
-        _write_run_record(record_path, record)
+        _write_run_record(record_path, record, timing_stage=3)
 
     if exit_code is None:
         raise RuntimeError("context preparation produced no capsules")
@@ -1128,7 +1131,9 @@ def _run_prepared_with_junie(
     return result
 
 
-def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+def _build_worktree(
+    config: dict[str, Any], result: dict[str, Any], record: dict[str, Any], *, continue_timing: bool = False,
+) -> dict[str, Any]:
     """対象worktreeをビルドし、以前のチェッカー結果を更新対象から外す。"""
     worktree = Path(result["worktree_path"])
     run_path = Path(result["run_path"])
@@ -1166,7 +1171,7 @@ def _build_worktree(config: dict[str, Any], result: dict[str, Any], record: dict
         raise RunInterrupted(record["run_id"]) from None
 
     record["status"] = "build_failed" if "error" in record else "build_succeeded"
-    _write_run_record(record_path, record)
+    _write_run_record(record_path, record, timing_stage=4 if continue_timing else None)
     return {
         **result,
         "junie_exit_code": record.get("junie_exit_code"),
@@ -1225,7 +1230,7 @@ def _run_checker(
         _write_run_record(record_path, record)
         raise RunInterrupted(record["run_id"]) from None
 
-    _write_run_record(record_path, record)
+    _write_run_record(record_path, record, timing_stage=5)
     return {
         **result,
         "status": record["status"],
@@ -1640,6 +1645,17 @@ def _repair_build_failure(
 def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
 ) -> dict[str, Any]:
+    record_path = Path(result["run_path"]) / "run.json"
+    try:
+        return _run_verification(config, unit, result, record)
+    finally:
+        if record.get("active_stage") is not None:
+            _write_run_record(record_path, record, timing_stage=None)
+
+
+def _run_verification(
+    config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
+) -> dict[str, Any]:
     """毎回ビルドを先に実行し、指摘の状態に応じて修正かレビューに進む。"""
     run_path = Path(result["run_path"])
     worktree = Path(result["worktree_path"])
@@ -1659,9 +1675,10 @@ def _verify_worktree(
         record["verification"]["scripts_passed"] = True
         if fingerprint is not None and fingerprint == current_fingerprint():
             record["verification"]["input_fingerprint"] = fingerprint
-        _write_run_record(record_path, record)
+        _write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
     while True:
+        _write_run_record(record_path, record, timing_stage=4)
         fingerprint = current_fingerprint()
         _run_script_phase(config, "before_build", worktree, run_path, record)
         if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():
@@ -1676,7 +1693,7 @@ def _verify_worktree(
         }
         if config.get("checker_from_cli"):
             record["verification"]["toml_checker_command"] = config.get("toml_checker_command")
-        verified = _build_worktree(config, result, record)
+        verified = _build_worktree(config, result, record, continue_timing=True)
         if record["status"] == "build_failed":
             try:
                 if _repair_build_failure(config, targets, worktree, run_path, record):
@@ -1695,6 +1712,7 @@ def _verify_worktree(
             record.pop("repair_pending", None)
             save_verification()
             return verified
+        _write_run_record(record_path, record, timing_stage=5)
         _run_script_phase(config, "before_checker", worktree, run_path, record)
         if fingerprint is not None and (scripts.get("after_build") or scripts.get("before_checker")):
             if fingerprint != current_fingerprint():
@@ -1707,7 +1725,7 @@ def _verify_worktree(
             save_verification()
         elif scripts:
             record["verification"]["scripts_passed"] = True
-            _write_run_record(record_path, record)
+            _write_run_record(record_path, record, timing_stage=5)
         if (
             checked["status"] != "checker_needs_review" or checked["error"]
             or (not limit and not record.get("checker_reviews"))

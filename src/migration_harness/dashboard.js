@@ -370,10 +370,10 @@ function renderCapsuleProgress(data, total, completed) {
   const chars = data.context_part_chars?.[capsuleIndex] ?? 0;
   const limit = data.max_context_chars ?? 0;
   const percent = limit ? Math.round(chars * 100 / limit) : 0;
-  element("#capsule-call").textContent = total ? `カプセル ${capsuleIndex + 1}/${total}` : "入力を準備中";
+  element("#capsule-call").textContent = total ? `カプセル ${capsuleIndex + 1} / ${total}` : "未準備";
   element(".capsule-top > span").textContent = limit ? `上限 ${limit.toLocaleString("ja-JP")}文字` : "上限 —";
-  element("#char-count").textContent = chars.toLocaleString("ja-JP");
-  element("#capsule-percent").textContent = `上限の${percent}%`;
+  element("#char-count").textContent = total ? chars.toLocaleString("ja-JP") : "—";
+  element("#capsule-percent").textContent = total ? `上限の${percent}%` : "—";
   element("#capsule-meter").setAttribute("aria-valuemax", String(limit || 1));
   element("#capsule-meter").setAttribute("aria-valuenow", String(chars));
   element("#meter-fill").style.width = `${percent}%`;
@@ -433,8 +433,9 @@ function renderCheckerReview(data, showReview) {
 
 function renderTokens() {
   const data = snapshot;
+  const usingJunie = !data.ready && (["junie_running", "repairing"].includes(data.status) || data.generating_anchors);
+  renderRunTokenSummary(data.token_usage, usingJunie);
   if (element("#tab-tokens").getAttribute("aria-selected") === "true") {
-    const usingJunie = !data.ready && (["junie_running", "repairing"].includes(data.status) || data.generating_anchors);
     tokenRuns.setActive(data.run_id ? {
       run_id: data.run_id, unit_id: data.unit_id, created_at: data.created_at,
       token_usage: data.token_usage, running: Boolean(usingJunie),

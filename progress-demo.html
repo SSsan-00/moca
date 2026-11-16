@@ -317,7 +317,14 @@
     .event-text { color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .event-text strong { color: var(--ink); font-weight: 680; }
     .capsule { padding: 14px 18px 17px; }
-    .capsule-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .run-token-summary { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .run-token-summary h2 { margin: 0; font-size: 13px; }
+    .run-token-summary h2 span, .run-token-summary p { color: var(--muted); font-size: 11px; font-weight: 400; }
+    .run-token-summary p { margin: 5px 0 0; }
+    .run-token-counts:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 6px 0 0; }
+    .run-token-counts dt { color: var(--muted); font-size: 11px; }
+    .run-token-counts dd { margin: 1px 0 0; font: 650 clamp(14px, 2vw, 19px) var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .capsule-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 10px; }
     .capsule-title { display: grid; gap: 2px; }
     .capsule-title h2 { margin: 0; font-size: 13px; }
     .capsule-title span { color: var(--muted); font-size: 10px; }
@@ -466,7 +473,7 @@
       .run-meta { flex-basis: 100%; }
       .runbar .controls { flex-wrap: wrap; min-width: 0; }
       .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
-      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) auto; }
       .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
       .side .panel:nth-child(2) { grid-column: 1; grid-row: 2; }
       .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
@@ -498,7 +505,7 @@
       .metric { padding: 9px 8px; }
       .metric-value { font-size: 15px; }
       .layout { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
-      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+      .side { gap: 8px; }
       .side .panel:first-child { grid-column: 1 / -1; grid-row: 1; }
       .side .panel:nth-child(2) { grid-column: 1; grid-row: 2; overflow-y: auto; }
       .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
@@ -605,10 +612,20 @@
         </div>
       </section>
 
-      <section class="panel" aria-labelledby="capsule-title">
+      <section class="panel" aria-labelledby="run-token-title capsule-title">
         <div class="capsule">
-          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">今回のJunie入力</h2><span id="capsule-call">呼び出し 1/3 · OrderHistoryPage</span></div><span>上限 500,000文字</span></div>
-          <div class="meter" id="capsule-meter" role="progressbar" aria-label="今回のJunie入力の文字数" aria-valuemin="0" aria-valuemax="500000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
+          <div class="run-token-summary">
+            <h2 id="run-token-title">Junieの累計トークン <span>（このRun）</span></h2>
+            <div aria-live="polite" aria-atomic="true">
+              <dl class="run-token-counts" id="run-token-counts" hidden>
+                <div><dt>入力</dt><dd id="run-token-input">—</dd></div>
+                <div><dt>出力</dt><dd id="run-token-output">—</dd></div>
+              </dl>
+              <p id="run-token-status">初回の使用量を待っています。</p>
+            </div>
+          </div>
+          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">カプセル本文の文字数</h2><span id="capsule-call">カプセル 1 / 3 · OrderHistoryPage</span></div><span>上限 500,000文字</span></div>
+          <div class="meter" id="capsule-meter" role="meter" aria-labelledby="capsule-title" aria-valuemin="0" aria-valuemax="500000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
           <div class="meter-label"><span><strong id="char-count">67,240</strong> 文字</span><span id="capsule-percent">上限の13%</span></div>
         </div>
       </section>
@@ -1016,12 +1033,35 @@ function bindTokenRuns(renderRun) {
   };
 }
 
+function summarizeTokenUsage(rows) {
+  return rows.reduce((totals, row) => {
+    if (row.responses > 0) {
+      totals.input += row.input;
+      totals.output += row.output;
+      totals.reported = true;
+    }
+    return totals;
+  }, {input: 0, output: 0, reported: false});
+}
+
+function renderRunTokenSummary(rows = [], waiting = false) {
+  const {input, output, reported} = summarizeTokenUsage(rows);
+  document.querySelector("#run-token-counts").hidden = !reported;
+  const status = document.querySelector("#run-token-status");
+  status.hidden = reported;
+  const message = waiting ? "初回の使用量を待っています。" : "使用量の記録がありません。";
+  if (status.textContent !== message) status.textContent = message;
+  for (const [selector, count] of [["#run-token-input", input], ["#run-token-output", output]]) {
+    const node = document.querySelector(selector);
+    const text = reported ? count.toLocaleString("ja-JP") : "—";
+    if (node.textContent !== text) node.textContent = text;
+  }
+}
+
 function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
   const tokenNumber = new Intl.NumberFormat("ja-JP");
-  const inputTokens = rows.reduce((sum, call) => sum + call.input, 0);
-  const outputTokens = rows.reduce((sum, call) => sum + call.output, 0);
+  const {input: inputTokens, output: outputTokens, reported: hasUsage} = summarizeTokenUsage(rows);
   const maxCallTokens = rows.reduce((max, call) => Math.max(max, call.input + call.output), 1);
-  const hasUsage = rows.some(call => call.responses > 0);
   const cacheRead = rows.reduce((sum, call) => sum + call.cache_read, 0);
   const cacheWrite = rows.reduce((sum, call) => sum + call.cache_write, 0);
   const inputBreakdown = (input, read, write) => [
@@ -2044,6 +2084,9 @@ function showMigrationLedger(ledger, snapshot, compare) {
     label: `${index + 1}. ${call.unit}`, input: call.inputTokens, output: call.outputTokens, responses: 1,
     cache_read: call.cacheRead, cache_write: call.cacheWrite,
   }));
+  const repairUsage = {label: "チェッカーの自動修正", input: 8570, output: 760, responses: 1, cache_read: 4300, cache_write: 0};
+  let reportedCapsules = 0;
+  let reportedRepair = false;
   const sampleUnits = ["注文履歴", "商品検索", "在庫照会", "会員情報", "請求明細", "売上集計", "配送状況"];
   const olderSamples = Array.from({length: 21}, (_, index) => {
     const day = 11 - Math.floor(index / 3);
@@ -2065,14 +2108,25 @@ function showMigrationLedger(ledger, snapshot, compare) {
       }),
     };
   });
-  bindTokenRuns(run => renderTokenUsage(run?.token_usage || [], run ? `${run.unit_id} · ${run.run_id}` : "")).setRuns([
-    {run_id: demoRunID, unit_id: "注文履歴ページの移行", created_at: "2026-11-14T10:42:00+09:00", token_usage: sampleUsage},
+  const demoTokenRuns = bindTokenRuns(run => renderTokenUsage(run?.token_usage || [], run ? `${run.unit_id} · ${run.run_id}` : "",
+    run?.running ? "初回の使用量を待っています。" : "使用量の記録がありません。", run?.running));
+  demoTokenRuns.setRuns([
     {run_id: "run-2026-11-13-002", unit_id: "商品検索ページの移行", created_at: "2026-11-13T14:16:00+09:00",
       token_usage: [{label: "カプセル 1", input: 78120, output: 6150, cache_read: 63400, cache_write: 2150, responses: 1}]},
     {run_id: "run-2026-11-12-001", unit_id: "注文履歴ページの移行", created_at: "2026-11-12T09:05:00+09:00",
       token_usage: [{label: "カプセル 1", input: 15380, output: 2210, cache_read: 8800, cache_write: 420, responses: 1}]},
     ...olderSamples,
   ]);
+  function renderDemoTokenUsage() {
+    const rows = sampleUsage.slice(0, reportedCapsules);
+    if (reportedRepair) rows.push(repairUsage);
+    const running = playing && current === 3;
+    renderRunTokenSummary(rows, running);
+    demoTokenRuns.setActive({
+      run_id: demoRunID, unit_id: "注文履歴ページの移行", created_at: "2026-11-14T10:42:00+09:00",
+      token_usage: rows, running,
+    });
+  }
   let demoSettings = `[project]
 root = "C:/apps/orders"
 worktree_root = "C:/migration/worktrees"
@@ -2638,12 +2692,12 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     const call = capsuleCalls[index];
     const percent = Math.round(call.chars / Number(capsuleMeter.getAttribute("aria-valuemax")) * 100);
     capsuleCallIndex = index;
-    capsuleCall.textContent = `呼び出し ${index + 1}/${capsuleCalls.length} · ${call.unit}`;
-    capsuleCharCount.textContent = call.chars.toLocaleString("en-US");
+    capsuleCall.textContent = `カプセル ${index + 1} / ${capsuleCalls.length} · ${call.unit}`;
+    capsuleCharCount.textContent = call.chars.toLocaleString("ja-JP");
     capsulePercent.textContent = `上限の${percent}%`;
     capsuleFill.style.width = `${percent}%`;
     capsuleMeter.setAttribute("aria-valuenow", String(call.chars));
-    addEvent(call.time, "Junie入力を確定", `${call.unit} · ${call.chars.toLocaleString("en-US")}文字`);
+    addEvent(call.time, "カプセル本文を確定", `${call.unit} · ${call.chars.toLocaleString("ja-JP")}文字`);
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
@@ -2651,22 +2705,34 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   function startCapsuleCalls() {
     if (capsuleTimer) return;
     if (capsuleCallIndex < 0) updateCapsuleCall(0);
+    renderDemoTokenUsage();
     capsuleTimer = setInterval(() => {
+      if (correctionRequested) {
+        reportedRepair = true;
+        return stopCapsuleCalls();
+      }
+      if (reportedCapsules === capsuleCallIndex) {
+        reportedCapsules++;
+        return renderDemoTokenUsage();
+      }
       if (capsuleCallIndex + 1 >= capsuleCalls.length) return stopCapsuleCalls();
       updateCapsuleCall(capsuleCallIndex + 1);
-    }, 2600);
+    }, 1300);
   }
 
   // 現在のカプセル表示を残したまま、進行タイマーを止める。
   function stopCapsuleCalls() {
     clearInterval(capsuleTimer);
     capsuleTimer = undefined;
+    renderDemoTokenUsage();
   }
 
   // 次の再生で最初のカプセルを表示できる状態に戻す。
   function resetCapsuleCalls() {
-    stopCapsuleCalls();
     capsuleCallIndex = -1;
+    reportedCapsules = 0;
+    reportedRepair = false;
+    stopCapsuleCalls();
     capsuleCall.textContent = "未開始";
     capsuleCharCount.textContent = "—";
     capsulePercent.textContent = "—";

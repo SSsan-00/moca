@@ -75,7 +75,8 @@ class JunieLaunchTests(unittest.TestCase):
         project = 'C:\\space & ()\\%NAME% !NAME! 日本語\\'
         guidelines = project + '必須事項 & details.md'
         executable = r"C:\Junie Tools & (%)!^\Junie.BAT"
-        command = [executable, "--project", project, "--ide-guidelines", guidelines, "--max-steps", "2", "--prompt", prompt]
+        command = junie_cli.build_command(Path(project), prompt, 2, guidelines=Path(guidelines))
+        command[0] = executable
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows", "JUNIE_PROMPT": "old", "JUNIE_PROJECT": "old"}):
             before = dict(os.environ)
             line, interpreter, environment = junie_cli._windows_batch_command(command)
@@ -84,9 +85,11 @@ class JunieLaunchTests(unittest.TestCase):
         self.assertIn(' /d /v:off /s /c ""%PHP_TO_CSHARP_JUNIE_LAUNCHER%"', line)
         self.assertTrue(line.endswith('""'))
         self.assertEqual(environment["JUNIE_PROMPT"], prompt)
-        self.assertEqual(environment["JUNIE_PROJECT"], project)
-        self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], guidelines)
+        self.assertEqual(environment["JUNIE_PROJECT"], str(Path(project)))
+        self.assertEqual(environment["JUNIE_IDE_GUIDELINES"], str(Path(guidelines)))
         self.assertEqual(environment["PHP_TO_CSHARP_JUNIE_LAUNCHER"], executable)
+        self.assertEqual(environment["PHP_TO_CSHARP_JUNIE_ARG_1"], "--brave")
+        self.assertIn('"%PHP_TO_CSHARP_JUNIE_ARG_1%"', line)
         self.assertNotIn(prompt, line)
         self.assertNotIn(project, line)
         self.assertNotIn(guidelines, line)
