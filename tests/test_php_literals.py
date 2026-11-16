@@ -10,6 +10,16 @@ from migration_harness import php_literals
 
 
 class PhpLiteralTests(unittest.TestCase):
+    def test_csharp_primitives_do_not_leak_php_or_python_literal_spelling(self):
+        for value, expected in ((True, "true"), (False, "false"), (None, "null"),
+                                (-(2**63), "-9223372036854775808"), (2**63-1, "9223372036854775807"),
+                                ('quote\'"\\\n\u0085\u2028😀', '"quote\'\\"\\\\\\n\\u0085\\u2028\\ud83d\\ude00"')):
+            with self.subTest(value=value):
+                self.assertEqual(php_literals.csharp_literal(value), expected)
+        for value in (1.5, float("nan"), {}, [], b"bytes", 2**63, -(2**63)-1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                php_literals.csharp_literal(value)
+
     cases = [
         ('"edge-15001-\\"<&>/\\\\日本"', 'edge-15001-"<&>/\\日本'),
         (r"'don\'t \\ \n \" $value'", "don't \\ \\n \\\" $value"),

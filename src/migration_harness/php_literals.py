@@ -7,12 +7,23 @@ The file is also copied into the agent workspace, so use only the standard libra
 """
 
 from collections.abc import Iterable
+import json
 from pathlib import Path
 import re
 
 
 # An escaped quote belongs to the token; a lazy quote-to-quote regex loses data.
 STRING_LITERAL = r"""(?:'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*")"""
+
+
+def csharp_literal(value: str | int | bool | None) -> str:
+    """Encode a decoded primitive, never PHP/Python spelling or a C# expression."""
+    if type(value) not in (str, int, bool, type(None)):
+        raise ValueError("expected a string, signed 64-bit integer, boolean or null; inspect other types")
+    if type(value) is int and not -(2**63) <= value < 2**63:
+        raise ValueError("integer is outside the signed 64-bit range")
+    # ASCII escapes also keep Unicode line separators inside C# string literals.
+    return json.dumps(value, ensure_ascii=True)
 
 
 def decode_literal(literal: str) -> str:
