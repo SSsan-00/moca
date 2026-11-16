@@ -10,6 +10,9 @@ const checkerInstruction = element("#checker-instruction");
 const checkerOutput = element("#checker-review-output");
 const checkerOutputStatus = element("#checker-output-status");
 const checkerDownload = element("#checker-output-download");
+const checkerDetails = element("#checker-review-details");
+const findingSection = element(".review-finding");
+const reviewNoteLabel = element('label[for="review-note"]');
 let checkerOutputRequest = 0;
 const viewer = element("#open-diff-viewer");
 const dashboardViewer = element(".runbar [data-compare]");
@@ -101,9 +104,7 @@ activity.replaceChildren();
 ledger.replaceChildren();
 element(".work-summary .metric-label").textContent = "カプセル総数";
 element(".work-summary .metric:nth-child(2) .metric-label").textContent = "移行済み";
-element(".review-eyebrow").hidden = true;
-element(".review-intro").textContent = "出力を確認し、必要に応じて Junie に追加指示を渡せます。問題なしと判断した指摘には理由を記録できます。";
-element(".review-note-label").textContent = "判断理由（必須）";
+reviewNoteLabel.textContent = "判断理由（必須）";
 note.placeholder = "例：共通関数へ委譲していることを差分で確認済み";
 note.required = true;
 note.maxLength = 2000;
@@ -127,7 +128,8 @@ locationCard.append(locationTitle, locationPath, locationLine);
 findingLocation.append(locationCard);
 const reviewFiles = document.createElement("p");
 reviewFiles.className = "review-caveat";
-element(".review-finding").replaceChildren(findings, findingLocation, diagnostic, reviewFiles);
+findingSection.replaceChildren(findings, findingLocation, diagnostic);
+checkerDetails.append(reviewFiles);
 const connection = document.createElement("span");
 connection.setAttribute("role", "status");
 element("#activity-title").after(connection);
@@ -598,6 +600,77 @@ function renderCapsuleProgress(data, total, completed) {
   element("#checked-count").textContent = `${completed} / ${total}`;
 }
 
+const checkerReviewStatuses = new Set(["checker_needs_review", "checker_failed"]);
+const checkerReviewGuidance = {
+  finding_repeated: ["修正後も同じチェッカーの指摘が残っているため、自動修正を止めました。"],
+  repair_limit: ["この実行の自動修正回数が上限に達しました。"],
+  repair_disabled: ["この実行では自動修正が無効に設定されています。"],
+  outside_targets: ["チェッカーが、設定された移行対象以外のファイルを指摘しました。",
+    "チェッカー出力で対象ファイルを確認し、必要に応じて対象ファイルや設定を見直してください。"],
+  output_too_large: ["チェッカー出力が、自動修正で扱える量を超えました。",
+    "チェッカー出力をダウンロードし、修正が必要な箇所を絞って「Junie への追加指示」に入力してください。"],
+  output_encoding: ["チェッカー出力を UTF-8 のテキストとして読み取れませんでした。",
+    "元の出力をダウンロードして確認し、チェッカーの出力文字コードを UTF-8 に設定してください。"],
+  output_unreadable: ["チェッカーの出力から、修正に使える内容を読み取れませんでした。",
+    "チェッカー出力と詳細ログを確認し、チェッカーの実行や出力の設定を見直してください。"],
+  output_error: ["チェッカー出力や指摘先のファイルを確認できませんでした。",
+    "詳細ログで読み込めなかったファイルを確認し、出力やファイルの状態を確認してください。"],
+  unchanged: ["Junie が移行対象のファイルを変更しなかったため、自動修正を止めました。"],
+  repair_incomplete: ["Junie の修正完了を確認できなかったため、自動修正を止めました。"],
+  unexpected_changes: ["Junie が修正対象外のファイルを変更したため、修正の反映を止めました。",
+    "詳細ログを確認し、修正対象と変更内容を指定して「指示を送って再開」を選んでください。"],
+  repair_interrupted: ["Junie の修正が途中で停止しました。"],
+  junie_unavailable: ["Junie を起動できなかったか、実行中に接続やセッションが終了しました。",
+    "詳細ログで Junie の起動や接続の状態を確認し、復旧後に「同じ実行を再開」を選んでください。"],
+  checker_incomplete: ["チェッカーが正常に完了しなかったため、自動修正に進めませんでした。",
+    "元のチェッカー出力と詳細ログで実行環境や設定を確認し、原因を直してから再開してください。"],
+  checker_interrupted: ["チェッカーが途中で停止したため、自動修正に進めませんでした。",
+    "出力や停止時の状況を確認し、検査を続ける場合は「同じ実行を再開」を選んでください。"],
+  repair_error: ["自動修正の途中でエラーが発生しました。"],
+  review_required: ["チェッカーの指摘が残っているため、確認が必要です。"],
+};
+const checkerLegacyReasons = [
+  [/a previous checker finding is still present/, "finding_repeated"],
+  [/automatic repair limit reached/, "repair_limit"],
+  [/outside the configured migration targets/, "outside_targets"],
+  [/too (?:large|much text) for automatic repair/, "output_too_large"],
+  [/unrecognized checker output encoding/, "output_encoding"],
+  [/no readable diagnostic|no supported findings/, "output_unreadable"],
+  [/Junie left the repair targets unchanged/, "unchanged"],
+  [/Junie did not record a completed repair/, "repair_incomplete"],
+  [/Junie changed files outside the repair targets/, "unexpected_changes"],
+  [/repair interrupted|Junie による修正を停止/, "repair_interrupted"],
+  [/Junie(?:Launch|Session|Connection)Error:/, "junie_unavailable"],
+  [/checker interrupted by user/, "checker_interrupted"],
+  [/checker did not complete normally/, "checker_incomplete"],
+];
+
+function checkerReviewCopy(data) {
+  const legacy = checkerLegacyReasons.find(([pattern]) => pattern.test(data.error || ""))?.[1];
+  const fallback = data.status === "checker_failed" ? "checker_incomplete" : "review_required";
+  const [reason, next] = checkerReviewGuidance[data.checker_review_reason || legacy] || checkerReviewGuidance[fallback];
+  const action = !data.resumable ? "チェッカーの設定と詳細ログを確認してください。"
+    : next || "チェッカー出力を確認し、修正方針を「Junie への追加指示」に入力して「指示を送って再開」を選ぶか、「エディタで手修正」を選んでください。";
+  return {reason, action};
+}
+
+function renderCheckerStatus(data) {
+  if (!data.ready) return;
+  const {reason, action} = checkerReviewCopy(data);
+  element("#checker-review-reason").textContent = reason;
+  element("#checker-review-next").textContent = action;
+  const diagnostics = [...new Set([data.error, data.review_error, data.error_details].filter(Boolean))];
+  if (Number.isInteger(data.checker_exit_code)) diagnostics.unshift(`チェッカーの終了コード ${data.checker_exit_code}`);
+  element("#checker-review-technical").textContent = diagnostics.join("\n\n") || "詳細ログはありません。";
+}
+
+function progressFeedback(data) {
+  if (data.ready && checkerReviewStatuses.has(data.status)) {
+    return data.message?.split("\n", 1)[0] || checkerReviewCopy(data).reason;
+  }
+  return data.message || (data.ready ? data.error || data.review_error : "") || "";
+}
+
 function renderCheckerReview(data, showReview) {
   const items = data.review?.findings || [];
   const reviewKey = JSON.stringify([data.run_id, data.review, data.review_error, data.checker_log_path]);
@@ -629,7 +702,8 @@ function renderCheckerReview(data, showReview) {
     emptyFinding.textContent = showReview && !items.length ? "ログで確認が必要です。" : "表示する指摘はありません。";
     ledger.append(emptyFinding);
     applyFindingFilter();
-    findings.hidden = !items.length;
+    findingSection.hidden = !items.length;
+    reviewNoteLabel.hidden = note.hidden = accept.hidden = !items.length;
     reviewFiles.textContent = data.checker_log_path ? `チェッカーログ：${data.checker_log_path}` : "";
     const selected = [...findings.options].findIndex(option => option.value === previousId);
     const nextPending = items.findIndex(item => !item[2]);
@@ -637,7 +711,8 @@ function renderCheckerReview(data, showReview) {
     else if (selected !== -1) findings.selectedIndex = selected;
     renderSelectedFinding();
   }
-  showNotice(data.message || (data.ready ? data.error : "") || data.review_error || (data.review?.unrecognized ? "一覧に表示できない出力があります。実行ログを確認してください。" : ""));
+  if (showReview) renderCheckerStatus(data);
+  showNotice(showReview ? data.message?.split("\n", 1)[0] : data.message);
   if (data.junie_request) return;
   if (showReview && data.ready && !prompted && activeHarnessTab === 0 && !progressPrompt.dialog.open) {
     prompted = true;
@@ -665,7 +740,7 @@ function render() {
   const data = snapshot;
   renderTokens();
   document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
-  const showReview = ["checker_needs_review", "checker_failed"].includes(data.status)
+  const showReview = checkerReviewStatuses.has(data.status)
     && (data.ready || data.generating_anchors || dialog.open);
   const showBuildReview = data.ready && data.status === "build_failed";
   if (!showBuildReview && buildDialog.open) buildDialog.close();
@@ -681,7 +756,7 @@ function render() {
   element(".demo-badge").textContent = savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
   element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : data.status === "idle" ? "移行ハーネス" : "移行を準備中";
   element(".run-detail").textContent = data.run_id ? `Run ID ${data.run_id} · ${data.target || ""}` : "";
-  element("#workspace-progress-feedback").textContent = data.message || (data.ready ? data.error || data.review_error : "") || "";
+  element("#workspace-progress-feedback").textContent = progressFeedback(data);
   element(".run-detail").title = data.worktree_path || "";
   let label = describe(data);
   if (verificationFinished && migrationCompletion) {
@@ -757,7 +832,7 @@ function setElapsed(time, seconds, missing = "未計測", label = time) {
 function addEvent(data) {
   if (savedView && !data.ready && !activity.childElementCount) return;
   const title = describe(data);
-  const detail = [data.message || (data.ready ? data.error || data.review_error : "")];
+  const detail = [progressFeedback(data)];
   if (data.ready) {
     const logs = [];
     for (const [label, code, log] of [
@@ -978,7 +1053,7 @@ element("#migration-ledger-compare").addEventListener("click", () => openSnapsho
 reviewButton.addEventListener("click", () => {
   if (snapshot.junie_request) openJunieReview();
   else if (snapshot.status === "build_failed") openBuildReview();
-  else if (["checker_needs_review", "checker_failed"].includes(snapshot.status)) openReview();
+  else if (checkerReviewStatuses.has(snapshot.status)) openReview();
   else send("resume");
 });
 element("#build-review-close").addEventListener("click", () => buildDialog.close());
@@ -1027,6 +1102,7 @@ stream.onmessage = event => {
     && data.review?.findings.some(item => item[0] === findings.value && item[2]);
   if (snapshot.run_id !== data.run_id) {
     checkerOutputRequest++;
+    checkerDetails.open = false;
     checkerInstruction.value = "";
     dialog.close();
     promptRequest++;

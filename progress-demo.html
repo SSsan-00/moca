@@ -431,10 +431,13 @@
     #build-review-dialog { width: min(760px, calc(100vw - 20px)); max-height: none; overflow: hidden; }
     #build-review-form { display: flex; flex-direction: column; max-height: min(90dvh, 800px); }
     .build-review-body { min-height: 0; overflow: auto; padding: clamp(16px, 3vw, 22px); }
-    #checker-review-output, #build-review-dialog .review-code { max-height: 13rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .checker-review-summary { margin: 12px 0 16px; padding: 12px 14px; border: 1px solid var(--amber-line); border-radius: 11px; background: var(--amber-soft); }
+    .checker-review-summary p { margin: 0; color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
+    .checker-review-summary p + p { margin-top: 7px; }
+    #checker-review-output, #checker-review-technical, #build-review-dialog .review-code { max-height: 13rem; white-space: pre-wrap; overflow-wrap: anywhere; }
     #checker-output-section p:empty, #checker-output-section p:has(a[hidden]) { display: none; }
-    #checker-output-section .review-code, #build-review-dialog .review-context .review-code { margin: 0 9px 9px; }
-    #build-review-dialog summary:focus-visible, #build-review-dialog select:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
+    #checker-output-section .review-code, #checker-review-details .review-code, #build-review-dialog .review-context .review-code { margin: 0 9px 9px; }
+    .review-context summary:focus-visible, #build-review-dialog select:focus-visible { outline: 3px solid #7da5df; outline-offset: 1px; }
     #build-review-dialog .build-editor { padding: 0 12px 12px; }
     #build-review-dialog .build-editor p { padding: 0; }
     #build-review-dialog select { width: 100%; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
@@ -959,12 +962,14 @@
     <div class="review-dialog-inner">
       <header class="review-heading">
         <div>
-          <p class="review-eyebrow">HUMAN REVIEW / CHECKER WARNING</p>
           <h2 id="review-title" tabindex="-1">チェッカーの指摘を確認</h2>
         </div>
         <button class="review-close" id="review-close" type="button" aria-label="閉じる">×</button>
       </header>
-      <p class="review-intro">指摘内容と移行先を確認し、対応を選んでください。判断するまで、この移行項目の処理は一時停止します。</p>
+      <div class="checker-review-summary">
+        <p><strong>自動修正が止まった理由</strong><br><span id="checker-review-reason">修正後も、同じ指摘が残っています。</span></p>
+        <p><strong>次にすること</strong><br><span id="checker-review-next">チェッカー出力を確認し、修正してほしい内容を「Junie への追加指示」に入力してください。</span></p>
+      </div>
       <section class="review-finding" aria-label="チェッカーの指摘内容">
         <div class="review-finding-top"><span class="review-rule-id">RULE RZ-017</span><span class="review-severity">警告 · 判断待ち</span></div>
         <h3>共通化対象の状態変換がページ内に残っている可能性</h3>
@@ -982,6 +987,11 @@
 注文の状態変換がページ内に残っています。</pre>
         <p id="checker-output-status" role="status"></p>
         <p><a id="checker-output-download" download="checker.log" hidden>出力をダウンロード</a></p>
+      </details>
+      <details class="review-context" id="checker-review-details">
+        <summary>詳細ログ</summary>
+        <pre class="review-code" id="checker-review-technical" tabindex="0" aria-label="詳細ログ">チェッカーの終了コード 1
+RZ-017: a previous checker finding is still present</pre>
       </details>
       <details class="review-context" id="review-demo-context">
         <summary>この指摘を判断する材料</summary>
