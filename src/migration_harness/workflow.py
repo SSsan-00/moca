@@ -1159,10 +1159,12 @@ def _run_prepared_with_junie(
     _write_run_record(record_path, record)
 
     try:
-        selected = _review_detail_applicability(
-            run_path, capsule, manifest, relative_targets, record,
-            record.get("junie_max_steps", config["junie_max_steps"]),
-        )
+        selected = None
+        if not followup_only or "detail_applicability" in record:
+            selected = _review_detail_applicability(
+                run_path, capsule, manifest, relative_targets, record,
+                record.get("junie_max_steps", config["junie_max_steps"]),
+            )
     except KeyboardInterrupt as exc:
         record.update(status="interrupted", error="detail applicability review was interrupted; resume this Run")
         _write_run_record(record_path, record)
