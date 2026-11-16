@@ -59,3 +59,28 @@ class PhpLiteralTests(unittest.TestCase):
             helper = runpy.run_path(str(file))
             self.assertEqual(helper["extract_appends"](['$rows[] = "test";'], "rows"), ["test"])
             self.assertEqual(list(Path(directory).iterdir()), [file])
+
+    def test_capsule_extraction_uses_only_the_declared_php_rows(self):
+        context = ('# Capsule\n## migration_rules — rule.md\n```text\n'
+                   '     1 | $rows[] = "example";\n```\n'
+                   '## php — \x60legacy/file\x60 lines 8-10\n\n```text\n'
+                   '     8 | $rows[] = "first";\n'
+                   '     9 | $rows[] = "quote-\\"日本";\n'
+                   '    10 | echo json_encode($rows);\n```\n')
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "context.md"
+            file.write_bytes(context.replace("\n", "\r\n").encode())
+            self.assertEqual(php_literals.capsule_appends(str(file), "rows"), ["first", 'quote-"日本'])
+            broken = [
+                context.replace('     8 | $rows[] = "first";\n', ""),
+                context.replace("     9 |", "    11 |"),
+                context.replace("     9 |", "     8 |"),
+                context.replace("     8 |", "     8 (focus chars 0-10) |"),
+                context + '## php — \x60other\x60 lines 1-1\n     1 | $rows[] = "other";\n',
+                '# Next source rows (reference only)\n     8 | $rows[] = "outside";\n',
+            ]
+            for value in broken:
+                with self.subTest(value=value):
+                    file.write_text(value, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        php_literals.capsule_appends(str(file), "rows")

@@ -48,7 +48,7 @@ class MultipleTargetsTest(HarnessCase):
         """移行先の復旧状況を、ディスク上のRun記録から確認する。"""
         return json.loads(self.record_path.read_bytes())
 
-    def edit_with_junie(self, *, complete=True, outside=False):
+    def edit_with_junie(self, *, complete=True, outside=False, scratch=False):
         """Junieの編集結果と完了記録を、テストの条件に合わせて用意する。"""
         def run(args, completion, token, targets, *, report_usage=None):
             """Junieに相当する処理として、両方の移行先へ変更を保存する。"""
@@ -62,6 +62,8 @@ class MultipleTargetsTest(HarnessCase):
                 path.write_text(f"migrated {path.name}", encoding="utf-8")
             if outside:
                 (completion.parent / "unlisted.cs").write_text("unlisted", encoding="utf-8")
+            if scratch:
+                (completion.parent / ".migration-scratch/values.json").write_text("[1, 2]")
             if complete:
                 completion.write_text(token, encoding="ascii")
             return 0
@@ -99,6 +101,32 @@ class MultipleTargetsTest(HarnessCase):
         for name in self.targets:
             self.assertEqual((self.worktree / name).read_text(encoding="utf-8"), f"original {name}")
         self.assertEqual(self.record()["completed_capsules"], 0)
+
+    def test_scratch_files_are_allowed_but_never_published(self):
+        with patch.object(workflow, "_verify_worktree", wraps=lambda _config, _unit, result, _record: result):
+            result = self.resume(self.edit_with_junie(scratch=True))
+        self.assertEqual(result["completed_capsules"], 1)
+        self.assertTrue((self.run_path / "agent-workspace/.migration-scratch/values.json").is_file())
+        self.assertFalse((self.worktree / ".migration-scratch").exists())
+        for name in self.targets:
+            self.assertEqual((self.worktree / name).read_text(), f"migrated {name}")
+
+    def test_scratch_does_not_allow_symlinks_or_hide_changes_to_materials(self):
+        agent = self.run_path / "agent-workspace"
+        (agent / ".migration-scratch").mkdir(parents=True)
+        material = agent / ".migration-materials/rule.txt"
+        material.parent.mkdir()
+        material.write_text("original")
+        before = workflow._unlisted_workspace_files(agent, set())
+        material.write_text("changed")
+        self.assertNotEqual(workflow._unlisted_workspace_files(agent, set()), before)
+        link = agent / ".migration-scratch/link"
+        try:
+            link.symlink_to(material)
+        except OSError:
+            self.skipTest("symlinks unavailable on this host")
+        with self.assertRaisesRegex(ValueError, "must not be symbolic links"):
+            workflow._unlisted_workspace_files(agent, set())
 
     # 途中の反映を復旧したうえで、カプセルの完了を改めて判定することを検証する。
     def test_recovers_partial_application_without_counting_the_capsule(self):

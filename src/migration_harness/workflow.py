@@ -839,6 +839,10 @@ def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]
         relative = path.relative_to(root)
         if relative in allowed:
             continue
+        if relative.parts[0] == ".migration-scratch":
+            if path.is_symlink():
+                raise ValueError("scratch files must not be symbolic links")
+            continue
         if path.is_symlink():
             files[relative] = "symlink:" + os.readlink(path)
         elif path.is_file():
@@ -887,6 +891,10 @@ def _stage_migration_materials(
     helper = _safe_target(agent_root, Path(".migration-materials/php_literals.py"))
     helper.parent.mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).with_name("php_literals.py"), helper)
+    scratch = agent_root / ".migration-scratch"
+    if scratch.is_symlink():
+        raise ValueError("scratch directory must not be a symbolic link")
+    scratch.mkdir(exist_ok=True)
     if "shared.md" in materials and ("rule_files" in manifest or "rule_chunks" in manifest):
         instructions += 'Before editing, read `.migration-materials/shared.md` and apply its constraints. '
     if "references.json" in materials:
@@ -927,12 +935,16 @@ def _stage_migration_materials(
 _EXACT_SOURCE_DATA = (
     "For repeated statements with data, literal tables, or other long sequences, use the workspace shell to "
     "extract the exact ordered data mechanically from the assigned PHP lines. A short Python command is fine. "
+    "Put temporary extraction scripts and data only in .migration-scratch/ (no symlinks); these files are "
+    "not migration outputs and are not copied to the application. Do not leave temporary files elsewhere. "
     "Read the file on disk, select the original numbered source rows in scope, and match the complete statements "
     "or use a tokenizer as needed. Exclude examples, shared rules, and read-only boundary rows from the data. "
     "For plain quoted PHP strings use the supplied .migration-materials/php_literals.py: "
     "in Python, import runpy; helpers = runpy.run_path('.migration-materials/php_literals.py') "
-    "(no import cache files). For literal array appends, pass the unnumbered executable source "
-    "statements and the actual variable name to helpers['extract_appends'](statements, variable). It preserves escaped "
+    "(no import cache files). For literal array appends use helpers['capsule_appends']('.migration-context.md', variable) "
+    "with the actual source variable name. During repairs call it on each saved source-*.md in capsule order. "
+    "Never merge boundary.md into extracted data: it contains reference-only rows from adjacent capsules. "
+    "The helper checks the complete assigned line range, preserves escaped "
     "quotes and rejects incomplete assignments. For other statement forms use helpers['STRING_LITERAL'] with fullmatch "
     "on the whole statement and helpers['decode_literal'] on the complete quoted token. Never use a lazy quote regex "
     "or unicode_escape. Unsupported expressions must be handled from the original code, never skipped. "
@@ -1214,7 +1226,7 @@ def _run_prepared_with_junie(
     relative_targets = _target_paths(unit)
     for relative in relative_targets:
         first = relative.parts[0].lower()
-        if first in {".migration-context.md", ".migration-materials", ".migration-boundary.md", "migration-read-rules.py"} or first.startswith(("migration-complete-", "migration-rule-reads-", "checker-findings-")):
+        if first in {".migration-context.md", ".migration-materials", ".migration-scratch", ".migration-boundary.md", "migration-read-rules.py"} or first.startswith(("migration-complete-", "migration-rule-reads-", "checker-findings-")):
             raise ValueError("target path conflicts with a reserved file in the agent workspace")
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
@@ -1324,7 +1336,7 @@ def _run_prepared_with_junie(
             f"for migration unit `{unit['id']}`. The configured target files are "
             + ", ".join(f"`{path.as_posix()}`" for path in relative_targets) + ". "
             "Preserve work from earlier segments and continue only with this segment. "
-            "Edit only the configured targets and the completion record described below. "
+            "Edit only the configured targets, the completion record, and temporary files in .migration-scratch/. "
             "Ensure every configured target exists before writing a completion record. "
             "Apply all mandatory rules in the Shared context section if present. "
             f"{material_instructions}{boundary_instruction}"

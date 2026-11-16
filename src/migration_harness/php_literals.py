@@ -7,6 +7,7 @@ The file is also copied into the agent workspace, so use only the standard libra
 """
 
 from collections.abc import Iterable
+from pathlib import Path
 import re
 
 
@@ -91,3 +92,33 @@ Unsupported assignments to this array raise instead of silently losing rows.
     if not values:
         raise ValueError("no complete literal append statements found")
     return values
+
+
+def capsule_appends(path: str, variable: str) -> list[str]:
+    """Read only the capsule's complete, numbered PHP excerpt, never boundary.md.
+
+Character slices, multiple PHP excerpts and incomplete rows require inspecting
+the original statements instead of combining uncertain ranges automatically.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    headings = list(re.finditer(r"(?m)^## .*", text))
+    excerpts = []
+    for index, heading in enumerate(headings):
+        match = re.fullmatch(r"## php — \x60[^\x60]+\x60 lines (\d+)-(\d+)", heading[0])
+        if match:
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+            excerpts.append((int(match[1]), int(match[2]), text[heading.end():end]))
+    if len(excerpts) != 1:
+        raise ValueError("expected exactly one complete PHP line excerpt; do not use boundary context")
+    first, last, source = excerpts[0]
+    statements = []
+    for line in source.split("\n"):
+        if line in {"", "```text", "```"}:
+            continue
+        row = re.fullmatch(r"\s*(\d+) \| (.*)", line)
+        if row is None or int(row[1]) != first + len(statements) or int(row[1]) > last:
+            raise ValueError("incomplete, sliced or out-of-order PHP source row")
+        statements.append(row[2])
+    if first + len(statements) != last + 1:
+        raise ValueError("PHP excerpt is missing source rows")
+    return extract_appends(statements, variable)
