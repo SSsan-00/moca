@@ -198,6 +198,10 @@ class CapsulePreparationTests(HarnessCase):
         ), encoding="utf-8")
         config = load_config(config_path)
         config["scripts"]["before_prepare"].append(command("second_prepare"))
+        draft = self.root / "generated files" / "Services" / "Draft.cs"
+        draft.parent.mkdir(parents=True)
+        draft.write_bytes(b"class Draft {}\r\n")
+        config["scripts"]["before_migration"].append(["@copy-migration-draft", str(draft), "Target.cs"])
         config["scripts"]["after_build"].append([sys.executable, "-c", "raise SystemExit(7)"])
         config["checker_command"] = [sys.executable, "-c", "pass"]
         subprocess_run = subprocess.run
@@ -212,6 +216,7 @@ class CapsulePreparationTests(HarnessCase):
         def migrate(args, completion, token, targets, *, report_usage=None):
             target, = targets
             calls.append("junie")
+            self.assertEqual(target.read_bytes(), draft.read_bytes())
             target.write_text("class Migrated {}", encoding="utf-8")
             completion.write_text(token, encoding="ascii")
             return 0

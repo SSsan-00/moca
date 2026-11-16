@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
+
+
+def harness_asset(name: str) -> Path:
+    """ハーネスのチェックアウトまたはインストール先の付属ファイルを解決する。"""
+    path = Path(__file__).resolve().parents[2] / name
+    return path if path.is_file() else Path(sys.prefix) / "share" / "php-to-csharp-harness" / name
 
 
 def has_symlink_component(root: Path, relative_path: Path) -> bool:

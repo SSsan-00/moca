@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 import secrets
-import sys
 import time
 from collections import deque
 from concurrent.futures import Future
@@ -20,6 +19,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import create_snapshot, review_html, snapshot_bytes
+from migration_harness.files import harness_asset
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.workflow import (
@@ -36,14 +36,9 @@ PROGRESS_FIELDS = (
 )
 
 
-def _dashboard_asset(name: str) -> Path:
-    path = Path(__file__).resolve().parents[2] / name
-    return path if path.is_file() else Path(sys.prefix) / "share" / "php-to-csharp-harness" / name
-
-
 def _read_settings(path: Path) -> tuple[bytes, str]:
     if not path.exists():
-        return _dashboard_asset("harness.example.toml").read_bytes(), "missing"
+        return harness_asset("harness.example.toml").read_bytes(), "missing"
     data = path.read_bytes()
     return data, hashlib.sha256(data).hexdigest()
 
@@ -417,7 +412,7 @@ def run_dashboard(config: dict[str, Any], *, unit_id: str | None = None, run_id:
     if unit_id is not None and run_id is not None:
         raise ValueError("choose a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent
-    demo = _dashboard_asset("progress-demo.html")
+    demo = harness_asset("progress-demo.html")
     html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
     if not marker:
         raise ValueError("progress dashboard template is missing its script marker")

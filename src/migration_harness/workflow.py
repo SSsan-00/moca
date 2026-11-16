@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from threading import RLock
 import uuid
 from datetime import datetime, timezone
@@ -23,7 +24,7 @@ from typing import Any, Iterator
 
 from . import junie_cli
 from .config import REFERENCE_ROLES
-from .files import has_symlink_component, sha256_file
+from .files import harness_asset, has_symlink_component, sha256_file
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
 worktree_source_lock = RLock()
@@ -660,7 +661,11 @@ def _run_script_phase(
             for number, command in enumerate(commands[start:], start + 1):
                 log.write(f"\n[{phase} {number}] {command[0]}\n".encode("utf-8"))
                 log.flush()
-                completed = subprocess.run(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
+                invocation = command
+                if phase == "before_migration" and command[0] == "@copy-migration-draft":
+                    script = harness_asset("tools/copy_migration_draft.py")
+                    invocation = [sys.executable, str(script), *command[1:]]
+                completed = subprocess.run(invocation, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
                 if record is not None and once:

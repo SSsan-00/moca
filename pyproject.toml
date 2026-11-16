@@ -24,3 +24,4 @@ migration_harness = ["dashboard.js"]
 [tool.setuptools.data-files]
 # 本番とデモが共用するHTMLを、作業ツリーの外からも読み込める場所に置く。
 "share/php-to-csharp-harness" = ["progress-demo.html", "harness.example.toml"]
+"share/php-to-csharp-harness/tools" = ["tools/copy_migration_draft.py"]
