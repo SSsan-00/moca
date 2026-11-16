@@ -39,6 +39,8 @@ max_context_chars = 100000
 [scripts]
 # 各工程に、実行ファイルと引数の配列を実行順で指定する。
 # before_prepare = [["powershell.exe", "-NoProfile", "-File", "tools/prepare-legacy.ps1"]]
+# 仮移行ファイルを取り込む場合は、スクリプトとコピー元の絶対パス、移行先の相対パスを指定する。
+# before_migration = [["py", "-3", "C:/tools/PhpToCsharp/tools/copy_migration_draft.py", "C:/draft/generated/Pages/Menu.cshtml.cs", "Pages/Menu.cshtml.cs"]]
 # after_build = [["py", "-3", "tools/export_results.py"]]
 
 [diff_viewer]
