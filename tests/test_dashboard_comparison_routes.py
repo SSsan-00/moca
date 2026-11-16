@@ -206,6 +206,7 @@ for (const mode of ["delayed", "ready", "slow-start", "abandoned", "unsupported"
 
     def test_comparisons_stay_with_creating_run_after_open_run_and_settings_save(self):
         (self.project / "source.php").write_text("<?php echo 'Hello';\n", encoding="utf-8")
+        (self.project / "earlier-example.php").write_text("<?php echo 'Hello';\n", encoding="utf-8")
         (self.project / "Page.cshtml").write_text("<p>Hello</p>\n", encoding="utf-8")
         (self.project / "Page.cshtml.cs").write_text("class PageModel {}\n", encoding="utf-8")
         (self.project / "viewer.html").write_text(
@@ -218,6 +219,10 @@ root = "app"
 worktree_root = "trees"
 run_root = "runs"
 
+[[project.references]]
+role = "reference_php"
+path = "earlier-example.php"
+
 [[units]]
 id = "sample"
 source = "source.php"
@@ -228,7 +233,9 @@ html = "viewer.html"
 """
         config_path.write_text(settings, encoding="utf-8")
         config = load_config(config_path)
-        run_a, run_b = (workflow.prepare_run(config, "sample") for _ in range(2))
+        run_a = workflow.prepare_run(config, "sample")
+        (self.project / "source.php").write_text("<?php echo 'Updated';\n", encoding="utf-8")
+        run_b = workflow.prepare_run(config, "sample")
         run_a_id, run_b_id = run_a["run_id"], run_b["run_id"]
         record_path = Path(run_a["run_path"]) / "run.json"
         record = json.loads(record_path.read_bytes())
@@ -248,6 +255,8 @@ html = "viewer.html"
             revision, state = self.ready_event(url)
             self.assertEqual(state["run_id"], run_a_id)
             comparison = self.post(url, "comparison", {}, 201)
+            plain = self.read_comparison(f"{url}review/{run_a_id}/{comparison['id']}")["workspace"]
+            self.assertEqual([part["fileName"] for part in plain["leftSegments"]], ["source.php"])
             anchored = self.post(url, "control", {"action": "anchors", "revision": revision}, 201)
             self.assertEqual(anchored["count"], 1)
             with urlopen(url + "migration-ledger", timeout=3) as response:
@@ -263,6 +272,7 @@ html = "viewer.html"
                 self.assertEqual(snapshot["snapshot"]["runId"], run_a_id)
                 workspace = snapshot["workspace"]
                 self.assertEqual([part["fileName"] for part in workspace["leftSegments"]], ["source.php"])
+                self.assertEqual(workspace["leftText"], "<?php echo 'Hello';\n")
                 self.assertEqual(
                     [part["fileName"] for part in workspace["rightSegments"]], ["Page.cshtml", "Page.cshtml.cs"],
                 )
@@ -272,6 +282,13 @@ html = "viewer.html"
             self.post(url, "control", {"action": "open-run", "run_id": run_b_id, "revision": revision}, 202)
             revision, state = self.ready_event(url, after=revision)
             self.assertEqual(state["run_id"], run_b_id)
+            comparison_b = self.post(url, "comparison", {}, 201)
+            workspace_b = self.read_comparison(f"{url}review/{run_b_id}/{comparison_b['id']}")["workspace"]
+            self.assertEqual([part["fileName"] for part in workspace_b["leftSegments"]], ["source.php"])
+            self.assertEqual(workspace_b["leftText"], "<?php echo 'Updated';\n")
+            self.assertEqual(
+                [part["fileName"] for part in workspace_b["rightSegments"]], ["Page.cshtml", "Page.cshtml.cs"],
+            )
             for path, snapshot in snapshots.items():
                 self.assertEqual(self.read_comparison(path), snapshot)
 
@@ -286,7 +303,6 @@ html = "viewer.html"
 
             snapshot_id = comparison["id"]
             review_dir = Path(run_b["run_path"]) / "review-snapshots"
-            review_dir.mkdir()
             (review_dir / f"{snapshot_id}.json").write_text(
                 json.dumps(snapshots[f"{url}review/{run_a_id}/{snapshot_id}"]), encoding="utf-8",
             )

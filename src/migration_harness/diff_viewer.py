@@ -61,19 +61,27 @@ def capture_workspace(
         if record.get("target_apply_pending"):
             raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
         capsule_path, manifest = _load_capsule_manifest(run_path)
-        sources = _pinned_php_sources(manifest)
+        # 共通の参考PHPも固定されるため、比較対象は台帳と同じカプセルの移行範囲から選ぶ。
+        encodings: dict[str, str] = {}
+        for part in manifest["parts"]:
+            for source in part["sources"]:
+                if _is_php_input(source):
+                    encodings.setdefault(source["path"], source["encoding"])
+        if not encodings:
+            raise ValueError("この実行の移行対象にPHPがありません。")
+        pinned = _pinned_php_sources(manifest)
+        sources = []
         legacy_paths = []
-        if sources is None:
+        if pinned is None:
             # 保存済みPHPを持たない旧Runでは、manifestのパスと文字コードで現在の入力を読む。
             project = Path(config["project_root"])
-            encodings: dict[str, str] = {}
-            for part in manifest["parts"]:
-                for source in part["sources"]:
-                    if _is_php_input(source):
-                        encodings.setdefault(source["path"], source["encoding"])
             legacy_paths = [(_inside_file(project, name), name, encoding) for name, encoding in encodings.items()]
-        if not (sources or legacy_paths):
-            raise ValueError("この実行の入力に参照PHPがありません。")
+        else:
+            pins_by_path = {source["path"]: source for source in pinned}
+            for name in encodings:
+                if name not in pins_by_path:
+                    raise ValueError(f"移行対象のPHPがRunに保存されていません: {name}")
+                sources.append(pins_by_path[name])
         target = Path(unit["target"]).as_posix()
         if "targets" in unit:
             targets = unit["targets"]
@@ -113,7 +121,7 @@ def capture_workspace(
             source_hashes[path] = hashlib.sha256(content).hexdigest()
             text = content.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
             left_files.append((Path(name).as_posix(), text))
-        for source in sources or []:
+        for source in sources:
             text = _read_pinned_php(capsule_path, source).decode(source["encoding"])
             left_files.append((Path(source["path"]).as_posix(), text.replace("\r\n", "\n").replace("\r", "\n")))
         right_files = []
