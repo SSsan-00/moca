@@ -328,6 +328,7 @@ class _JunieSessionEvents:
             )
         self.path: Path | None = None
         self.task: str | None = None
+        self.result: str | None = None
         self.usage = [0] * len(USAGE_FIELDS)
         self.last_event_at: float | None = None
 
@@ -478,11 +479,22 @@ class _JunieSessionEvents:
                         continue
                     if kind == "TaskStartedEvent":
                         self.task = entry.get("taskId")
+                        self.result = None
                     if entry.get("taskId") is not None and entry.get("taskId") != self.task:
                         continue
                     matches_task = self.task and (entry.get("taskId") == self.task or self.headless_project is not None)
                     if matches_task and kind == "SessionA2uxEvent":
-                        self._count_usage(entry.get("event"))
+                        event = entry.get("event")
+                        self._count_usage(event)
+                        agent = event.get("agentEvent") if isinstance(event, dict) else None
+                        if (
+                            isinstance(agent, dict) and event.get("state") == "COMPLETED"
+                            and agent.get("kind") == "ResultBlockUpdatedEvent"
+                            and agent.get("cancelled") is False
+                            and isinstance(agent.get("agent"), dict) and agent["agent"].get("kind") == "MainAgent"
+                            and isinstance(agent.get("result"), str)
+                        ):
+                            self.result = agent["result"]
                     self.last_event_at = time.monotonic()
                     message = _event_activity(entry)
                     # Coalesce repeated status updates in one poll; usage still counts every response.
@@ -560,6 +572,7 @@ def _task_command(command: list[str]) -> list[str]:
 def run_interactive(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
+    accept_result: Callable[[str], None] | None = None,
 ) -> int:
     """Junieを選択したモードで起動し、通信障害時は同じ作業場所で再試行する。"""
     delays = (1, 3)
@@ -573,7 +586,8 @@ def run_interactive(
                     "workspace and continue the remaining work without duplicating completed changes."
                 )]
             try:
-                return _run_session(invocation, completion_path, token, targets, report_usage=report_usage)
+                return _run_session(invocation, completion_path, token, targets,
+                                    report_usage=report_usage, accept_result=accept_result)
             except JunieAcpModelUnavailable:
                 dashboard = junie_dashboard_control()
                 if dashboard is None or not _supports_task(command[0]):
@@ -588,7 +602,8 @@ def run_interactive(
                     raise
                 report_activity("Junie を非対話モードで再試行します。")
                 command = _task_command(command)
-            return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets, report_usage=report_usage)
+            return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets,
+                                report_usage=report_usage, accept_result=accept_result)
         except JunieConnectionError as exc:
             if attempt == len(delays):
                 raise JunieConnectionError(
@@ -743,6 +758,7 @@ class _AcpSession:
 def _run_session(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
+    accept_result: Callable[[str], None] | None = None,
 ) -> int:
     """成果物と完了記録がそろえばJunieのセッションを閉じる。"""
     check_cancelled()
@@ -759,6 +775,10 @@ def _run_session(
             delta = events.usage
             events.usage = [0] * len(USAGE_FIELDS)
             report_usage(delta)
+        # 明示した読み取り専用タスクだけ、最終回答を呼び出し元で検証・保存する。
+        if cancellable and accept_result is not None and events.result is not None:
+            result, events.result = events.result, None
+            accept_result(result)
         return failed
 
     try:
@@ -841,7 +861,7 @@ def _run_session(
                         command, exit_code, events.startup_diagnostics(process.pid, command),
                     )
                 return exit_code
-    except (KeyboardInterrupt, OSError) as exc:
+    except (KeyboardInterrupt, OSError, ValueError) as exc:
         if process is not None and process.poll() is None:
             try:
                 if acp is not None and isinstance(exc, KeyboardInterrupt):

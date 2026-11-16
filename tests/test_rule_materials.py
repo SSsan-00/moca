@@ -119,8 +119,11 @@ class RuleMaterialsTests(HarnessCase):
             self.assertNotIn(body.strip().encode(), context)
             self.assertNotIn(irrelevant.strip().encode(), context)
             self.assertIn("complete detail index and every saved legacy capsule", command[-1])
-            outputs[0].write_text(json.dumps(decisions), encoding="utf-8")
-            completion.write_text(token, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "does not match this invocation"):
+                kwargs["accept_result"](json.dumps({"review_token": "another-task", "decisions": decisions}))
+            self.assertFalse(outputs[0].exists())
+            self.assertFalse(completion.exists())
+            kwargs["accept_result"]("```json\n" + json.dumps({"review_token": token, "decisions": decisions}) + "\n```")
 
         decisions = {entries[0]["file"]: {"applies": True, "reason": "Outputs orders"}}
         with patch.object(junie_cli, "run_interactive", side_effect=review) as junie:
@@ -159,8 +162,9 @@ class RuleMaterialsTests(HarnessCase):
                 self.assertEqual((completion.parent / f"source-{number:04d}.md").read_bytes(), p.read_bytes())
             saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_index[0]["when_to_read"], entry["description"])
-            outputs[0].write_text(json.dumps({"rule-0001.txt": {"applies": True, "reason": "Orders"}}))
-            completion.write_text(token)
+            kwargs["accept_result"](json.dumps({
+                "review_token": token, "decisions": {"rule-0001.txt": {"applies": True, "reason": "Orders"}},
+            }))
 
         for oversized in ("source", "index"):
             with self.subTest(oversized=oversized):

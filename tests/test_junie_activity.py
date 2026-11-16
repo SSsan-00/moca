@@ -207,6 +207,25 @@ class JunieEventTests(unittest.TestCase):
         self.assertEqual(events.usage, [0] * 5)
         self.assertEqual(len(self.messages), 1)
 
+    def test_result_comes_only_from_the_matching_completed_main_agent(self):
+        def result(text, *, task_id="task", state="COMPLETED", cancelled=False, agent_kind="MainAgent"):
+            event = agent("ResultBlockUpdatedEvent", task_id, result=text, cancelled=cancelled,
+                          agent={"kind": agent_kind})
+            event["event"]["state"] = state
+            return event
+
+        events = junie_cli._JunieSessionEvents("this-launch")
+        self.write("other", prompt("other-launch"), task(), result("other session"))
+        current = self.write("ours", prompt(), task(), result("other task", task_id="other"),
+                             result("partial", state="IN_PROGRESS"), result("cancelled", cancelled=True),
+                             result("worker", agent_kind="SubAgent"))
+        events.read_new_events()
+        self.assertIsNone(events.result)
+        self.append(current, result('{"decision": true}'))
+        events.read_new_events()
+        self.assertEqual(events.result, '{"decision": true}')
+        self.assertNotIn("decision", json.dumps(self.messages))
+
     def test_existing_history_is_skipped_but_matching_append_is_counted(self):
         current = self.write("existing", prompt(), task(), response())
         with count_event_bytes() as total:
@@ -363,6 +382,51 @@ class JunieControlTests(unittest.TestCase):
             with self.assertRaises(execution.OperationCancelled):
                 junie_cli._launch_process(["junie"])
         launch.assert_not_called()
+
+    def test_validated_final_result_closes_session_and_invalid_result_also_stops_child(self):
+        for reject in (False, True):
+            with self.subTest(reject=reject):
+                self.restored.reset_mock()
+                completion = self.root / "done"
+                completion.unlink(missing_ok=True)
+                path = self.root / "sessions" / str(reject) / "events.jsonl"
+                process = Mock(returncode=None)
+                process.poll.side_effect = lambda: process.returncode
+                result = agent("ResultBlockUpdatedEvent", result='{"decision": true}', cancelled=False,
+                               agent={"kind": "MainAgent"})
+                result["event"]["state"] = "COMPLETED"
+
+                def wait(timeout):
+                    if not path.exists():
+                        path.parent.mkdir(parents=True)
+                        path.write_bytes(line(prompt()) + line(task()) + line(response()) + line(result))
+                    raise subprocess.TimeoutExpired("junie", timeout)
+
+                def accept(answer):
+                    self.assertEqual(answer, '{"decision": true}')
+                    if reject:
+                        raise ValueError("invalid decision")
+                    completion.write_text("this-launch")
+
+                def close(child):
+                    self.assertIs(child, process)
+                    process.returncode = 0
+                    return 0
+
+                process.wait.side_effect = wait
+                callback, usage = Mock(side_effect=accept), []
+                with (patch.object(junie_cli, "_launch_process", return_value=process),
+                      patch.object(junie_cli, "_close_junie", side_effect=close) as closer):
+                    if reject:
+                        with self.assertRaisesRegex(ValueError, "invalid decision"):
+                            self.run_session(accept_result=callback, report_usage=usage.append)
+                    else:
+                        self.assertEqual(self.run_session(accept_result=callback, report_usage=usage.append), 0)
+                callback.assert_called_once()
+                closer.assert_called_once_with(process)
+                self.restored.assert_called_once_with()
+                self.assertEqual(usage, [[0] * 5, [18, 4, 5, 3, 1]])
+                self.assertEqual(completion.exists(), not reject)
 
     def test_cancel_during_poll_closes_child_flushes_usage_and_restores_terminal(self):
         process = Mock(returncode=None)
