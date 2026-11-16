@@ -317,3 +317,17 @@ def is_command(command: Any) -> bool:
         and all(isinstance(arg, str) and "\0" not in arg for arg in command)
         and bool(command[0].strip())
     )
+
+
+def find_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+    """設定で許可された移行単位だけを解決する。"""
+    for unit in config["units"]:
+        if unit["id"] == unit_id:
+            return unit
+    raise ValueError(f"unknown migration unit: {unit_id}")
+
+
+
+def target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:
+    """単一移行先を指定した旧設定も同じ順序付き形式で扱う。"""
+    return tuple(Path(name) for name in unit.get("targets", [unit["target"]]))

@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import junie_cli, workflow
+from migration_harness import junie_cli, run_records, workflow
 from migration_harness.diff_viewer import capture_workspace
 
 
@@ -178,7 +178,7 @@ class MultipleTargetsTest(HarnessCase):
         record = self.record()
         hashes = record["target_hashes"]
         record.update(status="checker_needs_review", checker_exit_code=1, review_file_hashes=hashes)
-        workflow._write_run_record(self.record_path, record)
+        run_records.write_run_record(self.record_path, record)
         (self.run_path / "checker.log").write_text(
             "".join(f"RZ1 {name}:1 warning: sample\n" for name in self.targets), encoding="utf-8",
         )
@@ -271,7 +271,7 @@ class MultipleTargetsTest(HarnessCase):
 
         for case in ("success", "junie_edits_reference", "worktree_reference_changes", "missing_reference"):
             with self.subTest(case=case):
-                workflow._write_run_record(self.record_path, case_record)
+                run_records.write_run_record(self.record_path, case_record)
                 model.write_bytes(b"latest model with NewName")
                 page.write_bytes(b"latest view before repair")
                 (agent / model_name).write_bytes(b"stale model with OldName")
@@ -322,7 +322,7 @@ class MultipleTargetsTest(HarnessCase):
         _, page = self.targets
         record = self.record()
         record.update(status="checker_needs_review", build_exit_code=0, completed_capsules=1)
-        workflow._write_run_record(self.record_path, record)
+        run_records.write_run_record(self.record_path, record)
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
 
         run_process = subprocess.run
@@ -361,7 +361,7 @@ class MultipleTargetsTest(HarnessCase):
         page = self.targets[1]
         record = self.record()
         record.update(status="checker_needs_review", build_exit_code=0, completed_capsules=1)
-        workflow._write_run_record(self.record_path, record)
+        run_records.write_run_record(self.record_path, record)
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
         run_process = subprocess.run
 

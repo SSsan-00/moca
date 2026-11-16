@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import diff_viewer, junie_cli, review_anchors, workflow
+from migration_harness import diff_viewer, junie_cli, review_anchors, run_records, workflow
 from migration_harness.diff_viewer import capture_workspace, create_snapshot, snapshot_bytes
 
 
@@ -16,12 +16,12 @@ class LiveComparisonTests(HarnessCase):
         self.commit_project()
         config = self.config()
         result = workflow.prepare_run(config, "sample")
-        run_path, worktree, record, _ = workflow._load_saved_run(config, result["run_id"])
+        run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()
         (agent / "Page.cs").write_text("class SavedDraft {}", encoding="utf-8")
         record["status"] = "junie_running"
-        workflow._write_run_record(run_path / "run.json", record)
+        run_records.write_run_record(run_path / "run.json", record)
         snapshot = create_snapshot(config, result["run_id"])
         payload = json.loads(snapshot_bytes(config, result["run_id"], snapshot))
         self.assertEqual(payload["workspace"]["rightText"], "class SavedDraft {}")
@@ -32,7 +32,7 @@ class LiveComparisonTests(HarnessCase):
         (agent / "Page.cs").write_text("class LaterDraft {}", encoding="utf-8")
         self.assertEqual(json.loads(snapshot_bytes(config, result["run_id"], snapshot)), payload)
         record["status"] = "build_succeeded"
-        workflow._write_run_record(run_path / "run.json", record)
+        run_records.write_run_record(run_path / "run.json", record)
         _, finished = capture_workspace(config, result["run_id"], include_draft=True)
         self.assertEqual(finished["workspace"]["rightText"], "class Original {}")
 
@@ -52,13 +52,13 @@ class LiveComparisonTests(HarnessCase):
         self.commit_project()
         config = self.config()
         result = workflow.prepare_run(config, "sample")
-        run_path, worktree, record, _ = workflow._load_saved_run(config, result["run_id"])
+        run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
 
         @contextmanager
         def application_failed_while_waiting():
             (worktree / "Page.cs").write_text("class PartlyApplied {}", encoding="utf-8")
             record["target_apply_pending"] = {"Page.cs": {"before": "old", "after": "new"}}
-            workflow._write_run_record(run_path / "run.json", record)
+            run_records.write_run_record(run_path / "run.json", record)
             yield
 
         with patch.object(diff_viewer, "worktree_source_lock", application_failed_while_waiting()):
@@ -95,21 +95,21 @@ class LiveComparisonTests(HarnessCase):
         self.commit_project()
         config = self.config()
         result = workflow.prepare_run(config, "sample")
-        run_path, worktree, record, _ = workflow._load_saved_run(config, result["run_id"])
+        run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()
-        read_pinned = diff_viewer._read_pinned_php
+        read_pinned = diff_viewer.read_pinned_php
         for destination in (worktree, agent):
             with self.subTest(destination=destination.name):
                 record["status"] = "junie_running"
-                workflow._write_run_record(run_path / "run.json", record)
+                run_records.write_run_record(run_path / "run.json", record)
 
                 def create_target(capsule_path, source):
                     content = read_pinned(capsule_path, source)
                     (destination / "Page.cs").write_text("class New {}", encoding="utf-8")
                     return content
 
-                with patch.object(diff_viewer, "_read_pinned_php", side_effect=create_target):
+                with patch.object(diff_viewer, "read_pinned_php", side_effect=create_target):
                     with self.assertRaisesRegex(ValueError, "取得中にソースが変更"):
                         create_snapshot(config, result["run_id"])
                 self.assertFalse((run_path / "review-snapshots").exists())
@@ -122,21 +122,21 @@ class LiveComparisonTests(HarnessCase):
         self.commit_project()
         config = self.config()
         result = workflow.prepare_run(config, "sample")
-        run_path, _, record, _ = workflow._load_saved_run(config, result["run_id"])
+        run_path, _, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()
         (agent / "Page.cs").write_text("class Draft {}", encoding="utf-8")
         record["status"] = "junie_running"
-        workflow._write_run_record(run_path / "run.json", record)
-        read_pinned = diff_viewer._read_pinned_php
+        run_records.write_run_record(run_path / "run.json", record)
+        read_pinned = diff_viewer.read_pinned_php
 
         def finish_run(capsule_path, source):
             content = read_pinned(capsule_path, source)
             record["status"] = "build_succeeded"
-            workflow._write_run_record(run_path / "run.json", record)
+            run_records.write_run_record(run_path / "run.json", record)
             return content
 
-        with patch.object(diff_viewer, "_read_pinned_php", side_effect=finish_run):
+        with patch.object(diff_viewer, "read_pinned_php", side_effect=finish_run):
             with self.assertRaisesRegex(ValueError, "取得中にソースが変更"):
                 create_snapshot(config, result["run_id"])
         self.assertFalse((run_path / "review-snapshots").exists())
@@ -170,7 +170,7 @@ class LiveComparisonTests(HarnessCase):
         self.commit_project()
         config = self.config()
         result = workflow.prepare_run(config, "sample")
-        run_path, worktree, record, _ = workflow._load_saved_run(config, result["run_id"])
+        run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()
         (agent / "Page.cs").write_bytes(b"class Original {}")
@@ -179,7 +179,7 @@ class LiveComparisonTests(HarnessCase):
         for source_kind in ("worktree", "draft", "legacy_php"):
             with self.subTest(source_kind=source_kind):
                 record["status"] = "junie_running" if source_kind == "draft" else "prepared"
-                workflow._write_run_record(run_path / "run.json", record)
+                run_records.write_run_record(run_path / "run.json", record)
                 trigger = (agent if source_kind == "draft" else worktree) / "Page.cs"
                 changed = trigger
                 replacement = b"class Replaced {}"

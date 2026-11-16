@@ -259,7 +259,7 @@ class DashboardErrorReportingTests(unittest.TestCase):
                 self.assertIn(b"data-workspace", response.read())
             raise KeyboardInterrupt
 
-        with patch.object(dashboard, "_load_saved_run", side_effect=ValueError("invalid saved record")):
+        with patch.object(dashboard, "load_saved_run", side_effect=ValueError("invalid saved record")):
             self.open_dashboard({}, [inspect], run_id="broken")
 
         def config_inspect(view, url):
@@ -278,7 +278,7 @@ class DashboardErrorReportingTests(unittest.TestCase):
 
         with (
             patch.object(dashboard, "run_with_junie", side_effect=RunScriptError("script failed", "saved-run")),
-            patch.object(dashboard, "_load_saved_run", side_effect=OSError("record unreadable")),
+            patch.object(dashboard, "load_saved_run", side_effect=OSError("record unreadable")),
         ):
             self.open_dashboard({}, [inspect], unit_id="example")
 
@@ -293,7 +293,7 @@ class DashboardErrorReportingTests(unittest.TestCase):
 
         with (
             patch.object(dashboard, "run_with_junie", side_effect=RunInterrupted("saved-run")),
-            patch.object(dashboard, "_load_saved_run", return_value=(None, None, saved, None)),
+            patch.object(dashboard, "load_saved_run", return_value=(None, None, saved, None)),
         ):
             _, result = self.open_dashboard({}, [inspect], unit_id="example")
         self.assertEqual(result, saved)
@@ -306,7 +306,7 @@ class DashboardErrorReportingTests(unittest.TestCase):
             self.assertIn("Error", view.state["error_details"])
             raise KeyboardInterrupt
 
-        with patch.object(dashboard, "_load_saved_run", return_value=(None, None, saved, None)):
+        with patch.object(dashboard, "load_saved_run", return_value=(None, None, saved, None)):
             self.open_dashboard({}, [inspect], run_id="saved-run")
 
     def test_settings_and_workspace_read_errors_keep_http_contract_and_diagnostics(self):
@@ -314,7 +314,7 @@ class DashboardErrorReportingTests(unittest.TestCase):
             for endpoint, target, error in (
                 ("settings", "_read_settings", PermissionError("cannot read settings.toml")),
                 ("settings", "build_settings_draft", TypeError("invalid settings table")),
-                ("workspace", "_load_saved_run", ValueError("unused")),
+                ("workspace", "load_saved_run", ValueError("unused")),
             ):
                 with self.subTest(endpoint=endpoint, target=target):
                     with patch.object(dashboard, target, side_effect=error):

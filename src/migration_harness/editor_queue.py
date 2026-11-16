@@ -10,6 +10,9 @@ from subprocess import run
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
+from .files import safe_target
+from .run_records import lock_run_record, replace_run_record
+
 EDITOR_TARGET_SUFFIXES = frozenset({".cs", ".cshtml"})
 EDIT_BYTES = 8 * 1024 * 1024
 QUEUE_PHASES = {"junie_running", "editor_checkpoint", "editor_followup", "interrupted", "junie_failed"}
@@ -18,17 +21,15 @@ AGENT_PHASES = QUEUE_PHASES | {"repairing"}
 
 @contextmanager
 def editor_queue(run_path: Path) -> Iterator[dict[str, Any]]:
-    from migration_harness.workflow import _lock_run_record, _replace_run_record
-
     path = run_path / "editor.json"
-    with _lock_run_record(path):
+    with lock_run_record(path):
         if path.is_symlink() or path.with_suffix(".json.tmp").is_symlink():
             raise ValueError("エディタの保存先がシンボリックリンクです。")
         before = path.read_text(encoding="utf-8") if path.exists() else '{"edits": {}, "prompts": []}'
         queue = json.loads(before)
         yield queue
         if queue != json.loads(before):
-            _replace_run_record(path, queue)
+            replace_run_record(path, queue)
 
 
 def editor_text(content: Any, limit: int = EDIT_BYTES) -> str:
@@ -38,9 +39,7 @@ def editor_text(content: Any, limit: int = EDIT_BYTES) -> str:
 
 
 def editor_target(root: Path, target: Path) -> tuple[bytes | None, str]:
-    from migration_harness.workflow import _safe_target
-
-    path = _safe_target(root, target)
+    path = safe_target(root, target)
     try:
         with path.open("rb") as stream:
             data = stream.read(EDIT_BYTES + 1)

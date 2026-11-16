@@ -21,22 +21,28 @@ from urllib.parse import parse_qs, urlsplit
 
 from tomlkit.exceptions import TOMLKitError
 
-from migration_harness.config import load_config
+from migration_harness.capsules import (
+    input_encoding, load_capsule_manifest, migration_php_encodings, pinned_php_sources, read_pinned_php,
+)
+from migration_harness.config import load_config, target_paths
 from migration_harness.diff_viewer import _inside_file, create_snapshot, review_html, snapshot_bytes
-from migration_harness.editor_queue import AGENT_PHASES, EDITOR_TARGET_SUFFIXES, EDIT_BYTES, QUEUE_PHASES, add_prompt, editor_queue, editor_target, editor_text, record_operator_edit
+from migration_harness.editor_queue import (
+    AGENT_PHASES, EDIT_BYTES, EDITOR_TARGET_SUFFIXES, QUEUE_PHASES,
+    add_prompt, editor_queue, editor_target, editor_text, record_operator_edit,
+)
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
-from migration_harness.files import harness_asset
-from migration_harness.timings import freeze_timings
+from migration_harness.files import harness_asset, safe_target
 from migration_harness.review_anchors import generate_anchors
+from migration_harness.run_records import load_saved_run, run_observer
 from migration_harness.settings_form import build_settings_draft
+from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
-    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _load_saved_run, _review_log, _safe_target,
-    _save_build_review_edit, _target_paths, build_failure_review, can_resume_run,
-    _input_encoding, _is_php_input, _load_capsule_manifest, _pinned_php_sources, _read_pinned_php,
-    migration_ledger, prepare_run, resume_with_junie,
-    review_checker, run_observer, run_with_junie, worktree_source_lock,
+    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _review_log, _save_build_review_edit,
+    build_failure_review, can_resume_run, migration_ledger, prepare_run, resume_with_junie,
+    review_checker, run_with_junie,
 )
+from migration_harness.worktree_targets import worktree_source_lock
 
 
 PROGRESS_FIELDS = (
@@ -339,13 +345,13 @@ class Dashboard:
                     if action is not None and action.get("run_id") != run_id:
                         raise ValueError("表示中の実行が変わりました。")
                     if run_id and state.get("worktree_path"):
-                        run_path, _, _, _ = _load_saved_run(config, run_id)
+                        run_path, _, _, _ = load_saved_run(config, run_id)
                         with editor_queue(run_path) as queue:
                             with dashboard.condition:
                                 state = dashboard.state
                                 if state.get("run_id") != run_id:
                                     raise ValueError("表示中の実行が変わりました。")
-                                _, _, record, _ = _load_saved_run(config, run_id)
+                                _, _, record, _ = load_saved_run(config, run_id)
                                 timing = _prompt_timing(config, state, run_path, record)
                                 if action is not None:
                                     if timing is None:
@@ -364,15 +370,13 @@ class Dashboard:
                 try:
                     if not run_id or query.get("run_id", [None])[0] != run_id:
                         raise ValueError("表示中の実行が変わりました。")
-                    run_path, _, _, _ = _load_saved_run(config, run_id)
-                    capsule, manifest = _load_capsule_manifest(run_path)
-                    pinned = _pinned_php_sources(manifest)
+                    run_path, _, _, _ = load_saved_run(config, run_id)
+                    capsule, manifest = load_capsule_manifest(run_path)
+                    pinned = pinned_php_sources(manifest)
                     legacy: dict[str, str] = {}
                     if pinned is None:
-                        for part in manifest["parts"]:
-                            for entry in part["sources"]:
-                                if _is_php_input(entry):
-                                    legacy.setdefault(Path(entry["path"]).as_posix(), entry["encoding"])
+                        for path, encoding in migration_php_encodings(manifest).items():
+                            legacy.setdefault(Path(path).as_posix(), encoding)
                     sources = {Path(entry["path"]).as_posix(): entry for entry in (pinned or [])}
                     names = list(sources if pinned is not None else legacy)
                     name = query.get("source", names[:1] or [None])[0]
@@ -383,10 +387,10 @@ class Dashboard:
                     try:
                         if name in sources:
                             entry = sources[name]
-                            content = _read_pinned_php(capsule, entry).decode(entry["encoding"])
+                            content = read_pinned_php(capsule, entry).decode(entry["encoding"])
                         elif name is not None:
                             path = _inside_file(Path(config["project_root"]).resolve(), name)
-                            content = path.read_text(encoding=_input_encoding(path, legacy[name]))
+                            content = path.read_text(encoding=input_encoding(path, legacy[name]))
                     except (OSError, ValueError, LookupError) as exc:
                         error = format_error(exc)
                     payload = {"sources": names, "source": name, "content": content, "error": error}
@@ -406,13 +410,13 @@ class Dashboard:
                     else:
                         if action is not None and action.get("run_id") != run_id:
                             raise ValueError("表示中の実行が変わりました。")
-                        run_path, _, _, _ = _load_saved_run(config, run_id)
+                        run_path, _, _, _ = load_saved_run(config, run_id)
                         with editor_queue(run_path) as queue:
                             state = dashboard.state
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
-                            _, worktree, record, unit = _load_saved_run(config, run_id)
-                            targets = tuple(path for path in _target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
+                            _, worktree, record, unit = load_saved_run(config, run_id)
+                            targets = tuple(path for path in target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
                             names = [path.as_posix() for path in targets]
                             name = query.get("target", names[:1] or [None])[0]
                             if action is not None and action.get("kind") == "save":
@@ -492,7 +496,7 @@ class Dashboard:
                     self.send_body(409, "text/plain; charset=utf-8", "現在の実行から確認画面を開き直してください。".encode())
                     return
                 try:
-                    run_path, _, record, _ = _load_saved_run(current_config, run_id)
+                    run_path, _, record, _ = load_saved_run(current_config, run_id)
                     if record["status"] not in {"checker_needs_review", "checker_failed"}:
                         raise ValueError("チェッカーの結果が変わりました。確認画面を開き直してください。")
                     if query.get("download") != ["1"]:
@@ -500,7 +504,7 @@ class Dashboard:
                         body = json.dumps({"output": output, "truncated": truncated}, ensure_ascii=False).encode()
                         self.send_body(200, "application/json; charset=utf-8", body)
                         return
-                    path = _safe_target(run_path, Path("checker.log"))
+                    path = safe_target(run_path, Path("checker.log"))
                     if not path.is_file():
                         raise ValueError("チェッカーの出力ファイルが見つかりません。")
                     stream = path.open("rb")
@@ -547,7 +551,7 @@ class Dashboard:
                     runs = []
                     for record_path in newest:
                         try:
-                            _, _, record, _ = _load_saved_run(workspace_config, record_path.parent.name)
+                            _, _, record, _ = load_saved_run(workspace_config, record_path.parent.name)
                         except _ERRORS:
                             continue
                         keys = ("run_id", "unit_id", "created_at", "token_usage") if include_usage else ("run_id", "unit_id")
@@ -833,7 +837,7 @@ def run_dashboard(
         view.publish({"status": "preparing", "unit_id": unit_id})
     elif run_id is not None:
         try:
-            _, _, saved, _ = _load_saved_run(config, run_id)
+            _, _, saved, _ = load_saved_run(config, run_id)
             view.observe(saved)
             view.ready(config, saved)
         except _ERRORS as exc:
@@ -870,7 +874,7 @@ def run_dashboard(
                                 and not view.state.get("worktree_path"))
             if failed_run_id and not preparation_only:
                 try:
-                    _, _, failed, _ = _load_saved_run(config, failed_run_id)
+                    _, _, failed, _ = load_saved_run(config, failed_run_id)
                     view.observe(failed)
                     view.ready(config, failed)
                 except _ERRORS as load_error:
@@ -942,7 +946,7 @@ def run_dashboard(
                     continue
                 try:
                     if action["action"] in ("open-run", "resume-run"):
-                        _, _, result, _ = _load_saved_run(config, action["run_id"])
+                        _, _, result, _ = load_saved_run(config, action["run_id"])
                         view.observe(result)
                         if action["action"] == "resume-run":
                             result = execute(resume_with_junie, config, action["run_id"])
@@ -950,7 +954,7 @@ def run_dashboard(
                     elif action["action"] in ("prepare", "run"):
                         if action["action"] == "prepare":
                             prepared = execute(prepare_run, config, action["unit_id"])
-                            _, _, result, _ = _load_saved_run(config, prepared["run_id"])
+                            _, _, result, _ = load_saved_run(config, prepared["run_id"])
                         else:
                             result = execute(run_with_junie, config, action["unit_id"])
                         view.ready(config, result)

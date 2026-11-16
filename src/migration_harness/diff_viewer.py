@@ -8,11 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from migration_harness.files import sha256_file
-from migration_harness.workflow import (
-    _input_encoding, _is_php_input, _load_capsule_manifest, _load_saved_run, _pinned_php_sources, _read_pinned_php,
-    worktree_source_lock,
+from migration_harness.capsules import (
+    input_encoding, load_capsule_manifest, migration_php_encodings, pinned_php_sources, read_pinned_php,
 )
+from migration_harness.files import sha256_file
+from migration_harness.run_records import load_saved_run
+from migration_harness.worktree_targets import worktree_source_lock
 
 
 def _inside_file(root: Path, relative: str) -> Path:
@@ -57,19 +58,14 @@ def capture_workspace(
 ) -> tuple[Path, dict[str, Any]]:
     """Runの参照PHPと移行先をそろえて読み、比較時点の内容を固定する。"""
     with worktree_source_lock:
-        run_path, worktree, record, unit = _load_saved_run(config, run_id)
+        run_path, worktree, record, unit = load_saved_run(config, run_id)
         if record.get("target_apply_pending"):
             raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
-        capsule_path, manifest = _load_capsule_manifest(run_path)
-        # 共通の参考PHPも固定されるため、比較対象は台帳と同じカプセルの移行範囲から選ぶ。
-        encodings: dict[str, str] = {}
-        for part in manifest["parts"]:
-            for source in part["sources"]:
-                if _is_php_input(source):
-                    encodings.setdefault(source["path"], source["encoding"])
+        capsule_path, manifest = load_capsule_manifest(run_path)
+        encodings = migration_php_encodings(manifest)
         if not encodings:
             raise ValueError("この実行の移行対象にPHPがありません。")
-        pinned = _pinned_php_sources(manifest)
+        pinned = pinned_php_sources(manifest)
         sources = []
         legacy_paths = []
         if pinned is None:
@@ -116,13 +112,13 @@ def capture_workspace(
         source_hashes = {}
         left_files = []
         for path, name, encoding in legacy_paths:
-            encoding = _input_encoding(path, encoding)
+            encoding = input_encoding(path, encoding)
             content = path.read_bytes()
             source_hashes[path] = hashlib.sha256(content).hexdigest()
             text = content.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
             left_files.append((Path(name).as_posix(), text))
         for source in sources:
-            text = _read_pinned_php(capsule_path, source).decode(source["encoding"])
+            text = read_pinned_php(capsule_path, source).decode(source["encoding"])
             left_files.append((Path(source["path"]).as_posix(), text.replace("\r\n", "\n").replace("\r", "\n")))
         right_files = []
         for name in targets:
@@ -139,7 +135,7 @@ def capture_workspace(
         contents_changed = any(sha256_file(path) != digest for path, digest in source_hashes.items())
         # 外部のエディターと競合した場合も、不揃いなスナップショットを保存しない。
         after = [_file_version(path) for path in paths]
-        _, _, latest, _ = _load_saved_run(config, run_id)
+        _, _, latest, _ = load_saved_run(config, run_id)
         if contents_changed or before != after or any(
             record.get(key) != latest.get(key) for key in ("status", "target_apply_pending")
         ):
@@ -198,7 +194,7 @@ def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> byt
     """比較IDから当該Runに属する保存済みJSONだけを読み出す。"""
     if re.fullmatch(r"[a-f0-9]{32}", snapshot_id) is None:
         raise ValueError("スナップショットIDが無効です。")
-    run_path, _, _, _ = _load_saved_run(config, run_id)
+    run_path, _, _, _ = load_saved_run(config, run_id)
     content = _inside_file(run_path, f"review-snapshots/{snapshot_id}.json").read_bytes()
     payload = json.loads(content)
     snapshot = payload.get("snapshot") if isinstance(payload, dict) else None

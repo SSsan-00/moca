@@ -30,3 +30,13 @@ def sha256_file(path: Path) -> str:
         while chunk := stream.read(64 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def safe_target(root: Path, relative: Path) -> Path:
+    """作業場所の内側にある通常ファイルのパスを返す。新規作成前のパスも許可する。"""
+    target = root / relative
+    if has_symlink_component(root, relative) or not target.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"target escapes its workspace or is a symlink: {relative}")
+    if target.exists() and not target.is_file():
+        raise ValueError(f"target is not a regular file: {relative}")
+    return target

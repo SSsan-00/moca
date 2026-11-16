@@ -9,7 +9,7 @@ from threading import Thread
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import workflow
+from migration_harness import run_records, workflow
 from migration_harness.dashboard import Dashboard
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope, run_process
 from migration_harness.timings import freeze_timings, update_timings
@@ -106,10 +106,10 @@ class ExecutionIntegrationTests(HarnessCase):
             clock += 7 if command[0] == "dotnet" else 11
             return subprocess.CompletedProcess(command, 0)
 
-        observer = workflow.run_observer.set(observe)
-        self.addCleanup(workflow.run_observer.reset, observer)
+        observer = run_records.run_observer.set(observe)
+        self.addCleanup(run_records.run_observer.reset, observer)
         with (
-            patch.object(workflow, "update_timings",
+            patch.object(run_records, "update_timings",
                          side_effect=lambda record, **kwargs: update_timings(record, now=clock, **kwargs)),
             patch.object(workflow.junie_cli, "require_interactive_cli"),
             patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate),
@@ -174,7 +174,7 @@ class ExecutionIntegrationTests(HarnessCase):
         record = json.loads(record_path.read_bytes())
         (Path(result["worktree_path"]) / "Page.cs").write_text("class Page {}", encoding="utf-8")
         record.update(status="junie_finished", completed_capsules=1)
-        workflow._write_run_record(record_path, record)
+        run_records.write_run_record(record_path, record)
         control = ExecutionControl(lambda _event: None)
         control.cancelled.set()
         with control_scope(control), self.assertRaises(workflow.RunInterrupted):

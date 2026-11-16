@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from migration_harness import cli, dashboard, junie_cli, workflow
+from migration_harness import cli, dashboard, junie_cli, run_records, workflow
 from migration_harness.settings_form import build_settings_draft
 
 
@@ -60,13 +60,13 @@ class JunieConnectionTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             run_path = Path(directory)
             view = dashboard.Dashboard()
-            handle = workflow.run_observer.set(view.observe)
+            handle = run_records.run_observer.set(view.observe)
             record = {"run_id": "run", "status": "checker_succeeded"}
             try:
-                workflow._write_run_record(run_path / "run.json", record)
+                run_records.write_run_record(run_path / "run.json", record)
                 view.publish({**view.state, "ready": False, "generating_anchors": True})
                 for delta in ([18, 4, 5, 3, 1], [2, 1, 0, 0, 1]):
-                    report = workflow.junie_usage_recorder(run_path, "anchors")
+                    report = run_records.junie_usage_recorder(run_path, "anchors")
                     report([0, 0, 0, 0, 0])
                     report(delta)
                     self.assertTrue(view.state["generating_anchors"])
@@ -77,7 +77,7 @@ class JunieConnectionTests(unittest.TestCase):
                 }])
                 self.assertEqual(view.state["token_usage"], loaded["token_usage"])
             finally:
-                workflow.run_observer.reset(handle)
+                run_records.run_observer.reset(handle)
 
     def test_only_current_tasks_terminal_connection_failure_retries(self):
         failure = {"kind": "SessionA2uxEvent", "taskId": "our-task", "event": {
