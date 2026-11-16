@@ -5,3 +5,6 @@ __pycache__/
 # ローカルのRunや設定には、移行元コードや利用者のパスが含まれる場合がある。
 .migration-harness/
 harness.local.toml
+# 案件ごとの原文・整理済みルールはローカルに保持する。
+rule-workspace/*
+!rule-workspace/README.md
