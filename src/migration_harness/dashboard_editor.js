@@ -374,6 +374,10 @@
 
   function updateChat() {
     renderPrompts();
+    const question = state.operator_question;
+    setText("#editor-operator-question", question ? "Junie からの確認\n" + question
+      + "\n回答を Junie に送ってから、進捗タブで実行を再開してください。" : "");
+    find("#editor-operator-question").hidden = !question;
     const showAgent = state.source === "agent-workspace";
     const snapshot = progress();
     const activity = find("#editor-junie-activity");

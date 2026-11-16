@@ -23,7 +23,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import _inside_file, create_snapshot, review_html, snapshot_bytes
-from migration_harness.editor_queue import AGENT_PHASES, EDITOR_TARGET_SUFFIXES, EDIT_BYTES, QUEUE_PHASES, add_prompt, editor_queue, editor_target, editor_text
+from migration_harness.editor_queue import AGENT_PHASES, EDITOR_TARGET_SUFFIXES, EDIT_BYTES, QUEUE_PHASES, add_prompt, editor_queue, editor_target, editor_text, record_operator_edit
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset
@@ -464,6 +464,7 @@ class Dashboard:
                                             _save_build_review_edit(worktree, targets, {
                                                 "target": name, "version": hashlib.sha256(original).hexdigest(), "content": draft,
                                             })
+                                        record_operator_edit(queue, name, content, draft)
                                         content = draft
                                 else:
                                     raise ValueError("現在の工程ではこの操作を受け付けられません。")
@@ -474,7 +475,7 @@ class Dashboard:
                                 "exists": original is not None, "read_error": read_error,
                                 "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,
                                 "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
-                                "status": phase,
+                                "status": phase, "operator_question": record.get("operator_question"),
                             }
                     self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 except _ERRORS as exc:

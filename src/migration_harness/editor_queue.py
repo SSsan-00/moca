@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import secrets
 from contextlib import contextmanager
+from difflib import unified_diff
 from pathlib import Path
 from subprocess import run
 from tempfile import TemporaryDirectory
@@ -68,6 +69,13 @@ def merge_edit(base: str, draft: str, current: str) -> str | None:
     if 0 < merged.returncode <= 127 and merged.stdout:
         return None
     raise ValueError("C# の変更を合流できませんでした。Git と対象ファイルを確認してください。")
+
+
+def record_operator_edit(queue: dict[str, Any], target: str, before: str, after: str) -> None:
+    if before == after:
+        return
+    diff = "".join(unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), n=2))
+    queue.setdefault("operator_edits", {}).setdefault(target, []).append(diff)
 
 
 def add_prompt(queue: dict[str, Any], action: dict[str, Any]) -> None:

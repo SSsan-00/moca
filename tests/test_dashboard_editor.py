@@ -240,6 +240,60 @@ class DashboardEditorTests(HarnessCase):
         self.assertIn("Check the date", calls[1])
         self.assertEqual(sum("Check the date" in prompt for prompt in calls), 1)
 
+    def test_human_edits_are_shared_and_question_pauses_before_overwriting(self):
+        (self.project / "source.php").write_text("<?php /* " + "x" * 2100 + " */", encoding="utf-8")
+        self.commit_project()
+        saved = BASE.replace("Last = 1", "Last = 3")
+        proposed = saved.replace("Last = 3", "Last = 4")
+        question = "Page.cs の Last は 3 のままでよいですか？"
+        reason = "Page.cs: Last を 4 に変更。担当者が確認した期待値に合わせた。"
+        calls = []
+
+        def junie(command, completion, token, targets, **kwargs):
+            calls.append(command[-1])
+            if len(calls) == 1:
+                self.queue_edit(self.request(), saved)
+                targets[0].write_text(BASE.replace("First = 1", "First = 2"), encoding="utf-8")
+            else:
+                inputs = completion.parent / ".migration-materials/operator-edits.json"
+                history = json.loads(inputs.read_text(encoding="utf-8"))["Page.cs"]
+                self.assertEqual(len(history), 1)
+                self.assertIn("+    int Last = 3;", history[0])
+                self.assertNotIn("+    int First = 2;", history[0])
+                self.assertIn("Preserve the human's work", command[-1])
+                report = completion.parent / f".migration-scratch/operator-review-{token}.json"
+                if len(calls) == 2:
+                    report.write_text(json.dumps({"question": question}), encoding="utf-8")
+                    targets[0].write_text(proposed, encoding="utf-8")
+                elif len(calls) == 3:
+                    self.assertIn(question, command[-1])
+                    self.assertIn("4 でお願いします", (completion.parent / f"checker-findings-{token}-operator.txt")
+                                  .read_text(encoding="utf-8"))
+                    targets[0].write_text(proposed.replace("First = 1", "First = 2"), encoding="utf-8")
+                    report.write_text(json.dumps({"fixes": [reason]}), encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=junie), \
+                patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result):
+            result = workflow.run_with_junie(self.settings, "sample")
+            self.assertEqual(result["status"], "editor_checkpoint")
+            self.assertEqual(result["completed_capsules"], 1)
+            self.assertEqual(self.request()["operator_question"], question)
+            for root in (result["agent_workspace_path"], result["worktree_path"]):
+                self.assertEqual((Path(root) / "Page.cs").read_text(encoding="utf-8-sig"),
+                                 saved.replace("First = 1", "First = 2"))
+            unanswered = workflow.resume_with_junie(self.settings, result["run_id"])
+            self.assertEqual(unanswered["status"], "editor_checkpoint")
+            self.assertEqual(len(calls), 2)
+            self.request("prompts", {"run_id": result["run_id"], "text": "4 でお願いします"})
+            workflow.resume_with_junie(self.settings, result["run_id"])
+            self.assertIsNone(self.request()["operator_question"])
+            run_record = json.loads((Path(result["run_path"]) / "run.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_record["operator_edit_fixes"], [reason])
+            self.assertEqual((Path(result["worktree_path"]) / "Page.cs").read_text(encoding="utf-8-sig"),
+                             proposed.replace("First = 1", "First = 2"))
+
     def test_progress_accepts_a_prompt_during_build_and_uses_the_latest_file_on_resume(self):
         phases = []
         changed = BASE.replace("Last = 1", "Last = 9")
