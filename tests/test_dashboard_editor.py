@@ -57,6 +57,135 @@ class DashboardEditorTests(HarnessCase):
             "resolve": resolve,
         })
 
+    def finished_run(self):
+        def junie(command, completion, token, targets, **kwargs):
+            completion.write_text(token)
+            return 0
+
+        def verify(config, unit, result, record):
+            record.update(status="build_succeeded", build_exit_code=0)
+            run_records.write_run_record(Path(result["run_path"]) / "run.json", record)
+            return {**result, "status": "build_succeeded"}
+
+        with patch.object(junie_cli, "require_interactive_cli"), \
+                patch.object(junie_cli, "run_interactive", side_effect=junie), \
+                patch.object(workflow, "_verify_worktree", side_effect=verify):
+            result = workflow.run_with_junie(self.settings, "sample")
+        self.view.ready(self.settings, result)
+        return result
+
+    def test_edits_can_be_saved_during_build_check_repair_scripts_stopping_and_anchor_generation(self):
+        result = self.finished_run()
+        run_path, worktree, record, _ = run_records.load_saved_run(self.settings, result["run_id"])
+        original = (worktree / "Page.cs").read_bytes()
+        cases = [(phase, {}) for phase in ("building", "checking", "repairing", "script_running")]
+        cases += [("junie_running", {"stop_requested": True}),
+                  ("build_succeeded", {"generating_anchors": True})]
+        for index, (phase, flags) in enumerate(cases, 2):
+            with self.subTest(phase=phase, flags=flags):
+                record["status"] = phase
+                run_records.write_run_record(run_path / "run.json", record)
+                self.view.begin_operation()
+                self.view.publish({**self.view.state, **flags})
+                state = self.request()
+                self.assertTrue(state["can_save"])
+                self.assertEqual(state["save_timing"], "resume")
+                text = BASE.replace("Last = 1", f"Last = {index}")
+                saved = self.queue_edit(state, text)
+                self.assertEqual(saved["edit"]["content"], text)
+                self.assertEqual(self.request()["edit"], saved["edit"])
+                self.assertEqual((worktree / "Page.cs").read_bytes(), original)
+                self.assertEqual((run_path / "agent-workspace/Page.cs").read_bytes(), original)
+                with self.assertRaises(HTTPError) as stale:
+                    self.queue_edit(state, "stale edit")
+                self.assertEqual(stale.exception.code, 409)
+                stale.exception.close()
+
+    def test_build_time_edits_remain_saved_when_idle_and_merge_on_resume_without_junie(self):
+        result = self.finished_run()
+        run_path, worktree, record, _ = run_records.load_saved_run(self.settings, result["run_id"])
+        record["status"] = "building"
+        run_records.write_run_record(run_path / "run.json", record)
+        self.view.begin_operation()
+        self.queue_edit(self.request(), BASE.replace("Last = 1", "Last = 3"))
+        record["status"] = "build_succeeded"
+        run_records.write_run_record(run_path / "run.json", record)
+        self.view.ready(self.settings, record)
+        state = self.request()
+        self.assertTrue(state["queued"])
+        saved = self.queue_edit(state, BASE.replace("Last = 1", "Last = 4"))
+        self.assertEqual(saved["save_timing"], "resume")
+        current = BASE.replace("First = 1", "First = 2")
+        (worktree / "Page.cs").write_bytes(current.replace("\n", "\r\n").encode("utf-8-sig"))
+
+        def verify(config, unit, result, record):
+            self.assertEqual((worktree / "Page.cs").read_bytes(),
+                             current.replace("Last = 1", "Last = 4").replace("\n", "\r\n").encode("utf-8-sig"))
+            self.assertIsNone(self.request()["edit"])
+            return result
+
+        self.view.begin_operation()
+        with patch.object(junie_cli, "require_interactive_cli", side_effect=AssertionError("Junie is not needed")), \
+                patch.object(junie_cli, "run_interactive", side_effect=AssertionError("Junie is not needed")), \
+                patch.object(workflow, "_verify_worktree", side_effect=verify) as verified:
+            workflow.resume_with_junie(self.settings, result["run_id"])
+        verified.assert_called_once()
+
+    def test_operation_starting_during_save_keeps_the_edit_without_changing_running_inputs(self):
+        result = self.finished_run()
+        state = self.request()
+        read_target = dashboard.editor_target
+
+        def start_operation(*args):
+            value = read_target(*args)
+            self.view.begin_operation()
+            return value
+
+        with patch.object(dashboard, "editor_target", side_effect=start_operation):
+            saved = self.queue_edit(state, BASE.replace("Last = 1", "Last = 4"))
+        self.assertEqual(saved["edit"]["content"], BASE.replace("Last = 1", "Last = 4"))
+        self.assertEqual(saved["save_timing"], "resume")
+        self.assertEqual((Path(result["worktree_path"]) / "Page.cs").read_text(encoding="utf-8-sig"), BASE)
+
+    def test_missing_targets_can_be_saved_when_idle_or_before_junie_starts(self):
+        for busy in (False, True):
+            with self.subTest(busy=busy):
+                name = f"Pages/New{busy}.cs"
+                self.settings.update(self.config(f'target = "{name}"'))
+                result = workflow.prepare_run(self.settings, "sample")
+                _, _, record, _ = run_records.load_saved_run(self.settings, result["run_id"])
+                self.view.ready(self.settings, record)
+                if busy:
+                    self.view.begin_operation()
+                state = self.request()
+                self.assertFalse(state["exists"])
+                self.assertTrue(state["can_save"])
+                text = "// 日本語の下書き\nclass Page {}\n"
+                saved = self.queue_edit(state, text, target=name)
+                target = Path(result["worktree_path"]) / name
+                if busy:
+                    self.assertFalse(target.exists())
+                    self.assertEqual(self.request()["edit"]["content"], text)
+
+                    def junie(command, completion, token, targets, **kwargs):
+                        self.assertEqual(targets[0].read_text(), text)
+                        completion.write_text(token)
+                        return 0
+
+                    with patch.object(junie_cli, "require_interactive_cli"), \
+                            patch.object(junie_cli, "run_interactive", side_effect=junie), \
+                            patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result):
+                        workflow.resume_with_junie(self.settings, result["run_id"])
+                else:
+                    self.assertTrue(saved["exists"])
+                    self.assertIsNone(saved["edit"])
+                self.assertEqual(target.read_text(), text)
+                with self.assertRaisesRegex(ValueError, "更新"):
+                    workflow._save_build_review_edit(target.parents[1], (Path(name),), {
+                        "target": name, "version": None, "content": "overwrite",
+                    })
+                self.assertEqual(target.read_text(), text)
+
     def test_http_prompt_reaches_active_junie_before_capsule_finishes_and_is_applied_once(self):
         self.view.begin_operation()
         received = []

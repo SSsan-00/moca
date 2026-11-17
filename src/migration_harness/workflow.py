@@ -599,10 +599,8 @@ def _apply_editor_edits(
         text = None if edit["status"] == "conflict" else merge_edit(edit["base"], edit["content"], current)
         if text is None:
             edit["status"] = "conflict"
-        elif original is not None:
-            merged[name] = (hashlib.sha256(original).hexdigest(), current, text)
         else:
-            raise ValueError("Junie の作業領域に移行先ファイルがありません。")
+            merged[name] = (hashlib.sha256(original).hexdigest() if original is not None else None, current, text)
     # ひとつでも競合していれば、他のファイルも書き換えずに利用者の解消を待つ。
     if any(edit["status"] == "conflict" for edit in edits.values()):
         record.update(status="editor_checkpoint", error="移行先ファイルの編集が競合しました。エディタで解消してから再開してください。")
@@ -1713,11 +1711,18 @@ def _build_error_lines(log: str) -> list[str]:
     return list(dict.fromkeys(line for line in lines if _BUILD_ERROR.search(line)))
 
 
-def _save_build_review_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, str]) -> None:
+def _save_build_review_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, Any]) -> None:
     with worktree_source_lock:
-        path, original, _ = _build_review_target(worktree, targets, edit["target"])
+        if edit["version"] is None:
+            if edit["target"] not in {target.as_posix() for target in targets}:
+                raise ValueError("設定された移行対象ファイルを選んでください。")
+            path = safe_target(worktree, Path(edit["target"]))
+            original, version = b"", target_hash(path)
+        else:
+            path, original, _ = _build_review_target(worktree, targets, edit["target"])
+            version = hashlib.sha256(original).hexdigest()
         # 画面を開いてから更新されたファイルを、古い編集内容で上書きしない。
-        if hashlib.sha256(original).hexdigest() != edit["version"]:
+        if version != edit["version"]:
             raise ValueError("編集を開いた後に対象ファイルが更新されました。最新の内容を読み込み、編集を反映し直してください。")
         # ブラウザーから来る改行を元の形式にそろえ、UTF-8 BOMの有無も維持する。
         text = edit["content"].replace("\r\n", "\n").replace("\r", "\n")
@@ -1725,17 +1730,23 @@ def _save_build_review_edit(worktree: Path, targets: tuple[Path, ...], edit: dic
         data = text.encode("utf-8-sig" if original.startswith(codecs.BOM_UTF8) else "utf-8")
         if len(data) > BUILD_REVIEW_EDIT_BYTES:
             raise ValueError("編集後のファイルが 8 MiB を超えています。作業ツリーで編集してください。")
-        if data == original:
+        if data == original and version is not None:
             return
         # 同じディレクトリに書き終えてから置き換え、保存途中の内容が見えないようにする。
+        path.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
             temporary = Path(stream.name)
         try:
             temporary.write_bytes(data)
-            shutil.copymode(path, temporary)
+            if version is not None:
+                shutil.copymode(path, temporary)
             if target_hash(safe_target(worktree, Path(edit["target"]))) != edit["version"]:
                 raise ValueError("対象ファイルが更新されました。最新の内容を読み込んでください。")
-            temporary.replace(path)
+            if version is None:
+                # 新規ファイルは、保存の間に別の処理が作成した内容を上書きしない。
+                os.link(temporary, path)
+            else:
+                temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -2452,8 +2463,10 @@ def resume_with_junie(
             record.pop("script_phase", None)
         with editor_queue(run_path) as queue:
             pending = any(prompt["status"] != "sent" for prompt in queue["prompts"])
-        if pending:
-            junie_cli.require_interactive_cli()
+            pending_edits = bool(queue["edits"])
+        if pending or pending_edits:
+            if pending:
+                junie_cli.require_interactive_cli()
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
         # 検証済みRunでも、再開時は現行ファイルをビルドから確認する。
         return _verify_worktree(config, unit, result, record)

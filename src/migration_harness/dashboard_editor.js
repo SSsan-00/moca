@@ -259,11 +259,12 @@
     save.textContent = conflict ? "競合を解消して保存" : "保存";
     setText("#editor-save-status", state.read_error ? "ファイルを表示できません"
       : dirty() ? "未保存の変更あり"
-      : !state.exists ? "移行先ファイルの作成待ち"
       : conflict ? "競合の解消待ち"
-      : state.edit ? "保存済み・ファイルへ反映待ち" : "ファイルに反映済み");
-    setText("#editor-save-timing", !state.can_save ? "保存できる工程まで、入力内容は下書きに残ります。" : state.queued
-      ? "Junie が現在の作業区間を終えたらファイルに反映します。" : "");
+      : state.edit ? "保存済み・ファイルへ反映待ち"
+      : !state.exists ? "移行先ファイルは未作成です" : "ファイルに反映済み");
+    setText("#editor-save-timing", !state.can_save ? "保存先を読み込めません。接続とエラー内容を確認してください。"
+      : state.save_timing === "checkpoint" ? "編集は保存できます。現在の作業区間が終わるとファイルに反映します。"
+      : state.save_timing === "resume" ? "編集は保存できます。同じ実行を再開するとファイルに反映します。" : "");
   }
 
   async function loadPhp(source) {
