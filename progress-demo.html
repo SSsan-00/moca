@@ -1027,7 +1027,6 @@
                 <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj">
                 <label for="settings-checker-command">チェッカーの実行ファイルと引数</label>
                 <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
-                <p class="settings-hint">専用のチェッカーを指定していない移行単位で使う共通設定です。</p>
                 <label for="settings-checker-repairs">自動修正回数</label>
                 <input id="settings-checker-repairs" data-section="checker" data-setting="max_repair_attempts" inputmode="numeric" autocomplete="off" placeholder="2（既定）">
               </fieldset>
@@ -1053,14 +1052,11 @@
                   </div>
                 </div>
                 <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
-                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" aria-describedby="settings-unit-targets-hint" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
-                <p class="settings-hint" id="settings-unit-targets-hint">相対パスはアプリのリポジトリルートが基準です。実行時は作業ツリー内の同じパスに書き込みます。</p>
+                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
                 <label for="settings-unit-draft-imports">仮C#のコピー元（任意・1行に1ファイル）</label>
-                <textarea id="settings-unit-draft-imports" data-setting="draft_imports" rows="2" spellcheck="false" autocomplete="off" aria-describedby="settings-unit-draft-imports-hint" placeholder="C:/migration/draft/Orders.cshtml.cs&#10;C:/migration/draft/Orders.cshtml"></textarea>
-                <p class="settings-hint" id="settings-unit-draft-imports-hint">絶対パス、またはアプリのリポジトリルートからの相対パスを入力します。移行先が複数ある場合は拡張子が一致するファイルに取り込みます。</p>
+                <textarea id="settings-unit-draft-imports" data-setting="draft_imports" rows="2" spellcheck="false" autocomplete="off" placeholder="C:/migration/draft/Orders.cshtml.cs&#10;C:/migration/draft/Orders.cshtml"></textarea>
                 <label for="settings-unit-checker-command">この移行単位のチェッカー（任意）</label>
-                <textarea id="settings-unit-checker-command" class="settings-command" data-setting="checker_command" spellcheck="false" aria-describedby="settings-unit-checker-hint" placeholder="py&#10;-3&#10;tools/check_orders.py"></textarea>
-                <p class="settings-hint" id="settings-unit-checker-hint">実行ファイルと各引数を1行ずつ入力します。空欄ならプロジェクト共通のチェッカーを使います。共通設定も空欄なら実行しません。</p>
+                <textarea id="settings-unit-checker-command" class="settings-command" data-setting="checker_command" spellcheck="false" placeholder="py&#10;-3&#10;tools/check_orders.py"></textarea>
               </div>
             </fieldset>
           </div>
