@@ -44,6 +44,12 @@ from .timings import freeze_timings
 from .worktree_targets import apply_agent_targets, finish_pending_targets, target_hash, worktree_source_lock
 
 
+def _print_progress(message: str) -> None:
+    """端末が表せないパスの文字があっても、移行・ビルドを中断しない。"""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(message.encode(encoding, errors="backslashreplace").decode(encoding), flush=True)
+
+
 class RunInterrupted(KeyboardInterrupt):
     """中断後の案内に使うRun IDを保持する。"""
 
@@ -198,7 +204,7 @@ def _run_script_phase(
         record.setdefault("script_logs", {})[phase] = str(log_path)
         record.update(status="script_running", script_phase=phase)
         write_run_record(record_path, record)
-    print(f"Running {phase} scripts in {cwd} (log: {log_path})", flush=True)
+    _print_progress(f"Running {phase} scripts in {cwd} (log: {log_path})")
     number = start + 1
     invocation = commands[start] if start < len(commands) else []
     try:
@@ -1139,7 +1145,7 @@ def _build_worktree(
                 "checker_success_message"):
         record.pop(key, None)
     write_run_record(record_path, record)
-    print(f"Building in {worktree} (log: {log_path})", flush=True)
+    _print_progress(f"Building in {worktree} (log: {log_path})")
     report_activity(
         "再ビルドを実行しています" if record.get("build_attempt_seconds") else "ビルドを実行しています",
         kind="phase", detail="コンパイラで構文・型を確認しています。ビルドが成功してからチェッカーへ進みます。",
@@ -1217,7 +1223,7 @@ def _run_checker(
     record.pop("checker_review_reason", None)
     record.pop("checker_success_message", None)
     write_run_record(record_path, record)
-    print(f"Running checker in {result['worktree_path']} (log: {log_path})", flush=True)
+    _print_progress(f"Running checker in {result['worktree_path']} (log: {log_path})")
     report_activity("独自チェッカーで確認しています", kind="phase",
                     detail="ビルドは成功しました。設定済みのチェッカーの結果を待っています。")
     try:
@@ -2196,7 +2202,7 @@ def _run_verification(
             attempt = len(history) + 1
             checker_log = safe_target(run_path, Path(f"checker-before-repair-{attempt}.log"))
             shutil.copyfile(log, checker_log)
-            print(f"Junie repair {attempt}/{limit} for {', '.join(path.as_posix() for path in repair_targets)}", flush=True)
+            _print_progress(f"Junie repair {attempt}/{limit} for {', '.join(path.as_posix() for path in repair_targets)}")
             details = {"findings": sorted(fingerprints), "checker_log_path": str(checker_log)}
             if use_raw_output:
                 details["raw_checker_output"] = True

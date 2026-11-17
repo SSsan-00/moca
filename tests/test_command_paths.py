@@ -1,6 +1,8 @@
 import json
+import io
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,7 +51,12 @@ class CommandPathsTests(HarnessCase):
                 return subprocess.CompletedProcess(command, 0)
             return execute(command, **kwargs)
 
-        with patch.object(workflow, "run_process", side_effect=process):
+        # 英語設定のWindowsへリダイレクトした標準出力でも、日本語パスで処理を止めない。
+        with (
+            io.TextIOWrapper(io.BytesIO(), encoding="cp1252") as terminal,
+            redirect_stdout(terminal),
+            patch.object(workflow, "run_process", side_effect=process),
+        ):
             return workflow.resume_with_junie(self.settings, result["run_id"])
 
     def test_commands_expand_for_each_run_and_resume_without_changing_settings(self):
@@ -98,7 +105,7 @@ class CommandPathsTests(HarnessCase):
         execute.assert_not_called()
         self.assertEqual(checked["status"], "checker_failed")
         self.assertIn("[build].project", checked["error"])
-        self.assertIn("[build].project", Path(checked["checker_log_path"]).read_text())
+        self.assertIn("[build].project", Path(checked["checker_log_path"]).read_text(encoding="utf-8"))
 
     def test_before_prepare_rejects_worktree_alias_instead_of_using_original_repository(self):
         self.settings["scripts"] = {"before_prepare": [self.command]}
