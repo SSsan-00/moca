@@ -122,13 +122,13 @@ class Dashboard:
         """停止要求は実行ごとのIDに結び付け、別のRunに持ち越さない。"""
         with self.condition:
             self.control = ExecutionControl(
-                self.activity, on_junie_request=self.show_junie_request,
+                self.activity, on_junie_request=self.show_junie_request, operation_id=secrets.token_hex(16),
                 trusted_junie_workspaces=self.trusted_junie_workspaces,
             )
             state = {key: value for key, value in self.state.items()
                      if key not in {"activity", "phase_activity", "latest_activity", "heartbeat"}}
             self.publish({**state, "ready": False, "cancellable": True,
-                          "operation_id": secrets.token_hex(16), "stop_requested": False})
+                          "operation_id": self.control.operation_id, "stop_requested": False})
 
     def activity(self, entry: dict[str, Any]) -> None:
         with self.condition:

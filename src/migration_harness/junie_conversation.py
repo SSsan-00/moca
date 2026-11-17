@@ -18,6 +18,7 @@ from .worktree_targets import review_target_hash
 
 PENDING = {"received", "clarification", "waiting", "running", "steering"}
 REBUILD = {"build", "build_repair", "checker", "checker_repair"}
+UNCONFIRMED_BUILD = "先行ビルドの終了を確認できません。ログと保存版を確認して指示を送信し直してください。"
 QUERY_INTENTS = {"status", "build_status", "checker_status"}
 BUILD_PHASES = {"building", "build_succeeded", "build_failed"}
 BUILD_TERM = r"(?:ビルド|\b(?:re)?build\b)"
@@ -33,7 +34,7 @@ VERIFICATION_REQUEST = (
     r"(?:\s+again)?\s*(?=[、,。.!！]|$)"
 )
 CONDITIONAL_VERIFICATION = re.compile(
-    r"(?P<condition>[^。.!?、,\n]+?(?:たら|なら|場合(?:は|に)?|次第|てから|(?:た|の|終了|完了)後(?:に)?))"
+    r"(?:^|[。.!?！\n])\s*(?P<condition>[^。.!?、,\n]+?(?:たら|なら|場合(?:は|に)?|次第|てから|(?:た|の|終了|完了)後(?:に)?))"
     r"[、,\s]*(?P<action>.+)", re.DOTALL,
 )
 BUILD_COMPLETION_CONDITION = re.compile(
@@ -73,8 +74,8 @@ def _junie_option(request, text):
 
 
 def _conditional_verification(value):
-    match = CONDITIONAL_VERIFICATION.fullmatch(value)
-    if match and re.search(rf"{BUILD_TERM}|{CHECKER_TERM}", value):
+    match = CONDITIONAL_VERIFICATION.search(value)
+    if match and re.search(rf"{BUILD_TERM}|{CHECKER_TERM}", match[0]):
         return match
     return None
 
@@ -270,10 +271,14 @@ class JunieConversations:
                 "id": identifier, "text": text, "status": "received",
                 "received_at": datetime.now(timezone.utc).isoformat(),
             }
-            if query := _status_intent(unicodedata.normalize("NFKC", text).lower()):
+            value = unicodedata.normalize("NFKC", text).lower()
+            if query := _status_intent(value):
                 entry["query_intent"] = query
             else:
-                request = self.manager.get(run_id).state.get("junie_request")
+                state = self.manager.get(run_id).state
+                if _conditional_verification(value):
+                    entry["predecessor_operation_id"] = state.get("operation_id")
+                request = state.get("junie_request")
                 if request:
                     entry["junie_question"] = request["id"]
                 if request and (option := _junie_option(request, text)) is not None:
@@ -424,6 +429,18 @@ class JunieConversations:
                 else:
                     entry.update(status="waiting", intent=intent)
 
+            if not job and state.get("ready"):
+                code = record.get("build_exit_code")
+                for waiting in history:
+                    if (waiting["status"] != "waiting" or not waiting["intent"].startswith("after_build_")
+                            or waiting.get("predecessor_build_finished")):
+                        continue
+                    operation_id = waiting.get("predecessor_operation_id")
+                    if operation_id and operation_id == record.get("build_operation_id") and type(code) is int and code >= 0:
+                        waiting["predecessor_build_finished"] = True
+                    else:
+                        _finish(waiting, "failed", UNCONFIRMED_BUILD)
+
             entry = next((item for item in history if item["status"] == "waiting"), None)
             if entry is None:
                 return any(item["status"] in PENDING for item in history)
@@ -477,12 +494,6 @@ class JunieConversations:
             mode = intent.removeprefix("stop_").removeprefix("after_build_")
             if mode not in REBUILD or not state.get("ready"):
                 return True
-            if intent.startswith("after_build_"):
-                code = record.get("build_exit_code")
-                # 通常の失敗終了も待機条件を満たす。停止や起動失敗では続行しない。
-                if type(code) is not int or code < 0:
-                    _finish(entry, "failed", "先行ビルドの終了を確認できません。ログと保存版を確認して指示を送信し直してください。")
-                    return True
             if mode.startswith("checker") and checker_command_for_unit(config, unit) is None:
                 _finish(entry, "failed", "チェッカーが設定されていません。設定タブでコマンドを確認してください。")
                 return True
@@ -508,6 +519,9 @@ def run_instruction(config, run_id, identifier):
         entry = next(item for item in queue["conversation"] if item["id"] == identifier)
         if entry["status"] != "waiting":
             raise ValueError("指示は開始済みか終了済みです。履歴を確認してください。")
+        # 旧版で永続化された実行待ちも、照合なしに再開しない。
+        if entry["intent"].startswith("after_build_") and not entry.get("predecessor_build_finished"):
+            raise ValueError(UNCONFIRMED_BUILD)
         entry.update(status="running", message="保存版を照合して検証を開始します。", started_at=datetime.now(timezone.utc).isoformat())
         instruction = entry.copy()
         instruction["intent"] = instruction["intent"].removeprefix("after_build_")

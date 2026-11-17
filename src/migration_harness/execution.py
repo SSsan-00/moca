@@ -28,6 +28,7 @@ class ExecutionControl:
     on_junie_request: Callable[[dict | None], Future[str] | None] | None = None
     trusted_junie_workspaces: set[str] = field(default_factory=set)
     junie_steering: bool = False
+    operation_id: str | None = None
     _build_lock: Lock = field(default_factory=Lock, repr=False)
     _building: bool = False
 
@@ -53,6 +54,11 @@ def control_scope(control: ExecutionControl | None) -> Iterator[None]:
 
 def is_controlled() -> bool:
     return _control.get() is not None
+
+
+def current_operation_id() -> str | None:
+    control = _control.get()
+    return control.operation_id if control is not None else None
 
 
 def junie_dashboard_control() -> ExecutionControl | None:

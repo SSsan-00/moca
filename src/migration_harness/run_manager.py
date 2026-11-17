@@ -229,8 +229,10 @@ class RunManager:
                     raise ValueError("この移行単位は別のRunで実行中または実行待ちです。終了してから再開してください。")
                 if kind == "anchors" and not view.state.get("worktree_path"):
                     raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
-                if kind in {"resume", "resume-run", "build-response"} and not can_resume_run(self.config, view.state):
-                    raise ValueError("このRunは再開できません。新しく実行してください。")
+                if kind in {"resume", "resume-run", "build-response"}:
+                    _, record = load_dashboard_record(self.config, run_id)
+                    if not can_resume_run(self.config, record):
+                        raise ValueError("このRunは再開できません。新しく実行してください。")
                 if kind == "build-response" and view.state.get("status") != "build_failed":
                     raise ValueError("ビルド結果が変わりました。進捗を確認してください。")
                 if kind == "accept" and view.state.get("status") != "checker_needs_review":

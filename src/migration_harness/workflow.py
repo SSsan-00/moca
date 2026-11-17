@@ -34,7 +34,7 @@ from .editor_queue import (
     record_operator_edit,
 )
 from .errors import format_error
-from .execution import build_process_scope, check_cancelled, report_activity, run_process
+from .execution import build_process_scope, check_cancelled, current_operation_id, report_activity, run_process
 from .files import harness_asset, has_symlink_component, safe_target, sha256_file
 from .rule_materials import detail_index, render_guidelines, selected_details
 from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, validate_run_id, write_run_record
@@ -1165,7 +1165,7 @@ def _build_worktree(
     _remember_diagnostic(run_path, record, "checker")
     record.update(status="building", build_exit_code=None, build_log_path=str(log_path))
     for key in ("error", "checker_exit_code", "checker_log_path", "review_file_hashes", "checker_review_reason",
-                "checker_success_message"):
+                "checker_success_message", "build_operation_id"):
         record.pop(key, None)
     write_run_record(record_path, record)
     _print_progress(f"Building in {worktree} (log: {log_path})")
@@ -1192,6 +1192,8 @@ def _build_worktree(
                 log.write((format_error(exc, command=command, cwd=worktree) + "\n").encode("utf-8"))
                 raise
         record["build_exit_code"] = completed.returncode
+        if operation_id := current_operation_id():
+            record["build_operation_id"] = operation_id
         if completed.returncode:
             record["error"] = f"dotnet build exited with code {completed.returncode}"
     except (OSError, ValueError) as exc:
@@ -1845,6 +1847,7 @@ def _run_verification(
     *, request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """毎回ビルドを先に実行し、指摘の状態に応じて修正かレビューに進む。"""
+    _require_saved_checker(config, unit, record)
     run_path = Path(result["run_path"])
     worktree = Path(result["worktree_path"])
     targets = target_paths(unit)
@@ -1871,6 +1874,8 @@ def _run_verification(
                 # 指示の受付と工程変更を直列化し、修正終了間際の送信もビルド前に扱う。
                 if record["status"] == "repairing":
                     record["status"] = "building"
+                # フック中に中断しても、前回のビルドは今回の待機条件を満たさない。
+                record.pop("build_operation_id", None)
                 write_run_record(record_path, record, timing_stage=4)
         if pending_changes:
             try:
@@ -2333,15 +2338,20 @@ def _missing_required_checker(config: dict[str, Any], unit: dict[str, Any], reco
     return required and checker_command_for_unit(config, unit) is None
 
 
+def _require_saved_checker(config: dict[str, Any], unit: dict[str, Any], record: dict[str, Any]) -> None:
+    if _missing_required_checker(config, unit, record):
+        raise ValueError("この Run に必要なチェッカーを設定するか、--checker-command で再指定してください。")
+
+
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
-    if status in _SCRIPT_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES:
-        unit = find_unit(config, record["unit_id"]) if "unit_id" in record else {}
-        if _missing_required_checker(config, unit, record):
-            return False
-        return status not in _CHECKER_RESUME_STATUSES or record.get("build_exit_code") == 0
-    return status in _JUNIE_RESUME_STATUSES
+    if status not in _SCRIPT_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES:
+        return False
+    unit = find_unit(config, record["unit_id"]) if "unit_id" in record else {}
+    if _missing_required_checker(config, unit, record):
+        return False
+    return status not in _CHECKER_RESUME_STATUSES or record.get("build_exit_code") == 0
 
 
 def resume_with_junie(
@@ -2368,13 +2378,10 @@ def _resume_with_junie(
         raise ValueError("表示中の Run のビルド結果が変わりました。")
     if checker_instruction is not None and status not in {"checker_needs_review", "checker_failed"}:
         raise ValueError("表示中の Run のチェッカー結果が変わりました。")
-    if verification_request and _missing_required_checker(config, unit, record):
-        raise ValueError("この Run に必要なチェッカーを設定するか、--checker-command で再指定してください。")
+    _require_saved_checker(config, unit, record)
     if not verification_request and not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
-        if status in VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _SCRIPT_RESUME_STATUSES:
-            raise ValueError("rechecking this Run requires its checker command; set it in TOML or pass --checker-command")
         raise ValueError(f"run is not resumable from status {status!r}")
     history = record.get("repair_history", [])
     if (
