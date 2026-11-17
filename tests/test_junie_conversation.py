@@ -125,6 +125,49 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual([log["kind"] for log in entry["logs"]], ["build", "checker"])
         self.assertEqual(len(calls), 2)
 
+    def test_verification_status_questions_only_read_saved_information(self):
+        self.save_record({**self.record(), "status": "build_failed", "build_exit_code": 1,
+                          "verification": {"target_hashes": {"Example.cs": "previous"}}})
+        self.build_log.write_text("error CS1002: missing semicolon\n", encoding="utf-8")
+        with editor_queue(self.run_path) as queue:
+            queue["edits"]["Example.cs"] = {
+                "id": "draft", "status": "queued", "base": "class Original {}\n", "content": "class Draft {}\n",
+            }
+        original_record = self.record()
+        original_target = self.target.read_bytes()
+        original_edit = self.request("editor")[1]["edit"]
+        self.assertEqual(original_edit["status"], "queued")
+        queries = {
+            "なぜビルドが失敗したの？": "CS1002",
+            "ビルドは終わった？": "CS1002",
+            "前回のビルドの結果を教えて": "CS1002",
+            "チェッカーは成功した？": "previous finding",
+            "チェッカーはもう実行したのですか": "previous finding",
+            "Why did the checker fail?": "previous finding",
+        }
+        with patch.object(workflow, "run_process") as run, patch.object(self.manager, "enqueue") as enqueue:
+            for query, detail in queries.items():
+                with self.subTest(query=query):
+                    identifier, _ = self.send(query)
+                    self.assertIn(detail, self.wait_for(identifier, "done")["logs"][0]["text"])
+            run.assert_not_called()
+            enqueue.assert_not_called()
+        self.assertEqual(self.record(), original_record)
+        self.assertEqual(self.target.read_bytes(), original_target)
+        self.assertEqual(self.request("editor")[1]["edit"], original_edit)
+        with editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["prompts"], [])
+
+    def test_an_ambiguous_build_mention_waits_for_an_explicit_answer(self):
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"))
+        with mocked:
+            identifier, _ = self.send("ビルドについて")
+            self.wait_for(identifier, "clarification")
+            self.assertEqual(calls, [])
+            self.send("ビルドだけ")
+            self.assertEqual(self.wait_for(identifier, "done")["result_status"], "build_succeeded")
+        self.assertEqual(calls, [["dotnet", "build"]])
+
     def test_build_only_failure_does_not_start_checker_or_a_repair(self):
         self.config["max_repair_attempts"] = 2
         mocked, calls = self.mock_commands(("dotnet", 1, b"Example.cs(1,1): error CS1002: missing semicolon\n"))

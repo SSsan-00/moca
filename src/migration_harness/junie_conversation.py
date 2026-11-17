@@ -19,6 +19,17 @@ from .worktree_targets import review_target_hash
 PENDING = {"received", "clarification", "waiting", "running", "steering"}
 REBUILD = {"build", "build_repair", "checker", "checker_repair"}
 BUILD_PHASES = {"building", "build_succeeded", "build_failed"}
+BUILD_TERM = r"(?:ビルド|\b(?:re)?build\b)"
+CHECKER_TERM = r"(?:チェッカー|\bchecker\b|チェック(?=まで|を(?:再|もう|実行)))"
+VERIFICATION_REQUEST = (
+    rf"(?:{BUILD_TERM}|{CHECKER_TERM})(?:を|は)?\s*"
+    r"(?:(?:だけ|のみ|まで|も)(?:を)?\s*)?"
+    r"(?:して(?:ください)?|(?:再)?実行して(?:ください)?|やり直して(?:ください)?|"
+    r"お願い(?:します)?|(?:もう一(?:度|回)|再度)(?:実行して(?:ください)?|お願い(?:します)?)?)"
+    r"(?=[ \t]*[、,。.!！\n]|\s*$)"
+    r"|(?:^|[、,。.!！])\s*(?:please\s+)?(?:rebuild|build|(?:run|rerun)\s+(?:the\s+)?checker)"
+    r"(?:\s+again)?\s*(?=[、,。.!！]|$)"
+)
 PHASES = {
     "queued": "準備を開始しています", "preparing": "準備中", "cancelled": "待機取消済み",
     "preparation_failed": "準備失敗", "preparation_interrupted": "準備中断",
@@ -43,30 +54,50 @@ def _answer_kind(text):
     return None
 
 
-def _intent(text, phase):
-    value = unicodedata.normalize("NFKC", text).lower()
+def _status_intent(value):
+    checker = re.search(CHECKER_TERM, value)
+    if (checker or re.search(BUILD_TERM, value)) and (
+        re.search(r"なぜ|どうして|原因|結果|ログ|状態|状況|進捗|\b(?:why|status|results?|logs?)\b", value)
+        or re.search(r"終わった|終えた|落ちた|通った|済み|実行中|かどうか|(?:は|って)(?:どう|まだ)\s*\?", value)
+        or re.search(r"(?:[?]|のですか|ましたか|したの\s*$|したか\s*$)", value)
+        and re.search(r"成功|失敗|完了|終了|実行した|停止|終わ|\b(?:ran|done|finish\w*|pass\w*|fail\w*|succeed\w*|running)\b", value)
+    ):
+        return "checker_status" if checker else "build_status"
     if re.search(r"(?:今|現在).*(?:何して|何をして|状態|状況|工程|進捗)|^(?:状態|状況|進捗)[は?。\s]*$|what (?:are you doing|is happening)", value):
         return "status"
-    if re.search(r"(?:ビルド|チェッカー|チェック|build|checker).*(?:なぜ|どうして|原因|結果|ログ|why)", value):
-        return "checker_status" if re.search(r"チェッカー|チェック|checker", value) else "build_status"
+    return None
+
+
+def _intent(text, phase):
+    value = unicodedata.normalize("NFKC", text).lower()
+    if status := _status_intent(value):
+        return status
     if re.search(r"差分.*(?:だけ|のみ).*(?:確認|見る)|(?:残り|他).*(?:触らず|触らない).*差分", value):
         return "diff"
     if re.search(r"(?:シェル|ターミナル|shell|powershell|業務php|sql|データベース|\bdb\b).*(?:を実行|に接続|実行して|run |execute )", value):
         return "unsupported"
-    if re.search(r"(?:ビルド|チェッカー|停止|build|checker).*(?:しないで|しない|せず|しなくて|するな|かどうか)|\b(?:don't|do not|without) (?:build|run|stop)\b", value):
+    if re.search(r"(?:ビルド|チェッカー|停止|build|checker).*(?:しないで|しない|せず|しなくて|するな)|\b(?:don't|do not|without) (?:build|run|stop)\b", value):
         return "clarify"
     stop = bool(re.search(r"止め|停止|中止|\bstop\b", value))
     retry = bool(re.search(r"やり直|再実行|(?:もう|再度|もう一度).*?(?:一回|一度|実行|お願い)|rebuild|rerun", value))
-    build = bool(re.search(r"ビルド|\bbuild\b|rebuild", value))
-    checker = bool(re.search(r"チェッカー|チェック.*(?:再|もう|実行)|\bchecker\b", value))
+    build = bool(re.search(BUILD_TERM, value))
+    checker = bool(re.search(CHECKER_TERM, value))
     repair = bool(re.search(r"(?<!やり)直して|修正して|合わせて|同じ.*(?:にして|使って)|既定値にして|\bfix\b", value))
+    if (build or checker or stop or retry) and re.search(r"\?|(?:ですか|ますか|でしょうか|していい)[。\s]*$", value):
+        return "clarify"
     if stop:
-        if phase in BUILD_PHASES and (build or retry) and not checker and (retry or "再ビルド" in value):
+        if phase in BUILD_PHASES and not checker and (
+            re.search(r"(?:止めて|(?:停止|中止)して).*(?:やり直して|再ビルドして|再実行して)", value)
+            or re.fullmatch(r"(?:please )?stop (?:the )?(?:current )?build and rebuild[.!]?", value)
+        ):
             return "stop_build_repair" if repair else "stop_build"
         return "clarify"
-    if checker:
-        return "checker_repair" if repair else "checker"
-    if build:
+    if build or checker:
+        requests = re.findall(VERIFICATION_REQUEST, value)
+        if not requests:
+            return "clarify"
+        if any(re.search(CHECKER_TERM, request) for request in requests):
+            return "checker_repair" if repair else "checker"
         return "build_repair" if repair else "build"
     if retry or re.fullmatch(r"\s*(?:もう一回|もう一度|再度)(?:お願い|お願いします)?[。.!！\s]*", value):
         return "clarify"
