@@ -26,10 +26,7 @@ def execution_lock(config: dict[str, Any], name: str, *, wait: bool = False) -> 
     with (directory / (name + ".lock")).open("a+b") as lock:
         if os.name == "nt":
             import msvcrt
-            lock.seek(0)
-            if not lock.read(1):
-                lock.write(b"\0")
-                lock.flush()
+            # Windowsはロック領域の読み取りも拒否する。EOF以降もロックできるので初期化は不要。
             def acquire():
                 lock.seek(0)
                 msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
