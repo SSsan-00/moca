@@ -26,7 +26,7 @@ from typing import Any
 
 from . import junie_cli
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
-from .config import find_unit, target_paths
+from .config import checker_command_for_unit, find_unit, target_paths
 from .editor_queue import (
     EDITOR_TARGET_SUFFIXES, LivePrompts, dispatch_prompts, editor_queue, editor_target, finish_prompts, merge_edit,
     record_operator_edit,
@@ -155,6 +155,7 @@ def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
         _run_script_phase(config, "after_prepare", worktree, run_path, record, once=True)
     return {
         "run_id": run_id,
+        "unit_id": unit_id,
         "worktree_path": str(worktree),
         **context,
         "max_context_chars": config["max_context_chars"],
@@ -1883,7 +1884,7 @@ def _run_verification(
     record_path = run_path / "run.json"
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
     _run_script_phase(config, "after_migration", worktree, run_path, record, once=True)
-    command = config["checker_command"]
+    command = checker_command_for_unit(config, unit)
     scripts = _verification_scripts(config, command)
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
@@ -1914,7 +1915,9 @@ def _run_verification(
             "scripts_passed": not scripts,
         }
         if config.get("checker_from_cli"):
-            record["verification"]["toml_checker_command"] = config.get("toml_checker_command")
+            record["verification"]["toml_checker_command"] = unit.get(
+                "checker_command", config.get("toml_checker_command"),
+            )
         verified = _build_worktree(config, result, record, continue_timing=True)
         if record["status"] == "build_failed":
             try:
@@ -2093,7 +2096,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
 
     verification = record.get("verification") or {}
     saved_checker = verification.get("checker_command")
-    configured_checker = config["checker_command"]
+    configured_checker = checker_command_for_unit(config, unit)
     if (
         verification.get("checker_from_cli")
         and not config.get("checker_from_cli")
@@ -2320,14 +2323,17 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     status = record.get("status")
     if status in _SCRIPT_RESUME_STATUSES:
         return True
+    if status in _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES:
+        unit = find_unit(config, record["unit_id"]) if "unit_id" in record else {}
+        command = checker_command_for_unit(config, unit)
     if status in _CHECKER_RESUME_STATUSES:
-        return config["checker_command"] is not None and record.get("build_exit_code") == 0
+        return command is not None and record.get("build_exit_code") == 0
     if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
         checker_required = (
             status in {"checker_succeeded", "checker_accepted"}
             or (record.get("verification") or {}).get("checker_command") is not None
         )
-        return not checker_required or config["checker_command"] is not None
+        return not checker_required or command is not None
     return status in _JUNIE_RESUME_STATUSES
 
 
@@ -2402,6 +2408,7 @@ def resume_with_junie(
 
     result = {
         "run_id": run_id,
+        "unit_id": unit["id"],
         "run_path": str(run_path),
         "worktree_path": str(worktree_path),
         "context_paths": context_paths,

@@ -252,7 +252,7 @@
     .settings-unit-picker .button { margin-bottom: 10px; }
     #settings-unit-targets { height: 76px; min-height: 72px; resize: vertical; }
     .settings-materials { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-    .settings-materials > p, .settings-material-range { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+    .settings-materials > p, .settings-material-range, .settings-hint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
     .settings-material { min-inline-size: 0; margin: 8px 0; padding: 8px 10px 10px; border: 1px solid var(--line); border-radius: 8px; }
     .settings-material legend { margin: 0; padding-inline: 4px; }
     .settings-material > [hidden] { display: none; }
@@ -902,6 +902,7 @@
                 <input id="settings-build-project" data-section="build" data-setting="project" autocomplete="off" placeholder="例：src/Web/Web.csproj">
                 <label for="settings-checker-command">チェッカーの実行ファイルと引数</label>
                 <textarea id="settings-checker-command" class="settings-command" data-section="checker" data-setting="command" spellcheck="false" placeholder="py&#10;-3.11&#10;tools/check_migration.py"></textarea>
+                <p class="settings-hint">専用のチェッカーを指定していない移行単位で使う共通設定です。</p>
                 <label for="settings-checker-repairs">自動修正回数</label>
                 <input id="settings-checker-repairs" data-section="checker" data-setting="max_repair_attempts" inputmode="numeric" autocomplete="off" placeholder="2（既定）">
               </fieldset>
@@ -928,6 +929,9 @@
                 </div>
                 <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
                 <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
+                <label for="settings-unit-checker-command">この移行単位のチェッカー（任意）</label>
+                <textarea id="settings-unit-checker-command" class="settings-command" data-setting="checker_command" spellcheck="false" aria-describedby="settings-unit-checker-hint" placeholder="py&#10;-3&#10;tools/check_orders.py"></textarea>
+                <p class="settings-hint" id="settings-unit-checker-hint">実行ファイルと各引数を1行ずつ入力します。空欄ならプロジェクト共通のチェッカーを使います。共通設定も空欄なら実行しません。</p>
               </div>
             </fieldset>
             <fieldset class="settings-fields settings-materials" id="settings-draft-import-fields">
@@ -1529,9 +1533,13 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     const cleanup = {};
     const removeEmptyUnits = [];
     for (const [index, entry] of settingsForm.units.entries()) {
+      const checker = entry.checker_command;
+      if (Array.isArray(checker) && checker.length && !checker[0]?.trim()) {
+        throw new Error(`移行単位 ${index + 1} のチェッカーの1行目に実行ファイルを入力してください。`);
+      }
       if (!added.has(entry)) continue;
       const {id, source, targets} = entry;
-      if (!id.trim() && !source.trim() && !targets.length) removeEmptyUnits.push(index);
+      if (!id.trim() && !source.trim() && !targets.length && !checker?.length) removeEmptyUnits.push(index);
       else if (!id.trim() || !source.trim() || !targets.length) {
         throw new Error(`移行単位 ${index + 1} の機能名、移行元PHP、移行先を指定してください。`);
       }
@@ -2027,7 +2035,8 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   for (const field of unitFields) field.addEventListener("input", () => {
     const index = Number(unit.value);
     const key = field.dataset.setting;
-    const value = key === "targets" ? field.value.split("\n").map(path => path.trim()).filter(Boolean) : field.value;
+    const value = key === "targets" ? field.value.split("\n").map(path => path.trim()).filter(Boolean)
+      : key === "checker_command" ? (field.value.trim() ? commandLines(field.value) : []) : field.value;
     changes.units[index] ??= {};
     changes.units[index][key] = settingsForm.units[index][key] = value;
     if (key === "id") unit.selectedOptions[0].text = value || `移行単位 ${index + 1}`;
@@ -2037,7 +2046,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   unit.addEventListener("change", showUnit);
   document.querySelector("#settings-unit-add").addEventListener("click", () => {
     const index = settingsForm.units.length;
-    const draft = newDraft({id: "", source: "", targets: []});
+    const draft = newDraft({id: "", source: "", targets: [], checker_command: []});
     changes.units[index] = {...draft};
     settingsForm.units.push(draft);
     showUnitOptions(index);
@@ -2498,7 +2507,12 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
     for (const [index, fields] of Object.entries(changes.units || {})) {
       units[index] ??= blocks.push("\n[[units]]\n") - 1;
       if ("targets" in fields) blocks[units[index]] = blocks[units[index]].replace(/^\s*target\s*=.*$/m, "");
-      blocks[units[index]] = patchBlock(blocks[units[index]], fields);
+      const edited = {...fields};
+      if (edited.checker_command?.length === 0) {
+        blocks[units[index]] = blocks[units[index]].replace(fieldPattern("checker_command"), "");
+        delete edited.checker_command;
+      }
+      blocks[units[index]] = patchBlock(blocks[units[index]], edited);
     }
     for (const index of [...(changes.removeEmptyUnits || [])].sort((a, b) => b - a)) {
       blocks.splice(units[index], 1);
@@ -2547,6 +2561,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
         references: readMaterials(materialBlocks("references")),
         scripts: Object.keys(scriptPhases).flatMap(phase => (read(scripts, phase) || []).map(command => ({phase, command}))),
         units: unitBlocks().map(index => ({id: read(index, "id"), source: read(index, "source"),
+          checker_command: read(index, "checker_command") ?? [],
           targets: read(index, "targets") || [read(index, "target")].filter(Boolean)})),
       }};
     } catch {

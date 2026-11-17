@@ -583,7 +583,6 @@ workspaceTabs.addEventListener("harnesstab", async () => {
     if (request === tokenListRequest) tokenRuns.setRuns([], `Run一覧を読み込めませんでした。\n${error.message}`);
   }
 });
-if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1);
 
 function renderCapsuleProgress(data, total, completed) {
   const capsuleIndex = Math.max(0, (data.current_capsule ?? 1) - 1);
@@ -1142,5 +1141,6 @@ stream.onmessage = event => {
 };
 setInterval(renderElapsed, 1000);
 setInterval(refreshProgressPrompts, 1000);
+if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1);
 render();
 document.documentElement.dataset.liveReady = "true";

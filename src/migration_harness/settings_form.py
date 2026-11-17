@@ -28,7 +28,7 @@ _NUMERIC_FIELDS = {
 }
 _INPUT_FIELDS = ("path", "start_line", "end_line", "encoding", "symbol")
 _RULE_FIELDS = ("usage", "description")
-_UNIT_SETTINGS = ("id", "source", "targets")
+_UNIT_SETTINGS = ("id", "source", "targets", "checker_command")
 _REFERENCE_TARGET_ROLES = ("reference_csharp", "reference_razor")
 
 
@@ -213,6 +213,13 @@ def _apply_unit_edits(document: Any, unit_changes: dict[str, Any]) -> None:
         for key, value in fields.items():
             if key not in _UNIT_SETTINGS:
                 raise ValueError("移行単位の入力内容を確認してください。")
+            elif key == "checker_command":
+                if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
+                    raise ValueError("移行単位のチェッカーのコマンドと引数を確認してください。")
+                if value:
+                    unit[key] = value
+                else:
+                    unit.pop(key, None)
             elif key == "targets":
                 if not isinstance(value, list) or any(not isinstance(path, str) for path in value):
                     raise ValueError("移行先は1行に1ファイル指定してください。")
@@ -305,6 +312,7 @@ def _settings_form(document: Any) -> dict[str, Any]:
         ],
         "units": [{
             **{key: value for key in ("id", "source") if isinstance(value := unit.get(key), str)},
+            "checker_command": unit.get("checker_command", []),
             "targets": [path for path in unit.get("targets", [unit.get("target")]) if isinstance(path, str)]
             if isinstance(unit.get("targets", []), list) else [],
         } for unit in units],

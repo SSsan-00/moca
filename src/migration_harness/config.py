@@ -220,6 +220,12 @@ def load_config(path: Path) -> dict[str, Any]:
                 normalized_inputs.append(normalized_input)
 
         normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
+        if "checker_command" in unit:
+            try:
+                validate_checker_command(unit["checker_command"])
+            except ValueError as exc:
+                raise ValueError(f"unit {unit['id']}: {exc}") from exc
+            normalized["checker_command"] = unit["checker_command"]
         if "targets" in unit:
             normalized["targets"] = [target.as_posix() for target in target_paths]
             normalized["target"] = normalized["targets"][0]
@@ -326,6 +332,12 @@ def find_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
             return unit
     raise ValueError(f"unknown migration unit: {unit_id}")
 
+
+def checker_command_for_unit(config: dict[str, Any], unit: dict[str, Any]) -> list[str] | None:
+    """CLI指定、移行単位、プロジェクト共通の順でチェッカーを選ぶ。"""
+    if config.get("checker_from_cli"):
+        return config["checker_command"]
+    return unit.get("checker_command", config["checker_command"])
 
 
 def target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:
