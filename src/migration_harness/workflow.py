@@ -7,8 +7,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator
-from dataclasses import dataclass
 import codecs
 import errno
 import hashlib
@@ -22,12 +20,15 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile, TemporaryDirectory
+from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Any
 
 from . import junie_cli
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
+from .checker_output import (
+    CHECKER_SUCCESS_MESSAGE, CheckerFinding, accepted_findings, checker_findings, checker_response_status,
+)
 from .command_paths import expand_command_paths
 from .config import checker_command_for_unit, find_unit, target_paths
 from .editor_queue import (
@@ -41,7 +42,10 @@ from .rule_materials import detail_index, render_guidelines, selected_details
 from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, write_run_record
 from .source_context import stage_target_context
 from .timings import freeze_timings
-from .worktree_targets import apply_agent_targets, finish_pending_targets, target_hash, worktree_source_lock
+from .worktree_targets import (
+    EDIT_BYTES, apply_agent_targets, finish_pending_targets, read_target, review_target_hash,
+    save_target_edit, target_hash, target_newline, worktree_source_lock,
+)
 
 
 def _print_progress(message: str) -> None:
@@ -628,7 +632,7 @@ def _apply_editor_edits(
         write_run_record(record_path, record, timing_stage=None)
         return False
     for name, (version, _, text) in merged.items():
-        _save_build_review_edit(agent_root, targets, {"target": name, "version": version, "content": text})
+        save_target_edit(agent_root, targets, {"target": name, "version": version, "content": text})
     apply_agent_targets(agent_root, worktree, targets, record["target_hashes"], record, record_path)
     for name, (_, current, text) in merged.items():
         if current == text:
@@ -1246,14 +1250,14 @@ def _run_checker(
         if completed.returncode >= 0:
             worktree = Path(result["worktree_path"])
             try:
-                findings, unrecognized = _checker_findings(log_path, worktree)
-                response_status = _checker_response_status(log_path)
+                findings, unrecognized = checker_findings(log_path, worktree)
+                response_status = checker_response_status(log_path)
                 if not findings and response_status == "checker_succeeded":
-                    record.update(status="checker_succeeded", checker_success_message=_CHECKER_SUCCESS_MESSAGE)
+                    record.update(status="checker_succeeded", checker_success_message=CHECKER_SUCCESS_MESSAGE)
                 elif findings or completed.returncode > 0 or response_status == "checker_needs_review":
                     record["status"] = "checker_needs_review"
                     record["review_file_hashes"] = {
-                        path: _review_target_hash(worktree, Path(path))
+                        path: review_target_hash(worktree, Path(path))
                         for path in {finding.path for finding in findings}
                     }
                     use_raw_output = unrecognized
@@ -1279,154 +1283,6 @@ def _run_checker(
         "checker_exit_code": record["checker_exit_code"],
         "checker_log_path": str(log_path) if log_path.is_file() else None,
     }, findings, use_raw_output
-
-
-_CHECKER_FINDING = re.compile(
-    r"(?P<rule>[\w.-]+)\s+(?P<path>.+?):(?P<line>\d+)(?::\d+)?\s+(?P<severity>warning|error):\s*(?P<message>.+)",
-    re.IGNORECASE,
-)
-_CHECKER_FIELDS = ("ファイル", "対処", "内容", "行番号", "コード", "備考")
-_CHECKER_SUCCESS_MESSAGE = "特に気になる点はありません。"
-_CHECKER_FIELD = re.compile(
-    r"\s*(?P<field>" + "|".join(r"\s*".join(name) for name in _CHECKER_FIELDS)
-    + r")\s*[:：]\s*(?P<value>.*)"
-)
-
-
-def _checker_response_status(log_path: Path) -> str | None:
-    with log_path.open("rb") as stream:
-        raw = stream.read(65_537)
-    if len(raw) > 65_536:
-        return None
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return None
-    # 不完全な指摘やコード内の成功文言を、問題なしの応答と誤認しない。
-    if any(_CHECKER_FIELD.fullmatch(line) or _CHECKER_FINDING.fullmatch(line.strip()) for line in text.splitlines()):
-        return "checker_needs_review"
-    if _CHECKER_SUCCESS_MESSAGE in text and "\0" not in text:
-        return "checker_succeeded"
-    return None
-
-
-def _checker_diagnostics(log_path: Path) -> Iterator[str]:
-    """ファイル欄から次の指摘までをまとめ、コードや備考の改行を残す。"""
-    block = []
-    with log_path.open("rb") as stream:
-        for index, data in enumerate(stream):
-            try:
-                raw = data.decode("utf-8-sig" if index == 0 else "utf-8")
-            except UnicodeDecodeError:
-                if block:
-                    yield "\n".join(block).strip()
-                    block = []
-                yield "\0"
-                continue
-            for line in raw.splitlines():
-                field = _CHECKER_FIELD.fullmatch(line)
-                starts_block = field is not None and "".join(field["field"].split()) == "ファイル"
-                if block and (starts_block or _CHECKER_FINDING.fullmatch(line.strip())):
-                    yield "\n".join(block).strip()
-                    block = []
-                if starts_block or block:
-                    block.append(line)
-                elif line.strip():
-                    yield line.strip()
-    if block:
-        yield "\n".join(block).strip()
-
-
-def _prefixed_checker_fields(diagnostic: str) -> dict[str, str] | None:
-    fields = {}
-    current = None
-    for line in diagnostic.splitlines():
-        match = _CHECKER_FIELD.fullmatch(line)
-        if match:
-            current = "".join(match["field"].split())
-            if current in fields:
-                return None
-            fields[current] = match["value"]
-        elif line.strip():
-            if current not in {"対処", "内容", "コード", "備考"}:
-                return None
-            fields[current] += "\n" + line
-        elif current:
-            fields[current] += "\n"
-    if (set(fields) != set(_CHECKER_FIELDS) or "\0" in diagnostic
-            or not fields["ファイル"].strip() or not fields["内容"].strip()
-            or not re.fullmatch(r"0*[1-9][0-9]*", fields["行番号"].strip())):
-        return None
-    return fields
-
-
-def _review_target_hash(worktree: Path, relative_target: Path) -> str | None:
-    """worktree内の通常ファイルだけをレビュー対象として照合する。"""
-    target = worktree / relative_target
-    if has_symlink_component(worktree, relative_target) or not target.resolve().is_relative_to(worktree.resolve()):
-        return None
-    return sha256_file(target) if target.is_file() else None
-
-
-@dataclass(frozen=True)
-class CheckerFinding:
-    """指摘の表示内容と、修正履歴・承認に使う識別情報を保持する。"""
-    finding_id: str
-    repair_fingerprint: str
-    path: str
-    diagnostic: str
-    line: str
-
-
-def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFinding], bool]:
-    """対応形式の指摘を抽出し、読み取れない出力が混じっているかも返す。"""
-    worktree = worktree.resolve()
-    findings = []
-    unrecognized = False
-    for diagnostic in _checker_diagnostics(log_path):
-        match = _CHECKER_FINDING.fullmatch(diagnostic)
-        fields = None if match else _prefixed_checker_fields(diagnostic)
-        if match:
-            path_text, line, severity = match["path"], match["line"], match["severity"].lower()
-            key = (match["rule"].casefold(), " ".join(match["message"].split()))
-        elif fields:
-            path_text, line, severity = fields["ファイル"].strip(), fields["行番号"].strip(), "finding"
-            key = ("prefixed", *(" ".join(fields[name].split()) for name in ("対処", "内容", "備考")),
-                   fields["コード"].strip())
-        else:
-            unrecognized = True
-            continue
-        if "\0" in path_text:
-            unrecognized = True
-            continue
-        path = Path(path_text.replace("\\", "/"))
-        try:
-            resolved = (worktree / path).resolve()
-        except (OSError, RuntimeError, ValueError):
-            unrecognized = True
-            continue
-        if not resolved.is_relative_to(worktree):
-            unrecognized = True
-            continue
-        relative = resolved.relative_to(worktree).as_posix()
-        # 行・列のずれは同じ指摘と扱う。旧形式の識別子は互換性を保つ。
-        repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
-        # 承認用のIDには対象パスと重大度も含め、別ファイルの指摘へ承認を流用しない。
-        review_key = (*key, relative, severity)
-        finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
-        findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, diagnostic, line))
-    return findings, unrecognized or not findings
-
-
-def _accepted_findings(record: dict[str, Any], findings: list[CheckerFinding], hashes: dict[str, str | None]) -> set[str]:
-    """指摘IDと対象ファイルの版がともに一致する承認だけを返す。"""
-    accepted = {(entry["finding_id"], entry["target_sha256"]) for entry in record.get("checker_reviews", [])}
-    counts = Counter(finding.finding_id for finding in findings)
-    # 同じIDが複数ある場合は承認対象を一意に特定できないため、承認済みとみなさない。
-    return {
-        finding.finding_id for finding in findings
-        if counts[finding.finding_id] == 1 and (finding.finding_id, hashes.get(finding.path)) in accepted
-    }
 
 
 def _charge_repair(record: dict[str, Any]) -> None:
@@ -1798,7 +1654,6 @@ _BUILD_DIAGNOSTIC = re.compile(
     re.IGNORECASE,
 )
 _BUILD_ERROR = re.compile(r"(?:^|:\s*)(?:error|エラー)\s+[A-Z]+\d+\s*:", re.IGNORECASE)
-BUILD_REVIEW_EDIT_BYTES = 8 * 1024 * 1024
 _RAZOR_GENERATOR = "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerator"
 
 
@@ -1826,33 +1681,6 @@ def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
     return data.decode("utf-8-sig", errors="replace"), bool(start)
 
 
-def _build_review_target(worktree: Path, targets: tuple[Path, ...], name: str) -> tuple[Path, bytes, str]:
-    if name not in {target.as_posix() for target in targets}:
-        raise ValueError("設定された移行対象ファイルを選んでください。")
-    path = safe_target(worktree, Path(name))
-    if not path.is_file():
-        raise ValueError("対象ファイルが見つかりません。作業ツリーで確認してください。")
-    with path.open("rb") as stream:
-        data = stream.read(BUILD_REVIEW_EDIT_BYTES + 1)
-    if len(data) > BUILD_REVIEW_EDIT_BYTES:
-        raise ValueError("8 MiB を超えるファイルは作業ツリーで編集してください。")
-    try:
-        content = data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise ValueError("UTF-8 以外のファイルは作業ツリーで編集してください。") from None
-    if "\0" in content:
-        raise ValueError("テキストファイルを選んでください。")
-    return path, data, content
-
-
-def _build_review_newline(data: bytes) -> str:
-    if b"\r\n" in data:
-        return "\r\n"
-    if b"\r" in data and b"\n" not in data:
-        return "\r"
-    return "\n"
-
-
 def build_failure_review(config: dict[str, Any], run_id: str, target: str | None = None) -> dict[str, Any]:
     """ビルド失敗時の出力と、選択した移行対象の編集用スナップショットを取得する。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
@@ -1860,11 +1688,15 @@ def build_failure_review(config: dict[str, Any], run_id: str, target: str | None
         raise ValueError("表示中の Run のビルド結果が変わりました。")
     targets = target_paths(unit)
     if target is not None:
+        if target not in {path.as_posix() for path in targets}:
+            raise ValueError("設定された移行対象ファイルを選んでください。")
         with worktree_source_lock:
-            _, data, content = _build_review_target(worktree, targets, target)
+            data, content = read_target(worktree, Path(target))
+        if data is None:
+            raise ValueError("対象ファイルが見つかりません。作業ツリーで確認してください。")
         return {
-            "content": content, "version": hashlib.sha256(data).hexdigest(), "max_bytes": BUILD_REVIEW_EDIT_BYTES,
-            "crlf": _build_review_newline(data) == "\r\n", "bom_bytes": len(codecs.BOM_UTF8),
+            "content": content, "version": hashlib.sha256(data).hexdigest(), "max_bytes": EDIT_BYTES,
+            "crlf": target_newline(data) == "\r\n", "bom_bytes": len(codecs.BOM_UTF8),
         }
     log, truncated = _review_log(run_path, "build.log")
     errors = []
@@ -1891,46 +1723,6 @@ def _build_error_lines(log: str) -> list[str]:
     return list(dict.fromkeys(line for line in lines if _BUILD_ERROR.search(line)))
 
 
-def _save_build_review_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, Any]) -> None:
-    with worktree_source_lock:
-        if edit["version"] is None:
-            if edit["target"] not in {target.as_posix() for target in targets}:
-                raise ValueError("設定された移行対象ファイルを選んでください。")
-            path = safe_target(worktree, Path(edit["target"]))
-            original, version = b"", target_hash(path)
-        else:
-            path, original, _ = _build_review_target(worktree, targets, edit["target"])
-            version = hashlib.sha256(original).hexdigest()
-        # 画面を開いてから更新されたファイルを、古い編集内容で上書きしない。
-        if version != edit["version"]:
-            raise ValueError("編集を開いた後に対象ファイルが更新されました。最新の内容を読み込み、編集を反映し直してください。")
-        # ブラウザーから来る改行を元の形式にそろえ、BOM付きUTF-8で保存する。
-        text = edit["content"].replace("\r\n", "\n").replace("\r", "\n")
-        text = text.replace("\n", _build_review_newline(original))
-        data = text.encode("utf-8-sig")
-        if len(data) > BUILD_REVIEW_EDIT_BYTES:
-            raise ValueError("編集後のファイルが 8 MiB を超えています。作業ツリーで編集してください。")
-        if data == original and version is not None:
-            return
-        # 同じディレクトリに書き終えてから置き換え、保存途中の内容が見えないようにする。
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-        try:
-            temporary.write_bytes(data)
-            if version is not None:
-                shutil.copymode(path, temporary)
-            if target_hash(safe_target(worktree, Path(edit["target"]))) != edit["version"]:
-                raise ValueError("対象ファイルが更新されました。最新の内容を読み込んでください。")
-            if version is None:
-                # 新規ファイルは、保存の間に別の処理が作成した内容を上書きしない。
-                os.link(temporary, path)
-            else:
-                temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-
 def _respond_to_build_failure(
     config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path,
     record: dict[str, Any], response: dict[str, Any],
@@ -1939,7 +1731,7 @@ def _respond_to_build_failure(
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
     check_cancelled()
     if response.get("edit") is not None:
-        _save_build_review_edit(worktree, targets, response["edit"])
+        save_target_edit(worktree, targets, response["edit"])
     instruction = response.get("instruction", "").strip()
     if not instruction:
         return
@@ -2114,7 +1906,7 @@ def _run_verification(
         if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():
             fingerprint = None
         record["verification"] = {
-            "target_hashes": {path.as_posix(): _review_target_hash(worktree, path) for path in targets},
+            "target_hashes": {path.as_posix(): review_target_hash(worktree, path) for path in targets},
             "build_project": config["build_project"],
             "checker_command": command,
             "checker_from_cli": config.get("checker_from_cli", False),
@@ -2161,7 +1953,7 @@ def _run_verification(
         if checked["status"] != "checker_needs_review" or (checked["error"] and not use_raw_output):
             return checked
         try:
-            accepted = _accepted_findings(record, findings, record.get("review_file_hashes", {}))
+            accepted = accepted_findings(record, findings, record.get("review_file_hashes", {}))
             remaining = [finding for finding in findings if finding.finding_id not in accepted]
             if not remaining and not use_raw_output:
                 record["status"] = "checker_accepted"
@@ -2250,7 +2042,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         """同じ移行先を複数のPHP範囲が参照する場合に再読込を避ける。"""
         if path not in hashes:
             try:
-                hashes[path] = _review_target_hash(worktree, Path(path))
+                hashes[path] = review_target_hash(worktree, Path(path))
             except OSError:
                 hashes[path] = None
         return hashes[path]
@@ -2320,7 +2112,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     checker_passed = status == "checker_succeeded" and (
         record.get("checker_exit_code") == 0
         or ((record.get("checker_exit_code") or 0) > 0
-            and record.get("checker_success_message") == _CHECKER_SUCCESS_MESSAGE)
+            and record.get("checker_success_message") == CHECKER_SUCCESS_MESSAGE)
     )
     if status == "checker_accepted":
         approved_file_hashes = record.get("review_file_hashes", {})
@@ -2385,7 +2177,7 @@ def review_migration_ranges(
         path = Path(name)
         if path not in allowed_targets:
             raise ValueError(f"review target is outside the configured migration targets: {name}")
-        digest = _review_target_hash(worktree, path)
+        digest = review_target_hash(worktree, path)
         if digest is None:
             raise ValueError(f"review target is missing or unsafe: {name}")
         manual_hashes[path.as_posix()] = digest
@@ -2411,7 +2203,7 @@ def review_migration_ranges(
                 else:
                     if not mapping:
                         raise ValueError(f"range {identifier} has no mapping candidate; specify the reviewed --target paths")
-                    digest = _review_target_hash(worktree, Path(mapping["path"]))
+                    digest = review_target_hash(worktree, Path(mapping["path"]))
                     if digest is None or digest != mapping["sha256"]:
                         raise ValueError(f"range {identifier} changed after its comparison; generate a new candidate")
                     decision["target_hashes"] = {mapping["path"]: digest}
@@ -2487,7 +2279,7 @@ def review_checker(
     log_path = run_path / "checker.log"
     if log_path.is_symlink() or not log_path.is_file():
         raise ValueError("checker log must be a regular file inside the run directory")
-    findings, unrecognized = _checker_findings(log_path, worktree)
+    findings, unrecognized = checker_findings(log_path, worktree)
     # 旧版のRunは最後に反映した移行先のハッシュで照合する。
     recorded_hashes = record.get("review_file_hashes", {
         Path(unit["target"]).as_posix(): record.get("review_target_sha256", record.get("target_sha256")),
@@ -2495,9 +2287,9 @@ def review_checker(
     hashes = {
         path: recorded_hashes.get(path)
         for path in {finding.path for finding in findings}
-        if _review_target_hash(worktree, Path(path)) == recorded_hashes.get(path)
+        if review_target_hash(worktree, Path(path)) == recorded_hashes.get(path)
     }
-    accepted = _accepted_findings(record, findings, hashes)
+    accepted = accepted_findings(record, findings, hashes)
     if finding_id is not None:
         matches = [finding for finding in findings if finding_id in (finding.finding_id, finding.finding_id[:12])]
         if len(matches) != 1:

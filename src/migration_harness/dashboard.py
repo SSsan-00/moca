@@ -27,7 +27,7 @@ from migration_harness.capsules import (
 from migration_harness.config import load_config, target_paths
 from migration_harness.diff_viewer import _inside_file, create_snapshot, review_html, snapshot_bytes
 from migration_harness.editor_queue import (
-    AGENT_PHASES, EDIT_BYTES, EDITOR_TARGET_SUFFIXES, QUEUE_PHASES,
+    AGENT_PHASES, EDITOR_TARGET_SUFFIXES, QUEUE_PHASES,
     add_prompt, editor_queue, editor_target, editor_text, record_operator_edit,
 )
 from migration_harness.errors import format_error
@@ -38,11 +38,11 @@ from migration_harness.run_records import load_saved_run, run_observer
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
-    BUILD_REVIEW_EDIT_BYTES, RunInterrupted, RunScriptError, _review_log, _save_build_review_edit,
+    RunInterrupted, RunScriptError, _review_log,
     build_failure_review, can_resume_run, migration_ledger, prepare_run, resume_with_junie,
     review_checker, run_with_junie,
 )
-from migration_harness.worktree_targets import worktree_source_lock
+from migration_harness.worktree_targets import EDIT_BYTES, save_target_edit, worktree_source_lock
 
 
 PROGRESS_FIELDS = (
@@ -511,7 +511,7 @@ class Dashboard:
                                             queue["edits"][name] = edit
                                             prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
                                         else:
-                                            _save_build_review_edit(worktree, targets, {
+                                            save_target_edit(worktree, targets, {
                                                 "target": name, "version": hashlib.sha256(original).hexdigest() if original is not None else None,
                                                 "content": draft,
                                             })
@@ -714,7 +714,7 @@ class Dashboard:
                     limit = 8 * 1024 * 1024
                 elif build_response:
                     # JSON エスケープはソースの 1 バイトを最大 6 バイトに展開する。
-                    limit = 6 * BUILD_REVIEW_EDIT_BYTES + 256 * 1024
+                    limit = 6 * EDIT_BYTES + 256 * 1024
                 elif editor:
                     limit = 12 * EDIT_BYTES + 16_384
                 elif prompts:
@@ -796,7 +796,7 @@ class Dashboard:
                         if edit is not None and (
                             not isinstance(edit, dict) or not all(isinstance(edit.get(key), str) for key in ("target", "version", "content"))
                             or not re.fullmatch(r"[0-9a-f]{64}", edit["version"])
-                            or "\0" in edit["content"] or len(edit["content"].encode("utf-8")) > BUILD_REVIEW_EDIT_BYTES
+                            or "\0" in edit["content"] or len(edit["content"].encode("utf-8")) > EDIT_BYTES
                         ):
                             raise ValueError
                 except (OSError, ValueError):

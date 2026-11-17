@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness import junie_cli, workflow
+from migration_harness import checker_output, junie_cli, workflow
 from test_checker_resume_review_dashboard import SavedRunFixture
 
 
@@ -24,7 +24,7 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
 
     def parse(self, text):
         self.log.write_bytes(text.encode("utf-8"))
-        return workflow._checker_findings(self.log, self.worktree)
+        return checker_output.checker_findings(self.log, self.worktree)
 
     def test_spacing_bom_crlf_and_line_shifts_keep_identity(self):
         original, unknown = self.parse(diagnostic())
@@ -64,7 +64,7 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
         findings, unknown = self.parse(text)
         self.assertFalse(unknown)
         self.assertEqual(findings[0].diagnostic, text.strip())
-        self.assertEqual(workflow._prefixed_checker_fields(text)["対処"], remedy)
+        self.assertEqual(checker_output._prefixed_checker_fields(text)["対処"], remedy)
 
     def test_empty_remedy_code_and_notes_are_allowed(self):
         text = "ファイル: Example.cs\n対処:\n内容: 送料が欠落\n行番号: 1\nコード:\n備考:\n"
@@ -98,7 +98,7 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
 
     def test_invalid_encoding_does_not_hide_following_valid_block(self):
         self.log.write_bytes(b"\xff\n" + diagnostic().encode("utf-8"))
-        findings, unknown = workflow._checker_findings(self.log, self.worktree)
+        findings, unknown = checker_output.checker_findings(self.log, self.worktree)
         self.assertTrue(unknown)
         self.assertEqual(len(findings), 1)
 

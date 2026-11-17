@@ -14,7 +14,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, editor_queue, junie_cli, run_records, workflow
+from migration_harness import dashboard, editor_queue, junie_cli, run_records, workflow, worktree_targets
 from migration_harness.config import load_config
 from migration_harness.execution import control_scope
 
@@ -376,7 +376,7 @@ class DashboardEditorTests(HarnessCase):
                     self.assertIsNone(saved["edit"])
                 self.assertEqual(target.read_bytes(), text.encode("utf-8-sig"))
                 with self.assertRaisesRegex(ValueError, "更新"):
-                    workflow._save_build_review_edit(target.parents[1], (Path(name),), {
+                    worktree_targets.save_target_edit(target.parents[1], (Path(name),), {
                         "target": name, "version": None, "content": "overwrite",
                     })
                 self.assertEqual(target.read_bytes(), text.encode("utf-8-sig"))

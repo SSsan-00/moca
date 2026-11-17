@@ -1,16 +1,20 @@
-"""Junieの編集結果をworktreeへ反映し、中断後に残りの反映を再開する。"""
+"""移行先ソースの読み書き、Junie出力の反映、中断後の復旧。"""
 
 from __future__ import annotations
 
 import codecs
+import hashlib
+import os
 import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
 from typing import Any
 
-from .files import safe_target, sha256_file
+from .files import has_symlink_component, safe_target, sha256_file
 from .run_records import write_run_record
+
+EDIT_BYTES = 8 * 1024 * 1024
 
 # 同じプロセスの比較・手修正・Junie出力の反映を直列化する。
 worktree_source_lock = RLock()
@@ -19,6 +23,84 @@ worktree_source_lock = RLock()
 def target_hash(path: Path) -> str | None:
     """移行先の未作成状態をハッシュの不一致と区別して扱う。"""
     return sha256_file(path) if path.is_file() else None
+
+
+def review_target_hash(worktree: Path, relative_target: Path) -> str | None:
+    """worktree内の通常ファイルだけをレビュー対象として照合する。"""
+    target = worktree / relative_target
+    if has_symlink_component(worktree, relative_target) or not target.resolve().is_relative_to(worktree.resolve()):
+        return None
+    return sha256_file(target) if target.is_file() else None
+
+
+def read_target(root: Path, target: Path) -> tuple[bytes | None, str]:
+    """編集用にサイズとUTF-8を検証し、元バイト列と改行を保った本文を返す。"""
+    path = safe_target(root, target)
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(EDIT_BYTES + 1)
+    except FileNotFoundError:
+        return None, ""
+    if len(data) > EDIT_BYTES:
+        raise ValueError("8 MiB を超える移行先ファイルは外部エディタで開いてください。")
+    try:
+        content = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError("UTF-8 の移行先ファイルを選んでください。") from None
+    if "\0" in content:
+        raise ValueError("テキストファイルを選んでください。")
+    return data, content
+
+
+def target_newline(data: bytes) -> str:
+    if b"\r\n" in data:
+        return "\r\n"
+    if b"\r" in data and b"\n" not in data:
+        return "\r"
+    return "\n"
+
+
+def save_target_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, Any]) -> None:
+    """編集元の版を照合し、改行を保ってBOM付きUTF-8のファイルへ置き換える。"""
+    with worktree_source_lock:
+        if edit["target"] not in {target.as_posix() for target in targets}:
+            raise ValueError("設定された移行対象ファイルを選んでください。")
+        path = safe_target(worktree, Path(edit["target"]))
+        if edit["version"] is None:
+            original, version = b"", target_hash(path)
+        else:
+            original, _ = read_target(worktree, Path(edit["target"]))
+            if original is None:
+                raise ValueError("対象ファイルが見つかりません。作業ツリーで確認してください。")
+            version = hashlib.sha256(original).hexdigest()
+        # 画面を開いてから更新されたファイルを、古い編集内容で上書きしない。
+        if version != edit["version"]:
+            raise ValueError("編集を開いた後に対象ファイルが更新されました。最新の内容を読み込み、編集を反映し直してください。")
+        # ブラウザーから来る改行を元の形式にそろえ、BOM付きUTF-8で保存する。
+        text = edit["content"].replace("\r\n", "\n").replace("\r", "\n")
+        text = text.replace("\n", target_newline(original))
+        data = text.encode("utf-8-sig")
+        if len(data) > EDIT_BYTES:
+            raise ValueError("編集後のファイルが 8 MiB を超えています。作業ツリーで編集してください。")
+        if data == original and version is not None:
+            return
+        # 同じディレクトリに書き終えてから置き換え、保存途中の内容が見えないようにする。
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+        try:
+            temporary.write_bytes(data)
+            if version is not None:
+                shutil.copymode(path, temporary)
+            if target_hash(safe_target(worktree, Path(edit["target"]))) != edit["version"]:
+                raise ValueError("対象ファイルが更新されました。最新の内容を読み込んでください。")
+            if version is None:
+                # 新規ファイルは、保存の間に別の処理が作成した内容を上書きしない。
+                os.link(temporary, path)
+            else:
+                temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _ensure_utf8_bom(path: Path) -> None:

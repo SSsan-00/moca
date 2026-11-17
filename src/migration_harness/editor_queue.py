@@ -11,11 +11,10 @@ from subprocess import run
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
-from .files import safe_target
 from .run_records import lock_run_record, replace_run_record
+from .worktree_targets import EDIT_BYTES, read_target
 
 EDITOR_TARGET_SUFFIXES = frozenset({".cs", ".cshtml"})
-EDIT_BYTES = 8 * 1024 * 1024
 QUEUE_PHASES = {"junie_running", "editor_checkpoint", "editor_followup", "interrupted", "junie_failed"}
 AGENT_PHASES = QUEUE_PHASES | {"repairing"}
 
@@ -40,18 +39,8 @@ def editor_text(content: Any, limit: int = EDIT_BYTES) -> str:
 
 
 def editor_target(root: Path, target: Path) -> tuple[bytes | None, str]:
-    path = safe_target(root, target)
-    try:
-        with path.open("rb") as stream:
-            data = stream.read(EDIT_BYTES + 1)
-    except FileNotFoundError:
-        return None, ""
-    if len(data) > EDIT_BYTES:
-        raise ValueError("8 MiB を超える移行先ファイルは外部エディタで開いてください。")
-    try:
-        return data, editor_text(data.decode("utf-8-sig"))
-    except UnicodeDecodeError:
-        raise ValueError("UTF-8 の 移行先ファイルを選んでください。") from None
+    data, content = read_target(root, target)
+    return data, editor_text(content)
 
 
 def merge_edit(base: str, draft: str, current: str) -> str | None:

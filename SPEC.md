@@ -10,10 +10,12 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 | --- | --- |
 | `[project]` | `root` は既存のアプリ用Git作業ツリー。 `base_ref` の既定値は `HEAD`。 `worktree_root` と `run_root` はアプリの外に置き、互いに包含しない。相対パスはTOMLの置き場所を基準とする。 |
 | `[[units]]` | 重複しない `id` と、`source` や `[[units.inputs]]` で入力を指定する。移行先は `target` または順序付き `targets` で指定する。Razorページでは同名の `.cshtml` と `.cshtml.cs` を両方指定する。 |
-| `[[project.migration_rules]]`・`[[project.references]]` | 共通ルールと参考実装。 `usage = "required"` が既定。 `usage = "reference"` には適用場面を示す `description` が必要。 |
+| `[[project.migration_rules]]` | 共通ルール。 `usage = "required"` が既定。 `usage = "reference"` には適用場面を示す `description` が必要。 |
+| `[[project.references]]` | 参考実装。 `role` に `reference_php`・`reference_csharp`・`reference_razor` を指定し、元PHPと対応する移行済みファイルを順に並べる。 |
 | `[junie]` | `max_steps` は任意の正の整数。指定時は各Junie呼び出しに渡す。 |
 | `[build]` | 任意の `project` にアプリ内の `.csproj`、`.sln`、`.slnx` を指定する。省略時はworktree直下で `dotnet build` を実行する。 |
 | `[checker]` | 任意の `command` を実行ファイルと個別の引数で指定する。 `max_repair_attempts` はビルド・チェッカーで共有し、既定はRunごとに2回。0で自動修正を無効にする。 |
+| `[[units]].checker_command` | 単位ごとのチェッカー。共通の `[checker].command` より優先する。CLIの `--checker-command` を指定した場合はCLIを優先する。 |
 | `[scripts]` | 各工程にコマンドの配列を指定する。詳細は下記の実行順序を参照。 |
 | `[diff_viewer]` | `html` が指定され有効な場合に比較・アンカー生成を提供する。 `anchor_reference` はTOMLを基準とした相対パスまたは絶対パスの配列。従来の単一パスも受け付ける。 |
 
@@ -39,6 +41,14 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 - Junieには静的な確認を指示し、移行元PHP・移行先の業務アプリ・DBを実行させません。精度はソースの照合、ビルド、静的チェッカー、人のレビューで確認します。設定済みのチェッカーやスクリプトは指定どおり実行するため、実行テストが必要なプロジェクトでは明示的に設定できます。ビルドや静的チェックの成功だけで実行時の振る舞いの一致を保証するものではありません。
 - `agent-workspace` に移行先、指定の移行資料、移行先周辺の参照ファイルを置きます。参照ファイルは、移行先の親ディレクトリ、隣接する `inc`、その一つ上の階層の `Libs`・`Extensions` から集めて保存します。Junie呼び出しの前後で編集対象外のファイルを照合し、設定した移行先の変更だけをworktreeに反映します。ファイル単位で置換する前に新旧ハッシュを保存し、途中で止まっても外部変更を検出しながら残りを適用できます。
 - ブラウザーの手修正や追加指示はRunに保存します。Junieの区間終了後に変更を取り込み、同じ箇所の競合は人の解消を待ちます。保存済みの手修正は差分としてJunieに渡します。Junieが所定のJSONで質問を返したときは反映を保留し、回答を追加指示として受け付けます。
+
+## 移行先ファイルの保存
+
+生成・修正した移行先ソースは **BOM付きUTF-8** で保存します。Junieの結果をworktreeへ反映する前にUTF-8として検証し、BOMがなければ先頭に `EF BB BF` を付けます。本文と改行のバイト列を保持し、既存BOMは重複させません。UTF-8として読めない出力は、その回のworktreeへの反映前にエラーにします。
+
+復旧用には、反映前のworktreeとBOM付与後のJunie出力のハッシュを保存します。Junieの作業領域とworktreeに同じバイト列を保存するため、次のカプセル・追加指示・自動修正・再開でも同じ版を参照できます。
+
+エディタとビルド失敗時の確認画面は、共通の読み取り・保存処理を使います。編集対象はUTF-8のテキストで、保存後のBOMを含めて8 MiB以下です。ブラウザーからの改行は元ファイルの形式にそろえ、新規ファイルはLFを使います。既存ファイルの版を保存直前にも照合し、同じディレクトリの一時ファイルから置き換えます。新規ファイルの保存中に別の処理が同じパスへ作成した場合は、上書きせずエラーにします。
 
 ## 保存データと照合
 
@@ -80,15 +90,21 @@ Junieには資料と書き戻すファイルを限定します。プロセス自
 | モジュール | 担当 |
 | --- | --- |
 | [cli.py](src/migration_harness/cli.py)・[config.py](src/migration_harness/config.py) | コマンドの入口、TOML検証と正規化。 |
-| [workflow.py](src/migration_harness/workflow.py) | 準備・移行・再開の順序、Junieへの指示、ビルドとチェッカー、移行台帳。 |
+| [workflow.py](src/migration_harness/workflow.py) | 準備・移行・再開の順序、Junieへの指示、ビルド・チェッカーの実行と修正、移行台帳。 |
+| [checker_output.py](src/migration_harness/checker_output.py) | チェッカー出力の解析、成功文言の判定、指摘ID・修正用識別子の生成、対象ファイルの版にひも付く承認の照合。 |
 | [capsules.py](src/migration_harness/capsules.py)・[rule_materials.py](src/migration_harness/rule_materials.py) | 入力の固定、分割、資料・manifestの生成と読み戻し。 |
 | [run_records.py](src/migration_harness/run_records.py)・[timings.py](src/migration_harness/timings.py) | Runの検証・保存と工程計測。 |
-| [worktree_targets.py](src/migration_harness/worktree_targets.py)・[source_context.py](src/migration_harness/source_context.py) | 移行先への反映と復旧、周辺の参照ファイルの固定と復元。 |
+| [worktree_targets.py](src/migration_harness/worktree_targets.py) | 移行先のUTF-8・サイズ検証、BOM付き保存、版の照合、Junie出力の反映と復旧。 |
+| [source_context.py](src/migration_harness/source_context.py) | 移行先周辺の参照ファイルの固定と復元。 |
 | [junie_cli.py](src/migration_harness/junie_cli.py)・[execution.py](src/migration_harness/execution.py) | Junieの起動・ACP・イベント・通信再試行、外部プロセスの実行とキャンセル。 |
-| [dashboard.py](src/migration_harness/dashboard.py)・[editor_queue.py](src/migration_harness/editor_queue.py) | ローカルHTTPとSSE、エディタの保存・指示待ち・競合処理。 |
+| [dashboard.py](src/migration_harness/dashboard.py) | ローカルHTTPとSSE、設定・進捗・レビュー・エディタの操作窓口。 |
+| [run_manager.py](src/migration_harness/run_manager.py) | 最大5件の並列実行、待機キューの保存・復元、Runごとの状態と操作の振り分け。 |
+| [editor_queue.py](src/migration_harness/editor_queue.py) | 手修正と追加指示の保存・送信待ち、変更の合流と競合判定。移行先ソースの読み書きは `worktree_targets.py` に集約する。 |
 | [diff_viewer.py](src/migration_harness/diff_viewer.py)・[review_anchors.py](src/migration_harness/review_anchors.py) | 一貫した比較スナップショットの作成、対応行の提案と検証。 |
 
 回帰テストは `python -m pip install -e .` の後に `python -m unittest discover -s tests -v` で実行します。入力規模、ルール、再開・修正の検証シナリオは [evaluations/](evaluations/) にあります。
+
+ファイル保存の境界条件は `test_worktree_targets.py`、移行・修正・反映途中の復旧は `test_multiple_targets.py`、チェッカーの解析と再検証は `test_checker_prefixes.py`・`test_checker_resume_review_dashboard.py`、画面からの編集と合流は `test_dashboard_editor.py` で確認します。Windows固有の改行変換と `cmd.exe` のテストは、Windows以外ではスキップします。
 
 ## ダッシュボードの並列実行
 
