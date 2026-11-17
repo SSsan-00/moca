@@ -1106,6 +1106,8 @@ class JunieConversationTests(SavedRunFixture):
     def test_stop_after_natural_build_exit_waits_without_cancelling_checker(self):
         completed, release = Event(), Event()
         script_phase = workflow._run_script_phase
+        replace = Path.replace
+        sharing_violation = Event()
         calls = []
         text = "今のビルドを止めて、保存した版でやり直して"
 
@@ -1120,8 +1122,19 @@ class JunieConversationTests(SavedRunFixture):
             calls.append(command[0])
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "_run_script_phase", side_effect=after_build), patch.object(
-            workflow, "run_process", side_effect=work,
+        def replace_record(source, target):
+            if target == self.record_path and completed.is_set() and not sharing_violation.is_set():
+                self.assertEqual(self.record()["status"], "build_succeeded")
+                sharing_violation.set()
+                error = PermissionError("fixture: destination held open by a reader")
+                error.winerror = 32
+                raise error
+            return replace(source, target)
+
+        with (
+            patch.object(workflow, "_run_script_phase", side_effect=after_build),
+            patch.object(workflow, "run_process", side_effect=work),
+            patch.object(Path, "replace", replace_record),
         ):
             self.start_build()
             try:
@@ -1136,6 +1149,7 @@ class JunieConversationTests(SavedRunFixture):
             self.wait_until_idle()
             self.restart_server()
             self.assertEqual(self.send(text, identifier)[1]["status"], "done")
+        self.assertTrue(sharing_violation.is_set())
         self.assertEqual(calls, ["dotnet", "fixture-checker", "dotnet"])
 
     def test_conflicting_saved_edit_is_preserved_and_does_not_build(self):
