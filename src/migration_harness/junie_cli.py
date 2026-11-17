@@ -38,6 +38,10 @@ if TYPE_CHECKING:
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
 
 
+class JunieEditHandoff(KeyboardInterrupt):
+    """修正セッションを閉じ、保存した編集と指示を自動で引き継ぐ。"""
+
+
 class JunieConnectionError(OSError):
     """Junieがモデルサービスとの通信を再試行しても続行できなかった。"""
 
@@ -956,6 +960,9 @@ def _run_session(
             report_usage([0] * len(USAGE_FIELDS))
         while True:
             check_cancelled()
+            if dashboard is not None and prompts is not None and prompts.needs_handoff():
+                report_activity("保存した編集と追加指示を反映するため、現在のJunie修正を切り替えます。")
+                raise JunieEditHandoff()
             try:
                 exit_code = process.wait(timeout=0.25)
             except subprocess.TimeoutExpired:

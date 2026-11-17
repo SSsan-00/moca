@@ -1347,10 +1347,41 @@ def _attempt_repair(
     write_run_record(record_path, record)
     repaired = False
     try:
-        _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
-        repaired = True
+        while True:
+            try:
+                _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
+                repaired = True
+                break
+            except junie_cli.JunieEditHandoff:
+                check_cancelled()
+                agent_root = run_path / "agent-workspace"
+                attempt = record["repair_pending"]
+                draft = attempt["draft"]
+                if any(target_hash(safe_target(agent_root, Path(name))) != digest
+                       for name, digest in draft["targets"].items()):
+                    raise CheckerRepairBlocked("handoff_unsafe", "切り替え中にJunieの下書きが更新されました。内容を確認して再開してください。")
+                with editor_queue(run_path) as queue:
+                    # Junieの終了後にだけ途中の変更を反映し、その版と手修正を合流する。
+                    record["target_hashes"] = draft["base"].copy()
+                    apply_agent_targets(agent_root, worktree, repair_targets, draft["base"], record, record_path)
+                    merged = _apply_editor_edits(queue, agent_root, worktree, targets, record, record_path)
+                    if merged:
+                        extra = dispatch_prompts(queue)
+                        attempt["operator_instruction"] = "\n".join(filter(None, (attempt.get("operator_instruction"), extra)))
+                        attempt.pop("draft", None)
+                        record.update(status="repairing")
+                        record.pop("error", None)
+                        write_run_record(record_path, record)
+                if not merged:
+                    raise CheckerRepairBlocked("operator_conflict", "編集が競合しました。エディタで解消してから再開してください。")
+                repair_targets = targets
+                report_activity("保存した編集を反映しました。追加指示をJunieに渡し直し、対応後に再ビルドします。")
     except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
         # 起動・通信の問題では修正枠を消費せず、同じ試行を再開できるようにする。
+        raise
+    except CheckerRepairBlocked as exc:
+        if exc.reason not in {"operator_conflict", "handoff_unsafe"}:
+            _charge_repair(record)
         raise
     except (OSError, RuntimeError, ValueError):
         _charge_repair(record)
@@ -1410,7 +1441,7 @@ def _repair_target(
         "The target may contain partial edits from an interrupted repair. Review those edits and continue the repair. "
         if resume_draft else ""
     )
-    instruction = attempt["details"].get("instruction")
+    instruction = "\n".join(filter(None, (attempt["details"].get("instruction"), attempt.get("operator_instruction"))))
     operator_instructions = ""
     if instruction:
         instruction_path = agent_root / f"checker-findings-{token}-instruction.txt"
@@ -1460,9 +1491,9 @@ def _repair_target(
         exit_code = junie_cli.run_interactive(
             command, completion_path, token, agent_targets,
             report_usage=junie_usage_recorder(run_path, phase),
-            prompts=LivePrompts(run_path),
+            prompts=LivePrompts(run_path, interrupt_for_edits=True),
         )
-    except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
+    except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError) as exc:
         attempt.pop("draft", None)
         try:
             if _unlisted_workspace_files(agent_root, allowed) == other_files:
@@ -1474,6 +1505,13 @@ def _repair_target(
         except (OSError, ValueError):
             # 安全に照合できない下書きは再開時に作業ツリーから同期し直す。
             pass
+        if isinstance(exc, junie_cli.JunieEditHandoff):
+            if "draft" not in attempt:
+                raise CheckerRepairBlocked("handoff_unsafe", "Junieの下書きを安全に引き継げません。作業領域を確認して再開してください。") from None
+            question = _read_operator_review(report, agent_root, worktree, repair_targets, record, completed=False)
+            if question:
+                attempt.pop("draft", None)
+                raise CheckerRepairBlocked("operator_confirmation", question) from None
         raise
     if _unlisted_workspace_files(agent_root, allowed) != other_files:
         raise CheckerRepairBlocked("unexpected_changes", "Junie changed files outside the repair targets; inspect the agent workspace")
@@ -1485,6 +1523,12 @@ def _repair_target(
         raise CheckerRepairBlocked("operator_confirmation", question)
     if not completed or not all(path.is_file() for path in agent_targets):
         raise CheckerRepairBlocked("repair_incomplete", "Junie did not record a completed repair; inspect its workspace for partial edits")
+    # 完了通知と指示の登録が重なった場合も、次のビルドより先に編集を引き継ぐ。
+    if LivePrompts(run_path, interrupt_for_edits=True).needs_handoff():
+        attempt["draft"] = {"base": before, "targets": {
+            path.as_posix(): target_hash(safe_target(agent_root, path)) for path in repair_targets
+        }}
+        raise junie_cli.JunieEditHandoff()
     record.pop("operator_question", None)
     if not instruction and all(
         sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)
@@ -1912,7 +1956,19 @@ def _run_verification(
 
     # 修正に成功したらここへ戻り、変更後のファイルを必ずビルドから検証し直す。
     while True:
-        write_run_record(record_path, record, timing_stage=4)
+        with editor_queue(run_path) as queue:
+            pending_changes = bool(queue["edits"] and any(prompt["status"] == "queued" for prompt in queue["prompts"]))
+            if not pending_changes:
+                # 指示の受付と工程変更を直列化し、修正終了間際の送信もビルド前に扱う。
+                if record["status"] == "repairing":
+                    record["status"] = "building"
+                write_run_record(record_path, record, timing_stage=4)
+        if pending_changes:
+            try:
+                check_cancelled()
+            except KeyboardInterrupt:
+                raise RunInterrupted(record["run_id"]) from None
+            return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
         fingerprint = current_fingerprint()
         _run_script_phase(config, "before_build", worktree, run_path, record)
         if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():

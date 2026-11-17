@@ -2287,6 +2287,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
       send.disabled = !available || !timing || saving || !bytes || bytes > 4_000;
       input.readOnly = saving;
       const message = bytes > 4_000 ? "指示を 4,000 バイト以下にしてください。"
+        : timing === "repair_restart" ? "保存した編集を反映して Junie に指示を渡し直し、対応後に再ビルドします。"
         : timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
         : timing === "checkpoint" ? "現在の作業区間が終わると Junie に渡します。"
         : timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
