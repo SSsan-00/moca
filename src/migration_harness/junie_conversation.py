@@ -207,7 +207,8 @@ class JunieConversations:
             self.thread.start()
 
     def scan(self):
-        self.runs = {path.parent.name for path in self.manager.queue_path.parent.glob("*/editor.json")} | self.runs
+        self.runs.update(path.parent.name for path in self.manager.queue_path.parent.glob("*/editor.json"))
+        self.runs.update(self.manager.blocked_conversations)
         self.wake.set()
 
     @contextmanager
@@ -275,6 +276,8 @@ class JunieConversations:
             if query := _status_intent(value):
                 entry["query_intent"] = query
             else:
+                if run_id in self.manager.blocked_conversations:
+                    raise ValueError(self.manager.blocked_conversations[run_id])
                 state = self.manager.get(run_id).state
                 if _conditional_verification(value):
                     entry["predecessor_operation_id"] = self.manager.jobs.get(run_id, {}).get("operation_id")
@@ -323,10 +326,32 @@ class JunieConversations:
     def advance(self, config, run_id):
         from .dashboard import _prompt_timing
 
+        with self.manager.condition:
+            if self.manager.closing or config["run_root"] != self.manager.root:
+                return False
+            blocked = self.manager.blocked_conversations.get(run_id)
+            if blocked and run_id in self.manager.jobs:
+                return True
+        if blocked:
+            fail_pending_after_unconfirmed_stop(config, run_id, blocked)
+            with self.manager.condition:
+                if config["run_root"] == self.manager.root and self.manager.blocked_conversations.get(run_id) == blocked:
+                    del self.manager.blocked_conversations[run_id]
+                    try:
+                        self.manager.persist()
+                    except OSError:
+                        self.manager.blocked_conversations[run_id] = blocked
+                        raise
+                    self.manager.start_pending()
+                    self.manager.condition.notify_all()
+            return True
+
         run_path, worktree, _, unit = load_saved_run(config, run_id)
         with editor_queue(run_path) as queue, self.manager.condition:
             if self.manager.closing or config["run_root"] != self.manager.root:
                 return False
+            if run_id in self.manager.blocked_conversations:
+                return True
             history = queue.get("conversation", [])
             cancelled = self.cancelled.get(run_id)
             for entry in history:
@@ -529,6 +554,12 @@ def run_instruction(config, run_id, identifier):
 
 
 def fail_pending_after_unconfirmed_stop(config, run_id, message):
+    validate_run_id(run_id)
+    try:
+        (Path(config["run_root"]).resolve() / run_id / "editor.json").lstat()
+    except FileNotFoundError:
+        # A started preparation can have been interrupted before conversation storage existed.
+        return
     run_path, _, _, _ = load_saved_run(config, run_id)
     with editor_queue(run_path) as queue:
         for entry in queue.get("conversation", []):

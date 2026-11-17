@@ -31,6 +31,7 @@ class RunManager:
         self.owner = None
         self.root = None
         self.scope = None
+        self.blocked_conversations = {}
         self.conversations = JunieConversations(self)
         if default.state.get("run_id"):
             self.views[default.state["run_id"]] = default
@@ -55,7 +56,12 @@ class RunManager:
             saved = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
             jobs = saved.get("jobs", [])
             cancelled = saved.get("cancelled_conversations", {})
-            if (jobs or cancelled) and saved.get("project_root") != config.get("project_root"):
+            blocked = saved.get("blocked_conversations", {})
+            for run_id, message in blocked.items():
+                validate_run_id(run_id)
+                if not isinstance(message, str) or not message:
+                    raise ValueError("保存済みの停止理由が不正です。")
+            if (jobs or cancelled or blocked) and saved.get("project_root") != config.get("project_root"):
                 raise ValueError("保存済みの実行待ち一覧とプロジェクトが異なります。保存先を確認してください。")
             for job in jobs:
                 if str(uuid.UUID(job["run_id"])) != job["run_id"]:
@@ -79,6 +85,7 @@ class RunManager:
         self.root = root
         if updated is not None:
             self.config.update(updated)
+        self.blocked_conversations = blocked
         if not root:
             return
         self.conversations.cancelled = cancelled
@@ -86,13 +93,18 @@ class RunManager:
             run_id = job["run_id"]
             if job.get("running"):
                 # 起動済みの工程は繰り返さない。保存されたチェックポイントから明示的に再開する。
+                message = self.blocked_conversations.setdefault(
+                    run_id, "前回の処理の終了を確認できません。ログと残存プロセスを確認してから指示を送信し直してください。",
+                )
                 try:
                     view = self.get(run_id)
-                    view.publish({**view.state, "message": "前回のダッシュボードが終了しました。内容を確認して再開してください。"})
+                    view.publish({**view.state, "message": message})
                 except (OSError, ValueError, KeyError):
                     view = self.new_view(run_id, job["unit_id"])
                     view.publish({**view.state, "status": "preparation_interrupted", "ready": True,
-                                  "message": "準備が完了していません。移行単位を選んで新しく実行してください。"})
+                                  "message": message})
+                continue
+            if run_id in self.blocked_conversations:
                 continue
             view = self.get(run_id) if job["action"] not in {"run", "prepare"} else self.new_view(run_id, job["unit_id"])
             self.enqueue(view, job, operation_id=job.get("operation_id"))
@@ -118,6 +130,7 @@ class RunManager:
         temporary.write_text(json.dumps({
             "project_root": self.config["project_root"], "jobs": jobs,
             "cancelled_conversations": self.conversations.cancelled,
+            "blocked_conversations": self.blocked_conversations,
         }, ensure_ascii=False), encoding="utf-8")
         temporary.replace(self.queue_path)
 
@@ -139,7 +152,7 @@ class RunManager:
                 view = type(self.default)()
                 view.condition = self.condition
                 view.observe(record)
-                view.ready(self.config, record)
+                view.ready(self.config, record, self.blocked_conversations.get(run_id, ""))
                 self.views[run_id] = view
             return self.views[run_id]
 
@@ -226,6 +239,8 @@ class RunManager:
                     return self.cancel_queued(view)
                 if not run_id or run_id in self.jobs or not view.state.get("ready"):
                     raise ValueError("このRunは処理中です。終了してから操作してください。")
+                if run_id in self.blocked_conversations:
+                    raise ValueError(self.blocked_conversations[run_id])
                 if kind == "hide-run":
                     return self.hide_run(run_id)
                 if any(job["unit_id"] == view.state["unit_id"] for job in self.jobs.values()):
@@ -263,18 +278,34 @@ class RunManager:
                 self.workers[run_id] = thread
                 thread.start()
 
+    def block_conversations(self, run_id, message):
+        with self.condition:
+            self.blocked_conversations[run_id] = message
+            self.conversations.notify(run_id)
+
     def execute(self, run_id):
         from .dashboard import execute_dashboard_action
         try:
             job = self.jobs[run_id]
-            self.results[run_id] = execute_dashboard_action(self.views[run_id], job["config"], job)
+            view = self.views[run_id]
+            view.manager = self
+            self.results[run_id] = execute_dashboard_action(view, job["config"], job)
         finally:
             with self.condition:
                 self.jobs.pop(run_id, None)
                 self.workers.pop(run_id, None)
-                self.persist()
-                self.start_pending()
-                self.condition.notify_all()
+                try:
+                    self.persist()
+                except OSError:
+                    if run_id not in self.blocked_conversations:
+                        raise
+                    # The last persisted queue still identifies this as a started job.
+                    view.publish({**view.state, "message": view.state.get("message", "") +
+                                  "\n待機指示の停止を保存できません。残存プロセスと保存先を確認してください。"})
+                else:
+                    self.start_pending()
+                finally:
+                    self.condition.notify_all()
 
     def workspace(self, *, include_usage=False):
         with self.condition:

@@ -53,6 +53,11 @@ class JunieProcessTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 self.check_child(mode=mode)
 
+    @unittest.skipIf(os.name == "nt", "requires POSIX process-group monitoring")
+    def test_launcher_exit_without_waitid_preserves_group_ownership(self):
+        with patch.object(os, "waitid", None, create=True):
+            self.check_child(mode="--task")
+
     def test_live_launcher_cancellation_confirms_child_exit(self):
         self.check_child(mode="--prompt", cancel="live")
 

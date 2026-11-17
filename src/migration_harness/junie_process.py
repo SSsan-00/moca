@@ -64,11 +64,25 @@ class JunieProcess(subprocess.Popen):
             return
         # Keep the leader unreaped so its group ID cannot be recycled during cleanup.
         deadline = time.monotonic() + timeout
-        while not os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+        waitid = getattr(os, "waitid", None)
+        while True:
+            if waitid is not None:
+                if waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+                    return
+            else:
+                # Python < 3.13 on macOS lacks waitid. A zombie still pins the group ID.
+                state = subprocess.run(
+                    ["/bin/ps", "-p", str(self.pid), "-o", "stat="],
+                    check=True, capture_output=True, text=True, timeout=max(0, deadline - time.monotonic()),
+                ).stdout.strip()
+                if state.startswith("Z"):
+                    return
+                if not state:
+                    raise OSError("Could not inspect the Junie launcher process")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired("Junie", timeout)
-            time.sleep(min(.025, remaining))
+            time.sleep(min(.025 if waitid is not None else .1, remaining))
 
     def stop(self):
         deadline = time.monotonic() + _STOP_TIMEOUT

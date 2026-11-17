@@ -34,7 +34,7 @@ from migration_harness.editor_queue import (
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset, safe_target
-from migration_harness.junie_cli import JunieStopError, list_models
+from migration_harness.junie_cli import list_models, unconfirmed_junie_stop
 from migration_harness.junie_conversation import (
     fail_pending_after_unconfirmed_stop, finish_instruction, invalidate_queued_steering, run_instruction,
 )
@@ -59,20 +59,6 @@ PROGRESS_FIELDS = (
     "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
-
-
-def _unconfirmed_junie_stop(error: BaseException) -> JunieStopError | None:
-    """診断の保存などで別の例外が出ても、未確認の終了を見落とさない。"""
-    pending = [error]
-    seen = set()
-    while pending:
-        current = pending.pop()
-        if isinstance(current, JunieStopError):
-            return current
-        if id(current) not in seen:
-            seen.add(id(current))
-            pending.extend(link for link in (current.__context__, current.__cause__) if link is not None)
-    return None
 
 
 def _prompt_timing(config, state, run_path, record, *, live: bool = False, pending_edits: bool = False) -> str | None:
@@ -1026,12 +1012,15 @@ def execute_dashboard_action(view, config, action):
                 finish_instruction(config, run_id, conversation_id, None, exc)
             except _ERRORS as save_error:
                 exc.add_note(f"Junie の履歴を保存できませんでした。{format_error(save_error)}")
-        unconfirmed_stop = _unconfirmed_junie_stop(exc)
+        unconfirmed_stop = unconfirmed_junie_stop(exc)
+        pending_save_error = None
         if unconfirmed_stop is not None:
+            if manager := getattr(view, "manager", None):
+                manager.block_conversations(run_id, str(unconfirmed_stop))
             try:
                 fail_pending_after_unconfirmed_stop(config, run_id, str(unconfirmed_stop))
             except _ERRORS as save_error:
-                exc.add_note(f"保留中の指示を更新できませんでした。{format_error(save_error)}")
+                pending_save_error = format_error(save_error)
         stopped = unconfirmed_stop is None and (
             isinstance(exc, KeyboardInterrupt) or bool(view.control and view.control.cancelled.is_set())
         )
@@ -1052,6 +1041,10 @@ def execute_dashboard_action(view, config, action):
                           "準備を停止しました。移行単位を選んで新しく実行してください。"})
         else:
             view.failed(exc)
+            if pending_save_error:
+                view.publish({**view.state, "message": view.state["message"] +
+                              "\n保留中の指示の停止を保存できません。残存プロセスと保存先を確認してください。\n" +
+                              pending_save_error})
         if action.get("reply") and not action["reply"].done():
             action["reply"].set_exception(ValueError("処理を停止しました。" if stopped else format_error(exc)))
     finally:

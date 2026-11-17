@@ -1503,7 +1503,7 @@ def _repair_target(
         )
     except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError) as exc:
         attempt.pop("draft", None)
-        if isinstance(exc, junie_cli.JunieStopError):
+        if junie_cli.unconfirmed_junie_stop(exc) is not None:
             raise
         try:
             if _unlisted_workspace_files(agent_root, allowed) == other_files:
@@ -1915,7 +1915,7 @@ def _run_verification(
             except (OSError, RuntimeError, ValueError) as exc:
                 record.update(status="build_failed", error=format_error(exc))
                 write_run_record(record_path, record)
-                if isinstance(exc, junie_cli.JunieStopError):
+                if junie_cli.unconfirmed_junie_stop(exc) is not None:
                     raise
                 return {**verified, "error": record["error"]}
             except KeyboardInterrupt:
@@ -2004,7 +2004,7 @@ def _run_verification(
             record.update(status="checker_needs_review", checker_review_reason=_checker_repair_reason(exc),
                           error=format_error(exc))
             write_run_record(record_path, record)
-            if isinstance(exc, junie_cli.JunieStopError):
+            if junie_cli.unconfirmed_junie_stop(exc) is not None:
                 raise
             return {**checked, "error": record["error"]}
         except KeyboardInterrupt:
