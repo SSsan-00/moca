@@ -108,6 +108,7 @@ def _create_worktree(
         "max_context_chars": config["max_context_chars"],
         "junie_max_steps": config["junie_max_steps"],
         "junie_model": config.get("junie_model"),
+        "junie_effort": config.get("junie_effort"),
         "resume_attempts": 0,
         "segmentation_policy": "line_with_character_fallback_and_overlap",
         "source_boundary_review_required": context["source_boundary_review_required"],
@@ -444,7 +445,7 @@ def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> s
 
 def _review_detail_applicability(
     run_path: Path, capsule: Path, manifest: dict[str, Any], targets: tuple[Path, ...],
-    record: dict[str, Any], max_steps: int | None, *, model: str | None = None,
+    record: dict[str, Any], max_steps: int | None, *, model: str | None = None, effort: str | None = None,
 ) -> frozenset[str] | None:
     index = detail_index(manifest)
     if not index:
@@ -590,7 +591,7 @@ def _review_detail_applicability(
             "exclude scopes clearly absent from the migration. " + result_instruction
             + "Use only files in this workspace."
         )
-        command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines, model=model)
+        command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines, model=model, effort=effort)
         junie_cli.run_interactive(
             command, completion, token, (output,), report_usage=junie_usage_recorder(run_path, "rule_review"),
             accept_result=save_decisions if context is not None else None,
@@ -792,7 +793,8 @@ def _run_editor_followup(
     guidelines, supplied = _task_guidelines(agent_root, inputs)
     prompt = context + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
-                                      guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")))
+                                      guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
+                                      effort=record.get("junie_effort"))
     allowed = {*targets, completion.relative_to(agent_root)}
     before = _unlisted_workspace_files(agent_root, allowed)
     try:
@@ -891,6 +893,7 @@ def _run_prepared_with_junie(
                 run_path, capsule, manifest, relative_targets, record,
                 record.get("junie_max_steps", config["junie_max_steps"]),
                 model=record.get("junie_model", config.get("junie_model")),
+                effort=record.get("junie_effort"),
             )
     except KeyboardInterrupt as exc:
         record.update(status="interrupted", error="detail applicability review was interrupted; resume this Run")
@@ -1032,7 +1035,8 @@ def _run_prepared_with_junie(
         prompt = context + prompt
         other_files = _unlisted_workspace_files(agent_root, allowed)
         command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
-                                          model=record.get("junie_model", config.get("junie_model")))
+                                          model=record.get("junie_model", config.get("junie_model")),
+                                          effort=record.get("junie_effort"))
         try:
             try:
                 exit_code = junie_cli.run_interactive(
@@ -1471,7 +1475,8 @@ def _repair_target(
     guidelines, supplied = _task_guidelines(agent_root, inputs)
     prompt = context + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
-                                      model=record.get("junie_model", config.get("junie_model")))
+                                      model=record.get("junie_model", config.get("junie_model")),
+                                      effort=record.get("junie_effort"))
     allowed = {*repair_targets, completion_path.relative_to(agent_root)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     report_activity(f"Junieが{reason}を修正しています", kind="phase",

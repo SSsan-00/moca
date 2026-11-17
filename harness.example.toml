@@ -32,6 +32,8 @@ max_context_chars = 500000
 [junie]
 # 設定タブでも選択可能。省略するとJunieの既定モデルを使う。
 # model = "sonnet"
+# モデルを指定した場合のみ使用。省略すると選択モデルの既定値を使う。
+# effort = "high"
 # 任意の正の整数。省略するとJunie CLI側の設定に従う。
 # max_steps = 20
 

@@ -1,12 +1,13 @@
 "use strict";
 
 // サーバーを使わず、同じ一覧UIで並列数・停止・再開・待機順を試せるデモ。
-function createDemoRuns(initialId, units, show) {
+function createDemoRuns(initialId, units, show, junie = () => ({})) {
   const limit = 5;
   let selected = initialId;
   let sequence = 8;
   const pending = [];
   const make = (id, unit, status, ready, tick = 0) => ({run_id: id, unit_id: unit, status, ready, tick,
+    junie_model: junie().model || null, junie_effort: junie().effort || null,
     created_at: new Date().toISOString(), context_capsules: 5, current_capsule: 1, completed_capsules: 0,
     worktree_path: status === "queued" ? null : `demo/${id}`, queued: status === "queued",
     resumable: ready, cancellable: !ready && status !== "queued", elapsed_seconds: tick * 3});

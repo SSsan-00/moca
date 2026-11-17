@@ -984,6 +984,10 @@
                   <option value="grok">Grok</option>
                 </select>
                 <p class="settings-material-range" id="settings-junie-model-status" role="status" hidden></p>
+                <label for="settings-junie-effort">推論の強さ</label>
+                <select id="settings-junie-effort" class="workspace-select" data-section="junie" data-setting="effort" disabled>
+                  <option value="">モデルを選択してください</option>
+                </select>
                 <div class="settings-pair">
                   <div>
                     <label for="settings-context-limit">カプセルの文字数上限</label>
@@ -1553,6 +1557,7 @@ const numericSettings = {
   max_repair_attempts: [0, "自動修正回数"], max_context_chars: [1000, "カプセルの文字数上限"],
   max_steps: [1, "Junieのステップ数上限"], start_line: [1, "開始行"], end_line: [1, "終了行"],
 };
+const effortLabels = {none: "なし", minimal: "最小", low: "低", medium: "中", high: "高", xhigh: "非常に高い", max: "最大"};
 const hasInputContent = item => Boolean(item.path?.trim() || item.description?.trim() || item.usage === "reference");
 function validateRuleUsage(item) {
   const usage = item.usage === undefined ? "required" : item.usage;
@@ -1590,7 +1595,9 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   const materialFields = ["migrationRules", "references"];
   const modelSelect = document.querySelector("#settings-junie-model");
   const modelStatus = document.querySelector("#settings-junie-model-status");
+  const effortSelect = document.querySelector("#settings-junie-effort");
   const fallbackModels = [...modelSelect.options].slice(1).map(option => ({id: option.value, name: option.text}));
+  let modelCatalog = fallbackModels;
   const added = new WeakSet();
   const formFeedback = form => form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
   const emptyChanges = () => ({project: {}, units: {}});
@@ -1612,6 +1619,20 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     modelSelect.value = value;
   }
 
+  function showEfforts(value = effortSelect.value, preserve = true) {
+    const model = modelSelect.value;
+    const supported = modelCatalog.find(item => item.id === model)?.efforts
+      ?? (model === "junie-lite" ? ["none"] : ["low", "medium", "high"]);
+    const values = model ? supported.filter(effort => Object.hasOwn(effortLabels, effort)) : [];
+    effortSelect.replaceChildren(new Option(model ? "モデルの既定値" : "モデルを選択してください", ""),
+      ...values.map(effort => new Option(`${effortLabels[effort]}（${effort}）`, effort)));
+    if (preserve && value && !values.includes(value)) {
+      effortSelect.add(new Option(`${effortLabels[value] ?? value}（指定済み）`, value));
+    }
+    effortSelect.value = preserve || values.includes(value) ? value : "";
+    effortSelect.disabled = !model;
+  }
+
   async function loadModels() {
     if (!readModels) return;
     const request = ++modelRequest;
@@ -1628,8 +1649,10 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     }
     if (request !== modelRequest) return;
     const selected = modelSelect.value;
+    modelCatalog = models;
     modelSelect.replaceChildren(new Option("Junieの既定モデル", ""), ...models.map(model => new Option(model.name, model.id)));
     selectModel(selected);
+    showEfforts();
     modelStatus.textContent = message;
     modelStatus.hidden = !message;
   }
@@ -2026,8 +2049,9 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       for (const field of tableFields) {
         const value = settingsForm[field.dataset.section][field.dataset.setting];
         if (field === modelSelect) selectModel(value ?? "");
-        else field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+        else if (field !== effortSelect) field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
       }
+      showEfforts(settingsForm.junie.effort ?? "");
       showMaterials(settingsForm.migrationRules, "migrationRules");
       showMaterials(settingsForm.references);
       showUnitOptions(unitIndex);
@@ -2130,6 +2154,10 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     if (setting === "anchor_reference") value = field.value.split("\n").map(path => path.trim()).filter(Boolean);
     changes[section] ??= {};
     changes[section][setting] = settingsForm[section][setting] = value;
+    if (field === modelSelect) {
+      showEfforts(effortSelect.value, false);
+      changes.junie.effort = settingsForm.junie.effort = effortSelect.value;
+    }
     schedulePreview();
   });
   for (const field of unitFields) field.addEventListener("input", () => {
@@ -2663,7 +2691,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
           command: read(checker, "command") ?? [],
           max_repair_attempts: read(checker, "max_repair_attempts") ?? "",
         },
-        junie: {max_steps: read(findTable("junie"), "max_steps"), model: read(findTable("junie"), "model")},
+        junie: Object.fromEntries(["max_steps", "model", "effort"].map(key => [key, read(findTable("junie"), key)])),
         diff_viewer: {
           html: read(findTable("diff_viewer"), "html"),
           anchor_reference: read(findTable("diff_viewer"), "anchor_reference"),
@@ -2680,7 +2708,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
       return {content, form: null};
     }
   }
-  const demoRuns = createDemoRuns(demoRunID, demoUnits, renderParallelDemo);
+  const demoRuns = createDemoRuns(demoRunID, demoUnits, renderParallelDemo, () => demoSettingsDraft(demoSettings).form.junie);
   let shownDemoRun;
   let shownDemoStatus;
   function renderParallelDemo(run) {
@@ -2719,6 +2747,14 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
       const form = demoSettingsDraft(content).form;
       if (!form) throw new Error("TOMLの書式を修正してください。");
       form.migrationRules.forEach(validateRuleUsage);
+      const {model = "", effort = ""} = form.junie;
+      if (typeof model !== "string" || /^-|[\s\x00-\x1f\x7f]/u.test(model)) {
+        throw new Error("Junieのモデルは、空白を含まないモデルIDで指定してください。既定値に戻す場合は空欄にしてください。");
+      }
+      if (typeof effort !== "string" || (effort && !Object.hasOwn(effortLabels, effort))) {
+        throw new Error("推論の強さは none・minimal・low・medium・high・xhigh・max のいずれかを指定してください。");
+      }
+      if (effort && !model) throw new Error("推論の強さを指定する場合は、Junieで使うモデルも選択してください。");
       demoSettings = content;
       const viewer = form.diff_viewer;
       document.documentElement.toggleAttribute("data-viewer-enabled", !!viewer?.html?.trim() && viewer.enabled !== "false");

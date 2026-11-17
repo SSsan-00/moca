@@ -17,7 +17,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
             with self.subTest(approve=approve), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 completion = root / "done"
-                command = junie_cli.build_command(root, "repair prompt", 7, guidelines=root / "rules.md", model="sonnet")
+                command = junie_cli.build_command(root, "repair prompt", 7, guidelines=root / "rules.md", model="sonnet", effort="high")
                 dashboard = Dashboard()
                 dashboard.begin_operation()
                 dashboard.control.trusted_junie_workspaces.add(str(root.resolve()))
@@ -66,6 +66,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
                         self.assertEqual(request["title"], "Junie を非対話モードで再試行")
                         self.assertEqual(len(commands), 1)
                         self.assertEqual(commands[0][commands[0].index("--model") + 1], "sonnet")
+                        self.assertEqual(commands[0][commands[0].index("--effort") + 1], "high")
                         self.assertTrue(dashboard.answer_junie({
                             "operation_id": operation_id, "request_id": request["id"],
                             "option_id": "headless" if approve else "stop",
@@ -75,7 +76,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
                             self.assertEqual(completion.read_text(), "token")
                             self.assertEqual(commands[1], [
                                 "junie", "--project", str(root), "--ide-guidelines", str(root / "rules.md"),
-                                "--max-steps", "7", "--model", "sonnet", "--task", "repair prompt",
+                                "--max-steps", "7", "--model", "sonnet", "--effort", "high", "--task", "repair prompt",
                             ])
                         else:
                             with self.assertRaises(junie_cli.JunieAcpModelUnavailable):

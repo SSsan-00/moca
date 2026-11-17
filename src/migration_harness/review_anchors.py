@@ -178,7 +178,8 @@ def generate_anchors(
         )
         _, _, record, _ = load_saved_run(config, run_id)
         command = junie_cli.build_command(agent, prompt, config["junie_max_steps"],
-                                          model=record.get("junie_model", config.get("junie_model")))
+                                          model=record.get("junie_model", config.get("junie_model")),
+                                          effort=record.get("junie_effort"))
         junie_cli.run_interactive(
             command, completion, token, (result,), report_usage=junie_usage_recorder(run_path, "anchors"),
             prefer_task=True,

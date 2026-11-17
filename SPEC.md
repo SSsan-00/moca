@@ -12,7 +12,7 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 | `[[units]]` | 重複しない `id` と、`source` や `[[units.inputs]]` で入力を指定する。移行先は `target` または順序付き `targets` で指定する。Razorページでは同名の `.cshtml` と `.cshtml.cs` を両方指定する。 |
 | `[[project.migration_rules]]` | 共通ルール。 `usage = "required"` が既定。 `usage = "reference"` には適用場面を示す `description` が必要。 |
 | `[[project.references]]` | 参考実装。 `role` に `reference_php`・`reference_csharp`・`reference_razor` を指定し、元PHPと対応する移行済みファイルを順に並べる。 |
-| `[junie]` | `max_steps` は任意の正の整数。指定時は各Junie呼び出しに渡す。 |
+| `[junie]` | 任意の `model` と `effort` を `--model`・`--effort` に渡す。`effort` は `none`・`minimal`・`low`・`medium`・`high`・`xhigh`・`max` のいずれかで、`model` の指定が必要。空欄・省略時はCLIへ渡さない。`max_steps` は任意の正の整数。 |
 | `[build]` | 任意の `project` にアプリ内の `.csproj`、`.sln`、`.slnx` を指定する。省略時はworktree直下で `dotnet build` を実行する。 |
 | `[checker]` | 任意の `command` を実行ファイルと個別の引数で指定する。 `max_repair_attempts` はビルド・チェッカーで共有し、既定はRunごとに2回。0で自動修正を無効にする。 |
 | `[[units]].checker_command` | 単位ごとのチェッカー。共通の `[checker].command` より優先する。CLIの `--checker-command` を指定した場合はCLIを優先する。 |
@@ -25,8 +25,10 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 
 ## 実行順序と再開
 
-1. **準備**。新しいUUIDのRunを作り、アプリルートで `before_prepare` を実行します。入力を検証し、カプセルの作成が成功してから基準リビジョンのdetached worktreeを作成します。以降のスクリプトはworktreeで実行します。
-2. **移行**。 `after_prepare`、`before_migration` の順に実行し、必要に応じて詳細ルールの適用判定を行います。Junieをカプセルごとに起動し、保存済みの移行先と今回の担当範囲を渡します。完了トークンと編集内容を検証し、worktreeに反映します。
+モデルと推論の強さは準備時の `junie_model`・`junie_effort` としてRunに保存します。移行・ルール適用判定・自動修正・追加指示・比較アンカー生成・再開ではRunの指定を使います。既定値も未指定として保存し、後から変更した設定を混ぜません。旧版Runで `junie_model` がない場合は現在のモデル設定を使い、`junie_effort` がない場合は推論の強さを指定しません。別名・既定モデルが指す実モデルはJunie側の設定に従います。
+
+1. **準備**。新しいUUIDのRunを作り、アプリルートで `before_prepare` を実行します。入力を検証し、カプセルの作成が成功してから基準リビジョンのdetached worktreeを作成し、`after_prepare` を実行します。worktree作成後のスクリプトはworktreeで実行します。
+2. **移行**。未完了の `after_prepare` があれば再開し、`before_migration` を実行して、必要に応じて詳細ルールの適用判定を行います。Junieをカプセルごとに起動し、保存済みの移行先と今回の担当範囲を渡します。完了トークンと編集内容を検証し、worktreeに反映します。
 3. **検証**。 `after_migration` の後、`before_build` → `dotnet build` → `after_build` の順に実行します。チェッカーを設定した場合は続けて `before_checker` → チェッカー → `after_checker` を実行します。 `after_checker` はチェッカーの終了コードを取得した場合に実行します。スクリプトが失敗した場合はその工程で止まります。
 4. **修正とレビュー**。修正可能なビルドエラーやチェッカー出力をJunieへ渡し、修正後にビルドからやり直します。回数上限、対象外の指摘、診断の繰り返しなどで修正を止め、ログと理由を保存します。自動修正に渡すチェッカー出力は最大65,536バイト、構造化して抽出した診断は合計8,000文字までです。
 
@@ -58,7 +60,7 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 
 | 保存場所 | 主な内容 |
 | --- | --- |
-| `<run_root>/<Run ID>/run.json` | 工程の状態、カプセルの完了数、移行先のハッシュ、工程時間、トークン、修正履歴、レビュー判断、検証時の照合情報。別CLIからの判断や使用量の更新と競合しないよう、ロックを使って置換する。 |
+| `<run_root>/<Run ID>/run.json` | 工程の状態、モデルと推論の強さ、カプセルの完了数、移行先のハッシュ、工程時間、トークン、修正履歴、レビュー判断、検証時の照合情報。別CLIからの判断や使用量の更新と競合しないよう、ロックを使って置換する。 |
 | `capsule/manifest.json` | カプセル本文のパス・文字数・ハッシュ、原文のファイル名と行範囲、長い行の担当・重複範囲、固定済み資料。 |
 | `capsule/part-*/`、`capsule/php-sources/`、`capsule/materials/` | 行番号付き本文と境界抜粋、固定済みPHP、共通ルール・参考実装。 |
 | `capsule/target-context/` | Junieの作業領域に復元する移行先周辺の参照ファイルと、専用のmanifest。 |
@@ -84,6 +86,8 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 | `anchors --run-id UUID` | Junieに対応行を提案させ、座標を検証して比較JSONを保存。 |
 
 全コマンドで `--config` が必要です。 `run`・`resume` は `--dashboard` に対応します。 `run`・`resume`・`view` の `--checker-command` は後続の引数すべてをチェッカーに渡すため末尾に置きます。
+
+設定画面のモデル候補は `GET …/junie-models` で取得します。ローカルの `junie list-models` を10秒のタイムアウト付きで実行し、モデルID・表示名・対応する推論の強さを返します。取得できなくても設定フォームは利用でき、代表的な候補へ切り替えます。モデルの変更で対応しなくなった強さは既定値へ戻し、既存設定の候補外の値は読み込み時に保持します。静的デモは固定候補を使い、保存したモデル・推論の強さを模擬Runへ記録します。デモの保存はページ内だけで、Junieやローカルの設定ファイルにはアクセスしません。
 
 ダッシュボードは `127.0.0.1` の空きポートにバインドし、ランダムなURL接頭辞の下に画面とAPIを配信します。進捗は `GET …/events` のSSEで送り、再接続時は直近100件の範囲で再送します。操作のPOSTは `Host`・`Origin` を照合します。ブラウザー操作時のJunieはACPで連携し、プロジェクトの信頼・操作の許可を画面で受け付けます。ACPでモデルを利用できない場合は、画面で今回の再試行を許可し、CLIが対応していれば `--task` で再試行できます。端末から直接実行する移行はJunieの対話CLIを使います。アンカー生成は `--task` 対応を確認して優先使用し、未対応なら対話CLIへ切り替えます。
 
