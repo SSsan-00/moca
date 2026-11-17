@@ -351,6 +351,19 @@
     prompt.focus();
   }
 
+  function chatTurn(text) {
+    const item = document.createElement("li");
+    const message = Object.assign(document.createElement("div"), {className: "editor-chat-bubble editor-chat-message"});
+    const reply = Object.assign(document.createElement("div"), {className: "editor-chat-bubble editor-chat-reply"});
+    message.append(
+      Object.assign(document.createElement("span"), {className: "editor-muted", textContent: "あなた"}),
+      Object.assign(document.createElement("p"), {textContent: text}),
+    );
+    reply.append(Object.assign(document.createElement("span"), {className: "editor-muted", textContent: "ハーネス"}));
+    item.append(message, reply);
+    return {item, message, reply};
+  }
+
   function renderPrompts() {
     const key = JSON.stringify([state.run_id, state.prompts, state.conversation, state.can_prompt,
       progress().status, Boolean(progress().junie_request)]);
@@ -360,12 +373,9 @@
     const ids = new Set(conversation.map(message => message.id));
     const lastVerification = conversation.findLast(entry => entry.result_status);
     promptList.replaceChildren(...state.prompts.filter(message => !ids.has(message.id)).map(message => {
-      const item = document.createElement("li");
-      const author = Object.assign(document.createElement("span"), {className: "editor-muted", textContent: "あなた"});
-      const text = Object.assign(document.createElement("p"), {textContent: message.text});
+      const {item, message: outgoing, reply} = chatTurn(message.text);
       const label = {queued: "送信待ち", steering: "Junie に送信・処理中", applying: "反映確認中", sending: "処理中", sent: "送信済み"}[message.status];
-      const status = Object.assign(document.createElement("span"), {className: "editor-muted", textContent: label});
-      item.append(author, text, status);
+      reply.append(Object.assign(document.createElement("p"), {textContent: label}));
       if (message.status === "queued" && state.can_prompt) {
         const button = Object.assign(document.createElement("button"), {className: "button", type: "button", textContent: "編集"});
         button.addEventListener("click", () => {
@@ -376,26 +386,23 @@
           promptMode();
           prompt.focus();
         });
-        item.append(button);
+        outgoing.append(button);
       }
       return item;
     }), ...conversation.map(message => {
-      const item = document.createElement("li");
-      const promptText = Object.assign(document.createElement("p"), {textContent: message.text});
-      const status = Object.assign(document.createElement("p"), {
-        className: "editor-chat-reply",
+      const {item, reply} = chatTurn(message.text);
+      reply.append(Object.assign(document.createElement("p"), {
         textContent: [...new Set([message.question, message.answer && `回答：${message.answer}`,
           message.plan, message.message || "受け付けました。"].filter(Boolean))].join("\n"),
-      });
-      item.append(promptText, status);
+      }));
       const targets = Object.entries(message.built_targets || {});
       if (targets.length) {
         const version = Object.assign(document.createElement("p"), {className: "editor-muted",
           textContent: targets.map(([name, hash]) => `${name} · ${hash || "ファイルなし"}`).join("\n")});
-        item.append(version);
+        reply.append(version);
       }
       if (message.review_targets?.length) {
-        item.append(Object.assign(document.createElement("p"), {className: "editor-muted",
+        reply.append(Object.assign(document.createElement("p"), {className: "editor-muted",
           textContent: message.review_targets.join("\n")}));
       }
       for (const log of message.logs || []) {
@@ -405,7 +412,7 @@
         });
         const output = Object.assign(document.createElement("pre"), {textContent: log.text});
         details.append(summary, output);
-        item.append(details);
+        reply.append(details);
       }
       if (message === lastVerification
           && message.result_status === progress().status && !progress().junie_request) {
@@ -414,7 +421,7 @@
         if (label) {
           const button = Object.assign(document.createElement("button"), {className: "button", type: "button", textContent: label});
           button.addEventListener("click", () => find("#toggle").click());
-          item.append(button);
+          reply.append(button);
         }
       }
       return item;

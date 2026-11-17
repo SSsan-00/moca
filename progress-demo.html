@@ -243,12 +243,16 @@
     .editor-chat-body { flex: 1; min-height: 0; padding: 12px; overflow: auto; overflow-wrap: anywhere; }
     .editor-chat-body p, .editor-chat form p { margin: 0; }
     #editor-operator-question { margin-block: 8px; white-space: pre-wrap; }
-    .editor-chat-list { display: grid; justify-items: end; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
-    .editor-chat-list li { max-width: 95%; min-width: 0; padding: 8px 10px; border-radius: 10px 10px 2px 10px; background: var(--blue-soft); }
-    .editor-chat-list li p { white-space: pre-wrap; }
-    .editor-chat-list .editor-chat-reply { margin-block: 6px; }
+    .editor-chat-list { display: grid; gap: 12px; max-width: 48rem; list-style: none; padding: 0; margin: 12px auto 0; }
+    .editor-chat-list li { display: grid; gap: 5px; min-width: 0; }
+    .editor-chat-bubble { max-width: min(92%, 65ch); min-width: 0; padding: 8px 10px; }
+    .editor-chat-message { justify-self: end; border-radius: 10px 10px 2px 10px; background: var(--blue-soft); }
+    .editor-chat-reply { justify-self: start; border-radius: 10px 10px 10px 2px; background: var(--surface-muted); }
+    .editor-chat-bubble p { white-space: pre-wrap; }
+    .editor-chat-bubble p + p { margin-top: 4px; }
+    .editor-chat-list summary { min-height: 24px; cursor: pointer; }
     .editor-chat-list details pre { white-space: pre-wrap; margin-block: 4px; overflow-wrap: anywhere; }
-    .editor-chat-list button { min-height: 28px; height: auto; padding-inline: 6px; margin-left: 6px; }
+    .editor-chat-list button { min-height: 28px; height: auto; padding-inline: 6px; margin-top: 4px; }
     .editor-chat form { display: grid; gap: 6px; border-top: 1px solid var(--line); }
     .editor-chat textarea { width: 100%; min-height: 64px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
     .editor-chat-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; }
