@@ -184,8 +184,9 @@ def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str,
 def _run_script_phase(
     config: dict[str, Any], phase: str, cwd: Path, run_path: Path,
     record: dict[str, Any] | None = None, *, once: bool = False,
+    extra_commands: tuple[list[str], ...] = (),
 ) -> None:
-    commands = config.get("scripts", {}).get(phase)
+    commands = [*config.get("scripts", {}).get(phase, []), *extra_commands]
     if not commands or (record is not None and once and phase in record.get("completed_script_phases", [])):
         return
 
@@ -840,7 +841,12 @@ def _run_prepared_with_junie(
     if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
         raise ValueError("agent workspace path escapes the run directory")
     _run_script_phase(config, "after_prepare", worktree_root, run_path, record, once=True)
-    _run_script_phase(config, "before_migration", worktree_root, run_path, record, once=True)
+    # Junieの作業領域を作成済みのRunでは、初期ファイルを再配置しない。
+    if not agent_root.exists():
+        _run_script_phase(
+            config, "before_migration", worktree_root, run_path, record, once=True,
+            extra_commands=tuple(unit.get("draft_import_commands", ())),
+        )
     record_path = run_path / "run.json"
     resume_attempts = record.get("resume_attempts", 0)
     if resuming and (type(resume_attempts) is not int or resume_attempts < 0):

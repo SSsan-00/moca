@@ -174,3 +174,64 @@ class ConfigFilePathTests(HarnessCase):
         self.assertIn("配置しました: Page.cs", log.read_text(encoding="utf-8"))
         self.assertEqual((worktree / "Page.cs").read_bytes(), draft.read_bytes())
         self.assertNotEqual((self.project / "Page.cs").read_bytes(), draft.read_bytes())
+
+    def test_unit_draft_imports_are_matched_and_staged_only_for_the_selected_unit(self):
+        razor = self.root / "Draft.CSHTML"
+        code = self.root / "Draft.cshtml.cs"
+        razor_bytes = b"<p>Draft</p>\r\n"
+        razor.write_bytes(razor_bytes)
+        orders = self.raw["units"][0]
+        del orders["target"]
+        orders["targets"] = ["Pages/Orders.cshtml.cs", "Pages/Orders.cshtml"]
+        self.raw["units"].append({**orders, "id": "other"})
+        sources = ["../Draft.CSHTML", str(code)]
+        edited = build_settings_draft(tomlkit.dumps(self.raw), {"units": {"0": {"draft_imports": sources}}})
+        self.assertEqual(edited["form"]["units"][0]["draft_imports"], sources)
+        self.assertEqual(edited["form"]["units"][1]["draft_imports"], [])
+        cleared = build_settings_draft(edited["content"], {"units": {"0": {"draft_imports": []}}})
+        self.assertNotIn("draft_imports", cleared["content"])
+        self.raw = tomlkit.parse(edited["content"]).unwrap()
+        config = self.load()
+
+        def junie(command, completion, token, targets, **kwargs):
+            if completion.parent.parent.name == imported_id:
+                self.assertEqual([path.read_bytes() for path in targets], [code.read_bytes(), razor_bytes])
+            else:
+                self.assertTrue(all(not path.exists() for path in targets))
+            for path in targets:
+                path.write_text("migrated\n", encoding="utf-8")
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        with (
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie),
+            patch.object(workflow, "_verify_worktree"),
+        ):
+            imported = workflow.prepare_run(config, "orders")
+            imported_id = imported["run_id"]
+            with self.assertRaises(workflow.RunScriptError):
+                workflow.resume_with_junie(config, imported_id)
+            self.assertEqual((Path(imported["worktree_path"]) / orders["targets"][1]).read_bytes(), razor_bytes)
+            razor.write_bytes(b"changed after successful copy")
+            code.write_bytes(b"class Draft {}\r\n")
+            workflow.resume_with_junie(config, imported_id)
+            workflow.run_with_junie(config, "other")
+        self.assertFalse((self.project / "Pages").exists())
+
+    def test_unit_draft_imports_reject_missing_ambiguous_or_duplicate_matches(self):
+        unit = self.raw["units"][0]
+        unit["draft_imports"] = ["Draft.txt"]
+        self.assertEqual(self.load()["units"][0]["draft_import_commands"][0][-1], "Page.cs")
+        del unit["target"]
+        unit["targets"] = ["Page.cshtml", "Page.cshtml.cs"]
+        with self.assertRaisesRegex(ValueError, "対応する移行先がありません"):
+            self.load()
+        unit["draft_imports"] = ["Draft.cs"]
+        self.assertEqual(self.load()["units"][0]["draft_import_commands"][0][-1], "Page.cshtml.cs")
+        unit["draft_imports"].append("Other.cshtml.cs")
+        with self.assertRaisesRegex(ValueError, "対応するコピー元が複数"):
+            self.load()
+        unit.update(targets=["Page.cs", "Other.cs"], draft_imports=["Draft.cs"])
+        with self.assertRaisesRegex(ValueError, "対応する移行先が複数"):
+            self.load()

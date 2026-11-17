@@ -1040,16 +1040,15 @@
                   </div>
                 </div>
                 <label for="settings-unit-targets">移行先（1行に1ファイル）</label>
-                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
+                <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" aria-describedby="settings-unit-targets-hint" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
+                <p class="settings-hint" id="settings-unit-targets-hint">相対パスはアプリのリポジトリルートが基準です。実行時は作業ツリー内の同じパスに書き込みます。</p>
+                <label for="settings-unit-draft-imports">仮C#のコピー元（任意・1行に1ファイル）</label>
+                <textarea id="settings-unit-draft-imports" data-setting="draft_imports" rows="3" spellcheck="false" autocomplete="off" aria-describedby="settings-unit-draft-imports-hint" placeholder="C:/migration/draft/Orders.cshtml.cs&#10;C:/migration/draft/Orders.cshtml"></textarea>
+                <p class="settings-hint" id="settings-unit-draft-imports-hint">絶対パス、またはアプリのリポジトリルートからの相対パスを入力します。移行先が複数ある場合は拡張子が一致するファイルに取り込みます。</p>
                 <label for="settings-unit-checker-command">この移行単位のチェッカー（任意）</label>
                 <textarea id="settings-unit-checker-command" class="settings-command" data-setting="checker_command" spellcheck="false" aria-describedby="settings-unit-checker-hint" placeholder="py&#10;-3&#10;tools/check_orders.py"></textarea>
                 <p class="settings-hint" id="settings-unit-checker-hint">実行ファイルと各引数を1行ずつ入力します。空欄ならプロジェクト共通のチェッカーを使います。共通設定も空欄なら実行しません。</p>
               </div>
-            </fieldset>
-            <fieldset class="settings-fields settings-materials" id="settings-draft-import-fields">
-              <legend>仮C#の取り込み</legend>
-              <div id="settings-draft-imports"></div>
-              <button class="button" id="settings-draft-import-add" type="button">仮C#の取り込みを追加</button>
             </fieldset>
           </div>
           <div class="settings-field-pane settings-shared-pane">
@@ -1547,12 +1546,6 @@ const scriptPhases = {
   before_build: "ビルド前", after_build: "ビルド成功後",
   before_checker: "チェッカー実行前", after_checker: "チェッカー実行後",
 };
-const draftImportCommand = "@copy-migration-draft";
-const isDraftImport = ({phase, command}) => phase === "before_migration" && (
-  (command.length === 3 && command[0] === draftImportCommand) ||
-  (command.length === 5 && command[0] === "py" && command[1] === "-3"
-    && /(?:^|[\\/])copy_migration_draft\.py$/i.test(command[2]))
-);
 const numericSettings = {
   max_repair_attempts: [0, "自動修正回数"], max_context_chars: [1000, "カプセルの文字数上限"],
   max_steps: [1, "Junieのステップ数上限"], start_line: [1, "開始行"], end_line: [1, "終了行"],
@@ -1590,8 +1583,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   const addReference = document.querySelector("#settings-reference-add");
   const scriptList = document.querySelector("#settings-scripts");
   const addScript = document.querySelector("#settings-script-add");
-  const draftImportList = document.querySelector("#settings-draft-imports");
-  const addDraftImport = document.querySelector("#settings-draft-import-add");
   const materialFields = ["migrationRules", "references"];
   const modelSelect = document.querySelector("#settings-junie-model");
   const modelStatus = document.querySelector("#settings-junie-model-status");
@@ -1656,7 +1647,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     modelStatus.textContent = message;
     modelStatus.hidden = !message;
   }
-  const draftTargets = () => [...new Set(settingsForm?.units.flatMap(entry => entry.targets) ?? [])];
   workspaceControls = () => {
     const available = canConfigure() && !busy;
     runsUI.sync();
@@ -1665,7 +1655,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     workspaceConfig.readOnly = !available || !settingsVersion || (previewPending && !readingTOML);
     editToggle.disabled = !available || !settingsVersion || previewPending || (!workspaceConfig.hidden && !settingsForm);
     for (const fieldset of fields.querySelectorAll("fieldset")) fieldset.disabled = !available || readingTOML;
-    addDraftImport.disabled = !draftTargets().length;
     reload.disabled = busy;
   };
 
@@ -1698,8 +1687,8 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
         throw new Error(`移行単位 ${index + 1} のチェッカーの1行目に実行ファイルを入力してください。`);
       }
       if (!added.has(entry)) continue;
-      const {id, source, targets} = entry;
-      if (!id.trim() && !source.trim() && !targets.length && !checker?.length) removeEmptyUnits.push(index);
+      const {id, source, targets, draft_imports} = entry;
+      if (!id.trim() && !source.trim() && !targets.length && !checker?.length && !draft_imports.length) removeEmptyUnits.push(index);
       else if (!id.trim() || !source.trim() || !targets.length) {
         throw new Error(`移行単位 ${index + 1} の機能名、移行元PHP、移行先を指定してください。`);
       }
@@ -1729,14 +1718,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
 
     const scripts = settingsForm.scripts.filter(entry =>
       !added.has(entry) || entry.phase || entry.command.some(argument => argument.trim()));
-    const targets = draftTargets();
-    for (const entry of scripts.filter(isDraftImport)) {
-      const [source, target] = entry.command.slice(-2);
-      if (!source.trim()) throw new Error("仮C#のコピー元を入力してください。");
-      if (!targets.includes(target)) {
-        throw new Error("仮C#の取り込み先を、登録済みの移行先から選んでください。");
-      }
-    }
     if (scripts.some(entry => !entry.phase || !entry.command[0]?.trim())) {
       throw new Error("入力途中のスクリプトの実行工程と実行ファイルを指定してください。");
     }
@@ -1784,61 +1765,18 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
 
   function showScripts() {
     scriptList.replaceChildren();
-    draftImportList.replaceChildren();
-    const targets = draftTargets();
     return settingsForm.scripts.map((script, index) => {
       const card = document.createElement("fieldset");
       card.className = "settings-material";
       const title = document.createElement("legend");
-      const draftImport = isDraftImport(script);
-      const list = draftImport ? draftImportList : scriptList;
-      const add = draftImport ? addDraftImport : addScript;
-      title.textContent = `${draftImport ? "取り込み" : "スクリプト"} ${list.children.length + 1}`;
+      title.textContent = `スクリプト ${index + 1}`;
       const remove = removeButton(`${title.textContent}を削除`, () => {
         settingsForm.scripts.splice(index, 1);
         const next = showScripts()[index];
-        (next && list.contains(next) ? next : add).focus();
+        (next ?? addScript).focus();
         changeScripts();
       });
-      list.append(card);
-      if (draftImport) {
-        card.append(title);
-        const [sourcePath, targetPath] = script.command.slice(-2);
-        const source = document.createElement("input");
-        source.autocomplete = "off";
-        source.spellcheck = false;
-        source.placeholder = "例：C:/migration/draft/generated/Services/MenuService.cs";
-        source.value = sourcePath;
-        source.addEventListener("input", () => {
-          script.command = [draftImportCommand, source.value.trim(), script.command.at(-1)];
-          changeScripts();
-        });
-        if (targets.length === 1 && targets[0] === targetPath) {
-          const note = document.createElement("p");
-          note.className = "settings-material-range";
-          note.style.overflowWrap = "anywhere";
-          note.textContent = `移行先 ${targetPath}`;
-          card.append(note);
-        } else {
-          const target = document.createElement("select");
-          target.className = "workspace-select";
-          const missing = targetPath && !targets.includes(targetPath);
-          const prompt = missing ? `再選択してください（旧移行先 ${targetPath}）` : "移行先を選択";
-          target.append(new Option(prompt, ""), ...targets.map(path => new Option(path, path)));
-          target.value = missing ? "" : targetPath;
-          target.addEventListener("change", () => {
-            script.command = [draftImportCommand, source.value.trim(), target.value];
-            changeScripts();
-          });
-          const targetLabel = document.createElement("label");
-          targetLabel.append("移行先ファイル", target);
-          card.append(targetLabel);
-        }
-        const sourceLabel = document.createElement("label");
-        sourceLabel.append("仮C#のコピー元（絶対・相対パス）", source);
-        card.append(fieldWithRemove(sourceLabel, remove));
-        return source;
-      }
+      scriptList.append(card);
       const phase = document.createElement("select");
       phase.className = "workspace-select";
       phase.append(new Option("工程を選択", ""), ...Object.entries(scriptPhases).map(([key, name]) => new Option(name, key)));
@@ -1868,14 +1806,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     changeScripts();
   });
 
-  addDraftImport.addEventListener("click", () => {
-    const currentTargets = settingsForm.units[Number(unit.value)]?.targets;
-    const targets = currentTargets?.length ? currentTargets : draftTargets();
-    const destination = targets.length === 1 ? targets[0] : "";
-    settingsForm.scripts.push({phase: "before_migration", command: [draftImportCommand, "", destination]});
-    showScripts().at(-1).focus();
-    changeScripts();
-  });
 
   function showMaterials(inputs, kind = "references") {
     const common = kind === "migrationRules";
@@ -2163,18 +2093,17 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   for (const field of unitFields) field.addEventListener("input", () => {
     const index = Number(unit.value);
     const key = field.dataset.setting;
-    const value = key === "targets" ? field.value.split("\n").map(path => path.trim()).filter(Boolean)
+    const value = key === "targets" || key === "draft_imports" ? field.value.split("\n").map(path => path.trim()).filter(Boolean)
       : key === "checker_command" ? (field.value.trim() ? commandLines(field.value) : []) : field.value;
     changes.units[index] ??= {};
     changes.units[index][key] = settingsForm.units[index][key] = value;
     if (key === "id") unit.selectedOptions[0].text = value || `移行単位 ${index + 1}`;
-    if (key === "targets") showScripts();
     schedulePreview();
   });
   unit.addEventListener("change", showUnit);
   document.querySelector("#settings-unit-add").addEventListener("click", () => {
     const index = settingsForm.units.length;
-    const draft = newDraft({id: "", source: "", targets: [], checker_command: []});
+    const draft = newDraft({id: "", source: "", targets: [], checker_command: [], draft_imports: []});
     changes.units[index] = {...draft};
     settingsForm.units.push(draft);
     showUnitOptions(index);
@@ -2564,13 +2493,11 @@ root = "C:/apps/orders"
 worktree_root = "C:/migration/worktrees"
 run_root = "C:/migration/runs"
 
-[scripts]
-before_migration = [["${draftImportCommand}", "C:/migration/draft/generated/web/Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml.cs"]]
-
 [[units]]
 id = "注文履歴"
 source = "php/orders.php"
 targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
+draft_imports = ["C:/migration/draft/generated/web/Pages/Orders/Index.cshtml.cs"]
 `;
   for (const [name, file] of [["顧客詳細", "Customers"], ["売上集計", "Sales"], ["在庫照会", "Stock"], ["商品検索", "Products"], ["取引先一覧", "Partners"], ["請求一覧", "Invoices"], ["入金照合", "Payments"]]) {
     demoSettings += `\n[[units]]\nid = "${name}"\nsource = "php/${file}.php"\ntargets = ["Pages/${file}.cs"]\n`;
@@ -2648,9 +2575,10 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
       units[index] ??= blocks.push("\n[[units]]\n") - 1;
       if ("targets" in fields) blocks[units[index]] = blocks[units[index]].replace(/^\s*target\s*=.*$/m, "");
       const edited = {...fields};
-      if (edited.checker_command?.length === 0) {
-        blocks[units[index]] = blocks[units[index]].replace(fieldPattern("checker_command"), "");
-        delete edited.checker_command;
+      for (const key of ["checker_command", "draft_imports"]) {
+        if (edited[key]?.length !== 0) continue;
+        blocks[units[index]] = blocks[units[index]].replace(fieldPattern(key), "");
+        delete edited[key];
       }
       blocks[units[index]] = patchBlock(blocks[units[index]], edited);
     }
@@ -2702,6 +2630,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
         scripts: Object.keys(scriptPhases).flatMap(phase => (read(scripts, phase) || []).map(command => ({phase, command}))),
         units: unitBlocks().map(index => ({id: read(index, "id"), source: read(index, "source"),
           checker_command: read(index, "checker_command") ?? [],
+          draft_imports: read(index, "draft_imports") ?? [],
           targets: read(index, "targets") || [read(index, "target")].filter(Boolean)})),
       }};
     } catch {

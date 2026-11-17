@@ -57,9 +57,6 @@ max_context_chars = 500000
 # 通常コマンドではチェッカーと同じ別名を使える（before_prepareと@copy-migration-draftを除く）。
 # after_build = [["py", "-3", "tools/export_results.py", "{build_project}", "{target}"]]
 # before_prepare = [["powershell.exe", "-NoProfile", "-File", "tools/prepare-legacy.ps1"]]
-# 仮移行ファイルのコピー元はアプリルートからの相対パス、または外部ファイルの絶対パス。
-# コピー先はアプリルートからの相対パス、またはアプリ内の絶対パス。書き込みはworktree内に限る。
-# before_migration = [["@copy-migration-draft", "C:/draft/generated/Pages/Menu.cshtml.cs", "Pages/Menu.cshtml.cs"]]
 # after_build = [["py", "-3", "tools/export_results.py"]]
 
 [diff_viewer]
@@ -79,6 +76,9 @@ id = "メニュー"
 source = "php/menu.php"
 # アプリルートからの相対パス、またはアプリ内の絶対パス。worktree内へ正規化し、元のリポジトリには書き込まない。
 targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
+# この移行単位の仮C#／Razorのコピー元。アプリルートからの相対パス、または外部ファイルの絶対パス。
+# 移行先が複数なら拡張子で照合し、Junie移行前にworktreeへ取り込む。
+# draft_imports = ["C:/draft/generated/Menu.cshtml.cs", "C:/draft/generated/Menu.cshtml"]
 # この移行単位だけで使うチェッカー。省略時は [checker].command を使う。
 # --checker-command を指定した場合は、CLIのコマンドを優先する。
 # checker_command = ["py", "-3", "tools/check_menu.py"]

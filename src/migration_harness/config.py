@@ -12,6 +12,45 @@ SCRIPT_PHASES = (
 REFERENCE_ROLES = ("reference_php", "reference_csharp", "reference_razor")
 
 
+def _draft_extension(path: Path) -> str:
+    if path.name.lower().endswith(".cshtml.cs"):
+        return ".cshtml.cs"
+    return path.suffix.lower()
+
+
+def _draft_import_commands(unit: dict[str, Any], targets: list[Path], root: Path) -> list[list[str]]:
+    sources = unit.get("draft_imports", [])
+    scope = f"移行単位「{unit['id']}」の仮C#取り込み"
+    if not isinstance(sources, list):
+        raise ValueError(f"{scope}はコピー元パスの配列で指定してください。")
+    commands = []
+    used_targets = set()
+    for source in sources:
+        path = root / _file_path(source, root, scope)
+        if len(targets) == 1:
+            destination = targets[0]
+        else:
+            extension = _draft_extension(Path(source))
+            matches = [target for target in targets if extension and _draft_extension(target) == extension]
+            if not matches and extension == ".cs":
+                matches = [target for target in targets if _draft_extension(target) == ".cshtml.cs"]
+            if len(matches) != 1:
+                reason = "ありません" if not matches else "複数あります"
+                raise ValueError(
+                    f"{scope}で、コピー元「{source}」の拡張子に対応する移行先が{reason}。"
+                    "コピー元と移行先の拡張子を確認し、対応する移行先を1つにしてください。"
+                )
+            destination = matches[0]
+        if destination in used_targets:
+            raise ValueError(
+                f"{scope}で、移行先「{destination.as_posix()}」に対応するコピー元が複数あります。"
+                "コピー元を1つにしてください。"
+            )
+        used_targets.add(destination)
+        commands.append(["@copy-migration-draft", str(path), destination.as_posix()])
+    return commands
+
+
 def _file_path(value: Any, root: Path, scope: str, *, inside: bool = False) -> str:
     """入力は外部ファイルも許可し、編集対象は元リポジトリ内の相対パスにそろえる。"""
     if not isinstance(value, str) or not value.strip() or "\0" in value or not Path(value).parts:
@@ -233,6 +272,8 @@ def load_config(path: Path) -> dict[str, Any]:
                 normalized_inputs.append(normalized_input)
 
         normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
+        if "draft_imports" in unit:
+            normalized["draft_import_commands"] = _draft_import_commands(unit, target_paths, root)
         if "checker_command" in unit:
             try:
                 validate_checker_command(unit["checker_command"])
