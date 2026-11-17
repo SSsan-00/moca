@@ -1852,9 +1852,8 @@ def _run_verification(
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
     _run_script_phase(config, "after_migration", worktree, run_path, record, once=True)
     mode = request["intent"].removeprefix("stop_") if request else None
-    command = checker_command_for_unit(config, unit)
-    if mode in {"build", "build_repair"}:
-        command = None
+    configured_checker = checker_command_for_unit(config, unit)
+    command = None if mode in {"build", "build_repair"} else configured_checker
     scripts = _verification_scripts(config, command)
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
@@ -1887,10 +1886,11 @@ def _run_verification(
         record["verification"] = {
             "target_hashes": hashes,
             "build_project": config["build_project"],
+            "configured_checker_command": configured_checker,
             "checker_command": command,
             "checker_from_cli": config.get("checker_from_cli", False),
             "scripts": scripts,
-            "scripts_passed": not scripts,
+            "scripts_passed": False,
         }
         if config.get("checker_from_cli"):
             record["verification"]["toml_checker_command"] = unit.get(
@@ -1932,10 +1932,7 @@ def _run_verification(
             _run_script_phase(config, "after_checker", worktree, run_path, record)
         if checked["status"] == "checker_succeeded":
             record.pop("repair_pending", None)
-            save_verification()
-        elif scripts:
-            record["verification"]["scripts_passed"] = True
-            write_run_record(record_path, record, timing_stage=5)
+        save_verification()
         if checked["status"] != "checker_needs_review" or (checked["error"] and not use_raw_output):
             return checked
         try:
@@ -2088,14 +2085,18 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
 
     verification = record.get("verification") or {}
     saved_checker = verification.get("checker_command")
+    saved_configuration = verification.get("configured_checker_command", saved_checker)
+    # 旧形式のnullは、未設定とビルドのみで省略した場合の両方で保存されていた。
+    ambiguous_checker = saved_checker is None and "configured_checker_command" not in verification
     configured_checker = checker_command_for_unit(config, unit)
     if (
         verification.get("checker_from_cli")
+        and not ambiguous_checker
         and not config.get("checker_from_cli")
         and configured_checker == verification.get("toml_checker_command")
     ):
         # TOML側の既定値が変わっていなければ、前回CLIから指定したチェッカーを引き継ぐ。
-        configured_checker = saved_checker
+        configured_checker = saved_configuration
     scripts = _verification_scripts(config, configured_checker)
     status = record["status"]
     checker_passed = status == "checker_succeeded" and (
@@ -2116,7 +2117,8 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         and verification.get("build_project") == config["build_project"]
         and verification.get("scripts", {}) == scripts
         and verification.get("scripts_passed") is True
-        and saved_checker == configured_checker
+        and not ambiguous_checker
+        and saved_configuration == configured_checker == saved_checker
         and (status == "build_succeeded" if saved_checker is None else checker_passed)
     )
     if verification_passed:

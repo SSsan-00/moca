@@ -135,8 +135,57 @@ class JunieConversationTests(SavedRunFixture):
             repair.assert_not_called()
             self.send("ビルドして", identifier)
         self.assertEqual(calls, [["dotnet", "build"]])
+        self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+
+    def test_build_only_does_not_restore_a_null_cli_checker(self):
+        default = self.config["checker_command"]
+        toml = self.config.copy()
+        self.config.update(checker_from_cli=True, toml_checker_command=default, checker_command=["cli-checker"])
+        workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Reviewed",
+                                         confirmed_targets=[self.target.name])
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"), ("checker", 0, b""))
+        with mocked:
+            identifier, _ = self.send("ビルドして")
+            self.wait_for(identifier, "done")
+            for settings in (self.config, toml):
+                completion = workflow.migration_ledger(settings, self.run_id)["completion"]
+                self.assertFalse(completion["verification_passed"])
+                self.assertFalse(completion["complete"])
+            record = self.record()
+            verification = record["verification"]
+            self.assertEqual(verification["configured_checker_command"], ["cli-checker"])
+            self.assertIsNone(verification["checker_command"])
+            del verification["configured_checker_command"]
+            self.save_record(record)
+            self.assertFalse(workflow.migration_ledger(toml, self.run_id)["completion"]["verification_passed"])
+            identifier, _ = self.send("チェッカーをもう一度")
+            self.wait_for(identifier, "done")
+        self.assertEqual(calls, [["dotnet", "build"], ["dotnet", "build"], ["cli-checker"]])
+        for settings in (self.config, toml):
+            completion = workflow.migration_ledger(settings, self.run_id)["completion"]
+            self.assertTrue(completion["complete"], completion)
+        self.target.write_text("class Changed {}\n", encoding="utf-8")
+        self.assertFalse(workflow.migration_ledger(toml, self.run_id)["completion"]["verification_passed"])
+
+    def test_build_only_verifies_a_run_without_a_checker(self):
+        self.config["checker_command"] = None
+        mocked, _ = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"))
+        with mocked:
+            identifier, _ = self.send("ビルドして")
+            self.wait_for(identifier, "done")
+            self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+            record = self.record()
+            record["verification"].pop("configured_checker_command")
+            self.save_record(record)
+            self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+            identifier, _ = self.send("ビルドして")
+            self.wait_for(identifier, "done")
+        self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
 
     def test_stop_and_rebuild_uses_saved_edit_once(self):
+        toml = self.config.copy()
+        self.config.update(checker_from_cli=True, toml_checker_command=toml["checker_command"],
+                           checker_command=["cli-checker"])
         running = Event()
         builds = []
 
@@ -167,6 +216,9 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual(entry["built_targets"], {"Example.cs": digest})
             self.assertEqual(entry["logs"][0]["text"], "new successful build\n")
         self.assertEqual(builds, ["class Original {}\n", edited])
+        self.assertEqual(self.record()["verification"]["configured_checker_command"], ["cli-checker"])
+        self.assertIsNone(self.record()["verification"]["checker_command"])
+        self.assertFalse(workflow.migration_ledger(toml, self.run_id)["completion"]["verification_passed"])
 
     def test_natural_completion_waits_and_rebuilds_after_checker(self):
         running, release = Event(), Event()
@@ -243,6 +295,9 @@ class JunieConversationTests(SavedRunFixture):
 
     def test_build_with_conditional_repair_uses_the_new_build_diagnostic(self):
         self.config["max_repair_attempts"] = 1
+        toml = self.config.copy()
+        self.config.update(checker_from_cli=True, toml_checker_command=toml["checker_command"],
+                           checker_command=["cli-checker"])
         diagnostic = b"Example.cs(1,1): error CS1002: Current build diagnostic\n"
         mocked, calls = self.mock_commands(("dotnet", 1, diagnostic), ("dotnet", 0, b"ok\n"))
         self.save_edit("class Corrected {}\n")
@@ -251,6 +306,11 @@ class JunieConversationTests(SavedRunFixture):
             self.assertIn("ビルド成功", self.wait_for(identifier, "done")["message"])
             self.assertIn("Current build diagnostic", repair.call_args.args[5])
         self.assertEqual(calls, [["dotnet", "build"], ["dotnet", "build"]])
+        verification = self.record()["verification"]
+        self.assertEqual(verification["configured_checker_command"], ["cli-checker"])
+        self.assertIsNone(verification["checker_command"])
+        for settings in (self.config, toml, {**toml, "checker_command": None}):
+            self.assertFalse(workflow.migration_ledger(settings, self.run_id)["completion"]["verification_passed"])
 
     def test_conversation_and_confirmation_are_isolated_between_runs(self):
         other = str(uuid.uuid4())
