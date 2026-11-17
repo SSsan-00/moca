@@ -21,6 +21,8 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 
 移行元、ルール、参考実装、ViewerのHTMLの相対パスはアプリルートを基準とし、外部の絶対パスも受け付けます。移行先とビルド対象はアプリ内に収め、実行時にworktree内のパスへ解決します。詳細な設定例は [harness.example.toml](harness.example.toml) を参照してください。
 
+チェッカーと通常のスクリプトのコマンドでは、`{worktree}` をRunの作業ツリーのルート、`{build_project}` を作業ツリー内のビルド対象、`{target}` を作業ツリー内の先頭の移行先ファイルの絶対パスへ展開します。引数中の一部分としても使え、空白を含むパスも1つの引数として渡します。`{build_project}` には `[build].project` の指定が必要です。`before_prepare` と `@copy-migration-draft` は対象外です。
+
 ## 実行順序と再開
 
 1. **準備**。新しいUUIDのRunを作り、アプリルートで `before_prepare` を実行します。入力を検証し、カプセルの作成が成功してから基準リビジョンのdetached worktreeを作成します。以降のスクリプトはworktreeで実行します。
