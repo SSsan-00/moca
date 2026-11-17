@@ -328,6 +328,7 @@ class JunieConversations:
         while not self.manager.closing:
             self.wake.wait(.2)
             self.wake.clear()
+            self.manager.retry_queue()
             with self.manager.condition:
                 run_ids = tuple(self.runs)
                 config = self.manager.config.copy()
@@ -355,6 +356,8 @@ class JunieConversations:
         if blocked:
             fail_pending_after_unconfirmed_stop(config, run_id, blocked)
             with self.manager.condition:
+                if self.manager.closing:
+                    return False
                 if config["run_root"] == self.manager.root and self.manager.blocked_conversations.get(run_id) == blocked:
                     del self.manager.blocked_conversations[run_id]
                     try:

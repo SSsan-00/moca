@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, junie_cli, workflow
+from migration_harness import dashboard, junie_cli, run_manager, workflow
 from migration_harness.execution import check_cancelled, report_activity
 from migration_harness.run_manager import RunManager
 from migration_harness.run_records import execution_lock, load_saved_run, write_run_record
@@ -391,6 +391,49 @@ class ParallelDashboardTests(HarnessCase):
         restored.start_pending()
         self.assertTrue(self.started[5].wait(5))
         self.assertEqual(len(restored.workers), 1)
+
+    def test_failed_start_save_leaves_job_waiting_across_shutdown(self):
+        self.manager.limit = 0
+        run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
+        operation_id = self.manager.jobs[run_id]["operation_id"]
+        self.manager.limit = 1
+        with patch.object(run_manager, "monotonic", return_value=10) as clock:
+            with patch.object(self.manager, "persist", side_effect=PermissionError("fixture: queue unavailable")):
+                self.manager.start_pending()
+            self.manager.close()
+            clock.return_value = 12
+            with patch.object(self.manager, "persist") as persist:
+                self.manager.retry_queue()
+                persist.assert_not_called()
+        self.assertFalse(self.started[0].is_set())
+
+        restored = RunManager(self.settings, dashboard.Dashboard())
+        self.addCleanup(restored.close)
+        self.assertEqual(list(restored.pending), [run_id])
+        self.assertEqual(restored.jobs[run_id]["operation_id"], operation_id)
+        self.assertTrue(restored.get(run_id).state["queued"])
+        restored.start_pending()
+        self.assertTrue(self.started[0].wait(5))
+        self.release[0].set()
+        self.wait_until(lambda: not restored.busy)
+
+    def test_queue_save_retry_does_not_carry_over_to_new_storage(self):
+        self.manager.limit = 0
+        run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
+        old_path = self.manager.queue_path
+        self.manager.limit = 1
+        with patch.object(run_manager, "monotonic", return_value=10) as clock, self.manager.condition:
+            with patch.object(self.manager, "persist", side_effect=PermissionError("fixture: queue unavailable")):
+                self.manager.start_pending()
+            self.manager.submit({"action": "cancel-queued", "run_id": run_id})
+            self.manager.configure({**self.settings, "run_root": str(self.root / "another-runs")})
+            clock.return_value = 12
+            with patch.object(self.manager, "persist") as persist:
+                self.manager.retry_queue()
+                persist.assert_not_called()
+        self.assertEqual(json.loads(old_path.read_bytes())["jobs"], [])
+        self.assertNotEqual(self.manager.queue_path, old_path)
+        self.assertFalse(self.started[0].is_set())
 
     def test_settings_switch_releases_old_owner_and_clears_old_runs(self):
         ids = self.manager.submit({"action": "prepare", "unit_ids": ["unit-0"]})["run_ids"]

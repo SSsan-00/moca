@@ -1080,6 +1080,130 @@ class JunieConversationTests(SavedRunFixture):
     def test_stop_fence_survives_restart_from_running_job_when_queue_write_also_fails(self):
         self.check_stop_fence(restart=True, fail_queue=True)
 
+    def test_shared_queue_recovers_in_fifo_order_while_unconfirmed_run_stays_blocked(self):
+        self.config["max_repair_attempts"] = 1
+        self.manager.limit = 1
+        (self.run_path / "agent-workspace").mkdir()
+        first, first_path, first_tree = self.add_saved_run("first")
+        second, second_path, second_tree = self.add_saved_run("second")
+        entered, release_stop = Event(), Event()
+        editor_unavailable, finish_failed, recover_finish = Event(), Event(), Event()
+        start_failed, recover_start, first_started, release_first = Event(), Event(), Event(), Event()
+        calls = []
+        replace = Path.replace
+        queue_path = self.manager.queue_path
+
+        def replace_record(source, target):
+            if editor_unavailable.is_set():
+                if target == self.run_path / "editor.json":
+                    raise PermissionError("fixture: Run A editor is unavailable")
+                if target == queue_path:
+                    saved = json.loads(source.read_bytes())
+                    if self.run_id in saved["blocked_conversations"]:
+                        if not recover_finish.is_set():
+                            finish_failed.set()
+                            raise PermissionError("fixture: queue completion could not be saved")
+                        if not recover_start.is_set() and any(
+                            job["run_id"] == first and job.get("running") for job in saved["jobs"]
+                        ):
+                            start_failed.set()
+                            raise PermissionError("fixture: queue start could not be saved")
+            return replace(source, target)
+
+        def repair(*args, **kwargs):
+            entered.set()
+            if not release_stop.wait(8):
+                raise TimeoutError("fixture did not release Run A")
+            raise workflow.junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
+
+        def external(command, *, cwd, **kwargs):
+            with self.manager.condition:
+                saved = json.loads(queue_path.read_bytes())
+                run_id = {first_tree: first, second_tree: second}[cwd]
+                self.assertTrue(next(job for job in saved["jobs"] if job["run_id"] == run_id)["running"])
+            calls.append((cwd, command[0]))
+            if cwd == first_tree:
+                first_started.set()
+                if not release_first.wait(8):
+                    raise TimeoutError("fixture did not release the first build")
+            return subprocess.CompletedProcess(command, 0)
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=repair) as junie,
+              patch.object(workflow, "run_process", side_effect=external),
+              patch.object(Path, "replace", replace_record)):
+            self.send("この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度")
+            try:
+                self.assertTrue(entered.wait(5))
+                waiting, _ = self.send("ビルドして")
+                self.wait_for(waiting, "waiting")
+                build_first, _ = self.send("ビルドして", run_id=first)
+                with self.manager.condition:
+                    self.assertTrue(self.manager.condition.wait_for(lambda: first in self.manager.pending, timeout=5))
+                build_second, _ = self.send("ビルドして", run_id=second)
+                with self.manager.condition:
+                    self.assertTrue(self.manager.condition.wait_for(lambda: second in self.manager.pending, timeout=5))
+                    editor_unavailable.set()
+                    release_stop.set()
+
+                self.assertTrue(finish_failed.wait(5))
+                with self.manager.condition:
+                    saved = json.loads(queue_path.read_bytes())
+                    self.assertTrue(next(job for job in saved["jobs"] if job["run_id"] == self.run_id)["running"])
+                    self.assertEqual(list(self.manager.pending), [first, second])
+                    self.assertFalse(self.manager.workers)
+                    self.assertEqual(calls, [])
+                recover_finish.set()
+
+                self.assertTrue(start_failed.wait(6), "shared queue did not recover without operator action")
+                with self.manager.condition:
+                    saved = json.loads(queue_path.read_bytes())
+                    self.assertIn(self.run_id, saved["blocked_conversations"])
+                    self.assertEqual([job["run_id"] for job in saved["jobs"]], [first, second])
+                    self.assertTrue(all(not job.get("running") for job in saved["jobs"]))
+                    self.assertEqual(list(self.manager.pending), [first, second])
+                    for run_id in (first, second):
+                        self.assertFalse(self.manager.jobs[run_id].get("running"))
+                        view = self.manager.get(run_id)
+                        self.assertTrue(view.state["queued"])
+                        self.assertIsNone(view.state["operation_id"])
+                        self.assertIsNone(view.control)
+                    self.assertFalse(self.manager.workers)
+                    self.assertEqual(calls, [])
+                recover_start.set()
+
+                self.assertTrue(first_started.wait(6))
+                with self.manager.condition:
+                    self.assertEqual(list(self.manager.workers), [first])
+                    self.assertEqual(list(self.manager.pending), [second])
+                    self.assertIn(self.run_id, self.manager.blocked_conversations)
+                    self.assertEqual(calls, [(first_tree, "dotnet")])
+                self.assertEqual(self.wait_for(waiting, "waiting")["status"], "waiting")
+                self.manager.conversations.notify(first)
+                self.manager.conversations.notify(second)
+                release_first.set()
+                self.wait_for(build_first, "done", run_path=first_path)
+                self.wait_for(build_second, "done", run_path=second_path)
+                with self.manager.condition:
+                    self.assertTrue(self.manager.condition.wait_for(lambda: not self.manager.busy, timeout=5))
+
+                self.restart_server()
+                with self.manager.condition:
+                    self.assertIn(self.run_id, self.manager.blocked_conversations)
+                    self.assertFalse(self.manager.busy)
+                    self.manager.conversations.start()
+                editor_unavailable.clear()
+                self.assertIn("termination unconfirmed", self.wait_for(waiting, "failed")["message"])
+                with self.manager.condition:
+                    self.assertTrue(self.manager.condition.wait_for(
+                        lambda: self.run_id not in self.manager.blocked_conversations, timeout=5,
+                    ))
+                junie.assert_called_once()
+            finally:
+                release_stop.set()
+                release_first.set()
+        self.assertEqual(calls, [(first_tree, "dotnet"), (second_tree, "dotnet")])
+
     def check_stop_fence(self, *, restart, fail_queue):
         self.config["max_repair_attempts"] = 1
         (self.run_path / "agent-workspace").mkdir()

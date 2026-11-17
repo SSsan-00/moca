@@ -9,6 +9,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
+from time import monotonic
 
 from .config import find_unit
 from .junie_conversation import JunieConversations
@@ -29,6 +30,7 @@ class RunManager:
         self.workers = {}
         self.results = {}
         self.closing = False
+        self._queue_retry_at = None
         self.owner = None
         self.root = None
         self.scope = None
@@ -68,6 +70,7 @@ class RunManager:
             self.results.clear()
         self.scope = scope
         self.root = root
+        self._queue_retry_at = None
         if updated is not None:
             self.config.update(updated)
         self.blocked_conversations = blocked
@@ -284,18 +287,46 @@ class RunManager:
     def start_pending(self):
         """空きワーカー枠にFIFO順で処理を割り当てる。"""
         with self.condition:
+            if self._queue_retry_at is not None:
+                return
             while self.pending and len(self.workers) < self.limit and not self.closing:
-                run_id = self.pending.popleft()
+                run_id = self.pending[0]
                 job = self.jobs[run_id]
-                job["running"] = True
                 job["config"] = copy.deepcopy(self.config)
+                job["running"] = True
+                try:
+                    self.persist()
+                except OSError:
+                    # 起動印を保存できるまで、待機位置と画面の状態を維持する。
+                    del job["running"], job["config"]
+                    self._defer_queue_retry()
+                    return
+                self.pending.popleft()
                 view = self.views[run_id]
                 view.publish({**view.state, "queued": False})
                 view.begin_operation(job["operation_id"])
-                self.persist()
                 thread = Thread(target=self.execute, args=(run_id,), daemon=True, name=f"migration-{run_id[:8]}")
                 self.workers[run_id] = thread
                 thread.start()
+
+    def _defer_queue_retry(self):
+        """既存の巡回で共有キューの保存を再試行するよう予約する。"""
+        if not self.closing:
+            self._queue_retry_at = monotonic() + 1.0
+            self.conversations.start()
+
+    def retry_queue(self):
+        """共有キューを保存し、空き枠の割り当てを再開する。"""
+        with self.condition:
+            if self.closing or self._queue_retry_at is None or monotonic() < self._queue_retry_at:
+                return
+            try:
+                self.persist()
+            except OSError:
+                self._defer_queue_retry()
+                return
+            self._queue_retry_at = None
+            self.start_pending()
 
     def block_conversations(self, run_id, message):
         """終了未確認のRunを会話処理から保留する。"""
@@ -318,6 +349,7 @@ class RunManager:
                 try:
                     self.persist()
                 except OSError:
+                    self._defer_queue_retry()
                     if run_id not in self.blocked_conversations:
                         raise
                     # The last persisted queue still identifies this as a started job.

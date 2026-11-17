@@ -489,6 +489,91 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                     self.assertEqual(len(self.record()["repair_history"]), 1)
                     self.assertNotIn("repair_pending", self.record())
 
+    def test_usage_save_failure_preserves_only_unconfirmed_repairs_for_explicit_resume(self):
+        self.config["max_repair_attempts"] = 2
+        (self.run_path / "agent-workspace").mkdir()
+        original_record = self.record()
+        original = self.target.read_bytes()
+        saved_draft = b"class Interrupted {}\n"
+        build_failure = ("dotnet", 1, b"Example.cs(1,1): error CS1002: missing semicolon\n")
+        checker_failure = ("fixture-checker", 1, self.diagnostic)
+        success = (self.build, ("fixture-checker", 0, b""))
+
+        for responses in ((build_failure,), (self.build, checker_failure)):
+            for failure in ("direct stop", "wrapped stop", "ordinary save failure"):
+                with self.subTest(phase=responses[-1][0], failure=failure):
+                    self.save_record(original_record)
+                    self.target.write_bytes(original)
+                    fail_usage = failure != "direct stop"
+                    replace = Path.replace
+
+                    def fail_usage_replace(source, target):
+                        nonlocal fail_usage
+                        if fail_usage and target == self.record_path and "token_usage" in json.loads(source.read_bytes()):
+                            fail_usage = False
+                            raise PermissionError("fixture: final usage could not be saved")
+                        return replace(source, target)
+
+                    def interrupt(command, completion, token, targets, **kwargs):
+                        targets[0].write_bytes(saved_draft)
+                        raise KeyboardInterrupt
+
+                    def fail(command, completion, token, targets, *, report_usage, **kwargs):
+                        self.assertEqual(targets[0].read_bytes(), saved_draft)
+                        targets[0].write_bytes(b"class Unconfirmed {}\n")
+                        completion.write_text(token, encoding="utf-8")
+                        try:
+                            if failure != "ordinary save failure":
+                                raise junie_cli.JunieStopError("fixture: termination unconfirmed")
+                        finally:
+                            if failure != "direct stop":
+                                report_usage([1, 0, 0, 0, 1])
+
+                    def complete(command, completion, token, targets, **kwargs):
+                        self.assertEqual(targets[0].read_bytes(), original)
+                        targets[0].write_bytes(b"class Fixed {}\n")
+                        completion.write_text(token, encoding="utf-8")
+                        return 0
+
+                    with (patch.object(junie_cli, "require_interactive_cli"),
+                          patch.object(junie_cli, "run_interactive", side_effect=interrupt) as junie,
+                          patch.object(Path, "replace", fail_usage_replace)):
+                        with self.assertRaises(workflow.RunInterrupted):
+                            self.resume(*responses)
+                        self.assertIn("draft", self.record()["repair_pending"])
+                        junie.side_effect = fail
+                        if failure == "ordinary save failure":
+                            result = self.resume(*responses)
+                            self.assertIn("final usage could not be saved", result["error"])
+                        else:
+                            commands, calls = self.mock_commands(*responses)
+                            with (commands, redirect_stdout(io.StringIO()),
+                                  self.assertRaises(OSError) as stopped):
+                                workflow.resume_with_junie(self.config, self.run_id)
+                            self.assertIsInstance(
+                                junie_cli.unconfirmed_junie_stop(stopped.exception), junie_cli.JunieStopError,
+                            )
+                            self.assertEqual(len(calls), len(responses))
+                        self.assertFalse(fail_usage)
+                        self.assertEqual(junie.call_count, 2)
+                        self.assertEqual(self.target.read_bytes(), original)
+                        saved = self.record()
+                        if failure == "ordinary save failure":
+                            self.assertEqual(len(saved["repair_history"]), 1)
+                            self.assertNotIn("repair_pending", saved)
+                            self.resume(*responses)
+                            self.assertEqual(junie.call_count, 2)
+                        else:
+                            self.assertEqual(saved["repair_history"], [])
+                            self.assertIn("repair_pending", saved)
+                            self.assertNotIn("draft", saved["repair_pending"])
+                            junie.side_effect = complete
+                            result = self.resume(*responses, *success)
+                            self.assertEqual(result["status"], "checker_succeeded")
+                            self.assertEqual(junie.call_count, 3)
+                            self.assertEqual(len(self.record()["repair_history"]), 1)
+                            self.assertNotIn("repair_pending", self.record())
+
     def test_free_form_checker_output_reaches_junie_before_rebuild(self):
         self.config["max_repair_attempts"] = 2
         log = b'{"expected": 42, "actual": 0}\n'

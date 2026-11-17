@@ -1376,15 +1376,15 @@ def _attempt_repair(
                     raise CheckerRepairBlocked("operator_conflict", "編集が競合しました。エディタで解消してから再開してください。")
                 repair_targets = targets
                 report_activity("保存した編集を反映しました。追加指示をJunieに渡し直し、対応後に再ビルドします。")
-    except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
+    except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError):
         # 起動・通信の問題では修正枠を消費せず、同じ試行を再開できるようにする。
         raise
-    except CheckerRepairBlocked as exc:
-        if exc.reason not in {"operator_conflict", "handoff_unsafe"}:
+    except (OSError, RuntimeError, ValueError) as exc:
+        if junie_cli.unconfirmed_junie_stop(exc) is not None:
+            # 使用量保存などが終了未確認を包んだ場合も、未確認の下書きは再利用しない。
+            record["repair_pending"].pop("draft", None)
+        elif not isinstance(exc, CheckerRepairBlocked) or exc.reason not in {"operator_conflict", "handoff_unsafe"}:
             _charge_repair(record)
-        raise
-    except (OSError, RuntimeError, ValueError):
-        _charge_repair(record)
         raise
     finally:
         with editor_queue(run_path) as queue:
