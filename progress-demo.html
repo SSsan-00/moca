@@ -2497,12 +2497,40 @@ run_root = "C:/migration/runs"
 id = "注文履歴"
 source = "php/orders.php"
 targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
-draft_imports = ["C:/migration/draft/generated/web/Pages/Orders/Index.cshtml.cs"]
+draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.cshtml.cs"]
 `;
   for (const [name, file] of [["顧客詳細", "Customers"], ["売上集計", "Sales"], ["在庫照会", "Stock"], ["商品検索", "Products"], ["取引先一覧", "Partners"], ["請求一覧", "Invoices"], ["入金照合", "Payments"]]) {
     demoSettings += `\n[[units]]\nid = "${name}"\nsource = "php/${file}.php"\ntargets = ["Pages/${file}.cs"]\n`;
   }
   const demoUnits = () => [...demoSettings.matchAll(/^\s*id\s*=\s*"([^"\r\n]+)"/gm)].map(match => match[1]);
+  function draftExtension(path) {
+    const name = path.split(/[\\/]/).at(-1).toLowerCase();
+    if (name.endsWith(".cshtml.cs")) return ".cshtml.cs";
+    return name.lastIndexOf(".") > 0 ? name.slice(name.lastIndexOf(".")) : "";
+  }
+
+  function validateDemoDraftImports({id, targets, draft_imports: sources}) {
+    const scope = `移行単位「${id}」の仮C#取り込み`;
+    if (!Array.isArray(sources) || sources.some(path => typeof path !== "string" || !path.trim())) {
+      throw new Error(`${scope}はコピー元パスの配列で指定してください。`);
+    }
+    const usedTargets = new Set();
+    for (const source of sources) {
+      const extension = draftExtension(source);
+      let matches = targets.length === 1 ? targets : targets.filter(path => extension && draftExtension(path) === extension);
+      if (!matches.length && extension === ".cs") matches = targets.filter(path => draftExtension(path) === ".cshtml.cs");
+      if (matches.length !== 1) {
+        const reason = matches.length ? "複数あります" : "ありません";
+        throw new Error(`${scope}で、コピー元「${source}」の拡張子に対応する移行先が${reason}。コピー元と移行先の拡張子を確認し、対応する移行先を1つにしてください。`);
+      }
+      const [target] = matches;
+      if (usedTargets.has(target)) {
+        throw new Error(`${scope}で、移行先「${target}」に対応するコピー元が複数あります。コピー元を1つにしてください。`);
+      }
+      usedTargets.add(target);
+    }
+  }
+
   // デモでは設定例とフォームから生成するTOMLを取り扱う。
   function demoSettingsDraft(content, changes = {}) {
     const blocks = content.split(/(?=^[\t ]*\[)/m);
@@ -2676,6 +2704,7 @@ draft_imports = ["C:/migration/draft/generated/web/Pages/Orders/Index.cshtml.cs"
       const form = demoSettingsDraft(content).form;
       if (!form) throw new Error("TOMLの書式を修正してください。");
       form.migrationRules.forEach(validateRuleUsage);
+      form.units.forEach(validateDemoDraftImports);
       const {model = "", effort = ""} = form.junie;
       if (typeof model !== "string" || /^-|[\s\x00-\x1f\x7f]/u.test(model)) {
         throw new Error("Junieのモデルは、空白を含まないモデルIDで指定してください。既定値に戻す場合は空欄にしてください。");
