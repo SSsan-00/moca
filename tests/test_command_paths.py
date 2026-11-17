@@ -82,7 +82,7 @@ class CommandPathsTests(HarnessCase):
                 self.assertEqual(record["verification"]["checker_command"], self.command)
         self.assertEqual(load_config(self.path)["checker_command"], self.command)
 
-    def test_expanded_ignored_checker_path_is_included_in_verification(self):
+    def test_expanded_checker_changes_require_explicit_reverification(self):
         result = self.prepare_verification()
         worktree = Path(result["worktree_path"])
         (worktree / ".gitignore").write_text("obj/\n", encoding="utf-8")
@@ -90,9 +90,12 @@ class CommandPathsTests(HarnessCase):
         checker.parent.mkdir()
         checker.write_text("pass\n", encoding="utf-8")
         self.settings["checker_command"] = [sys.executable, "{worktree}/obj/check.py", "{target}"]
+        self.settings["max_repair_attempts"] = 0
         self.verify(result)
         self.assertTrue(workflow.migration_ledger(self.settings, result["run_id"])["completion"]["verification_passed"])
-        checker.write_text("# changed checker\n", encoding="utf-8")
+        checker.write_text("raise SystemExit(1)\n", encoding="utf-8")
+        self.assertTrue(workflow.migration_ledger(self.settings, result["run_id"])["completion"]["verification_passed"])
+        self.assertEqual(self.verify(result)["status"], "checker_needs_review")
         self.assertFalse(workflow.migration_ledger(self.settings, result["run_id"])["completion"]["verification_passed"])
 
     def test_missing_build_setting_records_checker_failure(self):

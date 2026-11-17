@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from contextlib import contextmanager
@@ -10,6 +11,32 @@ from migration_harness.diff_viewer import capture_workspace, create_snapshot, sn
 
 
 class LiveComparisonTests(HarnessCase):
+    def test_managed_worktree_target_is_read_once_per_capture(self):
+        (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
+        data = "class Original {}\r\n".encode("utf-8-sig")
+        (self.project / "Page.cs").write_bytes(data)
+        self.commit_project()
+        config = self.config()
+        result = workflow.prepare_run(config, "sample")
+        target = Path(result["worktree_path"]) / "Page.cs"
+        original_open = Path.open
+
+        for hashes in (None, {}):
+            with self.subTest(return_hashes=hashes is not None):
+                reads = []
+
+                def open_file(path, mode="r", *args, **kwargs):
+                    if path == target and "r" in mode:
+                        reads.append(path)
+                    return original_open(path, mode, *args, **kwargs)
+
+                with patch.object(Path, "open", open_file):
+                    _, payload = capture_workspace(config, result["run_id"], target_hashes=hashes)
+                self.assertEqual(reads, [target])
+                self.assertEqual(payload["workspace"]["rightText"], "class Original {}\n")
+                if hashes is not None:
+                    self.assertEqual(hashes, {"Page.cs": hashlib.sha256(data).hexdigest()})
+
     def test_live_draft_is_captured_without_changing_worktree_or_anchor_inputs(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
@@ -141,7 +168,7 @@ class LiveComparisonTests(HarnessCase):
                 create_snapshot(config, result["run_id"])
         self.assertFalse((run_path / "review-snapshots").exists())
 
-    def test_rejected_capture_does_not_publish_hashes_even_when_mtime_is_preserved(self):
+    def test_managed_replacement_during_capture_does_not_publish_hashes(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
         self.commit_project()
@@ -155,8 +182,10 @@ class LiveComparisonTests(HarnessCase):
             content = read_bytes(path)
             if path == target:
                 before = path.stat()
-                path.write_bytes(b"class Replaced {}")
-                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                replacement = path.with_suffix(".tmp")
+                replacement.write_bytes(b"class Replaced {}")
+                os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+                replacement.replace(path)
             return content
 
         with patch.object(Path, "read_bytes", edit_after_read):
@@ -176,7 +205,7 @@ class LiveComparisonTests(HarnessCase):
         (agent / "Page.cs").write_bytes(b"class Original {}")
         read_bytes, file_version = Path.read_bytes, diff_viewer._file_version
 
-        for source_kind in ("worktree", "draft", "legacy_php"):
+        for source_kind in ("draft", "legacy_php"):
             with self.subTest(source_kind=source_kind):
                 record["status"] = "junie_running" if source_kind == "draft" else "prepared"
                 run_records.write_run_record(run_path / "run.json", record)

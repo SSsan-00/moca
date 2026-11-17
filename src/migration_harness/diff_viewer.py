@@ -127,13 +127,14 @@ def capture_workspace(
                 continue
             path = right_paths[name]
             content = path.read_bytes()
-            source_hashes[path] = hashlib.sha256(content).hexdigest()
             right_files.append((name, content.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")))
+            if name in draft_files:
+                source_hashes[path] = hashlib.sha256(content).hexdigest()
             if target_hashes is not None:
-                captured_hashes[name] = source_hashes[path]
-        # Windowsのctimeは作成日時なので、選択したライブファイルの内容も再照合する。
+                captured_hashes[name] = source_hashes.get(path) or hashlib.sha256(content).hexdigest()
+        # worktreeはロック中に直接編集されない。外部PHPとJunieの下書きだけを再読込する。
         contents_changed = any(sha256_file(path) != digest for path, digest in source_hashes.items())
-        # 外部のエディターと競合した場合も、不揃いなスナップショットを保存しない。
+        # 別プロセスによるハーネスのファイル置換や工程変更も検出する。
         after = [_file_version(path) for path in paths]
         _, _, latest, _ = load_saved_run(config, run_id)
         if contents_changed or before != after or any(

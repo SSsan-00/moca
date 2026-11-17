@@ -422,9 +422,9 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             )
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual([item["message"] for item in updates if item["kind"] == "phase"], [
-            "ビルド前のファイルを照合しています", "ビルドを実行しています", "ビルドエラーを確認しています",
+            "ビルドを実行しています", "ビルドエラーを確認しています",
             "修正に必要な資料を準備しています", "Junieがビルドエラーを修正しています",
-            "Junieの修正結果を確認しています", "ビルド前のファイルを照合しています",
+            "Junieの修正結果を確認しています",
             "再ビルドを実行しています", "独自チェッカーで確認しています",
         ])
         self.assertEqual(len(self.record()["build_attempt_seconds"]), 2)

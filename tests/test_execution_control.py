@@ -116,11 +116,6 @@ class ExecutionIntegrationTests(HarnessCase):
             clock += 13
             return 0
 
-        def fingerprint(*_args):
-            nonlocal clock
-            clock += 5
-            return "same-input"
-
         def execute(command, **_kwargs):
             nonlocal clock
             if command[0] == "git":
@@ -136,7 +131,6 @@ class ExecutionIntegrationTests(HarnessCase):
             patch.object(workflow, "monotonic", side_effect=lambda: clock),
             patch.object(workflow.junie_cli, "require_interactive_cli"),
             patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate),
-            patch.object(workflow, "_verification_fingerprint", side_effect=fingerprint),
             patch.object(workflow, "run_process", side_effect=execute),
         ):
             result = workflow.run_with_junie(config, "sample")
@@ -147,7 +141,7 @@ class ExecutionIntegrationTests(HarnessCase):
         self.assertIn(("junie_finished", 4), updates)
         self.assertIn(("build_succeeded", 5), updates)
         self.assertEqual(updates[-1], ("checker_succeeded", None))
-        self.assertEqual([record["stage_timings"][str(i)]["elapsed_seconds"] for i in (3, 4, 5)], [13, 12, 16])
+        self.assertEqual([record["stage_timings"][str(i)]["elapsed_seconds"] for i in (3, 4, 5)], [13, 7, 11])
         self.assertEqual(record["build_attempt_seconds"], [7])
 
     def test_stop_during_capsule_preparation_does_not_create_worktree(self):

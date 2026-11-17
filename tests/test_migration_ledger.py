@@ -144,7 +144,28 @@ class LedgerReviewTest(HarnessCase):
             "cache_read": 5, "cache_write": 3, "responses": 3,
         }])
 
-    def test_non_target_build_input_changes_expire_completion_before_resume(self):
+    def test_verification_and_ledger_do_not_scan_non_target_files(self):
+        self.prepare_for_verification()
+        original_open = Path.open
+        original_run = subprocess.run
+
+        def open_file(path, mode="r", *args, **kwargs):
+            if "r" in mode and path.is_relative_to(self.target.parent):
+                self.assertEqual(path, self.target, f"Unexpected worktree read: {path}")
+            return original_open(path, mode, *args, **kwargs)
+
+        def run_command(command, **kwargs):
+            self.assertNotEqual(command[0], "git", "Verification must not scan the worktree with Git")
+            return original_run(command, **kwargs)
+
+        with (
+            patch.object(Path, "open", open_file),
+            patch.object(workflow.subprocess, "run", side_effect=run_command),
+        ):
+            self.assertEqual(self.verify()["status"], "build_succeeded")
+            self.assertTrue(self.completion()["complete"])
+
+    def test_non_target_files_are_assumed_unchanged_until_explicit_reverification(self):
         self.prepare_for_verification()
         self.verify()
         self.assertTrue(self.completion()["complete"])
@@ -168,16 +189,14 @@ class LedgerReviewTest(HarnessCase):
             with self.subTest(edit=edit):
                 edit()
                 self.assertEqual(self.completion(), {
-                    "complete": False, "verification_passed": False, "reviewed": 1, "total": 1,
+                    "complete": True, "verification_passed": True, "reviewed": 1, "total": 1,
                 })
-                self.verify()
-                self.assertTrue(self.completion()["complete"])
 
         (worktree / "obj" / "Generated.cs").write_text("ignored change", encoding="utf-8")
         self.assertTrue(self.completion()["complete"])
         self.assertEqual(self.source()["review"]["state"], "confirmed")
 
-    def test_checker_and_hook_implementation_changes_expire_completion(self):
+    def test_checker_and_hook_changes_are_applied_on_reverification(self):
         worktree = self.target.parent
         ignored = worktree / "obj"
         ignored.mkdir()
@@ -193,14 +212,14 @@ class LedgerReviewTest(HarnessCase):
         self.verify()
         self.assertTrue(self.completion()["complete"])
         checker.write_text("raise SystemExit(1)\n", encoding="utf-8")
-        self.assertFalse(self.completion()["verification_passed"])
+        self.assertTrue(self.completion()["verification_passed"])
         self.assertEqual(self.verify()["status"], "checker_needs_review")
         self.assertFalse(self.completion()["complete"])
         checker.write_text("# fixed\n", encoding="utf-8")
         self.verify()
         self.assertTrue(self.completion()["complete"])
         hook.write_text("# edited\n", encoding="utf-8")
-        self.assertFalse(self.completion()["verification_passed"])
+        self.assertTrue(self.completion()["verification_passed"])
         self.verify()
         self.assertTrue(self.completion()["complete"])
 
@@ -225,18 +244,23 @@ class LedgerReviewTest(HarnessCase):
         self.settings["checker_command"] = [sys.executable, "-c", "# different command"]
         self.assertFalse(self.completion()["verification_passed"])
 
-    def test_legacy_or_unreadable_input_snapshot_requires_verification(self):
+    def test_completion_requires_verification_record_but_no_worktree_fingerprint(self):
         self.prepare_for_verification()
         self.verify()
         record = json.loads(self.record_path.read_bytes())
         self.assertTrue(self.completion()["complete"])
-        del record["verification"]["input_fingerprint"]
+        self.assertNotIn("input_fingerprint", record["verification"])
+        with patch.object(workflow.subprocess, "run", side_effect=OSError("Git unavailable")):
+            self.assertTrue(self.completion()["complete"])
+        # 旧Runに残る全体ハッシュも再計算しない。
+        record["verification"]["input_fingerprint"] = "legacy-worktree-fingerprint"
+        run_records.write_run_record(self.record_path, record)
+        self.assertTrue(self.completion()["complete"])
+        del record["verification"]
         run_records.write_run_record(self.record_path, record)
         self.assertFalse(self.completion()["verification_passed"])
         self.verify()
         self.assertTrue(self.completion()["complete"])
-        with patch.object(workflow.subprocess, "run", side_effect=OSError("Git unavailable")):
-            self.assertFalse(self.completion()["verification_passed"])
 
     def test_cli_override_is_reused_only_with_original_toml_default(self):
         checker = self.target.parent / "override.py"
@@ -259,9 +283,9 @@ class LedgerReviewTest(HarnessCase):
         self.settings.pop("checker_from_cli")
         self.settings["checker_command"] = default
         checker.write_text("# changed checker\n", encoding="utf-8")
-        self.assertFalse(self.completion()["verification_passed"])
+        self.assertTrue(self.completion()["verification_passed"])
 
-    def test_checker_cannot_attest_to_build_inputs_changed_by_hook(self):
+    def test_hooks_run_without_scanning_non_target_build_inputs(self):
         change = [sys.executable, "-c", "open('Dependency.cs', 'w').write('class HookEdit {}')"]
         restore = [sys.executable, "-c", "open('Dependency.cs', 'w').write('class Dependency {}\\n')"]
         self.settings.update(
@@ -270,4 +294,5 @@ class LedgerReviewTest(HarnessCase):
         )
         self.prepare_for_verification()
         self.assertEqual(self.verify()["status"], "checker_succeeded")
-        self.assertFalse(self.completion()["verification_passed"])
+        self.assertTrue(self.completion()["verification_passed"])
+        self.assertEqual((self.target.parent / "Dependency.cs").read_text(), "class Dependency {}\n")

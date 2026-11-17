@@ -8,13 +8,11 @@ from __future__ import annotations
 
 from collections import Counter
 import codecs
-import errno
 import hashlib
 import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import uuid
@@ -1536,118 +1534,6 @@ def _verification_scripts(config: dict[str, Any], checker_command: list[str] | N
     return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
 
 
-# ハッシュだけをworktree単位で再利用し、パスとファイル属性は毎回照合する。
-_verification_cache: tuple[Path | None, dict[Path, tuple[tuple[int, ...], str]]] = (None, {})
-
-
-def _verification_fingerprint(
-    worktree: Path, build_project: str | None, checker: list[str] | None, scripts: dict[str, Any],
-    target: str | None = None,
-) -> str | None:
-    """作業ツリー内のビルド入力と、検証コマンドが直接使うファイルを照合する。"""
-    # 照合できない場合はNoneを返す。以前の検証成功を現在も有効とは扱わない。
-    global _verification_cache
-    cached_root, cached = _verification_cache
-    if cached_root != worktree:
-        cached = {}
-    scanned: dict[Path, tuple[tuple[int, ...], str]] = {}
-    digest = hashlib.sha256(b"verification-inputs-v1\n")
-
-    def signature(info: os.stat_result) -> tuple[int, ...]:
-        return info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns
-
-    def add_file(name: str, path: Path, info: os.stat_result) -> None:
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"verification input is not a regular file: {path}")
-        key = signature(info)
-        previous = scanned.get(path) or cached.get(path)
-        if previous is not None and previous[0] == key:
-            content = previous[1]
-        else:
-            content = sha256_file(path)
-            if signature(path.lstat()) != key:
-                raise ValueError(f"verification input changed while reading: {path}")
-        scanned[path] = (key, content)
-        digest.update(json.dumps([name, info.st_mode, content]).encode("ascii") + b"\n")
-
-    try:
-        if not (worktree / ".git").exists():
-            return None
-        files = subprocess.run(
-            ["git", "-C", str(worktree), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            check=True, capture_output=True,
-        ).stdout
-        # Gitが無視していても、MSBuildの既定のグロブやインポートが拾うことがある。
-        build_patterns = (
-            "*.cs", "*.fs", "*.vb", "*.cshtml", "*.razor", "*.*proj", "*.props", "*.targets",
-            "*.sln", "*.slnx", "global.json", "nuget.config", ".editorconfig", ".globalconfig",
-        )
-        files += subprocess.run(
-            ["git", "-C", str(worktree), "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
-             *(f":(glob,icase)**/{pattern}" for pattern in build_patterns),
-             ":(exclude,glob,icase)**/bin/**", ":(exclude,glob,icase)**/obj/**"],
-            check=True, capture_output=True,
-        ).stdout
-        checked_dirs = {worktree}
-        for name in sorted(set(os.fsdecode(files).split("\0")) - {""}):
-            path = worktree / name
-            if path.parent not in checked_dirs:
-                if path.parent.resolve() != path.parent:
-                    return None
-                checked_dirs.add(path.parent)
-            try:
-                info = path.lstat()
-            except (FileNotFoundError, NotADirectoryError):
-                continue  # Gitの追跡一覧には、削除済みのパスも残る。
-            add_file(name, path, info)
-
-        if build_project is not None:
-            path = (worktree / build_project).resolve(strict=True)
-            if not path.is_relative_to(worktree):
-                return None
-            add_file(build_project, path, path.lstat())
-
-        commands = [command for phase_commands in scripts.values() for command in phase_commands]
-        if checker is not None:
-            commands.append(checker)
-        # 実行ファイルや、ファイルとして存在する引数の内容変更も検出する。
-        for command in commands:
-            command = expand_command_paths(command, worktree, build_project, target)
-            executable = command[0]
-            search_path = None
-            if os.name != "nt":
-                if os.path.dirname(executable):
-                    executable = str(worktree / executable)
-                search_path = os.pathsep.join(
-                    str(worktree / entry) for entry in os.get_exec_path()
-                )
-            found = shutil.which(executable, path=search_path)
-            if found is None:
-                return None
-            path = Path(found).resolve(strict=True)
-            add_file(str(path), path, path.lstat())
-            for arg in command[1:]:
-                if not arg or arg.startswith("-") or arg.splitlines() != [arg]:
-                    continue
-                path = worktree / arg
-                try:
-                    info = path.stat()
-                except (FileNotFoundError, NotADirectoryError):
-                    continue
-                except OSError as exc:
-                    if exc.errno in (errno.ENAMETOOLONG, errno.EINVAL) or getattr(exc, "winerror", None) == 123:
-                        continue  # 引数は本文などの場合もあり、すべてが有効なファイルパスとは限らない。
-                    raise
-                if stat.S_ISREG(info.st_mode):
-                    resolved = path.resolve(strict=True)
-                    add_file(str(resolved), resolved, info)
-    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError):
-        return None
-
-    _verification_cache = (worktree, scanned)
-    return digest.hexdigest()
-
-
 _BUILD_DIAGNOSTIC = re.compile(
     r"(?P<path>.+?)\((?P<location>\d+(?:,\d+){0,3})\)\s*:\s*"
     r"(?:error|エラー)\s+(?P<code>(?:CS|RZ)\d+)\s*:\s*(?P<message>.+)",
@@ -1874,14 +1760,8 @@ def _run_verification(
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
 
-    def current_fingerprint() -> str | None:
-        return _verification_fingerprint(worktree, config["build_project"], command, scripts, unit["target"])
-
     def save_verification() -> None:
         record["verification"]["scripts_passed"] = True
-        # 検証の前後で入力が同じ場合だけ、台帳で再利用できる成功記録を残す。
-        if fingerprint is not None and fingerprint == current_fingerprint():
-            record["verification"]["input_fingerprint"] = fingerprint
         write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
     # 修正に成功したらここへ戻り、変更後のファイルを必ずビルドから検証し直す。
@@ -1899,12 +1779,7 @@ def _run_verification(
             except KeyboardInterrupt:
                 raise RunInterrupted(record["run_id"]) from None
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
-        report_activity("ビルド前のファイルを照合しています", kind="phase",
-                        detail="変更後のソースとビルド設定を確認し、今回の検証対象を記録しています。")
-        fingerprint = current_fingerprint()
         _run_script_phase(config, "before_build", worktree, run_path, record)
-        if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():
-            fingerprint = None
         record["verification"] = {
             "target_hashes": {path.as_posix(): review_target_hash(worktree, path) for path in targets},
             "build_project": config["build_project"],
@@ -1938,9 +1813,6 @@ def _run_verification(
             return verified
         write_run_record(record_path, record, timing_stage=5)
         _run_script_phase(config, "before_checker", worktree, run_path, record)
-        if fingerprint is not None and (scripts.get("after_build") or scripts.get("before_checker")):
-            if fingerprint != current_fingerprint():
-                fingerprint = None
         checked, findings, use_raw_output = _run_checker(command, verified, record, config["build_project"])
         if record.get("checker_exit_code") is not None:
             _run_script_phase(config, "after_checker", worktree, run_path, record)
@@ -2107,7 +1979,6 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         # TOML側の既定値が変わっていなければ、前回CLIから指定したチェッカーを引き継ぐ。
         configured_checker = saved_checker
     scripts = _verification_scripts(config, configured_checker)
-    fingerprint = verification.get("input_fingerprint")
     status = record["status"]
     checker_passed = status == "checker_succeeded" and (
         record.get("checker_exit_code") == 0
@@ -2119,12 +1990,11 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         checker_passed = bool(approved_file_hashes) and all(
             digest is not None and current_hash(path) == digest for path, digest in approved_file_hashes.items()
         )
-    # 成功ステータスだけでは不十分。設定とファイルの版も検証時と同じか確認する。
+    # worktreeは直接編集しない前提。設定と移行対象の版だけを照合し、全体は走査しない。
     verification_passed = (
         not record.get("target_apply_pending")
         and record.get("completed_capsules") == len(capsules)
         and record.get("build_exit_code") == 0
-        and bool(fingerprint)
         and verification.get("build_project") == config["build_project"]
         and verification.get("scripts", {}) == scripts
         and verification.get("scripts_passed") is True
@@ -2134,10 +2004,6 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     if verification_passed:
         current_targets = {path: current_hash(path) for path in targets}
         verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
-    if verification_passed:
-        verification_passed = fingerprint == _verification_fingerprint(
-            worktree, config["build_project"], configured_checker, scripts, unit["target"],
-        )
 
     return {
         "run_id": run_id,
