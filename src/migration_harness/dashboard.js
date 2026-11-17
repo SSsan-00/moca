@@ -493,6 +493,9 @@ function applyFindingFilter() {
 
 // 同じRun状態の説明を、実行ログと画面上部に使う。
 function describe(state) {
+  if (state.queued) return "実行待ち";
+  if (state.status === "queued") return "準備を開始しています";
+  if (state.status === "cancelled") return "待機取消済み";
   if (state.generating_anchors) return "Junieでアンカー生成中";
   const label = statusNames[state.status] || state.status;
   if (state.script_phase && scriptPhases[state.script_phase]) return `${scriptPhases[state.script_phase]}の${label}`;
@@ -564,6 +567,7 @@ async function workspaceRequest(path, payload) {
 }
 
 bindHarnessWorkspace({
+  preparationChat: true,
   readRuns: () => workspaceRequest("workspace"),
   readSettings: () => workspaceRequest("settings"),
   readModels: () => workspaceRequest("junie-models"),

@@ -460,6 +460,9 @@ class Dashboard:
                         if action is not None:
                             raise ValueError("移行の実行を開いてから保存してください。")
                         payload = {"run_id": None, "targets": [], "prompts": [], "can_prompt": False}
+                        if manager and run_id:
+                            payload.update(run_id=run_id, can_prompt=True, status_only=True,
+                                           conversation=manager.conversations.preparation_replies(run_id, state))
                     else:
                         if action is not None and action.get("run_id") != run_id:
                             raise ValueError("表示中の実行が変わりました。")
@@ -545,7 +548,9 @@ class Dashboard:
                                 "status": phase, "operator_question": record.get("operator_question"),
                             }
                             if manager:
-                                payload.update(conversation=queue.get("conversation", []), can_prompt=True)
+                                conversation = manager.conversations.preparation_replies(run_id, state) + queue.get("conversation", [])
+                                payload.update(conversation=sorted(conversation, key=lambda entry: entry.get("received_at", "")),
+                                               can_prompt=True)
                     self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 except _ERRORS as exc:
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
@@ -779,7 +784,8 @@ class Dashboard:
                             try:
                                 self.send_body(202, "application/json", json.dumps(entry, ensure_ascii=False).encode())
                             finally:
-                                manager.conversations.notify(run_id)
+                                if not entry.get("status_only"):
+                                    manager.conversations.notify(run_id)
                         return
                     self.send_editor(action)
                     return

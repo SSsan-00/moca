@@ -435,7 +435,8 @@
     const activity = find("#editor-junie-activity");
     activity.textContent = showAgent && !snapshot.ready ? snapshot.activity?.message || "" : "";
     activity.hidden = !activity.textContent;
-    find("#editor-prompt-timing").textContent = state.conversation && !editPrompt ? "工程の確認、追加指示、ビルドやチェッカーの再実行を依頼できます。"
+    find("#editor-prompt-timing").textContent = state.status_only ? "「今何してる？」と送ると、現在の工程を確認できます。"
+      : state.conversation && !editPrompt ? "工程の確認、追加指示、ビルドやチェッカーの再実行を依頼できます。"
       : !state.can_prompt ? "現在の工程では指示を登録できません。"
       : state.prompt_timing === "repair_restart" ? "保存した編集を反映して Junie に指示を渡し直し、対応後に再ビルドします。"
       : state.prompt_timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
@@ -470,9 +471,20 @@
       find("#editor-empty").textContent = "実行タブで移行を始めるか、保存済みの実行を開いてください。";
       return;
     }
+    if (data.status_only) {
+      current = undefined;
+      layout.dataset.statusOnly = "true";
+      editorPane.hidden = splitter.hidden = true;
+      updateChat();
+      layout.hidden = false;
+      find("#editor-empty").hidden = true;
+      return;
+    }
     if (!editor) setText("#editor-empty", "エディタを読み込んでいます。");
     const monaco = await loadMonaco();
     if (expectedRevision !== revision || state !== data) return;
+    delete layout.dataset.statusOnly;
+    editorPane.hidden = splitter.hidden = false;
     if (!editor) {
       const theme = () => monaco.editor.setTheme(document.documentElement.dataset.theme === "dark" ? "vs-dark" : "vs");
       const options = {automaticLayout: true, minimap: {enabled: false}, bracketPairColorization: {enabled: true}};
@@ -545,7 +557,7 @@
           showEditor(diffOpen);
           showSaveState();
           updateChat();
-          report("#editor-error", error);
+          report(state.status_only ? "#editor-prompt-error" : "#editor-error", error);
         }
       }
     } finally {
@@ -597,7 +609,7 @@
       if (state.conversation && !editPrompt) {
         let submission = submittedMessages.get(runId);
         if (submission?.text !== text) {
-          submission = {id: crypto.randomUUID().replaceAll("-", ""), text};
+          submission = {id: crypto.randomUUID().replaceAll("-", ""), text, status_only: layout.dataset.statusOnly === "true"};
           submittedMessages.set(runId, submission);
         }
         const entry = await request("editor", {kind: "conversation", run_id: runId, ...submission});

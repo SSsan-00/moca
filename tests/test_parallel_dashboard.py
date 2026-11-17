@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import redirect_stdout
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -91,14 +92,18 @@ class ParallelDashboardTests(HarnessCase):
             with urlopen(Request(url + endpoint, json.dumps(body).encode(), headers), timeout=3) as response:
                 return response.status, json.load(response)
 
-        return post
+        def get(endpoint, run_id):
+            with urlopen(Request(url + endpoint, headers={"X-Run-ID": run_id}), timeout=3) as response:
+                return json.load(response)
+
+        return post, get
 
     def test_cancelling_queued_anchors_finishes_the_original_http_request(self):
         self.settings["diff_viewer_html"] = "viewer.html"
         run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
         self.manager.limit = 0
-        post = self.open_http_dashboard()
+        post, _ = self.open_http_dashboard()
         with patch.object(dashboard, "generate_anchors") as generate, ThreadPoolExecutor() as pool:
             request = pool.submit(post, "control", {"action": "anchors", "revision": 0}, run_id)
             self.wait_until(lambda: run_id in self.manager.pending)
@@ -276,13 +281,81 @@ class ParallelDashboardTests(HarnessCase):
         run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
         self.manager.submit({"action": "cancel-queued", "run_id": run_id})
         self.manager.default = self.manager.get(run_id)
-        post = self.open_http_dashboard()
+        post, _ = self.open_http_dashboard()
         self.assertEqual(post("control", {"action": "hide-run", "revision": 0, "run_id": run_id}, run_id)[0], 202)
         for action, unit in (("prepare", "unit-1"), ("run", "unit-2")):
             status, result = post("control", {"action": action, "revision": 0, "unit_id": unit}, run_id)
             self.assertEqual(status, 202)
             self.assertNotEqual(result["run_id"], run_id)
         self.assertNotIn("run_id", self.manager.get().state)
+
+    def test_conversation_status_before_worktree_survives_prepare(self):
+        self.manager.limit = 0
+        run_id, other = self.manager.submit({"action": "prepare", "unit_ids": ["unit-0", "unit-1"]})["run_ids"]
+        post, get = self.open_http_dashboard()
+
+        def send(text, identifier=None, **flags):
+            body = {"kind": "conversation", "run_id": run_id, "id": identifier or uuid.uuid4().hex, "text": text, **flags}
+            status, receipt = post("editor", body, run_id)
+            self.assertEqual(status, 202)
+            self.assertEqual(receipt["status"], "received")
+            return receipt["id"]
+
+        state = get("editor", run_id)
+        self.assertEqual(state["run_id"], run_id)
+        self.assertTrue(state["status_only"])
+        self.assertTrue(state["can_prompt"])
+        queued = send("今何してる？")
+        self.assertIn("実行待ち", get("editor", run_id)["conversation"][0]["message"])
+        self.assertEqual(get("editor", other)["conversation"], [])
+        self.assertFalse((Path(self.settings["run_root"]) / run_id).exists())
+
+        started, release = Event(), Event()
+        validate = workflow._validate_inputs
+
+        def wait_for_input(root, unit):
+            if unit["id"] == "unit-0":
+                started.set()
+                self.assertTrue(release.wait(5))
+            return validate(root, unit)
+
+        with patch.object(workflow, "_validate_inputs", side_effect=wait_for_input):
+            self.manager.limit = 1
+            self.manager.start_pending()
+            try:
+                self.assertTrue(started.wait(5))
+                preparing = send("今の状態は？")
+                diagnostics = send("前回のビルドはなぜ落ちた？")
+                rejected = send("ビルドして")
+                messages = {row["id"]: row["message"] for row in get("editor", run_id)["conversation"]}
+                self.assertIn("準備中", messages[preparing])
+                self.assertIn("保存済みの結果はありません", messages[diagnostics])
+                self.assertIn("状況の確認", messages[rejected])
+                self.assertFalse(self.manager.get(run_id).control.cancelled.is_set())
+            finally:
+                release.set()
+            self.wait_until(lambda: not self.manager.busy)
+        send("今何してる？", queued)
+        send("ビルドして", status_only=True)
+        state = get("editor", run_id)
+        self.assertFalse(state.get("status_only"))
+        self.assertIn("Page0.cs", state["targets"])
+        self.assertEqual(len(state["conversation"]), 5)
+        self.assertFalse(self.manager.busy)
+
+    def test_waiting_conversation_is_restored_after_dashboard_restart(self):
+        self.manager.limit = 0
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        action = {"id": uuid.uuid4().hex, "text": "今何してる？"}
+        self.manager.conversations.submit(run_id, action)
+        self.manager.close()
+        restarted = RunManager(self.settings, dashboard.Dashboard())
+        self.addCleanup(restarted.close)
+        history = restarted.conversations.preparation_replies(run_id, restarted.get(run_id).state)
+        self.assertEqual([item["id"] for item in history], [action["id"]])
+        self.assertIn("実行待ち", history[0]["message"])
+        self.assertIn(run_id, restarted.pending)
+        self.assertNotIn(run_id, restarted.workers)
 
     def test_resume_cannot_duplicate_a_unit_already_running(self):
         old = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]

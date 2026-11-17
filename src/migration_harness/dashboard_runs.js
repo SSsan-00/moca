@@ -1,7 +1,7 @@
 "use strict";
 
 // 実行一覧はデモと本番で共用し、進捗・エディタは選択したRunだけを表示する。
-function bindRunManager({readRuns, execute, canAct}) {
+function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   const find = selector => document.querySelector(selector);
   const form = find("#workspace-new-run");
   const options = find("#unit-options");
@@ -123,7 +123,7 @@ function bindRunManager({readRuns, execute, canAct}) {
       }));
       if (!data.units.length) options.append(node("p", "設定タブで移行単位を登録してください。"));
     }
-    const opened = data.runs.filter(run => run.worktree_path);
+    const opened = data.runs.filter(run => preparationChat || run.worktree_path);
     const nextContext = JSON.stringify(opened.map(run => [run.run_id, run.unit_id]));
     if (nextContext !== contextKey) {
       contextKey = nextContext;
@@ -172,10 +172,12 @@ function bindRunManager({readRuns, execute, canAct}) {
           item.addEventListener("click", () => act(action, run.run_id, tab));
           buttons.append(item);
         }
-        if (run.queued) button("待機を取消", "cancel-queued", null, true);
-        else {
+        if (run.queued) {
+          if (preparationChat) button("Junie", "open-run", "editor");
+          button("待機を取消", "cancel-queued", null, true);
+        } else {
           button(tone === "review" ? "進捗で確認" : "進捗", "open-run", "progress");
-          if (run.worktree_path) button("エディタ", "open-run", "editor");
+          if (run.worktree_path || preparationChat) button(run.worktree_path ? "エディタ" : "Junie", "open-run", "editor");
           if (!run.ready && run.cancellable) button(run.stop_requested ? "停止中" : "停止", "stop", null, true);
           if (run.ready && run.resumable) button(tone === "done" ? "再検証" : "再開", "resume-run", null, true);
           if (run.ready) button("削除", "hide-run");

@@ -4,19 +4,24 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Event, Thread
 
 from .config import checker_command_for_unit, target_paths
 from .editor_queue import editor_queue, editor_text
 from .errors import format_error
-from .run_records import load_saved_run
+from .files import safe_target
+from .run_records import load_saved_run, validate_run_id
 from .worktree_targets import review_target_hash
 
 PENDING = {"received", "clarification", "waiting", "running", "steering"}
 REBUILD = {"build", "build_repair", "checker", "checker_repair"}
 BUILD_PHASES = {"building", "build_succeeded", "build_failed"}
 PHASES = {
+    "queued": "準備を開始しています", "preparing": "準備中", "cancelled": "待機取消済み",
+    "preparation_failed": "準備失敗", "preparation_interrupted": "準備中断",
     "prepared": "準備完了", "junie_running": "移行中", "editor_followup": "追加指示を反映中",
     "editor_checkpoint": "編集の確認待ち", "repairing": "自動修正中", "building": "ビルド中",
     "checking": "チェッカー実行中", "build_succeeded": "ビルド成功", "build_failed": "ビルド失敗",
@@ -40,7 +45,7 @@ def _answer_kind(text):
 
 def _intent(text, phase):
     value = unicodedata.normalize("NFKC", text).lower()
-    if re.search(r"(?:今|現在).*(?:何して|何をして|状況|進捗)|^(?:状況|進捗)[は?。\s]*$|what (?:are you doing|is happening)", value):
+    if re.search(r"(?:今|現在).*(?:何して|何をして|状態|状況|工程|進捗)|^(?:状態|状況|進捗)[は?。\s]*$|what (?:are you doing|is happening)", value):
         return "status"
     if re.search(r"(?:ビルド|チェッカー|チェック|build|checker).*(?:なぜ|どうして|原因|結果|ログ|why)", value):
         return "checker_status" if re.search(r"チェッカー|チェック|checker", value) else "build_status"
@@ -81,6 +86,24 @@ def _finish(entry, status, message):
     entry["finished_at"] = datetime.now(timezone.utc).isoformat()
 
 
+def _phase_message(state, phase):
+    current = "実行待ち" if state.get("queued") else PHASES.get(phase, "状況を確認中")
+    if phase == "script_running" and state.get("script_phase") == "before_prepare":
+        current = "準備中（準備前スクリプトを実行中）"
+    return f"現在の工程は「{current}」です。"
+
+
+def _preparation_reply(entry):
+    phase = entry["phase"]
+    intent = _intent(entry["text"], phase)
+    if intent not in {"status", "build_status", "checker_status"}:
+        return {**entry, "status": "failed", "message": "準備前や準備中は状況の確認ができます。作業の指示は準備完了後に送ってください。"}
+    message = entry["phase_message"]
+    if intent != "status":
+        message += " 保存済みの結果はありません。" if not entry["has_worktree"] else " エディタが表示されたら、結果をもう一度問い合わせてください。"
+    return {**entry, "status": "done", "message": message}
+
+
 def invalidate_queued_steering(queue):
     """後から保存した版に、まだ渡していない指示を黙って適用しない。"""
     for entry in queue.get("conversation", []):
@@ -118,6 +141,30 @@ class JunieConversations:
         self.runs = {path.parent.name for path in self.manager.queue_path.parent.glob("*/editor.json")} | self.runs
         self.wake.set()
 
+    @contextmanager
+    def _preparation_history(self, run_id, state, *, create=False):
+        """作業ディレクトリを準備する処理から独立して、工程照会の履歴を保存する。"""
+        validate_run_id(run_id)
+        root = Path(self.manager.config["run_root"]).resolve()
+        path = safe_target(root, Path(".preparation-conversations") / (run_id + ".json"))
+        if not create and not path.is_file():
+            yield []
+            return
+        safe_target(root, path.with_suffix(".lock").relative_to(root))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with editor_queue(path.parent, name=path.name) as queue:
+            owner = [self.manager.config["project_root"], state["unit_id"]]
+            if queue.get("owner", owner) != owner:
+                raise ValueError("照会履歴が現在のプロジェクトと一致しません。")
+            history = queue.get("conversation", [])
+            yield history
+            if create and history:
+                queue.update(owner=owner, conversation=history)
+
+    def preparation_replies(self, run_id, state):
+        with self.manager.condition, self._preparation_history(run_id, state) as history:
+            return [_preparation_reply(entry) for entry in history]
+
     def submit(self, run_id, action):
         identifier = action.get("id")
         if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier):
@@ -125,6 +172,24 @@ class JunieConversations:
         text = editor_text(action.get("text"), 4_000).strip()
         if not text:
             raise ValueError("指示を入力してください。")
+        with self.manager.condition:
+            state = self.manager.get(run_id).state
+            early = not state.get("worktree_path") or action.get("status_only") is True
+            with self._preparation_history(run_id, state, create=early) as history:
+                for entry in history:
+                    if entry["id"] == identifier:
+                        if entry["text"] != text:
+                            raise ValueError("同じ指示 ID がすでに使われています。")
+                        return entry
+                if early:
+                    phase = state["status"]
+                    entry = {
+                        "id": identifier, "text": text, "status": "received", "status_only": True,
+                        "received_at": datetime.now(timezone.utc).isoformat(), "phase": phase,
+                        "phase_message": _phase_message(state, phase), "has_worktree": bool(state.get("worktree_path")),
+                    }
+                    history.append(entry)
+                    return entry
         run_path, worktree, _, unit = load_saved_run(self.manager.config, run_id)
         with editor_queue(run_path) as queue, self.manager.condition:
             history = queue.setdefault("conversation", [])
@@ -214,8 +279,7 @@ class JunieConversations:
                     continue
                 intent = _intent(entry["text"], phase)
                 if intent in {"status", "build_status", "checker_status"}:
-                    current = "実行待ち" if state.get("queued") else PHASES.get(phase, "状況を確認中")
-                    message = f"現在の工程は「{current}」です。"
+                    message = _phase_message(state, phase)
                     if intent != "status":
                         kind = intent.removesuffix("_status")
                         code = record.get(f"{kind}_exit_code")

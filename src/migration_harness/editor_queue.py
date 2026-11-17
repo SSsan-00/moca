@@ -20,8 +20,8 @@ AGENT_PHASES = QUEUE_PHASES | {"repairing"}
 
 
 @contextmanager
-def editor_queue(run_path: Path) -> Iterator[dict[str, Any]]:
-    path = run_path / "editor.json"
+def editor_queue(run_path: Path, *, name: str = "editor.json") -> Iterator[dict[str, Any]]:
+    path = run_path / name
     with lock_run_record(path):
         if path.is_symlink() or path.with_suffix(".json.tmp").is_symlink():
             raise ValueError("エディタの保存先がシンボリックリンクです。")
