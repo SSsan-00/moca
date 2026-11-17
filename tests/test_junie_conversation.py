@@ -7,6 +7,7 @@ import uuid
 from contextlib import redirect_stdout
 from threading import Event, Thread
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -42,19 +43,20 @@ class JunieConversationTests(SavedRunFixture):
         with urlopen(Request(self.url + endpoint, None if body is None else json.dumps(body).encode(), headers), timeout=3) as response:
             return response.status, json.load(response)
 
-    def send(self, text, identifier=None):
+    def send(self, text, identifier=None, *, run_id=None):
+        run_id = run_id or self.run_id
         identifier = identifier or uuid.uuid4().hex
         status, result = self.request("editor", {
-            "kind": "conversation", "run_id": self.run_id, "id": identifier, "text": text,
-        })
+            "kind": "conversation", "run_id": run_id, "id": identifier, "text": text,
+        }, run_id=run_id)
         self.assertEqual(status, 202)
         self.assertEqual(result["id"], identifier)
         return identifier, result
 
-    def wait_for(self, identifier, status):
+    def wait_for(self, identifier, status, *, run_path=None):
         end = time.monotonic() + 6
         while time.monotonic() < end:
-            with editor_queue(self.run_path) as queue:
+            with editor_queue(run_path or self.run_path) as queue:
                 entry = next((row for row in queue.get("conversation", []) if row["id"] == identifier), {})
             if entry.get("status") == status:
                 return entry
@@ -164,9 +166,88 @@ class JunieConversationTests(SavedRunFixture):
             identifier, _ = self.send("ビルドについて")
             self.wait_for(identifier, "clarification")
             self.assertEqual(calls, [])
+            self.save_edit("class ReviewedAfterQuestion {}\n")
             self.send("ビルドだけ")
             self.assertEqual(self.wait_for(identifier, "done")["result_status"], "build_succeeded")
         self.assertEqual(calls, [["dotnet", "build"]])
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class ReviewedAfterQuestion {}\n")
+
+    def fill_conversation(self):
+        (self.run_path / "agent-workspace").mkdir()
+        for index in range(15):
+            identifier, _ = self.send(f"注文日の表示を既存ヘルパーに合わせて {index}")
+            self.wait_for(identifier, "steering")
+        with patch.object(self.manager.conversations, "advance", return_value=True):
+            query, _ = self.send("今何してる？")
+            identifier, _ = self.send("もう一回お願い")
+        self.wait_for(query, "done")
+        self.wait_for(identifier, "clarification")
+        return identifier
+
+    def assert_conversation_rejected(self, text, detail, identifier=None):
+        with self.assertRaises(HTTPError) as rejected:
+            self.send(text, identifier)
+        with rejected.exception as response:
+            self.assertEqual(response.code, 409)
+            self.assertIn(detail, response.read().decode())
+
+    def test_full_conversation_allows_status_and_existing_answer(self):
+        identifier = self.fill_conversation()
+        self.assertEqual(self.send("もう一回お願い", identifier)[1]["status"], "clarification")
+        self.assert_conversation_rejected("ビルドだけ", "同じ指示 ID", identifier)
+        self.assert_conversation_rejected("ビルドだけ。注文日の表示も直して", "最大件数")
+        query, _ = self.send("チェッカーは成功した？")
+        self.assertIn("previous finding", self.wait_for(query, "done")["logs"][0]["text"])
+        self.wait_for(identifier, "clarification")
+
+        self.manager.limit = 0
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"))
+        with mocked:
+            answer, _ = self.send("ビルドだけ")
+            self.wait_for(answer, "done")
+            self.wait_for(identifier, "waiting")
+            self.assertEqual(self.send("ビルドだけ", answer)[1]["status"], "done")
+            self.assert_conversation_rejected("チェッカーまで", "同じ指示 ID", answer)
+            self.assert_conversation_rejected("チェッカーをもう一度", "最大件数")
+            self.manager.limit = 5
+            self.manager.start_pending()
+            self.assertEqual(self.wait_for(identifier, "done")["result_status"], "build_succeeded")
+        self.assertEqual(calls, [["dotnet", "build"]])
+
+    def test_full_conversation_allows_cancellation_and_frees_one_slot(self):
+        identifier = self.fill_conversation()
+        with patch.object(workflow, "run_process") as run:
+            cancellation, _ = self.send("キャンセル")
+            self.wait_for(cancellation, "done")
+            self.wait_for(identifier, "cancelled")
+            replacement, _ = self.send("ビルドについて")
+            self.wait_for(replacement, "clarification")
+            self.assert_conversation_rejected("新規作業を追加して", "最大件数")
+            view = self.manager.get(self.run_id)
+            view.begin_operation()
+            reply = view.show_junie_request({
+                "title": "作業を続けますか？", "options": [{"id": "yes", "label": "続ける"}],
+            })
+            response, _ = self.send("続ける")
+            self.wait_for(response, "done")
+            self.assertEqual(reply.result(timeout=3), "yes")
+            self.wait_for(replacement, "clarification")
+            run.assert_not_called()
+
+    def test_an_answer_cannot_be_applied_to_a_replacement_question(self):
+        original, _ = self.send("もう一回お願い")
+        self.wait_for(original, "clarification")
+        replacement = uuid.uuid4().hex
+        with patch.object(workflow, "run_process") as run:
+            with patch.object(self.manager.conversations, "advance", return_value=True):
+                answer, _ = self.send("ビルドだけ")
+                with editor_queue(self.run_path) as queue:
+                    question = queue["conversation"][0]
+                    queue["conversation"].append({**question, "id": replacement})
+                    question["status"] = "cancelled"
+            self.assertIn("更新されました", self.wait_for(answer, "failed")["message"])
+            self.wait_for(replacement, "clarification")
+            run.assert_not_called()
 
     def test_build_only_failure_does_not_start_checker_or_a_repair(self):
         self.config["max_repair_attempts"] = 2
@@ -368,6 +449,11 @@ class JunieConversationTests(SavedRunFixture):
         self.wait_for(identifier, "clarification")
         self.assertEqual(self.request("editor", run_id=other)[1]["conversation"], [])
         self.assertEqual([entry["id"] for entry in self.request("editor")[1]["conversation"]], [identifier])
+        other_question, _ = self.send("もう一回お願い", run_id=other)
+        self.wait_for(other_question, "clarification", run_path=path)
+        self.send("キャンセル", run_id=other)
+        self.wait_for(other_question, "cancelled", run_path=path)
+        self.wait_for(identifier, "clarification")
 
     def test_operator_answers_junie_with_the_same_input_field(self):
         running, release = Event(), Event()

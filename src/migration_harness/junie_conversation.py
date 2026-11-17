@@ -54,6 +54,14 @@ def _answer_kind(text):
     return None
 
 
+def _clarification(history):
+    return next((entry for entry in reversed(history) if entry["status"] == "clarification"), None)
+
+
+def _junie_option(request, text):
+    return next((choice for choice in request["options"] if text in (choice["label"], choice["id"])), None)
+
+
 def _status_intent(value):
     checker = re.search(CHECKER_TERM, value)
     if (checker or re.search(BUILD_TERM, value)) and (
@@ -229,16 +237,26 @@ class JunieConversations:
                     if entry["text"] != text:
                         raise ValueError("同じ指示 ID がすでに使われています。")
                     return entry
-            if sum(entry["status"] in PENDING for entry in history) >= 16:
-                raise ValueError("処理待ちの指示が最大件数に達しました。先に確認待ちの指示に回答してください。")
             entry = {
                 "id": identifier, "text": text, "status": "received",
                 "received_at": datetime.now(timezone.utc).isoformat(),
-                "edit_revision": queue.get("edit_revision"), "edits": saved_edits(queue),
-                "targets": target_versions(worktree, unit),
             }
-            if question := self.manager.get(run_id).state.get("junie_request"):
-                entry["junie_question"] = question["id"]
+            if query := _status_intent(unicodedata.normalize("NFKC", text).lower()):
+                entry["query_intent"] = query
+            else:
+                request = self.manager.get(run_id).state.get("junie_request")
+                if request:
+                    entry["junie_question"] = request["id"]
+                if request and (option := _junie_option(request, text)) is not None:
+                    entry["junie_option"] = option["id"]
+                elif _answer_kind(text) and (question := _clarification(history)):
+                    entry["clarification_id"] = question["id"]
+                elif sum(old["status"] in PENDING and not (
+                    "query_intent" in old or "junie_option" in old or "clarification_id" in old
+                ) for old in history) >= 16:
+                    raise ValueError("処理待ちの指示が最大件数に達しました。先に確認待ちの指示に回答してください。")
+                entry.update(edit_revision=queue.get("edit_revision"), edits=saved_edits(queue),
+                             targets=target_versions(worktree, unit))
             history.append(entry)
         return entry
 
@@ -308,7 +326,7 @@ class JunieConversations:
             for entry in history:
                 if entry["status"] != "received":
                     continue
-                intent = _intent(entry["text"], phase)
+                intent = entry.get("query_intent") or _intent(entry["text"], phase)
                 if intent in {"status", "build_status", "checker_status"}:
                     message = _phase_message(state, phase)
                     if intent != "status":
@@ -327,14 +345,13 @@ class JunieConversations:
                             message += " 保存済みの結果はありません。"
                     _finish(entry, "done", message)
                     continue
-                question = next((old for old in reversed(history) if old["status"] == "clarification"), None)
+                question = _clarification(history)
                 request = state.get("junie_request")
                 if entry.get("junie_question") and (not request or entry["junie_question"] != request["id"]):
                     _finish(entry, "failed", "Junie の確認は更新されました。現在の質問を確認してください。")
                     continue
                 if request and entry.get("junie_question"):
-                    choices = request["options"]
-                    option = next((choice for choice in choices if entry["text"] in (choice["label"], choice["id"])), None)
+                    option = _junie_option(request, entry["text"])
                     if option is not None:
                         entry["question"] = request["title"]
                         accepted = view.answer_junie({"request_id": request["id"], "option_id": option["id"],
@@ -346,10 +363,13 @@ class JunieConversations:
                         entry["question"] = request["title"]
                         _finish(entry, "failed", "回答は表示されている選択肢の文言で入力してください。")
                         continue
-                if question:
+                if reply_to := entry.get("clarification_id"):
+                    if question is None or reply_to != question["id"]:
+                        _finish(entry, "failed", "確認待ちの指示が更新されました。現在の質問を確認してください。")
+                        continue
                     answer = _answer_kind(entry["text"])
                     if answer is None:
-                        _finish(entry, "failed", "「ビルドだけ」「チェッカーまで」「キャンセル」のいずれかで回答してください。")
+                        _finish(entry, "failed", "表示されている確認への回答を送信し直してください。")
                     elif answer == "cancel":
                         _finish(question, "cancelled", "指示を取り消しました。")
                         _finish(entry, "done", "確認待ちの指示を取り消しました。")
@@ -358,6 +378,9 @@ class JunieConversations:
                         question.update(intent=answer, status="waiting", answer=entry["text"],
                                         edit_revision=entry["edit_revision"], edits=entry["edits"], targets=entry["targets"])
                         _finish(entry, "done", "確認への回答を受け付けました。")
+                    continue
+                if question:
+                    _finish(entry, "failed", "「ビルドだけ」「チェッカーまで」「キャンセル」のいずれかで回答してください。")
                     continue
                 if intent == "clarify":
                     question = "ビルドだけですか？ チェッカーまで実行しますか？"
