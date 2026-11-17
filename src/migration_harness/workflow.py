@@ -1,5 +1,9 @@
 """移行と再開の工程を進め、ビルド・チェッカー・台帳の結果をまとめる。"""
 
+# 入口は run_with_junie（新規）と resume_with_junie（再開）。進捗は run.json に保存する。
+# カプセルは原文を分割した処理単位。Junieは agent-workspace で編集し、
+# 対象ファイルだけを検証用のGit worktreeへ反映してからビルド・チェッカーに進む。
+
 from __future__ import annotations
 
 from collections import Counter
@@ -176,6 +180,7 @@ def _run_script_phase(
     if record is not None and once:
         command_ids = [hashlib.sha256(json.dumps(command).encode("utf-8")).hexdigest() for command in commands]
         completed_ids = record.get("script_command_progress", {}).get(phase, [])
+        # 中断後は成功済みの先頭部分だけを飛ばす。コマンドが変わった位置からは再実行する。
         for saved, current in zip(completed_ids, command_ids):
             if saved != current:
                 break
@@ -271,6 +276,7 @@ def _stage_migration_materials(
     """準備時の資料を照合して、今回のJunieに読む順番を伝える。"""
     materials = manifest.get("materials", {})
     omitted = set()
+    # Noneは選別なし、空集合は「該当する詳細なし」。後者では前回置いた詳細も取り除く。
     if selected is not None:
         omitted = {item["file"] for item in detail_index(manifest)} - selected
         omitted.add("rules.json")
@@ -336,6 +342,7 @@ def _stage_migration_materials(
     return instructions
 
 
+# 以下はJunieへ渡す共通指示。実行による検証はハーネス側の工程に任せる。
 _STATIC_SOURCE_REVIEW = (
     "Verify source and target statically. Do not execute the original PHP or migrated application, "
     "or connect to an application database. Source extraction and syntax/data inspection scripts are allowed. "
@@ -343,6 +350,7 @@ _STATIC_SOURCE_REVIEW = (
 )
 
 
+# 長いデータ列を推測で転記させず、担当する原文範囲からの抽出・照合を指示する。
 _EXACT_SOURCE_DATA = (
     "For repeated statements with data, literal tables, or other long sequences, use the workspace shell to "
     "extract the exact ordered data mechanically from the assigned PHP lines. A short Python command is fine. "
@@ -416,6 +424,7 @@ def _review_detail_applicability(
     index = detail_index(manifest)
     if not index:
         return None
+    # 再開時も同じルール選択を使い、カプセルごとに適用方針が変わるのを防ぐ。
     if "detail_applicability" in record:
         return selected_details(index, record["detail_applicability"])
     report_activity(f"移行前に詳細ルールの適用範囲をJunieで確認します（{len(index)}件）。")
@@ -507,6 +516,7 @@ def _review_detail_applicability(
             }, ensure_ascii=False, indent=2), encoding="utf-8")
 
         def save_decisions(answer: str) -> None:
+            # 原文と詳細索引の全文を渡した場合は、最終回答を照合してハーネス側で完了記録を作る。
             lines = answer.strip().splitlines()
             if len(lines) >= 2 and lines[0] in {"```", "```json"} and lines[-1] == "```":
                 answer = "\n".join(lines[1:-1])
@@ -592,6 +602,7 @@ def _apply_editor_edits(
             merged[name] = (hashlib.sha256(original).hexdigest(), current, text)
         else:
             raise ValueError("Junie の作業領域に移行先ファイルがありません。")
+    # ひとつでも競合していれば、他のファイルも書き換えずに利用者の解消を待つ。
     if any(edit["status"] == "conflict" for edit in edits.values()):
         record.update(status="editor_checkpoint", error="移行先ファイルの編集が競合しました。エディタで解消してから再開してください。")
         write_run_record(record_path, record, timing_stage=None)
@@ -708,6 +719,7 @@ def _task_guidelines(agent_root: Path, inputs: list[Path]) -> tuple[Path | None,
     destination.unlink(missing_ok=True)
     contents = {}
     remaining = 24_000
+    # 全入力が収まるときだけ同梱する。超過時は切り詰めず、元のファイル参照に戻す。
     for relative in inputs:
         check_cancelled()
         with safe_target(agent_root, relative).open("rb") as stream:
@@ -717,6 +729,7 @@ def _task_guidelines(agent_root: Path, inputs: list[Path]) -> tuple[Path | None,
             return default, ""
         contents[relative.as_posix()] = data.decode("utf-8")
     bundle = json.dumps(contents, ensure_ascii=False).encode("utf-8")
+    # 元の本文が収まっても、JSONのエスケープで増える分を含めて再判定する。
     if len(bundle) > 24_000:
         return default, ""
     destination.parent.mkdir(exist_ok=True)
@@ -812,6 +825,7 @@ def _run_prepared_with_junie(
             raise ValueError("agent workspace is missing; this run cannot be resumed safely")
         agent_root.mkdir()
 
+    # 前回の反映が途中で止まっていれば、残りを反映してから再開用のハッシュを比較する。
     finish_pending_targets(agent_root, worktree_root, relative_targets, record, record_path)
     worktree_targets = tuple(safe_target(worktree_root, path) for path in relative_targets)
     agent_targets = tuple(safe_target(agent_root, path) for path in relative_targets)
@@ -821,6 +835,7 @@ def _run_prepared_with_junie(
         prior_hashes = record.get("target_hashes", {relative_targets[0].as_posix(): record.get("target_sha256")})
         if hashes != prior_hashes:
             raise ValueError("worktree targets changed since the last recorded Junie result; inspect and reconcile before resuming")
+    # 通常の再開ではJunieの下書きを残し、移行完了後の追加指示ではworktreeの現行版を渡す。
     for relative, worktree_target, agent_target in zip(relative_targets, worktree_targets, agent_targets, strict=True):
         agent_target.parent.mkdir(parents=True, exist_ok=True)
         if (followup_only or not agent_target.exists()) and worktree_target.is_file():
@@ -868,6 +883,7 @@ def _run_prepared_with_junie(
     exit_code = record.get("junie_exit_code")
     with editor_queue(run_path) as queue:
         finish_prompts(queue, False)
+    # 未完了のカプセルから再開する。保存済みの下書きがあっても完了数は先に進めない。
     start_index = record["completed_capsules"] + 1
     for index, context_path in enumerate(result["context_paths"][start_index - 1 :], start=start_index):
         part = manifest["parts"][index - 1]
@@ -962,6 +978,7 @@ def _run_prepared_with_junie(
         interrupted = False
         complete = False
         with editor_queue(run_path) as queue:
+            # Junieが停止している区間の境目で、画面からの編集と追加指示を取り込む。
             if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
                 break
             extra = dispatch_prompts(queue)
@@ -1009,6 +1026,7 @@ def _run_prepared_with_junie(
                     break
                 if completed:
                     record.pop("operator_question", None)
+            # 完了前の編集も再開用に反映するが、完了トークンと全対象がそろうまで進捗は進めない。
             apply_agent_targets(
                 agent_root, worktree_root, relative_targets,
                 record["target_hashes"], record, record_path,
@@ -1044,6 +1062,7 @@ def _run_prepared_with_junie(
         record.pop("error", None)
         write_run_record(record_path, record, timing_stage=3)
 
+    # 最後のカプセル後にも編集を受け取り、保留中の追加指示を処理し終えてから検証に進む。
     while record["completed_capsules"] == result["capsule_count"] and record["status"] == "editor_checkpoint":
         with editor_queue(run_path) as queue:
             if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
@@ -1274,9 +1293,10 @@ def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFindi
                     unrecognized = True
                     continue
                 relative = resolved.relative_to(worktree).as_posix()
-                # 行・列がずれても、同じ対象ファイルのルールとメッセージで指摘を識別する。
+                # 行・列のずれは同じ指摘と扱う。旧履歴の修正識別子はルールと本文だけを使う。
                 key = (match["rule"].casefold(), " ".join(match["message"].split()))
                 repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
+                # 承認用のIDには対象パスと重大度も含め、別ファイルの指摘へ承認を流用しない。
                 review_key = (*key, relative, match["severity"].lower())
                 finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
                 findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, line, match["line"]))
@@ -1287,6 +1307,7 @@ def _accepted_findings(record: dict[str, Any], findings: list[CheckerFinding], h
     """指摘IDと対象ファイルの版がともに一致する承認だけを返す。"""
     accepted = {(entry["finding_id"], entry["target_sha256"]) for entry in record.get("checker_reviews", [])}
     counts = Counter(finding.finding_id for finding in findings)
+    # 同じIDが複数ある場合は承認対象を一意に特定できないため、承認済みとみなさない。
     return {
         finding.finding_id for finding in findings
         if counts[finding.finding_id] == 1 and (finding.finding_id, hashes.get(finding.path)) in accepted
@@ -1327,6 +1348,7 @@ def _attempt_repair(
     try:
         _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
     except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
+        # 起動・通信の問題では修正枠を消費せず、同じ試行を再開できるようにする。
         raise
     except (OSError, RuntimeError, ValueError):
         _charge_repair(record)
@@ -1357,6 +1379,7 @@ def _repair_target(
         source_files = {path: safe_target(worktree, path) for path in targets}
         agent_files = {path: safe_target(agent_root, path) for path in targets}
         before = {path.as_posix(): sha256_file(source) for path, source in source_files.items()}
+        # 中断時の原本と下書きが両方一致する場合だけ続きから修正し、それ以外は現行版に戻す。
         resume_draft = draft.get("base") == before and all(
             target_hash(agent_files[path]) == draft.get("targets", {}).get(path.as_posix())
             for path in repair_targets
@@ -1473,7 +1496,7 @@ def _verification_scripts(config: dict[str, Any], checker_command: list[str] | N
     return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
 
 
-# Cache file hashes for one worktree in memory. Each snapshot still checks the live paths and stats.
+# ハッシュだけをworktree単位で再利用し、パスとファイル属性は毎回照合する。
 _verification_cache: tuple[Path | None, dict[Path, tuple[tuple[int, ...], str]]] = (None, {})
 
 
@@ -1481,6 +1504,7 @@ def _verification_fingerprint(
     worktree: Path, build_project: str | None, checker: list[str] | None, scripts: dict[str, Any],
 ) -> str | None:
     """作業ツリー内のビルド入力と、検証コマンドが直接使うファイルを照合する。"""
+    # 照合できない場合はNoneを返す。以前の検証成功を現在も有効とは扱わない。
     global _verification_cache
     cached_root, cached = _verification_cache
     if cached_root != worktree:
@@ -1533,7 +1557,7 @@ def _verification_fingerprint(
             try:
                 info = path.lstat()
             except (FileNotFoundError, NotADirectoryError):
-                continue  # Git still lists deleted tracked paths.
+                continue  # Gitの追跡一覧には、削除済みのパスも残る。
             add_file(name, path, info)
 
         if build_project is not None:
@@ -1545,6 +1569,7 @@ def _verification_fingerprint(
         commands = [command for phase_commands in scripts.values() for command in phase_commands]
         if checker is not None:
             commands.append(checker)
+        # 実行ファイルや、ファイルとして存在する引数の内容変更も検出する。
         for command in commands:
             executable = command[0]
             search_path = None
@@ -1569,7 +1594,7 @@ def _verification_fingerprint(
                     continue
                 except OSError as exc:
                     if exc.errno in (errno.ENAMETOOLONG, errno.EINVAL) or getattr(exc, "winerror", None) == 123:
-                        continue  # Arbitrary arguments need not be valid file paths.
+                        continue  # 引数は本文などの場合もあり、すべてが有効なファイルパスとは限らない。
                     raise
                 if stat.S_ISREG(info.st_mode):
                     resolved = path.resolve(strict=True)
@@ -1592,7 +1617,7 @@ _RAZOR_GENERATOR = "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerato
 
 
 def _razor_generated_path(page: Path) -> Path:
-    # Razor preserves separators and classifies each UTF-16 code unit.
+    # Razorの命名規則に合わせ、区切りを保ち、BMP外の文字はUTF-16の2単位分に置換する。
     name = "".join(
         char if char == "/" or (ord(char) <= 0xFFFF and (char.isalpha() or char.isdecimal()))
         else "__" if ord(char) > 0xFFFF else "_"
@@ -1605,6 +1630,7 @@ def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
     log = safe_target(run_path, Path(name))
     if not log.is_file():
         return "", False
+    # 表示・修正指示には直近の診断を優先して末尾を使う。元のログファイルは切り詰めない。
     with log.open("rb") as stream:
         start = max(0, stream.seek(0, os.SEEK_END) - 65_536)
         stream.seek(start)
@@ -1682,8 +1708,10 @@ def _build_error_lines(log: str) -> list[str]:
 def _save_build_review_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, str]) -> None:
     with worktree_source_lock:
         path, original, _ = _build_review_target(worktree, targets, edit["target"])
+        # 画面を開いてから更新されたファイルを、古い編集内容で上書きしない。
         if hashlib.sha256(original).hexdigest() != edit["version"]:
             raise ValueError("編集を開いた後に対象ファイルが更新されました。最新の内容を読み込み、編集を反映し直してください。")
+        # ブラウザーから来る改行を元の形式にそろえ、UTF-8 BOMの有無も維持する。
         text = edit["content"].replace("\r\n", "\n").replace("\r", "\n")
         text = text.replace("\n", _build_review_newline(original))
         data = text.encode("utf-8-sig" if original.startswith(codecs.BOM_UTF8) else "utf-8")
@@ -1691,6 +1719,7 @@ def _save_build_review_edit(worktree: Path, targets: tuple[Path, ...], edit: dic
             raise ValueError("編集後のファイルが 8 MiB を超えています。作業ツリーで編集してください。")
         if data == original:
             return
+        # 同じディレクトリに書き終えてから置き換え、保存途中の内容が見えないようにする。
         with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
             temporary = Path(stream.name)
         try:
@@ -1744,6 +1773,7 @@ def _repair_build_failure(
     limit = config["max_repair_attempts"]
     history = record["repair_history"]
     log = run_path / "build.log"
+    # 上限はビルド・チェッカー共通の自動修正回数。利用者が明示した修正指示は数えない。
     automatic_attempts = sum("instruction" not in attempt for attempt in history)
     if automatic_attempts >= limit or not record.get("build_exit_code"):
         return False
@@ -1785,7 +1815,7 @@ def _repair_build_failure(
                 if project_dir.is_relative_to(worktree) and resolved.is_relative_to(project_dir):
                     page = resolved.relative_to(project_dir)
                     generated = _razor_generated_path(page)
-                    # Sanitized names can collide, even when only one page has a source diagnostic.
+                    # 生成名は衝突し得るため、診断が出ていない他ページの名前も照合する。
                     if not any(
                         other != path and other.suffix.lower() == ".cshtml"
                         and (worktree / other).is_relative_to(project_dir)
@@ -1798,7 +1828,7 @@ def _repair_build_failure(
             occurrences[key] += 1
             if sum(len(value) + 1 for value in findings.values()) > 8_000:
                 return False
-    # Only suppress generated copies that also have a diagnostic on an editable Razor source file.
+    # 編集可能なRazor原本にも同じ診断がある場合だけ、生成コード側の重複を除外する。
     if not generated_model_errors.issubset(source_model_errors):
         return False
     diagnostics = "\n".join(
@@ -1856,10 +1886,12 @@ def _run_verification(
 
     def save_verification() -> None:
         record["verification"]["scripts_passed"] = True
+        # 検証の前後で入力が同じ場合だけ、台帳で再利用できる成功記録を残す。
         if fingerprint is not None and fingerprint == current_fingerprint():
             record["verification"]["input_fingerprint"] = fingerprint
         write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
+    # 修正に成功したらここへ戻り、変更後のファイルを必ずビルドから検証し直す。
     while True:
         write_run_record(record_path, record, timing_stage=4)
         fingerprint = current_fingerprint()
@@ -1932,6 +1964,7 @@ def _run_verification(
             fingerprints = {finding.finding_id for finding in remaining}
             legacy_fingerprints = {finding.repair_fingerprint for finding in remaining}
             if use_raw_output:
+                # 未知の形式を含む場合は、抽出できた指摘だけでなく元の出力全体を判断材料にする。
                 with log.open("rb") as stream:
                     raw = stream.read(65_537)
                 if len(raw) > 65_536:
@@ -2010,6 +2043,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             if not is_php_input(source):
                 continue
             entry = {key: source[key] for key in ("path", "start_line", "end_line", "character_slices", "symbol") if key in source}
+            # 表示用IDの範囲番号は1始まり、保存済み辞書のキーは0始まり。
             entry["id"] = f"{part['index']}:{index + 1}"
             key = f"{part['index']}:{index}"
             review = reviews.get(key)
@@ -2058,7 +2092,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         and not config.get("checker_from_cli")
         and configured_checker == verification.get("toml_checker_command")
     ):
-        # Reuse the saved override while the TOML default still matches the original.
+        # TOML側の既定値が変わっていなければ、前回CLIから指定したチェッカーを引き継ぐ。
         configured_checker = saved_checker
     scripts = _verification_scripts(config, configured_checker)
     fingerprint = verification.get("input_fingerprint")
@@ -2069,6 +2103,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         checker_passed = bool(approved_file_hashes) and all(
             digest is not None and current_hash(path) == digest for path, digest in approved_file_hashes.items()
         )
+    # 成功ステータスだけでは不十分。設定とファイルの版も検証時と同じか確認する。
     verification_passed = (
         not record.get("target_apply_pending")
         and record.get("completed_capsules") == len(capsules)
@@ -2094,6 +2129,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "targets": targets,
         "capsules": capsules,
         "completion": {
+            # ビルド・チェッカーの成功に加え、すべてのPHP範囲に根拠付きの判断が必要。
             "complete": verification_passed and total > 0 and reviewed == total,
             "verification_passed": verification_passed,
             "reviewed": reviewed,
@@ -2142,6 +2178,7 @@ def review_migration_ranges(
             key = f"{capsule}:{index}"
             decision = {"state": state, "reason": reason.strip(), "target_hashes": {}}
             if state == "confirmed":
+                # 対応候補がなくても、利用者が確認した移行先を明示すればその版に判断をひも付ける。
                 mapping = record.get("migration_mappings", {}).get(key)
                 if capsule > record["completed_capsules"]:
                     raise ValueError(f"range {identifier} has not been processed")
@@ -2188,6 +2225,7 @@ def record_migration_candidates(
             key: mapping for key, mapping in record.get("migration_mappings", {}).items()
             if "candidate_snapshot" not in mapping
         }
+        # アンカーは行単位なので、1行内を文字で分割した原文には候補を自動付与しない。
         for part in manifest["parts"][:record["completed_capsules"]]:
             for index, source in enumerate(part.get("sources", [])):
                 key = f"{part['index']}:{index}"
@@ -2340,6 +2378,7 @@ def resume_with_junie(
 
     completed_capsules = record.get("completed_capsules", 0)
     script_retry = status in _SCRIPT_RESUME_STATUSES
+    # 移行後の失敗ならカプセル処理を繰り返さない。フックの失敗は保存済みの実行段階で分ける。
     migration_complete = (
         status in _BUILD_RESUME_STATUSES or status in _CHECKER_RESUME_STATUSES or status in VERIFIED_STATUSES
         or (script_retry and record.get("script_phase") not in {"after_prepare", "before_migration"})
@@ -2402,6 +2441,7 @@ def resume_with_junie(
         if pending:
             junie_cli.require_interactive_cli()
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
+        # 検証済みRunでも、再開時は現行ファイルをビルドから確認する。
         return _verify_worktree(config, unit, result, record)
     junie_cli.require_interactive_cli()
     record.pop("error", None)

@@ -1,5 +1,8 @@
 """Junie CLIの起動、通信再試行、セッションイベントの読み取り。"""
 
+# run_interactiveがモード選択と再試行、_run_sessionが1回の起動から終了までを受け持つ。
+# 通信は端末・非対話（--task）・ダッシュボード用ACPの3通り。イベントログで使用量も追跡する。
+
 from __future__ import annotations
 
 import errno
@@ -78,7 +81,7 @@ def _resolve_executable(name: str) -> str:
     executable = shutil.which(name)
     if executable is None:
         raise FileNotFoundError(errno.ENOENT, "Junie CLI was not found on PATH (or is not executable)", name)
-    # Preserve the launcher path: resolving a symlink can change a wrapper's installation directory.
+    # ランチャーが自身の場所からインストール先を探す場合に備え、シンボリックリンクは解決しない。
     return os.path.abspath(executable)
 
 
@@ -132,7 +135,7 @@ def build_command(project: Path, prompt: str, max_steps: int | None, *, guidelin
 def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]]:
     """本文とファイルパスはBATの引数処理を避け、Junieの公式環境変数で渡す。"""
     environment = os.environ.copy()
-    # os.environ is case-insensitive on Windows; its plain-dict copy is not.
+    # Windowsの環境変数名は大文字・小文字を区別しないが、dictへのコピー後は区別される。
     system_root = os.environ.get("SystemRoot")
     interpreter = ntpath.join(system_root, "System32", "cmd.exe") if system_root else environment.get("COMSPEC", "")
     if not ntpath.isabs(interpreter) or ntpath.basename(interpreter).lower() != "cmd.exe":
@@ -153,18 +156,18 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
                     value = next(remaining)
                 except StopIteration:
                     raise ValueError(f"{option} requires a value") from None
-            # cmd silently drops inherited variables over its 8191-character limit.
+            # cmdが上限を超える環境変数を黙って落とす前に、UTF-16の文字数で検出する。
             if len((variable + "=" + value).encode("utf-16-le")) // 2 > 8191:
                 raise ValueError(f"{option} exceeds the Windows batch launcher limit; shorten it or use a native Junie executable")
             if "\0" in value:
                 raise ValueError(f"{option} contains a NUL character")
             environment[variable] = value
             continue
-        # Remaining harness arguments are flags/numbers. Reject text that could break cmd quotes.
+        # 残るフラグ・数値はcmdに渡すため、引用符を壊す文字や制御文字を拒否する。
         if any(character in argument for character in ('"', "\r", "\n", "\0")):
             raise ValueError("A Windows batch launcher argument contains quotes or control characters; use --prompt for prompt text")
         name = f"PHP_TO_CSHARP_JUNIE_ARG_{len(arguments)}"
-        # Batch launchers forward %* to a native binary, whose argv parser consumes trailing backslashes.
+        # BATからネイティブ実行ファイルへ渡る際、末尾のバックスラッシュが消費される分を補う。
         trailing = len(argument) - len(argument.rstrip("\\"))
         environment[name] = argument + "\\" * trailing
         arguments.append(f'"%{name}%"')
@@ -174,7 +177,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
     expanded_size = sum(len(environment[item[2:-2]].encode("utf-16-le")) // 2 + 3 for item in arguments)
     if expanded_size > 8191:
         raise ValueError("Junie arguments exceed the Windows batch command limit; shorten the paths or arguments")
-    # No CALL (second expansion), AutoRun, delayed !expansion!, or shell=True argv conversion.
+    # CALLによる再展開、AutoRun、!変数!の遅延展開を避け、組み立てた行をcmdへ直接渡す。
     line = subprocess.list2cmdline([interpreter]) + ' /d /v:off /s /c "' + " ".join(arguments) + '"'
     return line, interpreter, environment
 
@@ -195,7 +198,7 @@ def _launch_process(command: list[str], **streams: Any) -> subprocess.Popen:
             streams["executable"] = interpreter
         else:
             environment = os.environ.copy()
-        # Junie's Python tools may import pinned helpers; do not create caches beside read-only materials.
+        # JunieのPythonツールが補助モジュールを読んでも、読み取り専用資料の隣にキャッシュを作らせない。
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         return subprocess.Popen(resolved, cwd=cwd, env=environment, **streams)
     except (OSError, ValueError) as exc:
@@ -209,6 +212,7 @@ def has_completion_record(path: Path, token: str) -> bool:
     expected = token.encode("ascii")
     try:
         with path.open("rb") as stream:
+            # 許容するのは末尾の改行だけ。最大許容長より1バイト多く読み、追記された本文を拒否する。
             value = stream.read(len(expected) + 3)
     except OSError:
         return False
@@ -228,7 +232,7 @@ def _close_junie(process: subprocess.Popen) -> int:
                 check=True, capture_output=True, timeout=10,
             )
         else:
-            # Keep Junie in the foreground terminal group; kill only its own descendants.
+            # 端末の前景グループは共有したまま、同じ端末の他プロセスを巻き込まずJunieの子孫だけを止める。
             listing = subprocess.run(
                 ["ps", "-eo", "pid=,ppid="], check=True, capture_output=True, text=True, timeout=10,
             )
@@ -256,6 +260,7 @@ def _close_junie(process: subprocess.Popen) -> int:
 
 
 def _is_junie_connection_failure(entry: dict[str, Any]) -> bool:
+    # ツール単位の失敗では再起動せず、MainAgentの接続失敗が確定したイベントだけを拾う。
     event = entry.get("event")
     if entry.get("kind") != "SessionA2uxEvent" or not isinstance(event, dict) or event.get("state") != "FAILED":
         return False
@@ -271,11 +276,12 @@ def _is_junie_connection_failure(entry: dict[str, Any]) -> bool:
 
 @dataclass
 class _EventCursor:
+    # ファイルの置換をidentity、追記位置をoffsetで識別し、同じイベントの二重集計を防ぐ。
     identity: tuple[int, int]
     offset: int = 0
-    pending: bytes = b""
-    startup_boundary: bool = False
-    discard: bool = False
+    pending: bytes = b""  # 監視中に届いた未完の行は、次の追記とつなげて読む。
+    startup_boundary: bool = False  # 起動前からある末尾が、行の途中だったかを初回読取時に調べる。
+    discard: bool = False  # 起動前に書き始められた行の続きを、次の改行まで読み捨てる。
 
 
 def _event_activity(entry: dict[str, Any]) -> str:
@@ -322,6 +328,7 @@ class _JunieSessionEvents:
         self.existing_logs = set(self._log_paths())
         self.cursors: dict[Path, _EventCursor] = {}
         self.existing_events = set(self._paths())
+        # 過去のイベントは集計せず、この起動より後に追記される部分だけを候補にする。
         for path in self.existing_events:
             try:
                 stat = path.stat()
@@ -352,7 +359,7 @@ class _JunieSessionEvents:
         """起動に対応するログのエラーとスタックを秘密情報を伏せて取り込む。"""
         new_logs = [path for path in self._log_paths() if path not in self.existing_logs]
         matched = [path for path in new_logs if path.name.endswith(f"-pid-{pid}.log")]
-        # Both Windows and Unix launchers can spawn a child with a different PID.
+        # ランチャーの子が別PIDでログを書く場合は、新規ログが1件のときだけ追加照合へ進む。
         paths = matched or (new_logs if len(new_logs) == 1 else [])
         if not paths:
             return f"Junie log directory: {self.logs} (no unambiguous log file for this launch)"
@@ -385,7 +392,7 @@ class _JunieSessionEvents:
                 correlated = path in matched or (startup_matches and cwd_matches)
                 if errors and correlated:
                     text = "".join(errors).rstrip()
-                    # Only use secret values for redaction; never include environment keys or dumps.
+                    # 環境変数は秘密値の伏せ字処理にだけ使い、変数名や一覧は診断へ出さない。
                     secrets = [value for name, value in os.environ.items() if value and re.search(
                         r"TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|API_?KEY|AUTH|JUNIE_(PROMPT|TASK)", name, re.I,
                     )]
@@ -410,7 +417,7 @@ class _JunieSessionEvents:
         cursor = self.cursors.get(path)
         if cursor is None or cursor.identity != identity or stat.st_size < cursor.offset:
             if cursor is not None and path == self.path:
-                # A replacement log must be matched to this launch again.
+                # ログが置換・切り詰めされたら、今回の起動との対応を照合し直す。
                 self.path = None
                 self.task = None
             cursor = self.cursors[path] = _EventCursor(identity)
@@ -422,7 +429,7 @@ class _JunieSessionEvents:
                 cursor.discard = stream.read(1) != b"\n"
                 cursor.startup_boundary = False
             stream.seek(cursor.offset)
-            # Bound this poll to its initial size even if Junie keeps appending.
+            # Junieが追記し続けても制御を返せるよう、この読取開始時のサイズで区切る。
             while cursor.offset < stat.st_size:
                 if cancellable:
                     check_cancelled()
@@ -476,6 +483,7 @@ class _JunieSessionEvents:
                         if kind != "UserPromptEvent":
                             continue
                         prompt = entry.get("prompt")
+                        # プロンプト中の今回のトークンで、並行して動く他のJunieセッションを除外する。
                         if not isinstance(prompt, str) or self.token not in prompt:
                             continue
                         self.path = path
@@ -484,6 +492,7 @@ class _JunieSessionEvents:
                     if kind == "TaskStartedEvent":
                         self.task = entry.get("taskId")
                         self.result = None
+                    # 同じセッション内でも、別タスクの結果や通信失敗を今回のものとして扱わない。
                     if entry.get("taskId") is not None and entry.get("taskId") != self.task:
                         continue
                     matches_task = self.task and (entry.get("taskId") == self.task or self.headless_project is not None)
@@ -501,7 +510,7 @@ class _JunieSessionEvents:
                             self.result = agent["result"]
                     self.last_event_at = time.monotonic()
                     message = _event_activity(entry)
-                    # Coalesce repeated status updates in one poll; usage still counts every response.
+                    # 1回の読取で同じ状況通知はまとめるが、使用量は応答ごとに集計する。
                     if message not in reported:
                         report_activity(message)
                         reported.add(message)
@@ -580,6 +589,7 @@ def run_interactive(
     prefer_task: bool = False,
 ) -> int:
     """Junieを選択したモードで起動し、通信障害時は同じ作業場所で再試行する。"""
+    # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
     task_supported = None
     if prefer_task:
         task_supported = _supports_task(command[0])
@@ -595,6 +605,7 @@ def run_interactive(
         try:
             invocation = command
             if attempt:
+                # 作業場所と完了トークンを引き継ぎ、既に保存された編集の続きを促す。
                 invocation = [*command[:-1], command[-1] + (
                     " A model service connection failed in the previous session. Review the edits already in the "
                     "workspace and continue the remaining work without duplicating completed changes."
@@ -603,6 +614,7 @@ def run_interactive(
                 return _run_session(invocation, completion_path, token, targets,
                                     report_usage=report_usage, accept_result=accept_result)
             except JunieAcpModelUnavailable:
+                # 非対話モードでは操作ごとの確認がなくなるため、自動では切り替えない。
                 dashboard = junie_dashboard_control()
                 if dashboard is None or task_supported is False:
                     raise
@@ -629,6 +641,7 @@ def run_interactive(
             report_activity("Junieの通信に失敗しました。再試行を待っています。")
             check_cancelled()
             if is_controlled():
+                # 待機時間は維持しつつ、ダッシュボードの停止要求を短い間隔で確認する。
                 for _ in range(delays[attempt] * 4):
                     time.sleep(0.25)
                     check_cancelled()
@@ -650,6 +663,7 @@ class _AcpSession:
         self.tool_calls: dict[str, dict] = {}
         self.pending: tuple[int | str, Future[str]] | None = None
         self.startup_deadline = time.monotonic() + 30
+        # stdoutの行待ちを別スレッドに任せ、監視側は停止要求や許可への回答を確認し続ける。
         self.reader = Thread(target=self._read, daemon=True)
         self.reader.start()
 
@@ -658,6 +672,7 @@ class _AcpSession:
             for line in self.process.stdout:
                 self.messages.put(line)
         finally:
+            # キューが一時的に空の状態と、接続が終了した状態を区別するための印。
             self.messages.put(b"")
 
     def send(self, **message: Any) -> None:
@@ -669,6 +684,7 @@ class _AcpSession:
 
     def permission(self, request_id: int | str, params: dict) -> None:
         tool = params["toolCall"]
+        # 許可要求だけでは省略される情報を、先に受け取ったツール更新から補う。
         details = {**self.tool_calls.get(tool["toolCallId"], {}), **tool}
         content = []
         for item in details.get("content") or []:
@@ -700,12 +716,14 @@ class _AcpSession:
     def advance(self) -> bool:
         """受信済みのメッセージを処理し、プロンプトの終了時にTrueを返す。"""
         if self.pending:
+            # 回答待ちではブロックせず監視側へ戻し、停止要求を受け付けられるようにする。
             request_id, reply = self.pending
             if not reply.done():
                 return False
             check_cancelled()
             self.send(id=request_id, result={"outcome": {"outcome": "selected", "optionId": reply.result()}})
             self.pending = None
+        # 更新が続いても、プロセス監視や完了記録の確認へ定期的に制御を戻す。
         for _ in range(128):
             check_cancelled()
             try:
@@ -735,6 +753,7 @@ class _AcpSession:
                 if update.get("sessionUpdate") in ("tool_call", "tool_call_update") and "toolCallId" in update:
                     self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
             elif not method and request_id in (1, 2, 3):
+                # 要求IDは1=初期化、2=セッション作成、3=プロンプト実行。応答を待って次へ進む。
                 if "error" in message:
                     error = message["error"]
                     code = error.get("code")
@@ -788,6 +807,7 @@ def _run_session(
     def poll(*, cancellable: bool = True) -> bool:
         failed = events.read_new_events(cancellable=cancellable)
         if report_usage is not None and any(events.usage):
+            # 読み取った差分を渡したら集計を空にし、次回や終了時に二重加算しない。
             delta = events.usage
             events.usage = [0] * len(USAGE_FIELDS)
             report_usage(delta)
@@ -814,8 +834,10 @@ def _run_session(
         if headless:
             process = _launch_process(command, stdin=subprocess.DEVNULL)
         elif dashboard is None:
+            # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
             process = _launch_process(command)
         else:
+            # ACPではプロンプトを起動引数から外し、初期化後のsession/prompt要求で送る。
             acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
             process = _launch_process(acp_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request)
@@ -831,6 +853,7 @@ def _run_session(
                 exit_code = process.wait(timeout=0.25)
             except subprocess.TimeoutExpired:
                 check_cancelled()
+                # 完了記録での早期終了は対話・ACPだけ。非対話モードはプロセスの自然終了を待つ。
                 if (
                     not headless and has_completion_record(completion_path, token)
                     and all(
@@ -872,6 +895,7 @@ def _run_session(
                 check_cancelled()
                 if poll() and not has_completion_record(completion_path, token):
                     raise JunieConnectionError("Junie model service connection failed")
+                # 終了コード0でも、対応するセッションも完了記録もなければ起動失敗として診断する。
                 if events.path is None and not has_completion_record(completion_path, token):
                     raise JunieSessionError(
                         command, exit_code, events.startup_diagnostics(process.pid, command),
@@ -887,6 +911,7 @@ def _run_session(
                         pass
                 _close_junie(process)
             except OSError as cleanup_error:
+                # 書き込みが続いている可能性があるため、通常の通信再試行には進ませない。
                 raise JunieStopError(
                     "Junieの終了を確認できませんでした。起動した端末で終了してから再開してください。"
                 ) from cleanup_error
@@ -898,6 +923,7 @@ def _run_session(
             if acp is not None and process.poll() is not None:
                 acp.close()
             if process is not None and report_usage is not None:
+                # 停止要求が出ていても最後の使用量を回収する。最終回答の採用処理は行わない。
                 poll(cancellable=False)
         finally:
             if restore_terminal is not None and (process is None or process.poll() is not None):
