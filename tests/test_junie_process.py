@@ -196,7 +196,7 @@ finally:
         def start(argv, **streams):
             nonlocal connection, parent
             if connection is not None:
-                wait_for_eof()
+                wait_for_disconnect()
                 connection.close()
                 permit.unlink()
             with patch.dict(os.environ, {"TEST_JUNIE_SKIP_TOKEN": "1" if retry and parent is None else "0"}):
@@ -220,8 +220,13 @@ finally:
             wait_for_launcher(process, timeout)
             control.cancelled.set()
 
-        def wait_for_eof():
-            self.assertEqual(connection.recv(1), b"")
+        def wait_for_disconnect():
+            try:
+                self.assertEqual(connection.recv(1), b"")
+            except ConnectionResetError:
+                # TerminateJobObject can reset the socket instead of sending EOF.
+                if os.name != "nt":
+                    raise
 
         accepted = Mock()
         try:
@@ -256,7 +261,7 @@ finally:
                         connection.sendall(b"w")
                     except (BrokenPipeError, ConnectionResetError):
                         pass
-                wait_for_eof()
+                wait_for_disconnect()
                 self.assertEqual(target.read_text(encoding="utf-8"), "before exit")
                 self.assertIsNone(sibling.poll())
         finally:
