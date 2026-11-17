@@ -24,9 +24,9 @@ class ParallelDashboardTests(HarnessCase):
         self.commit_project()
         self.settings = self.config()
         unit = self.settings["units"][0]
-        self.settings["units"] = [{**copy.deepcopy(unit), "id": f"unit-{i}", "target": f"Page{i}.cs"} for i in range(4)]
-        self.started = [Event() for _ in range(4)]
-        self.release = [Event() for _ in range(4)]
+        self.settings["units"] = [{**copy.deepcopy(unit), "id": f"unit-{i}", "target": f"Page{i}.cs"} for i in range(7)]
+        self.started = [Event() for _ in range(7)]
+        self.release = [Event() for _ in range(7)]
         self.guard = Lock()
         self.active = self.maximum = 0
         command = workflow.run_process
@@ -69,20 +69,21 @@ class ParallelDashboardTests(HarnessCase):
             time.sleep(.02)
         self.assertTrue(predicate())
 
-    def test_two_workers_queue_stop_isolation_and_resume(self):
-        ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(3)]})["run_ids"]
-        self.assertTrue(self.started[0].wait(5))
-        self.assertTrue(self.started[1].wait(5))
-        self.assertFalse(self.started[2].is_set())
-        self.assertEqual(self.manager.row(self.manager.get(ids[2]))["queue_position"], 1)
+    def test_five_workers_queue_stop_isolation_and_resume(self):
+        ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
+        for event in self.started[:5]:
+            self.assertTrue(event.wait(10))
+        self.assertFalse(self.started[5].is_set())
+        self.assertEqual(self.manager.row(self.manager.get(ids[5]))["queue_position"], 1)
+        self.assertEqual(self.manager.workspace()["parallel_limit"], 5)
         a, b = self.manager.get(ids[0]), self.manager.get(ids[1])
         self.assertIn("unit-0", a.state["latest_activity"]["message"])
         self.assertIn("unit-1", b.state["latest_activity"]["message"])
         with self.assertRaisesRegex(RuntimeError, "使用中"):
             workflow.resume_with_junie(self.settings, ids[0])
         self.assertTrue(a.request_stop({"operation_id": a.state["operation_id"]}))
-        self.assertTrue(self.started[2].wait(5))
-        self.assertFalse(b.control.cancelled.is_set())
+        self.assertTrue(self.started[5].wait(5))
+        self.assertTrue(all(not self.manager.get(run_id).control.cancelled.is_set() for run_id in ids[1:5]))
         self.wait_until(lambda: a.state.get("ready"))
         self.assertTrue(a.state["resumable"])
         for event in self.release:
@@ -90,20 +91,20 @@ class ParallelDashboardTests(HarnessCase):
         self.wait_until(lambda: not self.manager.busy)
         self.manager.submit({"action": "resume-run", "run_id": ids[0]})
         self.wait_until(lambda: not self.manager.busy)
-        self.assertEqual(self.maximum, 2)
+        self.assertEqual(self.maximum, 5)
         for run_id in ids:
             self.assertEqual(self.manager.get(run_id).state["status"], "build_succeeded")
-        self.assertEqual(len({self.manager.get(run_id).state["worktree_path"] for run_id in ids}), 3)
+        self.assertEqual(len({self.manager.get(run_id).state["worktree_path"] for run_id in ids}), 6)
 
     def test_cancel_and_duplicate_enqueue_are_atomic(self):
-        ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(3)]})["run_ids"]
+        ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
         with self.assertRaisesRegex(ValueError, "実行中または実行待ち"):
-            self.manager.submit({"action": "run", "unit_ids": ["unit-3", "unit-0"]})
-        self.assertFalse(any(job["unit_id"] == "unit-3" for job in self.manager.jobs.values()))
-        self.manager.submit({"action": "cancel-queued", "run_id": ids[2]})
-        self.assertEqual(self.manager.get(ids[2]).state["status"], "cancelled")
-        self.assertFalse(self.started[2].is_set())
-        self.assertFalse((Path(self.settings["run_root"]) / ids[2]).exists())
+            self.manager.submit({"action": "run", "unit_ids": ["unit-6", "unit-0"]})
+        self.assertFalse(any(job["unit_id"] == "unit-6" for job in self.manager.jobs.values()))
+        self.manager.submit({"action": "cancel-queued", "run_id": ids[5]})
+        self.assertEqual(self.manager.get(ids[5]).state["status"], "cancelled")
+        self.assertFalse(self.started[5].is_set())
+        self.assertFalse((Path(self.settings["run_root"]) / ids[5]).exists())
 
     def test_resume_cannot_duplicate_a_unit_already_running(self):
         old = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
@@ -112,18 +113,32 @@ class ParallelDashboardTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "別のRunで実行中"):
             self.manager.submit({"action": "resume-run", "run_id": old})
 
+    def test_new_and_resumed_runs_share_fifo_and_cancel_restores_saved_state(self):
+        saved = self.manager.submit({"action": "prepare", "unit_id": "unit-6"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
+        self.manager.submit({"action": "resume-run", "run_id": saved})
+        self.assertEqual(list(self.manager.pending), [ids[5], saved])
+        self.assertEqual(self.manager.row(self.manager.get(saved))["queue_position"], 2)
+        self.manager.submit({"action": "cancel-queued", "run_id": saved})
+        self.assertEqual(list(self.manager.pending), [ids[5]])
+        view = self.manager.get(saved)
+        self.assertEqual(view.state["status"], "prepared")
+        self.assertTrue(view.state["ready"] and view.state["resumable"])
+        self.assertFalse(view.state["queued"])
+
     def test_queue_survives_shutdown_but_started_runs_do_not_restart(self):
-        ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(3)]})["run_ids"]
-        self.assertTrue(self.started[0].wait(5))
-        self.assertTrue(self.started[1].wait(5))
+        ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
+        for event in self.started[:5]:
+            self.assertTrue(event.wait(10))
         self.manager.close()
         restored = RunManager(self.settings, dashboard.Dashboard())
         self.addCleanup(restored.close)
-        self.assertEqual(list(restored.pending), [ids[2]])
+        self.assertEqual(list(restored.pending), [ids[5]])
         self.assertEqual(restored.get(ids[0]).state["status"], "interrupted")
         self.assertTrue(restored.get(ids[0]).state["resumable"])
         restored.start_pending()
-        self.assertTrue(self.started[2].wait(5))
+        self.assertTrue(self.started[5].wait(5))
         self.assertEqual(len(restored.workers), 1)
 
     def test_settings_switch_releases_old_owner_and_clears_old_runs(self):

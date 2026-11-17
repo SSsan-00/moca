@@ -2,21 +2,29 @@
 
 // サーバーを使わず、同じ一覧UIで並列数・停止・再開・待機順を試せるデモ。
 function createDemoRuns(initialId, units, show) {
+  const limit = 5;
   let selected = initialId;
-  let sequence = 6;
+  let sequence = 8;
+  const pending = [];
   const make = (id, unit, status, ready, tick = 0) => ({run_id: id, unit_id: unit, status, ready, tick,
     created_at: new Date().toISOString(), context_capsules: 5, current_capsule: 1, completed_capsules: 0,
     worktree_path: status === "queued" ? null : `demo/${id}`, queued: status === "queued",
     resumable: ready, cancellable: !ready && status !== "queued", elapsed_seconds: tick * 3});
   const runs = [make(initialId, "注文履歴", "junie_running", false, 8),
     make("demo-customer", "顧客詳細", "building", false, 22),
-    make("demo-sales", "売上集計", "queued", false), make("demo-stock", "在庫照会", "queued", false),
+    make("demo-sales", "売上集計", "junie_running", false, 12), make("demo-stock", "在庫照会", "junie_running", false, 4),
+    make("demo-invoices", "請求一覧", "checking", false, 25), make("demo-payments", "入金照合", "queued", false),
     make("demo-search", "商品検索", "checker_needs_review", true, 30),
     make("demo-partners", "取引先一覧", "checker_succeeded", true, 30)];
+  pending.push(...runs.filter(run => run.queued));
+  function enqueue(run) {
+    run.queued = true;
+    run.ready = false;
+    pending.push(run);
+  }
   function publish() {
-    let position = 0;
     for (const run of runs) {
-      run.queue_position = run.queued ? ++position : undefined;
+      run.queue_position = run.queued ? pending.indexOf(run) + 1 : undefined;
       run.current_capsule = Math.min(5, Math.max(1, Math.floor(run.tick / 4) + 1));
       run.completed_capsules = run.tick >= 20 ? 5 : run.current_capsule - 1;
       run.cancellable = !run.ready && !run.queued;
@@ -31,7 +39,8 @@ function createDemoRuns(initialId, units, show) {
   }
   function schedule() {
     let active = runs.filter(run => !run.ready && !run.queued).length;
-    for (const run of runs) if (active < 2 && run.queued) {
+    while (active < limit && pending.length) {
+      const run = pending.shift();
       Object.assign(run, {queued: false, status: "preparing", worktree_path: `demo/${run.run_id}`});
       active++;
     }
@@ -49,9 +58,8 @@ function createDemoRuns(initialId, units, show) {
   }, 3000);
   return {
     read: async () => {
-      let position = 0;
-      return {units: units(), runs: structuredClone(runs.map(run => ({...run, queue_position: run.queued ? ++position : undefined}))),
-        parallel_limit: 2, busy: runs.some(run => !run.ready)};
+      return {units: units(), runs: structuredClone(runs.map(run => ({...run, queue_position: run.queued ? pending.indexOf(run) + 1 : undefined}))),
+        parallel_limit: limit, busy: runs.some(run => !run.ready)};
     },
     async execute(action, data) {
       if (action === "run" || action === "prepare") {
@@ -61,6 +69,7 @@ function createDemoRuns(initialId, units, show) {
           const run = make(`demo-run-${++sequence}`, unit, "queued", false);
           run.prepareOnly = action === "prepare";
           runs.push(run);
+          enqueue(run);
         }
       } else {
         const run = runs.find(item => item.run_id === data.run_id);
@@ -72,10 +81,15 @@ function createDemoRuns(initialId, units, show) {
           publish();
           document.dispatchEvent(new Event("harnessrunchange"));
         } else if (action === "stop") Object.assign(run, {ready: true, status: "interrupted"});
-        else if (action === "cancel-queued") Object.assign(run, {queued: false, ready: true, status: "cancelled"});
-        else if (action === "resume-run") {
+        else if (action === "cancel-queued") {
+          if (!run.queued) throw new Error("このRunはすでに実行されています。一覧を更新して停止してください。");
+          pending.splice(pending.indexOf(run), 1);
+          Object.assign(run, {queued: false, ready: true, status: "cancelled"});
+        } else if (action === "resume-run") {
+          if (!run.ready || !run.worktree_path) throw new Error("このRunは再開できません。実行一覧を確認してください。");
           if (runs.some(item => item !== run && item.unit_id === run.unit_id && !item.ready)) throw new Error("この移行単位は別のRunで実行中または待機中です。");
-          Object.assign(run, {queued: true, ready: false, prepareOnly: false, tick: Math.min(run.tick, 20)});
+          Object.assign(run, {prepareOnly: false, tick: Math.min(run.tick, 20)});
+          enqueue(run);
         }
       }
       schedule();

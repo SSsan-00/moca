@@ -1,4 +1,4 @@
-"""ダッシュボードのRun一覧と、同時に2件までの実行待ち行列。"""
+"""ダッシュボードのRun一覧と、同時に5件までの実行待ち行列。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,13 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
-from typing import Any
 
 from .config import find_unit
 from .run_records import execution_lock, load_saved_run
 
 
 class RunManager:
-    limit = 2
+    limit = 5
 
     def __init__(self, config, default):
         self.config = config
@@ -91,10 +90,8 @@ class RunManager:
                     view.publish({**view.state, "status": "preparation_interrupted", "ready": True,
                                   "message": "準備が完了していません。移行単位を選んで新しく実行してください。"})
                 continue
-            self.jobs[run_id] = job
             view = self.get(run_id) if job["action"] not in {"run", "prepare"} else self.new_view(run_id, job["unit_id"])
-            self.mark_queued(view)
-            self.pending.append(run_id)
+            self.enqueue(view, job)
         self.persist()
 
     @property
@@ -136,10 +133,31 @@ class RunManager:
                 self.views[run_id] = view
             return self.views[run_id]
 
-    def mark_queued(self, view):
+    def enqueue(self, view, action):
+        """新規・再開・復元を同じFIFOキューと画面状態へ登録する。"""
+        run_id = view.state["run_id"]
+        self.jobs[run_id] = {**action, "run_id": run_id, "unit_id": view.state["unit_id"]}
         view.publish({**view.state, "ready": False, "queued": True, "cancellable": False,
                       "operation_id": None, "stop_requested": False,
-                      "generating_anchors": self.jobs[view.state["run_id"]]["action"] == "anchors"})
+                      "generating_anchors": action["action"] == "anchors"})
+        self.pending.append(run_id)
+
+    def cancel_queued(self, view):
+        run_id = view.state["run_id"]
+        if run_id not in self.pending:
+            raise ValueError("このRunはすでに実行されています。一覧を更新して停止してください。")
+        job = self.jobs[run_id]
+        if job["action"] in {"run", "prepare"}:
+            view.publish({**view.state, "status": "cancelled", "queued": False, "ready": True})
+        else:
+            _, _, record, _ = load_saved_run(self.config, run_id)
+            view.observe(record)
+            view.ready(self.config, record)
+            view.publish({**view.state, "queued": False})
+        self.pending.remove(run_id)
+        del self.jobs[run_id]
+        self.persist()
+        return {"run_id": run_id}
 
     def submit(self, action, selected=None):
         from .workflow import can_resume_run
@@ -161,9 +179,7 @@ class RunManager:
                 for unit in units:
                     run_id = str(uuid.uuid4())
                     view = self.new_view(run_id, unit)
-                    self.jobs[run_id] = {"action": kind, "unit_id": unit, "run_id": run_id}
-                    self.mark_queued(view)
-                    self.pending.append(run_id)
+                    self.enqueue(view, {"action": kind})
                     ids.append(run_id)
             else:
                 view = self.get(action.get("run_id")) if action.get("run_id") else selected or self.default
@@ -171,19 +187,7 @@ class RunManager:
                 if kind == "open-run":
                     return {"run_id": run_id}
                 if kind == "cancel-queued":
-                    if run_id not in self.pending:
-                        raise ValueError("このRunはすでに実行されています。一覧を更新して停止してください。")
-                    self.pending.remove(run_id)
-                    job = self.jobs.pop(run_id)
-                    if job["action"] in {"run", "prepare"}:
-                        view.publish({**view.state, "status": "cancelled", "queued": False, "ready": True})
-                    else:
-                        _, _, record, _ = load_saved_run(self.config, run_id)
-                        view.observe(record)
-                        view.ready(self.config, record)
-                        view.publish({**view.state, "queued": False})
-                    self.persist()
-                    return {"run_id": run_id}
+                    return self.cancel_queued(view)
                 if not run_id or run_id in self.jobs or not view.state.get("ready"):
                     raise ValueError("このRunは処理中です。終了してから操作してください。")
                 if any(job["unit_id"] == view.state["unit_id"] for job in self.jobs.values()):
@@ -198,9 +202,7 @@ class RunManager:
                     raise ValueError("チェッカー結果が変わりました。進捗を確認してください。")
                 if kind not in {"resume-run", "anchors"} and action.get("revision") != view.revision:
                     raise ValueError("実行状況が更新されました。内容を確認してもう一度操作してください。")
-                self.jobs[run_id] = {**action, "run_id": run_id, "unit_id": view.state["unit_id"]}
-                self.mark_queued(view)
-                self.pending.append(run_id)
+                self.enqueue(view, action)
                 ids = [run_id]
             self.persist()
             self.start_pending()

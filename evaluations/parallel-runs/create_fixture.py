@@ -1,4 +1,4 @@
-"""独立した3単位を、2件並列・1件待機で実行する検証用アプリを作る。"""
+"""独立した6単位を、5件並列・1件待機で実行する検証用アプリを作る。"""
 
 import json
 import subprocess
@@ -11,7 +11,7 @@ app = root / "app"
 app.mkdir(parents=True, exist_ok=False)
 (app / "Case.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n')
 (app / "rules.md").write_text(
-    "Translate PHP functions into a public static C# class named Unit0, Unit1 or Unit2 to match the target filename. "
+    "Translate PHP functions into a public static C# class with the same name as the target filename (without the .cs extension). "
     "Keep the public static method named Label returning the exact string literal from the PHP. No namespace. "
     "Only edit the specified target. Do not run business code or the PHP.\n"
 )
@@ -34,7 +34,7 @@ project = "Case.csproj"
 [checker]
 max_repair_attempts = 1
 '''
-for n, label in enumerate(("注文一覧", "顧客詳細", "売上集計")):
+for n, label in enumerate(("注文一覧", "顧客詳細", "売上集計", "在庫照会", "請求一覧", "入金消込")):
     (app / f"source{n}.php").write_text(f'<?php\nfunction Label() {{ return "unit-{n}"; }}\n')
     config += f'''\n[[units]]
 id = "{label}"

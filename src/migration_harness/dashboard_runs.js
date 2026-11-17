@@ -96,7 +96,9 @@ function bindRunManager({readRuns, execute, canAct}) {
   function render() {
     const counts = Object.fromEntries(Object.keys(labels).map(key => [key, key === "all" ? data.runs.length : data.runs.filter(run => category(run) === key).length]));
     const active = data.runs.filter(run => !run.ready && !run.queued).length;
-    summary.textContent = `実行中 ${active} / 2　待機 ${counts.queued}　要確認 ${counts.review}`;
+    const limit = data.parallel_limit ?? "—";
+    find("#parallel-limit").textContent = limit;
+    summary.textContent = `実行中 ${active} / ${limit}　待機 ${counts.queued}　要確認 ${counts.review}`;
     for (const [value, button] of filters) {
       button.textContent = `${labels[value]} ${counts[value]}`;
       button.setAttribute("aria-pressed", String(value === filter));
@@ -222,7 +224,7 @@ function bindRunManager({readRuns, execute, canAct}) {
       selectedUnits.clear();
       optionKey = undefined;
       find("#unit-picker").open = false;
-      feedback.textContent = "実行待ちに追加しました。最大2件ずつ処理します。";
+      feedback.textContent = `実行待ちに追加しました。最大${data.parallel_limit}件ずつ処理します。`;
       await refresh();
     } catch (error) { feedback.textContent = error.message; }
     finally { pending = false; sync(); }
