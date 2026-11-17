@@ -10,6 +10,7 @@ from concurrent.futures import Future
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Event, Lock
 from typing import Callable, Iterator
 
@@ -29,6 +30,7 @@ class ExecutionControl:
     trusted_junie_workspaces: set[str] = field(default_factory=set)
     junie_steering: bool = False
     operation_id: str | None = None
+    junie_thoughts_path: Path | None = None
     _build_lock: Lock = field(default_factory=Lock, repr=False)
     _building: bool = False
 

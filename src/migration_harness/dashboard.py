@@ -10,6 +10,7 @@ import shutil
 import time
 from collections import deque
 from concurrent.futures import Future
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Empty, Queue
@@ -35,8 +36,9 @@ from migration_harness.execution import ExecutionControl, OperationCancelled, co
 from migration_harness.files import harness_asset, safe_target
 from migration_harness.junie_cli import list_models
 from migration_harness.junie_conversation import finish_instruction, invalidate_queued_steering, run_instruction
+from migration_harness.junie_thoughts import FILENAME as JUNIE_THOUGHTS_FILENAME, read_junie_thoughts
 from migration_harness.review_anchors import generate_anchors
-from migration_harness.run_records import load_saved_run, run_observer
+from migration_harness.run_records import load_saved_run, run_observer, validate_run_id
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
@@ -348,6 +350,8 @@ class Dashboard:
                     self.send_editor_php()
                 elif self.path.partition("?")[0] == prefix + "events":
                     self.send_events()
+                elif self.path.partition("?")[0] == prefix + "junie-thoughts":
+                    self.send_junie_thoughts()
                 elif self.path.partition("?")[0] == prefix + "workspace":
                     self.send_workspace()
                 elif self.path.partition("?")[0] == prefix + "token-runs":
@@ -382,6 +386,30 @@ class Dashboard:
                     self.send_comparison()
                 else:
                     self.send_error(404)
+
+            def send_junie_thoughts(self) -> None:
+                state = self.dashboard.state
+                args = parse_qs(urlsplit(self.path).query)
+                run_id = args.get("run_id", [None])[0]
+                if not run_id or run_id != state.get("run_id"):
+                    self.send_error(404)
+                    return
+                try:
+                    validate_run_id(run_id)
+                    cursor = int(args.get("cursor", ["0"])[0])
+                    if cursor < 0 or cursor > 2**63 - 1:
+                        raise ValueError("invalid log cursor")
+                except ValueError:
+                    self.send_error(400)
+                    return
+                try:
+                    run_root = Path((manager.config if manager else config)["run_root"]).resolve()
+                    batch = read_junie_thoughts(run_root, run_id, cursor)
+                except (KeyError, OSError, ValueError):
+                    self.send_error(409)
+                    return
+                live = bool(state.get("operation_id") and not state.get("ready") and not state.get("queued"))
+                self.send_body(200, "application/json", json.dumps({**batch, "live": live}, ensure_ascii=False).encode("utf-8"))
 
             def send_prompts(self, action: dict[str, Any] | None = None) -> None:
                 state = self.dashboard.state
@@ -944,6 +972,11 @@ def execute_dashboard_action(view, config, action):
     conversation_id = action.get("conversation_id")
     try:
         with control_scope(view.control):
+            if view.control is not None:
+                # ログの保存先を決められない場合も、実行側の通常の検証とエラー表示を使う。
+                with suppress(KeyError, OSError, ValueError):
+                    validate_run_id(run_id)
+                    view.control.junie_thoughts_path = Path(config["run_root"]).resolve() / run_id / JUNIE_THOUGHTS_FILENAME
             kind = action["action"]
             if kind == "anchors":
                 path, count = generate_anchors(config, run_id, focus=action.get("focus"))
