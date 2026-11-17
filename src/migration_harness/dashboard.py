@@ -712,8 +712,6 @@ class Dashboard:
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
                     self.send_error(403)
                     return
-                if not self.bind_view():
-                    return
                 comparison = self.path == prefix + "comparison"
                 settings = self.path.partition("?")[0] == prefix + "settings"
                 build_response = self.path == prefix + "build-response"
@@ -749,7 +747,12 @@ class Dashboard:
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
-                if manager and action.get("run_id"):
+                creating = manager and self.path == prefix + "control" and action.get("action") in ("run", "prepare")
+                if creating:
+                    self.dashboard = manager.get()
+                elif not self.bind_view():
+                    return
+                if not creating and manager and action.get("run_id"):
                     try:
                         self.dashboard = manager.get(action["run_id"])
                     except _ERRORS as exc:

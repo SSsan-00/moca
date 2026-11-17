@@ -173,6 +173,10 @@ class RunManager:
             else:
                 self.views.pop(run_id, None)
                 self.results.pop(run_id, None)
+        if self.default.state.get("run_id") == run_id:
+            self.default = type(self.default)()
+            self.default.condition = self.condition
+            self.default.publish({"status": "idle", "ready": True})
         return {"run_id": run_id}
 
     def submit(self, action, selected=None):

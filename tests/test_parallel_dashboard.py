@@ -222,6 +222,19 @@ class ParallelDashboardTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "UUID"):
             self.manager.hide_run("../another-run")
 
+    def test_create_run_after_hiding_the_selected_cancelled_run(self):
+        self.manager.limit = 0
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.manager.submit({"action": "cancel-queued", "run_id": run_id})
+        self.manager.default = self.manager.get(run_id)
+        post = self.open_http_dashboard()
+        self.assertEqual(post("control", {"action": "hide-run", "revision": 0, "run_id": run_id}, run_id)[0], 202)
+        for action, unit in (("prepare", "unit-1"), ("run", "unit-2")):
+            status, result = post("control", {"action": action, "revision": 0, "unit_id": unit}, run_id)
+            self.assertEqual(status, 202)
+            self.assertNotEqual(result["run_id"], run_id)
+        self.assertNotIn("run_id", self.manager.get().state)
+
     def test_resume_cannot_duplicate_a_unit_already_running(self):
         old = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)

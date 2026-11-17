@@ -541,16 +541,17 @@
     const text = prompt.value.trim();
     if (!text || switching || state.run_id !== progress().run_id || sending || !state.can_prompt) return;
     sending = true;
-    revision++;
+    const version = ++revision;
     updateChat();
     report("#editor-prompt-error");
     try {
       const data = await request("editor", {kind: "prompt", run_id: state.run_id, id: editPrompt, text});
+      if (version !== revision) return;
       state.prompts = data.prompts;
       if (editPrompt) finishPromptEdit();
       else prompt.value = "";
     } catch (error) {
-      report("#editor-prompt-error", error);
+      if (version === revision) report("#editor-prompt-error", error);
     } finally {
       sending = false;
       updateChat();

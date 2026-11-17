@@ -542,7 +542,7 @@ async function responseError(response) {
 
 function runFetch(path, options = {}) {
   const headers = new Headers(options.headers);
-  const runId = selectedRunId || snapshot.run_id;
+  const runId = selectedRunId;
   if (runId && !["workspace", "token-runs", "settings", "junie-models"].includes(path)) headers.set("X-Run-ID", runId);
   return fetch(path, {...options, headers});
 }
@@ -571,7 +571,9 @@ bindHarnessWorkspace({
   saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: dashboardRevision}),
   execute: async (action, payload) => {
     if (action === "open-run") return connectRun(payload.run_id);
-    return workspaceRequest("control", {action, revision: dashboardRevision, ...payload});
+    const result = await workspaceRequest("control", {action, revision: dashboardRevision, ...payload});
+    if (action === "hide-run" && selectedRunId === result.run_id) await connectRun("", {removed: true});
+    return result;
   },
   canAct: () => connected && !submitting,
   canConfigure: () => connected && !submitting && !window.harnessRuns?.busy,
@@ -1103,8 +1105,8 @@ element("#build-review-form").addEventListener("submit", async event => {
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
 let stream;
 let streamGeneration = 0;
-function connectRun(runId = "") {
-  if (window.harnessEditorCanSwitch && !window.harnessEditorCanSwitch()) {
+function connectRun(runId = "", {removed = false} = {}) {
+  if (!removed && window.harnessEditorCanSwitch && !window.harnessEditorCanSwitch()) {
     return Promise.reject(new Error("編集の保存または指示の送信が終わってから実行を切り替えてください。"));
   }
   const generation = ++streamGeneration;
