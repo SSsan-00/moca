@@ -156,6 +156,8 @@ class RunManager:
             view.publish({**view.state, "queued": False})
         self.pending.remove(run_id)
         del self.jobs[run_id]
+        if (reply := job.get("reply")) is not None:
+            reply.set_exception(ValueError("待機中のアンカー生成を取り消しました。"))
         self.persist()
         return {"run_id": run_id}
 

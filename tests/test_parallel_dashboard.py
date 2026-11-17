@@ -4,6 +4,7 @@ import json
 import subprocess
 import time
 from contextlib import redirect_stdout
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock, Thread
 from unittest.mock import patch
@@ -69,6 +70,49 @@ class ParallelDashboardTests(HarnessCase):
         while not predicate() and time.monotonic() < end:
             time.sleep(.02)
         self.assertTrue(predicate())
+
+    def open_http_dashboard(self):
+        terminal = io.StringIO()
+        with redirect_stdout(terminal):
+            server = self.view.server(self.settings, b"", b"")
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+        url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+        origin = urlsplit(url)
+
+        def post(endpoint, body, run_id=None):
+            headers = {"Content-Type": "application/json", "Origin": f"{origin.scheme}://{origin.netloc}"}
+            if run_id is not None:
+                headers["X-Run-ID"] = run_id
+            with urlopen(Request(url + endpoint, json.dumps(body).encode(), headers), timeout=3) as response:
+                return response.status, json.load(response)
+
+        return post
+
+    def test_cancelling_queued_anchors_finishes_the_original_http_request(self):
+        self.settings["diff_viewer_html"] = "viewer.html"
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        self.manager.limit = 0
+        post = self.open_http_dashboard()
+        with patch.object(dashboard, "generate_anchors") as generate, ThreadPoolExecutor() as pool:
+            request = pool.submit(post, "control", {"action": "anchors", "revision": 0}, run_id)
+            self.wait_until(lambda: run_id in self.manager.pending)
+            status, _ = post("control", {"action": "cancel-queued", "revision": 0, "run_id": run_id})
+            self.assertEqual(status, 202)
+            with self.assertRaises(HTTPError) as response:
+                request.result(timeout=2)
+            with response.exception as error:
+                self.assertEqual(error.code, 409)
+                self.assertIn("取り消", error.read().decode())
+            self.manager.limit = 5
+            self.manager.start_pending()
+            generate.assert_not_called()
+        self.assertTrue(self.manager.get(run_id).state["ready"])
+        self.assertFalse(self.manager.get(run_id).state["generating_anchors"])
 
     def test_five_workers_queue_stop_isolation_and_resume(self):
         ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
