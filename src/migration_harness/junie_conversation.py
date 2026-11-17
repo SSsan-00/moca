@@ -277,7 +277,7 @@ class JunieConversations:
             else:
                 state = self.manager.get(run_id).state
                 if _conditional_verification(value):
-                    entry["predecessor_operation_id"] = state.get("operation_id")
+                    entry["predecessor_operation_id"] = self.manager.jobs.get(run_id, {}).get("operation_id")
                 request = state.get("junie_request")
                 if request:
                     entry["junie_question"] = request["id"]
@@ -526,6 +526,14 @@ def run_instruction(config, run_id, identifier):
         instruction = entry.copy()
         instruction["intent"] = instruction["intent"].removeprefix("after_build_")
     return resume_with_junie(config, run_id, verification_request=instruction)
+
+
+def fail_pending_after_unconfirmed_stop(config, run_id, message):
+    run_path, _, _, _ = load_saved_run(config, run_id)
+    with editor_queue(run_path) as queue:
+        for entry in queue.get("conversation", []):
+            if entry["status"] in {"received", "waiting"} and not entry.get("query_intent"):
+                _finish(entry, "failed", message)
 
 
 def finish_instruction(config, run_id, identifier, result, error=None):

@@ -50,7 +50,7 @@ class JunieThoughtTests(unittest.TestCase):
             first = read_junie_thoughts(root, run_id, 0)
             self.assertGreater(first["cursor"], 0)
             self.assertEqual([row["thought"] for row in first["entries"]], ["入力を確認しました。 [REDACTED]"])
-            self.assertNotIn("raw-content-must-not-be-exposed", (root / run_id / FILENAME).read_text())
+            self.assertNotIn("raw-content-must-not-be-exposed", (root / run_id / FILENAME).read_text(encoding="utf-8"))
             self.assertEqual(read_junie_thoughts(root, run_id, first["cursor"])["entries"], [])
             with source.open("ab") as stream:
                 stream.write(second[-6:])

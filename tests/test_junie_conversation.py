@@ -5,15 +5,16 @@ import subprocess
 import time
 import uuid
 from contextlib import ExitStack, redirect_stdout
+from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from migration_harness import dashboard, workflow
 from migration_harness.editor_queue import editor_queue
-from migration_harness.execution import check_cancelled
+from migration_harness.execution import check_cancelled, current_operation_id
 from migration_harness.junie_conversation import _intent
 from migration_harness.run_manager import RunManager
 from test_checker_resume_review_dashboard import SavedRunFixture
@@ -77,9 +78,9 @@ class JunieConversationTests(SavedRunFixture):
     def start_build(self):
         self.request("control", {"action": "resume-run", "revision": 0, "run_id": self.run_id})
 
-    def save_edit(self, text):
-        _, editor = self.request("editor")
-        self.request("editor", {"kind": "save", "run_id": self.run_id, "target": "Example.cs",
+    def save_edit(self, text, target="Example.cs"):
+        _, editor = self.request("editor?" + urlencode({"target": target}))
+        self.request("editor", {"kind": "save", "run_id": self.run_id, "target": target,
                                 "base": editor["content"], "content": text,
                                 "edit_id": editor["edit"]["id"] if editor["edit"] else None})
 
@@ -206,6 +207,7 @@ class JunieConversationTests(SavedRunFixture):
 
     def test_full_conversation_allows_status_and_existing_answer(self):
         identifier = self.fill_conversation()
+        self.restart_server()
         self.assertEqual(self.send("もう一回お願い", identifier)[1]["status"], "clarification")
         self.assert_conversation_rejected("ビルドだけ", "同じ指示 ID", identifier)
         self.assert_conversation_rejected("ビルドだけ。注文日の表示も直して", "最大件数")
@@ -227,12 +229,36 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual(self.wait_for(identifier, "done")["result_status"], "build_succeeded")
         self.assertEqual(calls, [["dotnet", "build"]])
 
+    def test_full_conversation_runs_checker_once_after_reload_and_answer(self):
+        identifier = self.fill_conversation()
+        self.restart_server()
+        history = self.request("editor")[1]["conversation"]
+        self.assertEqual([row["id"] for row in history if row["status"] == "clarification"], [identifier])
+        self.assertEqual(sum(row["status"] == "steering" for row in history), 15)
+        self.assert_conversation_rejected("新規作業を追加して", "最大件数")
+        query, _ = self.send("チェッカーは成功した？")
+        self.wait_for(query, "done")
+        mocked, calls = self.mock_commands(("dotnet", 0, b""), ("checker", 0, b""))
+        with mocked:
+            answer, _ = self.send("チェッカーまで")
+            self.wait_for(answer, "done")
+            self.assertEqual(self.send("チェッカーまで", answer)[1]["status"], "done")
+            self.assertEqual(self.wait_for(identifier, "done")["result_status"], "checker_succeeded")
+            self.wait_until_idle()
+        self.assertEqual(calls, [["dotnet", "build"], ["fixture-checker"]])
+        self.assertEqual(sum(row["status"] == "steering" for row in self.request("editor")[1]["conversation"]), 15)
+
     def test_full_conversation_allows_cancellation_and_frees_one_slot(self):
         identifier = self.fill_conversation()
+        self.restart_server()
         with patch.object(workflow, "run_process") as run:
+            query, _ = self.send("今何してる？")
+            self.wait_for(query, "done")
             cancellation, _ = self.send("キャンセル")
             self.wait_for(cancellation, "done")
             self.wait_for(identifier, "cancelled")
+            self.restart_server()
+            self.assertEqual(self.send("もう一回お願い", identifier)[1]["status"], "cancelled")
             replacement, _ = self.send("ビルドについて")
             self.wait_for(replacement, "clarification")
             self.assert_conversation_rejected("新規作業を追加して", "最大件数")
@@ -398,6 +424,9 @@ class JunieConversationTests(SavedRunFixture):
             digest = hashlib.sha256(self.target.read_bytes()).hexdigest()
             self.assertEqual(entry["built_targets"], {"Example.cs": digest})
             self.assertEqual(entry["logs"][0]["text"], "new successful build\n")
+            self.wait_until_idle()
+            self.restart_server()
+            self.assertEqual(self.send(text, identifier)[1]["built_targets"], entry["built_targets"])
         self.assertEqual(builds, ["class Original {}\n", edited])
         self.assertEqual(self.record()["verification"]["configured_checker_command"], ["cli-checker"])
         self.assertIsNone(self.record()["verification"]["checker_command"])
@@ -594,6 +623,7 @@ class JunieConversationTests(SavedRunFixture):
 
     def _check_conditional_checker(self, first_exit):
         running, release = Event(), Event()
+        checking, release_checker = Event(), Event()
         calls = []
         original = self.target.read_text(encoding="utf-8-sig")
         edited = f"class Saved{first_exit} {{}}\n"
@@ -605,6 +635,9 @@ class JunieConversationTests(SavedRunFixture):
                 self.assertTrue(release.wait(5))
                 check_cancelled()
                 return subprocess.CompletedProcess(command, first_exit)
+            if command[0] == "fixture-checker":
+                checking.set()
+                self.assertTrue(release_checker.wait(5))
             return subprocess.CompletedProcess(command, 0)
 
         with patch.object(workflow, "run_process", side_effect=work):
@@ -621,6 +654,7 @@ class JunieConversationTests(SavedRunFixture):
                 self.assertNotIn("query_intent", received)
                 self.assertIn("Example.cs", received["edits"])
                 self.assertIn("待ち", self.wait_for(second, "waiting")["message"])
+                self.assertEqual(self.send(message, second)[1]["status"], "waiting")
                 view = self.manager.get(self.run_id)
                 self.assertFalse(view.control.cancelled.is_set())
                 self.assertEqual(calls, [("dotnet", original)])
@@ -637,12 +671,125 @@ class JunieConversationTests(SavedRunFixture):
                 self.assertEqual(self.target.read_text(encoding="utf-8-sig"), original)
                 self.assertEqual(self.record()["status"], "build_failed")
                 return
-            initial = self.wait_for(first, "done")
-            self.assertEqual(initial["result_status"], "build_succeeded" if first_exit == 0 else "build_failed")
-            self.assertEqual(self.wait_for(second, "done")["result_status"], "checker_succeeded")
+            try:
+                initial = self.wait_for(first, "done")
+                self.assertEqual(initial["result_status"], "build_succeeded" if first_exit == 0 else "build_failed")
+                self.assertTrue(checking.wait(5))
+                self.assertFalse(self.request("migration-ledger")[1]["completion"]["verification_passed"])
+            finally:
+                release_checker.set()
+            final = self.wait_for(second, "done")
+            self.assertEqual(final["result_status"], "checker_succeeded")
+            self.wait_until_idle()
+            self.restart_server()
+            self.assertEqual(self.send(message, second)[1]["status"], "done")
+            completion = self.request("migration-ledger")[1]["completion"]
+            self.assertTrue(completion["verification_passed"])
+            self.assertFalse(completion["complete"])
         self.assertEqual(calls, [("dotnet", original), ("dotnet", edited), ("fixture-checker", edited)])
         self.assertIsNone(self.request("editor")[1]["edit"])
         self.assertEqual(self.record()["status"], "checker_succeeded")
+        self.assertNotEqual(initial["built_targets"], final["built_targets"])
+        self.assertEqual(final["built_targets"], self.record()["verification"]["target_hashes"])
+        self.assertEqual(self.record()["verification"]["configured_checker_command"], ["fixture-checker"])
+        workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Reviewed",
+                                         confirmed_targets=[self.target.name])
+        self.assertTrue(self.request("migration-ledger")[1]["completion"]["complete"])
+
+    def add_saved_run(self, unit_id):
+        run_id = str(uuid.uuid4())
+        path = self.run_path.parent / run_id
+        worktree = self.worktree.parent / run_id
+        (path / "capsule").mkdir(parents=True)
+        capsule = path / "capsule" / "context.txt"
+        capsule.write_bytes((self.run_path / "capsule" / "context.txt").read_bytes())
+        manifest = json.loads((self.run_path / "capsule" / "manifest.json").read_bytes())
+        manifest["parts"][0]["path"] = str(capsule)
+        (path / "capsule" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        worktree.mkdir()
+        (worktree / self.target.name).write_bytes(self.target.read_bytes())
+        (path / "run.json").write_text(json.dumps({
+            **self.record(), "run_id": run_id, "unit_id": unit_id, "worktree_path": str(worktree),
+        }), encoding="utf-8")
+        self.config["units"].append({"id": unit_id, "target": self.target.name})
+        return run_id, path, worktree
+
+    def test_conditional_checker_binds_to_build_waiting_for_a_real_worker_slot(self):
+        blockers = [(*self.add_saved_run(f"blocker-{index}"), Event()) for index in range(5)]
+
+        started = {worktree: event for _, _, worktree, event in blockers}
+        release = Event()
+        calls = []
+        operations = []
+
+        def work(command, *, cwd, **kwargs):
+            if event := started.get(cwd):
+                event.set()
+                if not release.wait(15):
+                    raise TimeoutError("blocked build was not released")
+            else:
+                calls.append(command[0])
+                operations.append(current_operation_id())
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(workflow, "run_process", side_effect=work):
+            threads = []
+            try:
+                for run_id, path, _, event in blockers:
+                    self.send("ビルドして", run_id=run_id)
+                    if not event.wait(5):
+                        with editor_queue(path) as queue:
+                            self.fail(str(queue["conversation"]))
+                    with self.manager.condition:
+                        threads.append(self.manager.workers[run_id])
+                self.assertEqual(len(threads), self.manager.limit)
+                first, _ = self.send("ビルドして")
+                self.assertIn("実行枠", self.wait_for(first, "waiting")["message"])
+                view = self.manager.get(self.run_id)
+                self.assertTrue(view.state["queued"])
+                self.assertIsNone(view.state["operation_id"])
+                second, receipt = self.send("今のビルドが終わったら、チェッカーを実行して")
+                self.wait_for(second, "waiting")
+                self.assertEqual(calls, [])
+            finally:
+                release.set()
+                for thread in threads:
+                    thread.join(timeout=5)
+                    self.assertFalse(thread.is_alive())
+            self.assertEqual(self.wait_for(first, "done")["result_status"], "build_succeeded")
+            self.assertEqual(self.wait_for(second, "done")["result_status"], "checker_succeeded")
+            self.assertTrue(receipt["predecessor_operation_id"])
+            self.assertEqual(operations[0], receipt["predecessor_operation_id"])
+            self.assertNotEqual(operations[0], operations[1])
+            self.wait_until_idle()
+        self.assertEqual(calls, ["dotnet", "dotnet", "fixture-checker"])
+
+    def test_queued_predecessor_identity_survives_restart_or_fails_on_cancellation(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                self.manager.limit = 0
+                first, _ = self.send("ビルドして")
+                self.assertIn("実行枠", self.wait_for(first, "waiting")["message"])
+                second, _ = self.send("今のビルドが終わったら、チェッカーを実行して")
+                self.wait_for(second, "waiting")
+                if cancel:
+                    self.request("control", {"action": "cancel-queued", "revision": 0, "run_id": self.run_id})
+                with patch.object(workflow, "run_process", side_effect=lambda command, **_: subprocess.CompletedProcess(command, 0)) as run:
+                    self.restart_server()
+                    with self.manager.condition:
+                        self.manager.conversations.start()
+                    if cancel:
+                        self.wait_for(first, "cancelled")
+                        replacement, _ = self.send("ビルドして")
+                        self.wait_for(replacement, "done")
+                        self.assertIn("終了を確認", self.wait_for(second, "failed")["message"])
+                    else:
+                        self.manager.start_pending()
+                        self.wait_for(first, "done")
+                        self.assertEqual(self.wait_for(second, "done")["result_status"], "checker_succeeded")
+                    self.wait_until_idle()
+                self.assertEqual([call.args[0][0] for call in run.call_args_list],
+                                 ["dotnet"] if cancel else ["dotnet", "dotnet", "fixture-checker"])
 
     def test_conditional_checker_can_resume_waiting_after_a_confirmed_build(self):
         building, release = Event(), Event()
@@ -749,6 +896,102 @@ class JunieConversationTests(SavedRunFixture):
             run.assert_not_called()
         self.assertIn("class Second", self.request("editor")[1]["edit"]["content"])
 
+    def test_razor_pair_verifies_both_saved_targets_while_another_run_builds(self):
+        sibling, sibling_path, sibling_tree = self.add_saved_run("other")
+        names = ["Pages/Example.cshtml", "Pages/Example.cshtml.cs"]
+        originals = {names[0]: "@page\n", names[1]: "class Original {}\n"}
+        self.config["units"][0].update(target=names[0], targets=names)
+        self.save_record({**self.record(), "target": names[0], "targets": names})
+        (self.worktree / "Pages").mkdir()
+        for name, content in originals.items():
+            (self.worktree / name).write_text(content, encoding="utf-8")
+
+        sibling_started, release_sibling = Event(), Event()
+        building, release_build = Event(), Event()
+        calls = []
+
+        def work(command, *, cwd, **kwargs):
+            cwd = Path(cwd)
+            if cwd == sibling_tree:
+                self.assertEqual(command[0], "dotnet")
+                sibling_started.set()
+                self.assertTrue(release_sibling.wait(12))
+                check_cancelled()
+            else:
+                calls.append((command[0], {name: (cwd / name).read_text(encoding="utf-8-sig") for name in names}))
+                if len(calls) == 1:
+                    building.set()
+                    self.assertTrue(release_build.wait(8))
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(workflow, "run_process", side_effect=work):
+            other, _ = self.send("ビルドして", run_id=sibling)
+            try:
+                self.assertTrue(sibling_started.wait(5))
+                self.send("ビルドして")
+                self.assertTrue(building.wait(5))
+                saved = {names[0]: "@page\n<p>Edited</p>\n", names[1]: "class Edited {}\n"}
+                for name, content in saved.items():
+                    self.save_edit(content, name)
+                stale, _ = self.send("今のビルドが終わったら、チェッカーを実行して")
+                self.wait_for(stale, "waiting")
+                saved[names[1]] = "class Latest {}\n"
+                self.save_edit(saved[names[1]], names[1])
+                fresh, _ = self.send("今のビルドが終わったら、チェッカーを実行して")
+                self.wait_for(fresh, "waiting")
+                release_build.set()
+                self.assertIn("更新されました", self.wait_for(stale, "failed")["message"])
+                result = self.wait_for(fresh, "done")
+                self.assertEqual(result["result_status"], "checker_succeeded")
+                self.assertEqual(result["built_targets"], {
+                    name: hashlib.sha256((self.worktree / name).read_bytes()).hexdigest() for name in names
+                })
+                sibling_view = self.manager.get(sibling)
+                self.assertFalse(sibling_view.control.cancelled.is_set())
+                self.assertEqual(self.request("editor", run_id=sibling)[1]["conversation"][0]["id"], other)
+                self.assertEqual(self.request("editor", run_id=sibling)[1]["content"], "class Original {}\n")
+            finally:
+                release_build.set()
+                release_sibling.set()
+            self.assertEqual(self.wait_for(other, "done", run_path=sibling_path)["result_status"], "build_succeeded")
+            self.wait_until_idle()
+        self.assertEqual(calls, [("dotnet", originals), ("dotnet", saved), ("fixture-checker", saved)])
+        self.restart_server()
+        self.assertTrue(self.request("migration-ledger")[1]["completion"]["verification_passed"])
+        self.assertFalse(self.request("migration-ledger", run_id=sibling)[1]["completion"]["verification_passed"])
+
+    def test_unconfirmed_junie_stop_does_not_continue_with_a_waiting_build(self):
+        self.config["max_repair_attempts"] = 1
+        (self.run_path / "agent-workspace").mkdir()
+        running, release = Event(), Event()
+        original = self.target.read_bytes()
+
+        def fail_stop(command, completion, token, targets, **kwargs):
+            targets[0].write_text("class Unconfirmed {}\n", encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+            running.set()
+            self.assertTrue(release.wait(8))
+            raise workflow.junie_cli.JunieStopError("Junieの終了を確認できませんでした。")
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=fail_stop),
+              patch.object(workflow, "run_process") as run):
+            repair, _ = self.send("この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度")
+            try:
+                if not running.wait(5):
+                    self.fail(str(self.request("editor")[1]["conversation"]))
+                build, _ = self.send("ビルドして")
+                self.wait_for(build, "waiting")
+                self.stop_operation()
+            finally:
+                release.set()
+            self.assertIn("終了を確認できません", self.wait_for(repair, "failed")["message"])
+            self.assertIn("終了を確認できません", self.wait_for(build, "failed")["message"])
+            self.wait_until_idle()
+            self.assertIn("終了を確認できません", self.manager.get(self.run_id).state["error_details"])
+            self.assertEqual(self.target.read_bytes(), original)
+            run.assert_not_called()
+
     def test_checker_repair_passes_instruction_to_junie_and_respects_run_limit(self):
         self.config["max_repair_attempts"] = 1
         mocked, calls = self.mock_commands(
@@ -848,8 +1091,10 @@ class JunieConversationTests(SavedRunFixture):
         completed, release = Event(), Event()
         script_phase = workflow._run_script_phase
         calls = []
+        text = "今のビルドを止めて、保存した版でやり直して"
 
         def after_build(config, phase, *args, **kwargs):
+            # Pause before an optional hook changes the phase away from build_succeeded.
             if phase == "after_build" and calls == ["dotnet"]:
                 completed.set()
                 self.assertTrue(release.wait(5))
@@ -865,12 +1110,16 @@ class JunieConversationTests(SavedRunFixture):
             self.start_build()
             try:
                 self.assertTrue(completed.wait(5))
-                identifier, _ = self.send("今のビルドを止めて、保存した版でやり直して")
+                identifier, _ = self.send(text)
                 self.assertIn("終了を待ちます", self.wait_for(identifier, "waiting")["message"])
+                self.assertEqual(self.send(text, identifier)[1]["status"], "waiting")
                 self.assertFalse(self.manager.get(self.run_id).control.cancelled.is_set())
             finally:
                 release.set()
             self.wait_for(identifier, "done")
+            self.wait_until_idle()
+            self.restart_server()
+            self.assertEqual(self.send(text, identifier)[1]["status"], "done")
         self.assertEqual(calls, ["dotnet", "fixture-checker", "dotnet"])
 
     def test_conflicting_saved_edit_is_preserved_and_does_not_build(self):
