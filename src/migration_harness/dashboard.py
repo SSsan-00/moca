@@ -61,6 +61,20 @@ PROGRESS_FIELDS = (
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
 
+def _unconfirmed_junie_stop(error: BaseException) -> JunieStopError | None:
+    """診断の保存などで別の例外が出ても、未確認の終了を見落とさない。"""
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, JunieStopError):
+            return current
+        if id(current) not in seen:
+            seen.add(id(current))
+            pending.extend(link for link in (current.__context__, current.__cause__) if link is not None)
+    return None
+
+
 def _prompt_timing(config, state, run_path, record, *, live: bool = False, pending_edits: bool = False) -> str | None:
     if state.get("stop_requested") or state.get("generating_anchors"):
         return None
@@ -1012,12 +1026,13 @@ def execute_dashboard_action(view, config, action):
                 finish_instruction(config, run_id, conversation_id, None, exc)
             except _ERRORS as save_error:
                 exc.add_note(f"Junie の履歴を保存できませんでした。{format_error(save_error)}")
-        if isinstance(exc, JunieStopError):
+        unconfirmed_stop = _unconfirmed_junie_stop(exc)
+        if unconfirmed_stop is not None:
             try:
-                fail_pending_after_unconfirmed_stop(config, run_id, str(exc))
+                fail_pending_after_unconfirmed_stop(config, run_id, str(unconfirmed_stop))
             except _ERRORS as save_error:
                 exc.add_note(f"保留中の指示を更新できませんでした。{format_error(save_error)}")
-        stopped = not isinstance(exc, JunieStopError) and (
+        stopped = unconfirmed_stop is None and (
             isinstance(exc, KeyboardInterrupt) or bool(view.control and view.control.cancelled.is_set())
         )
         try:

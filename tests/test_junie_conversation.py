@@ -961,10 +961,18 @@ class JunieConversationTests(SavedRunFixture):
         self.assertFalse(self.request("migration-ledger", run_id=sibling)[1]["completion"]["verification_passed"])
 
     def test_unconfirmed_junie_stop_does_not_continue_with_a_waiting_build(self):
+        self.check_unconfirmed_junie_stop()
+
+    def test_unconfirmed_junie_stop_blocks_waiting_build_even_when_saving_diagnostics_fails(self):
+        self.check_unconfirmed_junie_stop(fail_diagnostic_save=True)
+
+    def check_unconfirmed_junie_stop(self, *, fail_diagnostic_save=False):
         self.config["max_repair_attempts"] = 1
         (self.run_path / "agent-workspace").mkdir()
         running, release = Event(), Event()
+        save_failed = Event()
         original = self.target.read_bytes()
+        write_record = workflow.write_run_record
 
         def fail_stop(command, completion, token, targets, **kwargs):
             targets[0].write_text("class Unconfirmed {}\n", encoding="utf-8")
@@ -973,8 +981,15 @@ class JunieConversationTests(SavedRunFixture):
             self.assertTrue(release.wait(8))
             raise workflow.junie_cli.JunieStopError("Junieの終了を確認できませんでした。")
 
+        def save_record(path, record, **kwargs):
+            if fail_diagnostic_save and "終了を確認できません" in record.get("error", ""):
+                save_failed.set()
+                raise PermissionError("fixture: run.json could not be replaced")
+            return write_record(path, record, **kwargs)
+
         with (patch.object(workflow.junie_cli, "require_interactive_cli"),
               patch.object(workflow.junie_cli, "run_interactive", side_effect=fail_stop),
+              patch.object(workflow, "write_run_record", side_effect=save_record),
               patch.object(workflow, "run_process") as run):
             repair, _ = self.send("この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度")
             try:
@@ -988,6 +1003,7 @@ class JunieConversationTests(SavedRunFixture):
             self.assertIn("終了を確認できません", self.wait_for(repair, "failed")["message"])
             self.assertIn("終了を確認できません", self.wait_for(build, "failed")["message"])
             self.wait_until_idle()
+            self.assertEqual(save_failed.is_set(), fail_diagnostic_save)
             self.assertIn("終了を確認できません", self.manager.get(self.run_id).state["error_details"])
             self.assertEqual(self.target.read_bytes(), original)
             run.assert_not_called()
