@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 from contextlib import redirect_stdout
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock, Thread
 from unittest.mock import patch
@@ -114,6 +114,30 @@ class ParallelDashboardTests(HarnessCase):
             generate.assert_not_called()
         self.assertTrue(self.manager.get(run_id).state["ready"])
         self.assertFalse(self.manager.get(run_id).state["generating_anchors"])
+
+    def test_a_started_anchor_job_keeps_its_own_reply(self):
+        self.settings["diff_viewer_html"] = "viewer.html"
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        started, release = Event(), Event()
+        reply = Future()
+
+        def generate(*args, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(5))
+            return Path("example.json"), 2
+
+        with patch.object(dashboard, "generate_anchors", side_effect=generate):
+            self.manager.submit({"action": "anchors", "run_id": run_id, "reply": reply})
+            try:
+                self.assertTrue(started.wait(5))
+                with self.assertRaisesRegex(ValueError, "すでに実行"):
+                    self.manager.submit({"action": "cancel-queued", "run_id": run_id})
+                self.assertFalse(reply.done())
+            finally:
+                release.set()
+            self.assertEqual(reply.result(timeout=3), (run_id, "example", 2))
+            self.wait_until(lambda: not self.manager.busy)
 
     def test_five_workers_queue_stop_isolation_and_resume(self):
         ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
