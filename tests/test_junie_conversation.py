@@ -4,7 +4,7 @@ import json
 import subprocess
 import time
 import uuid
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from threading import Event, Thread
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from migration_harness import dashboard, workflow
 from migration_harness.editor_queue import editor_queue
 from migration_harness.execution import check_cancelled
+from migration_harness.junie_conversation import _intent
 from migration_harness.run_manager import RunManager
 from test_checker_resume_review_dashboard import SavedRunFixture
 
@@ -21,22 +22,32 @@ from test_checker_resume_review_dashboard import SavedRunFixture
 class JunieConversationTests(SavedRunFixture):
     def setUp(self):
         super().setUp()
+        self.start_server()
+
+    def start_server(self):
         view = dashboard.Dashboard()
         view.publish({"status": "idle", "ready": True})
         self.manager = RunManager(self.config, view)
         view.manager = self.manager
-        self.addCleanup(self.manager.close)
         stream = io.StringIO()
         with redirect_stdout(stream):
             server = view.server(self.config, b"", b"")
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(thread.join)
-        self.addCleanup(server.shutdown)
+        self.server_cleanup = ExitStack()
+        self.addCleanup(self.server_cleanup.close)
+        self.server_cleanup.callback(self.manager.close)
+        self.server_cleanup.callback(server.server_close)
+        self.server_cleanup.callback(thread.join)
+        self.server_cleanup.callback(server.shutdown)
         self.url = stream.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
         origin = urlsplit(self.url)
         self.headers = {"Origin": f"{origin.scheme}://{origin.netloc}", "Content-Type": "application/json"}
+
+    def restart_server(self, **settings):
+        self.server_cleanup.close()
+        self.config = {**self.config, **settings}
+        self.start_server()
 
     def request(self, endpoint, body=None, run_id=None):
         headers = {**self.headers, "X-Run-ID": run_id or self.run_id}
@@ -294,7 +305,52 @@ class JunieConversationTests(SavedRunFixture):
         self.target.write_text("class Changed {}\n", encoding="utf-8")
         self.assertFalse(workflow.migration_ledger(toml, self.run_id)["completion"]["verification_passed"])
 
+    def test_restarted_conversation_cannot_drop_the_cli_checker_requirement(self):
+        override = ["cli-checker"]
+        self.config.update(checker_from_cli=True, toml_checker_command=None, checker_command=override)
+        workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Reviewed",
+                                         confirmed_targets=[self.target.name])
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok"))
+        with mocked:
+            first, _ = self.send("ビルドして")
+            self.wait_for(first, "done")
+        self.assertEqual(calls, [["dotnet", "build"]])
+        saved_record = self.record()
+        self.assertEqual(saved_record["verification"]["configured_checker_command"], override)
+        self.assertIsNone(saved_record["verification"]["checker_command"])
+
+        self.restart_server(checker_from_cli=False, checker_command=None)
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    record = self.record()
+                    del record["verification"]["configured_checker_command"]
+                    self.save_record(record)
+                before = self.record()
+                self.assertFalse(workflow.can_resume_run(self.config, before))
+                mocked, calls = self.mock_commands(("dotnet", 0, b"ok"))
+                with mocked:
+                    second, _ = self.send("ビルドして")
+                    self.assertIn("チェッカー", self.wait_for(second, "failed")["message"])
+                self.assertEqual(calls, [])
+                self.assertEqual(self.record(), before)
+                completion = self.request("migration-ledger")[1]["completion"]
+                self.assertEqual(completion, {"complete": False, "verification_passed": False,
+                                              "reviewed": 1, "total": 1})
+
+        self.restart_server(checker_from_cli=True, checker_command=override)
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok"), ("checker", 0, b""))
+        with mocked:
+            identifier, _ = self.send("チェッカーをもう一度")
+            self.assertEqual(self.wait_for(identifier, "done")["result_status"], "checker_succeeded")
+        self.assertEqual(calls, [["dotnet", "build"], override])
+        self.assertTrue(self.request("migration-ledger")[1]["completion"]["complete"])
+
     def test_build_only_verifies_a_run_without_a_checker(self):
+        record = self.record()
+        record.update(status="junie_finished", build_exit_code=None)
+        record.pop("checker_exit_code", None)
+        self.save_record(record)
         self.config["checker_command"] = None
         mocked, _ = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"))
         with mocked:
@@ -346,6 +402,91 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(self.record()["verification"]["configured_checker_command"], ["cli-checker"])
         self.assertIsNone(self.record()["verification"]["checker_command"])
         self.assertFalse(workflow.migration_ledger(toml, self.run_id)["completion"]["verification_passed"])
+
+    def test_conditional_verification_intents(self):
+        cases = {
+            "今のビルドが終わったら、保存した版でチェッカーを実行して": "after_build_checker",
+            "ビルドの終了後に保存版でビルドしてください": "after_build_build",
+            "ビルドが完了したらチェッカーを実行してもらえますか？": "after_build_checker",
+            "ビルドが終わったらチェッカーを実行するの？": "clarify",
+            "ビルドが通ったらチェッカーを実行して": "clarify",
+            "環境が整ったらチェッカーを実行して": "clarify",
+            "ビルドが終わったら差分だけ確認して": "clarify",
+            "なぜビルドが失敗したの？": "build_status",
+            "ビルドは終わった？": "build_status",
+            "チェッカーは成功した？": "checker_status",
+        }
+        for message, expected in cases.items():
+            with self.subTest(message=message):
+                self.assertEqual(_intent(message, "building"), expected)
+
+    def test_preupgrade_query_receipt_cannot_start_a_conditional_checker_without_a_saved_version(self):
+        identifier = uuid.uuid4().hex
+        with editor_queue(self.run_path) as queue:
+            queue["conversation"] = [{
+                "id": identifier, "text": "ビルドが終わったら、チェッカーを実行して",
+                "status": "received", "query_intent": "checker_status",
+            }]
+        with patch.object(workflow, "run_process") as run:
+            self.manager.conversations.notify(self.run_id)
+            self.assertIn("送信し直してください", self.wait_for(identifier, "failed")["message"])
+            run.assert_not_called()
+
+    def test_conditional_checker_waits_for_build_and_verifies_saved_edit(self):
+        for first_exit in (0, 1, None):
+            with self.subTest(first_exit=first_exit):
+                self._check_conditional_checker(first_exit)
+
+    def _check_conditional_checker(self, first_exit):
+        running, release = Event(), Event()
+        calls = []
+        original = self.target.read_text(encoding="utf-8-sig")
+        edited = f"class Saved{first_exit} {{}}\n"
+
+        def work(command, **kwargs):
+            calls.append((command[0], self.target.read_text(encoding="utf-8-sig")))
+            if len(calls) == 1:
+                running.set()
+                self.assertTrue(release.wait(5))
+                check_cancelled()
+                return subprocess.CompletedProcess(command, first_exit)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(workflow, "run_process", side_effect=work):
+            first, _ = self.send("ビルドして")
+            try:
+                self.assertTrue(running.wait(5))
+                self.save_edit(edited)
+                self.assertEqual(self.request("editor")[1]["edit"]["status"], "queued")
+                query, _ = self.send("ビルドは終わった？")
+                self.assertIn("ビルド中", self.wait_for(query, "done")["message"])
+                message = "今のビルドが終わったら、保存した版でチェッカーを実行して"
+                second, received = self.send(message)
+                self.assertNotIn("query_intent", received)
+                self.assertIn("Example.cs", received["edits"])
+                self.assertIn("待ち", self.wait_for(second, "waiting")["message"])
+                view = self.manager.get(self.run_id)
+                self.assertFalse(view.control.cancelled.is_set())
+                self.assertEqual(calls, [("dotnet", original)])
+                if first_exit is None:
+                    self.request("control", {"action": "stop", "run_id": self.run_id,
+                                             "operation_id": view.state["operation_id"], "revision": 0})
+            finally:
+                release.set()
+            if first_exit is None:
+                self.wait_for(first, "cancelled")
+                self.assertIn("終了を確認", self.wait_for(second, "failed")["message"])
+                self.assertEqual(calls, [("dotnet", original)])
+                self.assertEqual(self.request("editor")[1]["edit"]["status"], "queued")
+                self.assertEqual(self.target.read_text(encoding="utf-8-sig"), original)
+                self.assertEqual(self.record()["status"], "build_failed")
+                return
+            initial = self.wait_for(first, "done")
+            self.assertEqual(initial["result_status"], "build_succeeded" if first_exit == 0 else "build_failed")
+            self.assertEqual(self.wait_for(second, "done")["result_status"], "checker_succeeded")
+        self.assertEqual(calls, [("dotnet", original), ("dotnet", edited), ("fixture-checker", edited)])
+        self.assertIsNone(self.request("editor")[1]["edit"])
+        self.assertEqual(self.record()["status"], "checker_succeeded")
 
     def test_natural_completion_waits_and_rebuilds_after_checker(self):
         running, release = Event(), Event()

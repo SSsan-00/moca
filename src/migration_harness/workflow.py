@@ -2322,23 +2322,25 @@ _JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrup
 _SCRIPT_RESUME_STATUSES = {"script_running", "script_failed"}
 
 
+def _missing_required_checker(config: dict[str, Any], unit: dict[str, Any], record: dict[str, Any]) -> bool:
+    verification = record.get("verification") or {}
+    # 旧形式でCLI由来のnullはコマンドを復元できないが、CLI指定があったことは分かる。
+    required = (
+        record.get("status") in _CHECKER_RESUME_STATUSES | {"checker_succeeded", "checker_accepted"}
+        or verification.get("checker_from_cli")
+        or verification.get("configured_checker_command", verification.get("checker_command")) is not None
+    )
+    return required and checker_command_for_unit(config, unit) is None
+
+
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
-    if status in _SCRIPT_RESUME_STATUSES:
-        return True
-    if status in _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES:
+    if status in _SCRIPT_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES:
         unit = find_unit(config, record["unit_id"]) if "unit_id" in record else {}
-        command = checker_command_for_unit(config, unit)
-    if status in _CHECKER_RESUME_STATUSES:
-        return command is not None and record.get("build_exit_code") == 0
-    if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
-        verification = record.get("verification") or {}
-        checker_required = (
-            status in {"checker_succeeded", "checker_accepted"}
-            or verification.get("configured_checker_command", verification.get("checker_command")) is not None
-        )
-        return not checker_required or command is not None
+        if _missing_required_checker(config, unit, record):
+            return False
+        return status not in _CHECKER_RESUME_STATUSES or record.get("build_exit_code") == 0
     return status in _JUNIE_RESUME_STATUSES
 
 
@@ -2366,10 +2368,12 @@ def _resume_with_junie(
         raise ValueError("表示中の Run のビルド結果が変わりました。")
     if checker_instruction is not None and status not in {"checker_needs_review", "checker_failed"}:
         raise ValueError("表示中の Run のチェッカー結果が変わりました。")
+    if verification_request and _missing_required_checker(config, unit, record):
+        raise ValueError("この Run に必要なチェッカーを設定するか、--checker-command で再指定してください。")
     if not verification_request and not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
-        if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
+        if status in VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _SCRIPT_RESUME_STATUSES:
             raise ValueError("rechecking this Run requires its checker command; set it in TOML or pass --checker-command")
         raise ValueError(f"run is not resumable from status {status!r}")
     history = record.get("repair_history", [])

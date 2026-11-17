@@ -18,17 +18,27 @@ from .worktree_targets import review_target_hash
 
 PENDING = {"received", "clarification", "waiting", "running", "steering"}
 REBUILD = {"build", "build_repair", "checker", "checker_repair"}
+QUERY_INTENTS = {"status", "build_status", "checker_status"}
 BUILD_PHASES = {"building", "build_succeeded", "build_failed"}
 BUILD_TERM = r"(?:ビルド|\b(?:re)?build\b)"
 CHECKER_TERM = r"(?:チェッカー|\bchecker\b|チェック(?=まで|を(?:再|もう|実行)))"
+REQUEST_ENDING = r"(?:ください|(?:もらえ|くれ|いただけ)ますか\s*\??)?"
 VERIFICATION_REQUEST = (
     rf"(?:{BUILD_TERM}|{CHECKER_TERM})(?:を|は)?\s*"
     r"(?:(?:だけ|のみ|まで|も)(?:を)?\s*)?"
-    r"(?:して(?:ください)?|(?:再)?実行して(?:ください)?|やり直して(?:ください)?|"
+    rf"(?:して{REQUEST_ENDING}|(?:再)?実行して{REQUEST_ENDING}|やり直して{REQUEST_ENDING}|"
     r"お願い(?:します)?|(?:もう一(?:度|回)|再度)(?:実行して(?:ください)?|お願い(?:します)?)?)"
     r"(?=[ \t]*[、,。.!！\n]|\s*$)"
     r"|(?:^|[、,。.!！])\s*(?:please\s+)?(?:rebuild|build|(?:run|rerun)\s+(?:the\s+)?checker)"
     r"(?:\s+again)?\s*(?=[、,。.!！]|$)"
+)
+CONDITIONAL_VERIFICATION = re.compile(
+    r"(?P<condition>[^。.!?、,\n]+?(?:たら|なら|場合(?:は|に)?|次第|てから|(?:た|の|終了|完了)後(?:に)?))"
+    r"[、,\s]*(?P<action>.+)", re.DOTALL,
+)
+BUILD_COMPLETION_CONDITION = re.compile(
+    rf"(?:もし\s*)?(?:(?:今|現在)の|(?:現在)?実行中の)?\s*{BUILD_TERM}(?:が|の|は)?\s*"
+    r"(?:終わったら|終わってから|(?:終了|完了)(?:したら|してから|(?:した)?後(?:に)?|次第)|終わった後(?:に)?)",
 )
 PHASES = {
     "queued": "準備を開始しています", "preparing": "準備中", "cancelled": "待機取消済み",
@@ -62,7 +72,16 @@ def _junie_option(request, text):
     return next((choice for choice in request["options"] if text in (choice["label"], choice["id"])), None)
 
 
+def _conditional_verification(value):
+    match = CONDITIONAL_VERIFICATION.fullmatch(value)
+    if match and re.search(rf"{BUILD_TERM}|{CHECKER_TERM}", value):
+        return match
+    return None
+
+
 def _status_intent(value):
+    if _conditional_verification(value):
+        return None
     checker = re.search(CHECKER_TERM, value)
     if (checker or re.search(BUILD_TERM, value)) and (
         re.search(r"なぜ|どうして|原因|結果|ログ|状態|状況|進捗|\b(?:why|status|results?|logs?)\b", value)
@@ -81,18 +100,27 @@ def _intent(text, phase):
     value = unicodedata.normalize("NFKC", text).lower()
     if status := _status_intent(value):
         return status
-    if re.search(r"差分.*(?:だけ|のみ).*(?:確認|見る)|(?:残り|他).*(?:触らず|触らない).*差分", value):
-        return "diff"
     if re.search(r"(?:シェル|ターミナル|shell|powershell|業務php|sql|データベース|\bdb\b).*(?:を実行|に接続|実行して|run |execute )", value):
         return "unsupported"
     if re.search(r"(?:ビルド|チェッカー|停止|build|checker).*(?:しないで|しない|せず|しなくて|するな)|\b(?:don't|do not|without) (?:build|run|stop)\b", value):
         return "clarify"
+    if condition := _conditional_verification(value):
+        action = condition["action"]
+        if BUILD_COMPLETION_CONDITION.fullmatch(condition["condition"]) and not _conditional_verification(action):
+            intent = _intent(action, phase)
+            if intent in REBUILD:
+                return f"after_build_{intent}"
+        return "clarify"
+    if re.search(r"差分.*(?:だけ|のみ).*(?:確認|見る)|(?:残り|他).*(?:触らず|触らない).*差分", value):
+        return "diff"
     stop = bool(re.search(r"止め|停止|中止|\bstop\b", value))
     retry = bool(re.search(r"やり直|再実行|(?:もう|再度|もう一度).*?(?:一回|一度|実行|お願い)|rebuild|rerun", value))
     build = bool(re.search(BUILD_TERM, value))
     checker = bool(re.search(CHECKER_TERM, value))
     repair = bool(re.search(r"(?<!やり)直して|修正して|合わせて|同じ.*(?:にして|使って)|既定値にして|\bfix\b", value))
-    if (build or checker or stop or retry) and re.search(r"\?|(?:ですか|ますか|でしょうか|していい)[。\s]*$", value):
+    if (build or checker or stop or retry) and re.search(
+        r"\?|(?:ですか|ますか|でしょうか|していい)[。\s]*$", re.sub(VERIFICATION_REQUEST, "", value),
+    ):
         return "clarify"
     if stop:
         if phase in BUILD_PHASES and not checker and (
@@ -136,7 +164,7 @@ def _phase_message(state, phase):
 def _preparation_reply(entry):
     phase = entry["phase"]
     intent = _intent(entry["text"], phase)
-    if intent not in {"status", "build_status", "checker_status"}:
+    if intent not in QUERY_INTENTS:
         return {**entry, "status": "failed", "message": "準備前や準備中は状況の確認ができます。作業の指示は準備完了後に送ってください。"}
     message = entry["phase_message"]
     if intent != "status":
@@ -327,8 +355,11 @@ class JunieConversations:
             for entry in history:
                 if entry["status"] != "received":
                     continue
-                intent = entry.get("query_intent") or _intent(entry["text"], phase)
-                if intent in {"status", "build_status", "checker_status"}:
+                intent = _intent(entry["text"], phase)
+                if entry.get("query_intent") and intent not in QUERY_INTENTS:
+                    _finish(entry, "failed", "受付時に保存版を記録していません。エディタで確認して指示を送信し直してください。")
+                    continue
+                if intent in QUERY_INTENTS:
                     message = _phase_message(state, phase)
                     if intent != "status":
                         kind = intent.removesuffix("_status")
@@ -385,6 +416,8 @@ class JunieConversations:
                     continue
                 if intent == "clarify":
                     question = "ビルドだけですか？ チェッカーまで実行しますか？"
+                    if _conditional_verification(unicodedata.normalize("NFKC", entry["text"]).lower()):
+                        question = "実行条件を確定できません。条件を付けずに依頼する場合は、ビルドだけですか？ チェッカーまで実行しますか？"
                     entry.update(status="clarification", message=question, question=question)
                 elif intent == "unsupported":
                     _finish(entry, "failed", "この欄では移行先の編集指示と設定済みのビルド・チェッカーを受け付けます。")
@@ -441,9 +474,15 @@ class JunieConversations:
                 _finish(entry, "done", message + ("エディタの「差分」で表示された対象を確認してください。" if changed
                                                   else "保存記録と照合できる差分はありませんでした。"))
                 return True
-            mode = intent.removeprefix("stop_")
+            mode = intent.removeprefix("stop_").removeprefix("after_build_")
             if mode not in REBUILD or not state.get("ready"):
                 return True
+            if intent.startswith("after_build_"):
+                code = record.get("build_exit_code")
+                # 通常の失敗終了も待機条件を満たす。停止や起動失敗では続行しない。
+                if type(code) is not int or code < 0:
+                    _finish(entry, "failed", "先行ビルドの終了を確認できません。ログと保存版を確認して指示を送信し直してください。")
+                    return True
             if mode.startswith("checker") and checker_command_for_unit(config, unit) is None:
                 _finish(entry, "failed", "チェッカーが設定されていません。設定タブでコマンドを確認してください。")
                 return True
@@ -471,6 +510,7 @@ def run_instruction(config, run_id, identifier):
             raise ValueError("指示は開始済みか終了済みです。履歴を確認してください。")
         entry.update(status="running", message="保存版を照合して検証を開始します。", started_at=datetime.now(timezone.utc).isoformat())
         instruction = entry.copy()
+        instruction["intent"] = instruction["intent"].removeprefix("after_build_")
     return resume_with_junie(config, run_id, verification_request=instruction)
 
 
