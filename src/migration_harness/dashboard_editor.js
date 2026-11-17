@@ -43,7 +43,7 @@
   let selectedTarget;
   let editPrompt;
   let newPromptDraft = "";
-  let refreshing = false;
+  let refreshing;
   let saving = false;
   let sending = false;
   let revision = 0;
@@ -271,15 +271,17 @@
   }
 
   async function loadPhp(source) {
+    if (switching || !state?.run_id || state.run_id !== progress().run_id) return;
     const version = ++phpRequest;
-    const query = new URLSearchParams({run_id: state.run_id});
+    const runId = state.run_id;
+    const query = new URLSearchParams({run_id: runId});
     if (source) query.set("source", source);
     phpSource = {...phpSource, sources: phpSource?.sources ?? [], loading: true};
     phpEditor?.setValue("");
     showSaveState();
     try {
       const data = await request("editor-php?" + query);
-      if (version !== phpRequest) return;
+      if (version !== phpRequest || data.run_id !== runId || runId !== progress().run_id) return;
       phpSource = data;
       if (!phpEditor) {
         phpEditor = window.monaco.editor.create(phpHost, {
@@ -398,7 +400,7 @@
   }
 
   async function display(data, expectedRevision = revision) {
-    if (expectedRevision !== revision) return;
+    if (expectedRevision !== revision || switching || (data.run_id && data.run_id !== progress().run_id)) return;
     const previous = state;
     if (previous?.run_id !== data.run_id) {
       if (previous?.run_id) runDrafts.set(previous.run_id, {prompt: prompt.value, editPrompt, newPromptDraft});
@@ -424,8 +426,6 @@
     if (!editor) setText("#editor-empty", "エディタを読み込んでいます。");
     const monaco = await loadMonaco();
     if (expectedRevision !== revision || state !== data) return;
-    layout.hidden = false;
-    find("#editor-empty").hidden = true;
     if (!editor) {
       const theme = () => monaco.editor.setTheme(document.documentElement.dataset.theme === "dark" ? "vs-dark" : "vs");
       const options = {automaticLayout: true, minimap: {enabled: false}, bracketPairColorization: {enabled: true}};
@@ -444,6 +444,8 @@
       showEditor(false);
       updateChat();
       if (!phpSource) loadPhp();
+      layout.hidden = false;
+      find("#editor-empty").hidden = true;
       return;
     }
     const fileLanguage = data.target.toLowerCase().endsWith(".cshtml") ? "razor" : "csharp";
@@ -471,15 +473,21 @@
     updateChat();
     if (language === "php" && !phpSource) loadPhp();
     if (data.read_error || previous?.read_error) report("#editor-error", data.read_error);
+    layout.hidden = false;
+    find("#editor-empty").hidden = true;
   }
 
   async function refresh() {
-    if (tab.getAttribute("aria-selected") !== "true" || refreshing || saving || sending || switching) return;
-    refreshing = true;
+    if (tab.getAttribute("aria-selected") !== "true" || refreshing === revision || saving || sending || switching) return;
     const version = revision;
-    const target = state?.run_id === progress().run_id && selectedTarget;
+    refreshing = version;
+    const runId = progress().run_id;
+    const target = state?.run_id === runId && selectedTarget;
+    const query = new URLSearchParams();
+    if (runId) query.set("run_id", runId);
+    if (target) query.set("target", target);
     try {
-      const data = await request(target ? "editor?target=" + encodeURIComponent(target) : "editor");
+      const data = await request("editor" + (query.size ? "?" + query : ""));
       await display(data, version);
     } catch (error) {
       if (version === revision) {
@@ -494,7 +502,7 @@
         }
       }
     } finally {
-      refreshing = false;
+      if (refreshing === version) refreshing = undefined;
     }
   }
 
@@ -550,7 +558,20 @@
     }
   });
   window.harnessEditorCanSwitch = () => !saving && !sending;
-  document.addEventListener("harnessrunselect", () => { switching = true; revision++; if (state) { showSaveState(); updateChat(); } });
+  document.addEventListener("harnessrunselect", () => {
+    switching = true;
+    revision++;
+    phpRequest++;
+    phpSource = undefined;
+    phpEditor?.setValue("");
+    // 次のRunが読み込めるまで、前のRunの本文や指示を表示しない。下書きは保持する。
+    layout.hidden = true;
+    find("#editor-empty").hidden = false;
+    setText("#editor-empty", "選択した実行を読み込んでいます…");
+    report("#editor-error");
+    report("#editor-prompt-error");
+    if (state) { showSaveState(); updateChat(); }
+  });
   document.addEventListener("harnessrunchange", () => { switching = false; revision++; refresh(); });
   setInterval(refresh, 750);
   workspaceTabs.addEventListener("harnesstab", refresh);

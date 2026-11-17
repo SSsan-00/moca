@@ -910,7 +910,7 @@ function appendEvent(at, title, detail, kind = "state") {
 
 // 受信済みの連番を付けて利用者の操作を端末へ送る。
 async function send(action, fields = {finding_id: findings.value, reason: note.value.trim()}) {
-  if (submitting) return;
+  if (submitting || !connected) return;
   if (action === "stop") {
     if (!connected || !snapshot.cancellable || snapshot.stop_requested || stopPendingOperation !== undefined) return;
     stopPendingOperation = snapshot.operation_id;
@@ -921,8 +921,8 @@ async function send(action, fields = {finding_id: findings.value, reason: note.v
     const response = await runFetch(action === "build-response" ? "build-response" : "control", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(action === "stop"
-        ? {action, operation_id: snapshot.operation_id, revision: dashboardRevision}
-        : {action, revision: dashboardRevision, ...fields}),
+        ? {action, run_id: snapshot.run_id, operation_id: snapshot.operation_id, revision: dashboardRevision}
+        : {action, run_id: snapshot.run_id, revision: dashboardRevision, ...fields}),
     });
     if (!response.ok) throw await responseError(response);
     return true;
@@ -1121,7 +1121,7 @@ function connectRun(runId = "") {
     let received = false;
     stream.onopen = () => {
       if (generation !== streamGeneration) return;
-      connected = true;
+      connected = received;
       connection.textContent = "";
       syncActions();
     };
@@ -1137,6 +1137,7 @@ function connectRun(runId = "") {
     };
     stream.onmessage = event => {
       if (generation !== streamGeneration) return;
+      connected = true;
       receiveProgress(event);
       if (!received) {
         received = true;
@@ -1166,6 +1167,9 @@ function receiveProgress(event) {
     });
     const draft = runInputDrafts.get(data.run_id) || {};
     checkerOutputRequest++;
+    buildRequest++;
+    buildLoading = false;
+    buildDialog.close();
     checkerDetails.open = false;
     checkerInstruction.value = draft.checker || "";
     note.value = draft.reason || "";

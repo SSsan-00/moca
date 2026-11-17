@@ -214,3 +214,44 @@ class ParallelDashboardTests(HarnessCase):
             pass
         with urlopen(Request(url + "prompts", headers={"X-Run-ID": ids[1]}), timeout=3) as response:
             self.assertEqual(json.load(response)["prompts"], [])
+
+    def test_same_target_runs_keep_editor_files_php_and_prompts_separate(self):
+        ids = []
+        for number in (1, 2):
+            (self.project / "source.php").write_text(f"<?php echo {number};\n")
+            run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+            self.wait_until(lambda: not self.manager.busy)
+            ids.append(run_id)
+            (Path(self.manager.get(run_id).state["worktree_path"]) / "Page0.cs").write_text(f"class Run{number} {{}}\n")
+
+        terminal = io.StringIO()
+        with redirect_stdout(terminal):
+            server = self.view.server(self.settings, b"", b"")
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+        url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+        origin = urlsplit(url)
+
+        def request(run_id, endpoint="editor", body=None):
+            headers = {"X-Run-ID": run_id, "Content-Type": "application/json",
+                       "Origin": f"{origin.scheme}://{origin.netloc}"}
+            with urlopen(Request(url + endpoint, None if body is None else json.dumps(body).encode(), headers), timeout=3) as response:
+                return json.load(response)
+
+        first, second = (request(run_id) for run_id in ids)
+        self.assertEqual(first["target"], second["target"])
+        self.assertNotEqual(first["content"], second["content"])
+        for number, run_id in enumerate(ids, 1):
+            php = request(run_id, f"editor-php?run_id={run_id}")
+            self.assertEqual(php["run_id"], run_id)
+            self.assertEqual(php["content"], f"<?php echo {number};\n")
+        saved = request(ids[0], body={"kind": "save", "run_id": ids[0], "target": first["target"],
+                                     "base": first["content"], "content": "class Edited {}\n", "edit_id": None})
+        self.assertEqual(saved["content"], "class Edited {}\n")
+        request(ids[0], "prompts", {"run_id": ids[0], "text": "first run only"})
+        self.assertEqual(request(ids[1])["content"], second["content"])
+        self.assertEqual(request(ids[1], "prompts")["prompts"], [])
+        self.assertEqual(len(self.manager.workspace()["runs"]), 2)

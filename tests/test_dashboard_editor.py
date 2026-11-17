@@ -537,6 +537,7 @@ class DashboardEditorTests(HarnessCase):
         (self.project / "source.php").write_text("<?php echo 'updated after preparation';", encoding="utf-8")
         route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
         source = self.request(route)
+        self.assertEqual(source["run_id"], prepared["run_id"])
         self.assertEqual(source["sources"], ["source.php", "annotated.txt", "annotated", "other.php"])
         self.assertEqual(source["source"], "source.php")
         self.assertEqual(source["content"], "<?php echo 1;")
@@ -555,6 +556,17 @@ class DashboardEditorTests(HarnessCase):
             self.request("editor-php", {"kind": "save", "target": "source.php"})
         self.assertEqual(method.exception.code, 404)
         method.exception.close()
+
+    def test_editor_get_rejects_another_run_with_the_same_target(self):
+        first = self.finished_run()
+        second = self.finished_run()
+        self.assertNotEqual(first["run_id"], second["run_id"])
+        with self.assertRaises(HTTPError) as stale:
+            self.request("editor?" + urlencode({"run_id": first["run_id"], "target": "Page.cs"}))
+        self.assertEqual(stale.exception.code, 409)
+        stale.exception.close()
+        current = self.request("editor?" + urlencode({"run_id": second["run_id"], "target": "Page.cs"}))
+        self.assertEqual(current["run_id"], second["run_id"])
 
     def test_php_view_excludes_shared_php_from_default_selection_and_requests(self):
         unrelated = ["rules.php", "reference.php", "other-reference", "other.php"]
@@ -594,6 +606,7 @@ shared = true
                     manifest.pop("php_sources")
                     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
                 self.assertEqual(self.request(route), {
+                    "run_id": prepared["run_id"],
                     "sources": ["source.php"], "source": "source.php", "content": "<?php echo 1;", "error": None,
                 })
                 for name in unrelated:

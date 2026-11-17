@@ -76,7 +76,7 @@ window.harnessEditorDemo = (() => {
   let updated = false;
 
   async function request(path, action) {
-    if (path.startsWith("editor-php?")) return {sources: [phpPath], source: phpPath, content: php};
+    if (path.startsWith("editor-php?")) return {run_id: runId, sources: [phpPath], source: phpPath, content: php};
     const target = action?.target ?? new URLSearchParams(path.split("?")[1]).get("target") ?? codeBehind;
     const file = files.get(target);
     if (!file) throw new Error("設定された移行先ファイルを選んでください。");

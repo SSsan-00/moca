@@ -443,7 +443,7 @@ class Dashboard:
                             content = path.read_text(encoding=input_encoding(path, encodings[name]))
                     except (OSError, ValueError, LookupError) as exc:
                         error = format_error(exc)
-                    payload = {"sources": names, "source": name, "content": content, "error": error}
+                    payload = {"run_id": run_id, "sources": names, "source": name, "content": content, "error": error}
                     self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 except _ERRORS as exc:
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
@@ -453,6 +453,8 @@ class Dashboard:
                 state = self.dashboard.state
                 run_id = state.get("run_id")
                 try:
+                    if "run_id" in query and query["run_id"] != [run_id]:
+                        raise ValueError("表示中の実行が変わりました。")
                     if not run_id or not state.get("worktree_path"):
                         if action is not None:
                             raise ValueError("移行の実行を開いてから保存してください。")
