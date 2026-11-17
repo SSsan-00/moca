@@ -104,6 +104,66 @@ class DashboardEditorTests(HarnessCase):
         self.assertEqual(method.exception.code, 404)
         method.exception.close()
 
+    def test_php_view_excludes_shared_php_from_default_selection_and_requests(self):
+        unrelated = ["rules.php", "reference.php", "other-reference", "other.php"]
+        for name in unrelated:
+            (self.project / name).write_text(f"<?php // {name}\n", encoding="utf-8")
+        self.commit_project()
+        config_path = self.root / "test.toml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace("\n[[units]]", """
+[[project.migration_rules]]
+path = "rules.php"
+
+[[project.references]]
+role = "reference_php"
+path = "reference.php"
+
+[[units]]""", 1) + """
+[[units]]
+id = "other"
+source = "other.php"
+target = "Other.cs"
+
+[[units.inputs]]
+role = "reference_php"
+path = "other-reference"
+shared = true
+""", encoding="utf-8",
+        )
+        self.settings.update(load_config(config_path))
+        prepared = workflow.prepare_run(self.settings, "sample")
+        route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
+        manifest_path = Path(prepared["capsule_path"]) / "manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    manifest.pop("php_sources")
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                self.assertEqual(self.request(route), {
+                    "sources": ["source.php"], "source": "source.php", "content": "<?php echo 1;", "error": None,
+                })
+                for name in unrelated:
+                    with self.subTest(source=name):
+                        with self.assertRaises(HTTPError) as denied:
+                            self.request(route + "&" + urlencode({"source": name}))
+                        self.assertEqual(denied.exception.code, 409)
+                        denied.exception.close()
+
+    def test_php_view_rejects_missing_pin_without_reading_the_live_source(self):
+        prepared = workflow.prepare_run(self.settings, "sample")
+        manifest_path = Path(prepared["capsule_path"]) / "manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["php_sources"] = []
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
+        with self.assertRaises(HTTPError) as missing:
+            self.request(route)
+        self.assertEqual(missing.exception.code, 409)
+        self.assertIn("移行対象のPHPがRunに保存されていません: source.php", missing.exception.read().decode("utf-8"))
+        missing.exception.close()
+
     def test_razor_pair_saves_both_targets_at_the_checkpoint(self):
         razor = "@page\n<h1>Orders</h1>\n\n<p>Details</p>\n"
         originals = {"Index.cshtml": razor, "Index.cshtml.cs": BASE}

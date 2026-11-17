@@ -373,12 +373,15 @@ class Dashboard:
                     run_path, _, _, _ = load_saved_run(config, run_id)
                     capsule, manifest = load_capsule_manifest(run_path)
                     pinned = pinned_php_sources(manifest)
-                    legacy: dict[str, str] = {}
-                    if pinned is None:
-                        for path, encoding in migration_php_encodings(manifest).items():
-                            legacy.setdefault(Path(path).as_posix(), encoding)
+                    encodings: dict[str, str] = {}
+                    for path, encoding in migration_php_encodings(manifest).items():
+                        encodings.setdefault(Path(path).as_posix(), encoding)
                     sources = {Path(entry["path"]).as_posix(): entry for entry in (pinned or [])}
-                    names = list(sources if pinned is not None else legacy)
+                    if pinned is not None:
+                        for name in encodings:
+                            if name not in sources:
+                                raise ValueError(f"移行対象のPHPがRunに保存されていません: {name}")
+                    names = list(encodings)
                     name = query.get("source", names[:1] or [None])[0]
                     if name is not None and name not in names:
                         raise ValueError("この実行の移行元 PHP を選んでください。")
@@ -390,7 +393,7 @@ class Dashboard:
                             content = read_pinned_php(capsule, entry).decode(entry["encoding"])
                         elif name is not None:
                             path = _inside_file(Path(config["project_root"]).resolve(), name)
-                            content = path.read_text(encoding=input_encoding(path, legacy[name]))
+                            content = path.read_text(encoding=input_encoding(path, encodings[name]))
                     except (OSError, ValueError, LookupError) as exc:
                         error = format_error(exc)
                     payload = {"sources": names, "source": name, "content": content, "error": error}
