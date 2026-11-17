@@ -55,10 +55,12 @@ PROGRESS_FIELDS = (
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
 
-def _prompt_timing(config, state, run_path, record, *, live: bool = False) -> str | None:
+def _prompt_timing(config, state, run_path, record, *, live: bool = False, pending_edits: bool = False) -> str | None:
     if state.get("stop_requested") or state.get("generating_anchors"):
         return None
     phase = record["status"]
+    if pending_edits and not state.get("ready") and phase == "repairing":
+        return "repair_restart"
     if live and not state.get("ready") and phase in {"junie_running", "editor_followup", "repairing"}:
         return "immediate"
     if phase == "prepared" or phase in QUEUE_PHASES or (
@@ -367,7 +369,7 @@ class Dashboard:
                                 if state.get("run_id") != run_id:
                                     raise ValueError("表示中の実行が変わりました。")
                                 _, _, record, _ = load_saved_run(config, run_id)
-                                timing = _prompt_timing(config, state, run_path, record,
+                                timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
                                                         live=bool(dashboard.control and dashboard.control.junie_steering
                                                                   and not queue["edits"]))
                                 if action is not None:
@@ -453,7 +455,7 @@ class Dashboard:
                             root = agent_root if from_agent else worktree
                             busy_other = state.get("generating_anchors") or state.get("stop_requested")
                             queued = bool(queue["edits"] or not state.get("ready") or busy_other or phase in AGENT_PHASES)
-                            prompt_timing = _prompt_timing(config, state, run_path, record,
+                            prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
                                                           live=bool(dashboard.control and dashboard.control.junie_steering
                                                                     and not queue["edits"]))
                             read_error = None
@@ -487,7 +489,7 @@ class Dashboard:
                                                 raise ValueError("最新版との差分を確認し、競合を解消して保存してください。")
                                             edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
                                             queue["edits"][name] = edit
-                                            prompt_timing = _prompt_timing(config, state, run_path, record)
+                                            prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
                                         else:
                                             _save_build_review_edit(worktree, targets, {
                                                 "target": name, "version": hashlib.sha256(original).hexdigest() if original is not None else None,
@@ -501,7 +503,8 @@ class Dashboard:
                                 "run_id": run_id, "targets": names, "target": name, "content": content, "edit": edit,
                                 "source": "agent-workspace" if from_agent else "worktree",
                                 "can_save": bool(name and read_error is None), "queued": queued,
-                                "save_timing": ("checkpoint" if queued and not state.get("ready") and not busy_other
+                                "save_timing": ("repair_restart" if phase == "repairing" and not state.get("ready") and not busy_other
+                                                else "checkpoint" if queued and not state.get("ready") and not busy_other
                                                 and phase in QUEUE_PHASES else "resume" if queued else "immediate"),
                                 "exists": original is not None, "read_error": read_error,
                                 "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,

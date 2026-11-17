@@ -263,6 +263,7 @@
       : state.edit ? "保存済み・ファイルへ反映待ち"
       : !state.exists ? "移行先ファイルは未作成です" : "ファイルに反映済み");
     setText("#editor-save-timing", !state.can_save ? "保存先を読み込めません。接続とエラー内容を確認してください。"
+      : state.save_timing === "repair_restart" ? "編集を保存して追加指示を送ると、修正へ反映し、対応後に再ビルドします。"
       : state.save_timing === "checkpoint" ? "編集は保存できます。現在の作業区間が終わるとファイルに反映します。"
       : state.save_timing === "resume" ? "編集は保存できます。同じ実行を再開するとファイルに反映します。" : "");
   }
@@ -385,6 +386,7 @@
     activity.textContent = showAgent && !snapshot.ready ? snapshot.activity?.message || "" : "";
     activity.hidden = !activity.textContent;
     find("#editor-prompt-timing").textContent = !state.can_prompt ? "現在の工程では指示を登録できません。"
+      : state.prompt_timing === "repair_restart" ? "保存した編集を反映して Junie に指示を渡し直し、対応後に再ビルドします。"
       : state.prompt_timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
       : state.prompt_timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
       : "現在の作業区間が終わると Junie に渡します。";

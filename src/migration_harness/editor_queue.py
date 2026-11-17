@@ -113,6 +113,13 @@ class LivePrompts:
     """実行途中に送った指示だけを追跡し、未完了なら通常の送信待ちに戻す。"""
 
     run_path: Path
+    interrupt_for_edits: bool = False
+
+    def needs_handoff(self) -> bool:
+        if not self.interrupt_for_edits:
+            return False
+        with editor_queue(self.run_path) as queue:
+            return bool(queue["edits"] and any(prompt["status"] == "queued" for prompt in queue["prompts"]))
 
     def recover(self) -> None:
         with editor_queue(self.run_path) as queue:

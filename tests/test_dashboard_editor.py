@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import textwrap
 from contextlib import redirect_stdout
@@ -89,7 +90,7 @@ class DashboardEditorTests(HarnessCase):
                 self.view.publish({**self.view.state, **flags})
                 state = self.request()
                 self.assertTrue(state["can_save"])
-                self.assertEqual(state["save_timing"], "resume")
+                self.assertEqual(state["save_timing"], "repair_restart" if phase == "repairing" else "resume")
                 text = BASE.replace("Last = 1", f"Last = {index}")
                 saved = self.queue_edit(state, text)
                 self.assertEqual(saved["edit"]["content"], text)
@@ -146,6 +147,200 @@ class DashboardEditorTests(HarnessCase):
         self.assertEqual(saved["edit"]["content"], BASE.replace("Last = 1", "Last = 4"))
         self.assertEqual(saved["save_timing"], "resume")
         self.assertEqual((Path(result["worktree_path"]) / "Page.cs").read_text(encoding="utf-8-sig"), BASE)
+
+    def test_saving_and_sending_during_repair_automatically_hands_off_and_rebuilds(self):
+        for supported, handoffs, cancelled in ((True, 1, False), (False, 1, False), (True, 2, False), (True, 1, True)):
+            with self.subTest(supported=supported, handoffs=handoffs, cancelled=cancelled):
+                result = self.finished_run()
+                run_path, worktree, record, _ = run_records.load_saved_run(self.settings, result["run_id"])
+                self.settings["max_repair_attempts"] = 1
+                self.view.begin_operation()
+                control = self.view.control
+                control.trusted_junie_workspaces.add(str(run_path / "agent-workspace"))
+                processes, builds, sent = [], [], []
+
+                def request_permission(request):
+                    if request is None:
+                        return None
+                    from concurrent.futures import Future
+                    state = self.request()
+                    self.assertEqual(state["save_timing"], "repair_restart")
+                    text = state["content"].replace("Last = 1", "Last = 42") if not sent else state["content"].replace("Middle = 0", "Middle = 7")
+                    saved = self.queue_edit(state, text)
+                    self.assertEqual(saved["prompt_timing"], "repair_restart")
+                    instruction = "保存した Last = 42 を維持して再ビルドしてください。" if not sent else "Middle = 7 も維持してください。"
+                    response = self.request("prompts", {"run_id": result["run_id"], "text": instruction})
+                    self.assertEqual(response["timing"], "repair_restart")
+                    sent.append(instruction)
+                    if cancelled:
+                        control.cancelled.set()
+                    reply = Future()
+                    reply.set_result("allow")
+                    return reply
+
+                control.on_junie_request = request_permission
+                launch = junie_cli._launch_process
+
+                def launch_agent(command, **streams):
+                    self.assertTrue(all(process.poll() is not None for process in processes))
+                    root = Path(command[command.index("--project") + 1])
+                    handing_off = len(processes) < handoffs
+                    if len(processes):
+                        self.assertEqual(self.request()["prompts"][0]["status"], "sending")
+                        self.assertEqual(self.request()["edit"], None)
+                        self.assertEqual(len(run_records.load_saved_run(self.settings, result["run_id"])[2].get("repair_history", [])), 0)
+                    script = f"import os; os.chdir({str(root)!r})\nsupported = {supported!r}\nhanding_off = {handing_off!r}\n" + textwrap.dedent("""
+                        import json, re, sys
+                        from pathlib import Path
+                        def read():
+                            return json.loads(sys.stdin.readline())
+                        def send(**message):
+                            print(json.dumps(dict(jsonrpc="2.0", **message)), flush=True)
+                        assert read()["method"] == "initialize"
+                        send(id=1, result={"protocolVersion": 1, "_meta": {"steering": {"supported": supported}}})
+                        assert read()["method"] == "session/new"
+                        send(id=2, result={"sessionId": "repair"})
+                        request = read()
+                        assert request["method"] == "session/prompt"
+                        prompt = request["params"]["prompt"][0]["text"]
+                        target = Path("Page.cs")
+                        target.write_text(target.read_text(encoding="utf-8-sig").replace("First = 1", "First = 2"))
+                        if handing_off:
+                            send(id=100, method="session/request_permission", params={"sessionId": "repair",
+                                 "toolCall": {"toolCallId": "ready", "title": "修正を継続"},
+                                 "options": [{"optionId": "allow", "name": "許可", "kind": "allow_once"}]})
+                            sys.stdin.read()
+                        else:
+                            assert "Last = 42" in target.read_text()
+                            instruction = re.search(r"Read and follow the operator's instruction in `([^`]+)`", prompt)
+                            assert instruction and "保存した Last = 42" in Path(instruction[1]).read_text()
+                            match = re.search(r"write exactly `([a-f0-9]+)` as plain text to `(migration-complete-[^`]+)`", prompt)
+                            assert match
+                            Path(match[2]).write_text(match[1])
+                            send(id=3, result={"stopReason": "end_turn"})
+                            sys.stdin.read()
+                    """)
+                    process = launch([sys.executable, "-u", "-c", script], **streams)
+                    processes.append(process)
+                    return process
+
+                def build(command, **kwargs):
+                    self.assertEqual(command[:2], ["dotnet", "build"])
+                    builds.append((worktree / "Page.cs").read_text(encoding="utf-8-sig"))
+                    failed = len(builds) == 1
+                    kwargs["stdout"].write(b"Page.cs(1,1): error CS1002: expected semicolon\n" if failed else b"Build succeeded\n")
+                    return subprocess.CompletedProcess(command, int(failed))
+
+                with control_scope(control), \
+                        patch.object(junie_cli, "require_interactive_cli"), \
+                        patch.object(junie_cli, "_launch_process", side_effect=launch_agent), \
+                        patch.object(workflow, "run_process", side_effect=build), \
+                        patch.dict("os.environ", {"JUNIE_HOME": str(self.root / "junie-home")}):
+                    if cancelled:
+                        with self.assertRaises(workflow.RunInterrupted):
+                            workflow.resume_with_junie(self.settings, result["run_id"])
+                    else:
+                        completed = workflow.resume_with_junie(self.settings, result["run_id"])
+                if cancelled:
+                    self.assertEqual(len(processes), 1)
+                    self.assertIsNotNone(processes[0].poll())
+                    self.assertEqual(len(builds), 1)
+                    self.assertEqual(self.request()["edit"]["status"], "queued")
+                    self.assertEqual(self.request()["prompts"][0]["status"], "queued")
+                    continue
+                self.assertEqual(completed["status"], "build_succeeded", completed.get("error"))
+                self.assertEqual(len(builds), 2)
+                self.assertEqual(len(processes), handoffs + 1)
+                self.assertIn("First = 2", builds[-1])
+                self.assertIn("Last = 42", builds[-1])
+                if handoffs == 2:
+                    self.assertIn("Middle = 7", builds[-1])
+                self.assertTrue(all(prompt["status"] == "sent" for prompt in self.request("prompts")["prompts"]))
+                self.assertEqual(len(run_records.load_saved_run(self.settings, result["run_id"])[2]["repair_history"]), 1)
+
+    def test_repair_handoff_handles_completion_race_conflict_and_unsafe_changes(self):
+        for scenario in ("completed", "conflict", "unsafe"):
+            with self.subTest(scenario=scenario):
+                result = self.finished_run()
+                run_path, worktree, record, _ = run_records.load_saved_run(self.settings, result["run_id"])
+                record["repair_history"] = []
+                self.view.begin_operation()
+                calls = []
+
+                def junie(command, completion, token, targets, **kwargs):
+                    calls.append(command)
+                    if len(calls) == 1:
+                        self.queue_edit(self.request(), BASE.replace("Last = 1", "Last = 42"))
+                        self.request("prompts", {"run_id": result["run_id"], "text": "保存した内容で再ビルドしてください。"})
+                        targets[0].write_text(BASE.replace("First = 1", "First = 2") if scenario != "conflict"
+                                              else BASE.replace("Last = 1", "Last = 99"))
+                        if scenario == "unsafe":
+                            (completion.parent / "unexpected.txt").write_text("unexpected")
+                        if scenario != "completed":
+                            raise junie_cli.JunieEditHandoff()
+                    completion.write_text(token)
+                    return 0
+
+                with patch.object(junie_cli, "require_interactive_cli"), \
+                        patch.object(junie_cli, "run_interactive", side_effect=junie):
+                    if scenario == "completed":
+                        workflow._attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
+                                                 run_path, "diagnostic", record, {"kind": "build"})
+                        self.assertEqual(len(calls), 2)
+                        self.assertIn("Last = 42", (worktree / "Page.cs").read_text(encoding="utf-8-sig"))
+                    else:
+                        with self.assertRaises(workflow.CheckerRepairBlocked) as blocked:
+                            workflow._attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
+                                                     run_path, "diagnostic", record, {"kind": "build"})
+                        self.assertEqual(blocked.exception.reason, "operator_conflict" if scenario == "conflict" else "handoff_unsafe")
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(record.get("repair_history", []), [])
+                        state = self.request()
+                        self.assertEqual(state["edit"]["status"], "conflict" if scenario == "conflict" else "queued")
+                        self.assertEqual(state["edit"]["content"], BASE.replace("Last = 1", "Last = 42"))
+                        self.assertEqual(state["prompts"][0]["status"], "queued")
+
+    def test_edits_submitted_as_repair_finishes_are_applied_before_rebuilding(self):
+        result = self.finished_run()
+        run_path, worktree, _, _ = run_records.load_saved_run(self.settings, result["run_id"])
+        self.view.begin_operation()
+        calls, builds = [], []
+        charge = workflow._charge_repair
+
+        def finish_repair(record):
+            charge(record)
+            if len(calls) == 1 and not self.request()["edit"]:
+                state = self.request()
+                self.queue_edit(state, state["content"].replace("Last = 1", "Last = 42"))
+                self.request("prompts", {"run_id": result["run_id"], "text": "保存した修正で再ビルドしてください。"})
+
+        def junie(command, completion, token, targets, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                targets[0].write_text(BASE.replace("First = 1", "First = 2"))
+            else:
+                self.assertIn("Last = 42", targets[0].read_text())
+                self.assertIn("operator's follow-up instructions", command[-1])
+            completion.write_text(token)
+            return 0
+
+        def build(command, **kwargs):
+            builds.append((worktree / "Page.cs").read_text(encoding="utf-8-sig"))
+            failed = len(builds) == 1
+            kwargs["stdout"].write(b"Page.cs(1,1): error CS1002: expected semicolon\n" if failed else b"Build succeeded\n")
+            return subprocess.CompletedProcess(command, int(failed))
+
+        with patch.object(junie_cli, "require_interactive_cli"), \
+                patch.object(junie_cli, "run_interactive", side_effect=junie), \
+                patch.object(workflow, "_charge_repair", side_effect=finish_repair), \
+                patch.object(workflow, "run_process", side_effect=build):
+            completed = workflow.resume_with_junie(self.settings, result["run_id"])
+        self.assertEqual(completed["status"], "build_succeeded", completed.get("error"))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(builds), 2)
+        self.assertIn("First = 2", builds[-1])
+        self.assertIn("Last = 42", builds[-1])
+        self.assertEqual(self.request()["prompts"][0]["status"], "sent")
 
     def test_missing_targets_can_be_saved_when_idle_or_before_junie_starts(self):
         for busy in (False, True):
