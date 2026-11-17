@@ -34,7 +34,7 @@ from .editor_queue import (
     record_operator_edit,
 )
 from .errors import format_error
-from .execution import check_cancelled, report_activity, run_process
+from .execution import build_process_scope, check_cancelled, report_activity, run_process
 from .files import harness_asset, has_symlink_component, safe_target, sha256_file
 from .rule_materials import detail_index, render_guidelines, selected_details
 from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, validate_run_id, write_run_record
@@ -1161,6 +1161,8 @@ def _build_worktree(
     build_project = config["build_project"]
     command = ["dotnet", "build"]
 
+    _remember_diagnostic(run_path, record, "build")
+    _remember_diagnostic(run_path, record, "checker")
     record.update(status="building", build_exit_code=None, build_log_path=str(log_path))
     for key in ("error", "checker_exit_code", "checker_log_path", "review_file_hashes", "checker_review_reason",
                 "checker_success_message"):
@@ -1182,7 +1184,8 @@ def _build_worktree(
                     command.append(str(target))
                 started = monotonic()
                 try:
-                    completed = run_process(command, label="ビルド", cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
+                    with build_process_scope():
+                        completed = run_process(command, label="ビルド", cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
                 finally:
                     record.setdefault("build_attempt_seconds", []).append(monotonic() - started)
             except (OSError, ValueError) as exc:
@@ -1584,6 +1587,18 @@ def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
     return data.decode("utf-8-sig", errors="replace"), bool(start)
 
 
+def _remember_diagnostic(run_path: Path, record: dict[str, Any], kind: str) -> None:
+    code = record.get(f"{kind}_exit_code")
+    if code is None:
+        return
+    output, truncated = _review_log(run_path, f"{kind}.log")
+    record.setdefault("last_diagnostics", {})[kind] = {
+        "code": code,
+        "error": record.get("error") if (record["status"] == "build_failed") == (kind == "build") else None,
+        "log": {"kind": kind, "text": output[-8_000:], "truncated": truncated or len(output) > 8_000} if output else None,
+    }
+
+
 def build_failure_review(config: dict[str, Any], run_id: str, target: str | None = None) -> dict[str, Any]:
     """ビルド失敗時の出力と、選択した移行対象の編集用スナップショットを取得する。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
@@ -1658,6 +1673,68 @@ def _respond_to_build_failure(
         record.update(status="build_failed", error="Junie による修正を停止しました。")
         write_run_record(record_path, record)
         raise RunInterrupted(record["run_id"]) from None
+
+
+def _repair_from_checker_instruction(config, targets, worktree, run_path, record, instruction):
+    record_path = run_path / "run.json"
+    status = record["status"]
+    output, truncated = _review_log(run_path, "checker.log")
+    diagnostic = (("Only the last part of the checker output is shown.\n" if truncated else "") + output
+                  or "The checker produced no output.")
+    history = record.setdefault("repair_history", [])
+    details = {"findings": [], "instruction": instruction, "raw_checker_output": True}
+    if output:
+        archive = safe_target(run_path, Path(f"checker-before-repair-{len(history) + 1}.log"))
+        shutil.copyfile(run_path / "checker.log", archive)
+        details["checker_log_path"] = str(archive)
+    try:
+        _attempt_repair(config, targets, targets, worktree, run_path, diagnostic, record, details)
+    except (OSError, RuntimeError, ValueError) as exc:
+        record.update(status=status, checker_review_reason=_checker_repair_reason(exc), error=format_error(exc))
+        write_run_record(record_path, record)
+        raise
+    except KeyboardInterrupt:
+        record.update(status=status, checker_review_reason="repair_interrupted", error="Junie による修正を停止しました。")
+        write_run_record(record_path, record)
+        raise RunInterrupted(record["run_id"]) from None
+
+
+def _apply_verification_edits(run_path, worktree, unit, request):
+    from .junie_conversation import saved_edits, target_versions
+
+    targets = target_paths(unit)
+    apply_error = None
+    with editor_queue(run_path) as queue, worktree_source_lock:
+        check_cancelled()
+        if (saved_edits(queue) != request["edits"] or queue.get("edit_revision") != request["edit_revision"]
+                or target_versions(worktree, unit) != request["targets"]):
+            raise ValueError("指示を受け付けた後に移行先または保存版が更新されました。エディタで確認して指示を送信し直してください。")
+        merged = {}
+        conflicts = []
+        for name, edit in queue["edits"].items():
+            if Path(name) not in targets or Path(name).suffix.lower() not in EDITOR_TARGET_SUFFIXES:
+                raise ValueError("エディタの保存先が設定された移行先と一致しません。")
+            data, current = editor_target(worktree, Path(name))
+            content = None if edit["status"] == "conflict" else merge_edit(edit["base"], edit["content"], current)
+            if content is None:
+                edit["status"] = "conflict"
+                conflicts.append(name)
+            else:
+                merged[name] = (hashlib.sha256(data).hexdigest() if data is not None else None, current, content)
+        if not conflicts:
+            for name, (version, current, content) in merged.items():
+                try:
+                    save_target_edit(worktree, targets, {"target": name, "version": version, "content": content})
+                except (OSError, ValueError) as exc:
+                    apply_error = ValueError(f"{name} を反映できませんでした。残りの保存版を確認してください。{format_error(exc)}")
+                    break
+                record_operator_edit(queue, name, current, content)
+                del queue["edits"][name]
+            if apply_error is None:
+                return target_versions(worktree, unit)
+    if apply_error is not None:
+        raise apply_error
+    raise ValueError(f"編集が競合しました。エディタで「競合を解消して保存」を選んでください。対象: {', '.join(conflicts)}")
 
 
 def _repair_build_failure(
@@ -1753,10 +1830,11 @@ def _repair_build_failure(
 
 def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
+    *, request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     record_path = Path(result["run_path"]) / "run.json"
     try:
-        return _run_verification(config, unit, result, record)
+        return _run_verification(config, unit, result, record, request=request)
     finally:
         if record.get("active_stage") is not None:
             write_run_record(record_path, record, timing_stage=None)
@@ -1764,6 +1842,7 @@ def _verify_worktree(
 
 def _run_verification(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
+    *, request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """毎回ビルドを先に実行し、指摘の状態に応じて修正かレビューに進む。"""
     run_path = Path(result["run_path"])
@@ -1772,10 +1851,14 @@ def _run_verification(
     record_path = run_path / "run.json"
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
     _run_script_phase(config, "after_migration", worktree, run_path, record, once=True)
+    mode = request["intent"].removeprefix("stop_") if request else None
     command = checker_command_for_unit(config, unit)
+    if mode in {"build", "build_repair"}:
+        command = None
     scripts = _verification_scripts(config, command)
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
+    expected_targets = request.get("build_targets") if request else None
 
     def save_verification() -> None:
         record["verification"]["scripts_passed"] = True
@@ -1784,7 +1867,7 @@ def _run_verification(
     # 修正に成功したらここへ戻り、変更後のファイルを必ずビルドから検証し直す。
     while True:
         with editor_queue(run_path) as queue:
-            pending_changes = bool(queue["edits"] and any(prompt["status"] == "queued" for prompt in queue["prompts"]))
+            pending_changes = not request and bool(queue["edits"] and any(prompt["status"] == "queued" for prompt in queue["prompts"]))
             if not pending_changes:
                 # 指示の受付と工程変更を直列化し、修正終了間際の送信もビルド前に扱う。
                 if record["status"] == "repairing":
@@ -1797,8 +1880,12 @@ def _run_verification(
                 raise RunInterrupted(record["run_id"]) from None
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
         _run_script_phase(config, "before_build", worktree, run_path, record)
+        hashes = {path.as_posix(): review_target_hash(worktree, path) for path in targets}
+        if expected_targets is not None and hashes != expected_targets:
+            raise ValueError("ビルドの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
+        expected_targets = None
         record["verification"] = {
-            "target_hashes": {path.as_posix(): review_target_hash(worktree, path) for path in targets},
+            "target_hashes": hashes,
             "build_project": config["build_project"],
             "checker_command": command,
             "checker_from_cli": config.get("checker_from_cli", False),
@@ -1810,9 +1897,13 @@ def _run_verification(
                 "checker_command", config.get("toml_checker_command"),
             )
         verified = _build_worktree(config, result, record, continue_timing=True)
+        if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
+            raise ValueError("ビルド中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
         if record["status"] == "build_failed":
             try:
-                if _repair_build_failure(config, targets, worktree, run_path, record):
+                if (not request or mode == "build_repair" and len(history) < limit) and _repair_build_failure(
+                    config, targets, worktree, run_path, record,
+                ):
                     continue
             except (OSError, RuntimeError, ValueError) as exc:
                 record.update(status="build_failed", error=format_error(exc))
@@ -1823,6 +1914,7 @@ def _run_verification(
                 write_run_record(record_path, record)
                 raise RunInterrupted(record["run_id"]) from None
             return verified
+        check_cancelled()
         _run_script_phase(config, "after_build", worktree, run_path, record)
         if command is None:
             record.pop("repair_pending", None)
@@ -1830,7 +1922,12 @@ def _run_verification(
             return verified
         write_run_record(record_path, record, timing_stage=5)
         _run_script_phase(config, "before_checker", worktree, run_path, record)
+        if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
+            raise ValueError("チェッカーの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
         checked, findings, use_raw_output = _run_checker(command, verified, record, config["build_project"])
+        check_cancelled()
+        if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
+            raise ValueError("チェッカー実行中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
         if record.get("checker_exit_code") is not None:
             _run_script_phase(config, "after_checker", worktree, run_path, record)
         if checked["status"] == "checker_succeeded":
@@ -1849,6 +1946,8 @@ def _run_verification(
                 record.pop("repair_pending", None)
                 save_verification()
                 return {**checked, "status": record["status"]}
+            if request:
+                return checked
             if not limit:
                 record["checker_review_reason"] = "repair_disabled"
                 write_run_record(record_path, record, timing_stage=5)
@@ -2242,16 +2341,17 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
 
 def resume_with_junie(
     config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
-    checker_instruction: str | None = None,
+    checker_instruction: str | None = None, verification_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     run_id = str(uuid.UUID(run_id))
     with execution_lock(config, run_id):
-        return _resume_with_junie(config, run_id, build_response=build_response, checker_instruction=checker_instruction)
+        return _resume_with_junie(config, run_id, build_response=build_response, checker_instruction=checker_instruction,
+                                  verification_request=verification_request)
 
 
 def _resume_with_junie(
     config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
-    checker_instruction: str | None = None,
+    checker_instruction: str | None = None, verification_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = load_saved_run(config, run_id)
@@ -2263,7 +2363,7 @@ def _resume_with_junie(
         raise ValueError("表示中の Run のビルド結果が変わりました。")
     if checker_instruction is not None and status not in {"checker_needs_review", "checker_failed"}:
         raise ValueError("表示中の Run のチェッカー結果が変わりました。")
-    if not can_resume_run(config, record):
+    if not verification_request and not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
         if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
@@ -2332,6 +2432,25 @@ def _resume_with_junie(
         "source_boundary_review_required": record["source_boundary_review_required"],
         "max_context_chars": record["max_context_chars"],
     }
+    if verification_request:
+        if not (migration_complete or waiting_at_final_checkpoint):
+            raise ValueError("移行が完了してから、ビルドまたはチェッカーを実行してください。")
+        targets = target_paths(unit)
+        record_path = run_path / "run.json"
+        finish_pending_targets(run_path / "agent-workspace", worktree_path, targets, record, record_path)
+        result["request_id"] = verification_request["id"]
+        if verification_request["intent"] == "checker_repair":
+            if status not in {"checker_needs_review", "checker_failed"}:
+                raise ValueError("チェッカー指摘が更新されました。最新の結果を確認してください。")
+            if len(history) >= config["max_repair_attempts"]:
+                raise ValueError("この Run の修正回数が上限に達しました。残った指摘はエディタで修正してください。")
+        verification_request["build_targets"] = _apply_verification_edits(run_path, worktree_path, unit, verification_request)
+        if verification_request["intent"] == "checker_repair":
+            _repair_from_checker_instruction(config, targets, worktree_path, run_path, record, verification_request["text"])
+            verification_request["build_targets"] = {
+                target.as_posix(): review_target_hash(worktree_path, target) for target in targets
+            }
+        return _verify_worktree(config, unit, result, record, request=verification_request)
     if migration_complete:
         if build_response is not None:
             _respond_to_build_failure(config, target_paths(unit), worktree_path, run_path, record, build_response)
@@ -2339,25 +2458,7 @@ def _resume_with_junie(
             targets = target_paths(unit)
             record_path = run_path / "run.json"
             finish_pending_targets(run_path / "agent-workspace", worktree_path, targets, record, record_path)
-            output, truncated = _review_log(run_path, "checker.log")
-            diagnostic = (("Only the last part of the checker output is shown.\n" if truncated else "") + output
-                          or "The checker produced no output.")
-            history = record.setdefault("repair_history", [])
-            details = {"findings": [], "instruction": checker_instruction, "raw_checker_output": True}
-            if output:
-                archive = safe_target(run_path, Path(f"checker-before-repair-{len(history) + 1}.log"))
-                shutil.copyfile(run_path / "checker.log", archive)
-                details["checker_log_path"] = str(archive)
-            try:
-                _attempt_repair(config, targets, targets, worktree_path, run_path, diagnostic, record, details)
-            except (OSError, RuntimeError, ValueError) as exc:
-                record.update(status=status, checker_review_reason=_checker_repair_reason(exc), error=format_error(exc))
-                write_run_record(record_path, record)
-                raise
-            except KeyboardInterrupt:
-                record.update(status=status, checker_review_reason="repair_interrupted", error="Junie による修正を停止しました。")
-                write_run_record(record_path, record)
-                raise RunInterrupted(run_id) from None
+            _repair_from_checker_instruction(config, targets, worktree_path, run_path, record, checker_instruction)
         if script_retry:
             record.update(status="junie_finished")
             record.pop("error", None)

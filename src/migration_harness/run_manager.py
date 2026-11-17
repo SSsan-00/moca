@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import Thread
 
 from .config import find_unit
+from .junie_conversation import JunieConversations
 from .run_records import edit_run_record, execution_lock, load_dashboard_record, load_saved_run, validate_run_id
 
 
@@ -30,6 +31,7 @@ class RunManager:
         self.owner = None
         self.root = None
         self.scope = None
+        self.conversations = JunieConversations(self)
         if default.state.get("run_id"):
             self.views[default.state["run_id"]] = default
         self.configure()
@@ -52,7 +54,8 @@ class RunManager:
             path = Path(root) / "dashboard-queue.json" if root else None
             saved = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
             jobs = saved.get("jobs", [])
-            if jobs and saved.get("project_root") != config.get("project_root"):
+            cancelled = saved.get("cancelled_conversations", {})
+            if (jobs or cancelled) and saved.get("project_root") != config.get("project_root"):
                 raise ValueError("保存済みの実行待ち一覧とプロジェクトが異なります。保存先を確認してください。")
             for job in jobs:
                 if str(uuid.UUID(job["run_id"])) != job["run_id"]:
@@ -78,6 +81,7 @@ class RunManager:
             self.config.update(updated)
         if not root:
             return
+        self.conversations.cancelled = cancelled
         for job in jobs:
             run_id = job["run_id"]
             if job.get("running"):
@@ -93,6 +97,9 @@ class RunManager:
             view = self.get(run_id) if job["action"] not in {"run", "prepare"} else self.new_view(run_id, job["unit_id"])
             self.enqueue(view, job)
         self.persist()
+        if self.conversations.thread:
+            self.conversations.runs.clear()
+            self.conversations.scan()
 
     @property
     def queue_path(self):
@@ -108,7 +115,10 @@ class RunManager:
         jobs = [{key: value for key, value in job.items() if key not in {"reply", "config"}}
                 for job in self.jobs.values()]
         temporary = self.queue_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"project_root": self.config["project_root"], "jobs": jobs}, ensure_ascii=False), encoding="utf-8")
+        temporary.write_text(json.dumps({
+            "project_root": self.config["project_root"], "jobs": jobs,
+            "cancelled_conversations": self.conversations.cancelled,
+        }, ensure_ascii=False), encoding="utf-8")
         temporary.replace(self.queue_path)
 
     def new_view(self, run_id, unit_id):
@@ -158,6 +168,9 @@ class RunManager:
         del self.jobs[run_id]
         if (reply := job.get("reply")) is not None:
             reply.set_exception(ValueError("待機中のアンカー生成を取り消しました。"))
+        if identifier := job.get("conversation_id"):
+            self.conversations.cancelled[run_id] = identifier
+            self.conversations.wake.set()
         self.persist()
         return {"run_id": run_id}
 
@@ -304,12 +317,15 @@ class RunManager:
     def close(self):
         with self.condition:
             self.closing = True
+            self.conversations.wake.set()
             for view in self.views.values():
                 if view.control:
                     view.request_stop({"operation_id": view.state.get("operation_id")})
             threads = list(self.workers.values())
         for thread in threads:
             thread.join()
+        if self.conversations.thread:
+            self.conversations.thread.join()
         with self.condition:
             for view in [self.default, *self.views.values()]:
                 view.closed = True

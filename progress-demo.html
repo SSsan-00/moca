@@ -244,6 +244,8 @@
     .editor-chat-list { display: grid; justify-items: end; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
     .editor-chat-list li { max-width: 95%; min-width: 0; padding: 8px 10px; border-radius: 10px 10px 2px 10px; background: var(--blue-soft); }
     .editor-chat-list li p { white-space: pre-wrap; }
+    .editor-chat-list .editor-chat-reply { margin-block: 6px; }
+    .editor-chat-list details pre { white-space: pre-wrap; margin-block: 4px; overflow-wrap: anywhere; }
     .editor-chat-list button { min-height: 28px; height: auto; padding-inline: 6px; margin-left: 6px; }
     .editor-chat form { display: grid; gap: 6px; border-top: 1px solid var(--line); }
     .editor-chat textarea { width: 100%; min-height: 64px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
@@ -910,7 +912,7 @@
           <p role="status"><button class="state" id="editor-junie-status" type="button" disabled><span class="state-orb" aria-hidden="true"></span><span id="editor-junie-phase"></span></button></p>
           <p id="editor-junie-activity" class="editor-muted" hidden></p>
           <p id="editor-operator-question" class="editor-notice" role="status" hidden></p>
-          <ol class="editor-chat-list" id="editor-prompts" aria-label="Junie への追加指示"></ol>
+          <ol class="editor-chat-list" id="editor-prompts" aria-label="Junie との会話" aria-live="polite"></ol>
         </div>
         <form id="editor-prompt-form">
           <div class="prompt-field">

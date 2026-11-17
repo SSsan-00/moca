@@ -1,0 +1,376 @@
+"""Runごとの自然文の受付、確認、Junieと検証工程への振り分け。"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from datetime import datetime, timezone
+from threading import Event, Thread
+
+from .config import checker_command_for_unit, target_paths
+from .editor_queue import editor_queue, editor_text
+from .errors import format_error
+from .run_records import load_saved_run
+from .worktree_targets import review_target_hash
+
+PENDING = {"received", "clarification", "waiting", "running", "steering"}
+REBUILD = {"build", "build_repair", "checker", "checker_repair"}
+BUILD_PHASES = {"building", "build_succeeded", "build_failed"}
+PHASES = {
+    "prepared": "準備完了", "junie_running": "移行中", "editor_followup": "追加指示を反映中",
+    "editor_checkpoint": "編集の確認待ち", "repairing": "自動修正中", "building": "ビルド中",
+    "checking": "チェッカー実行中", "build_succeeded": "ビルド成功", "build_failed": "ビルド失敗",
+    "checker_succeeded": "チェッカー成功", "checker_accepted": "チェッカー確認済み",
+    "checker_needs_review": "チェッカー指摘の確認待ち", "checker_failed": "チェッカー失敗",
+    "interrupted": "停止中", "junie_finished": "移行完了", "junie_failed": "移行の確認待ち",
+    "script_running": "設定済みスクリプトの実行中", "script_failed": "設定済みスクリプトの失敗",
+}
+
+
+def _answer_kind(text):
+    value = unicodedata.normalize("NFKC", text).lower()
+    if re.fullmatch(r"\s*(?:チェッカー(?:まで|も)?|チェックまで|checker)[。.!！\s]*", value):
+        return "checker"
+    if re.fullmatch(r"\s*(?:ビルド(?:だけ|のみ)?|build)[。.!！\s]*", value):
+        return "build"
+    if re.fullmatch(r"\s*(?:取消|取り消し|キャンセル|cancel)[。.!！\s]*", value):
+        return "cancel"
+    return None
+
+
+def _intent(text, phase):
+    value = unicodedata.normalize("NFKC", text).lower()
+    if re.search(r"(?:今|現在).*(?:何して|何をして|状況|進捗)|^(?:状況|進捗)[は?。\s]*$|what (?:are you doing|is happening)", value):
+        return "status"
+    if re.search(r"(?:ビルド|チェッカー|チェック|build|checker).*(?:なぜ|どうして|原因|結果|ログ|why)", value):
+        return "checker_status" if re.search(r"チェッカー|チェック|checker", value) else "build_status"
+    if re.search(r"差分.*(?:だけ|のみ).*(?:確認|見る)|(?:残り|他).*(?:触らず|触らない).*差分", value):
+        return "diff"
+    if re.search(r"(?:シェル|ターミナル|shell|powershell|業務php|sql|データベース|\bdb\b).*(?:を実行|に接続|実行して|run |execute )", value):
+        return "unsupported"
+    if re.search(r"(?:ビルド|チェッカー|停止|build|checker).*(?:しないで|しない|せず|しなくて|するな|かどうか)|\b(?:don't|do not|without) (?:build|run|stop)\b", value):
+        return "clarify"
+    stop = bool(re.search(r"止め|停止|中止|\bstop\b", value))
+    retry = bool(re.search(r"やり直|再実行|(?:もう|再度|もう一度).*?(?:一回|一度|実行|お願い)|rebuild|rerun", value))
+    build = bool(re.search(r"ビルド|\bbuild\b|rebuild", value))
+    checker = bool(re.search(r"チェッカー|チェック.*(?:再|もう|実行)|\bchecker\b", value))
+    repair = bool(re.search(r"(?<!やり)直して|修正して|合わせて|同じ.*(?:にして|使って)|既定値にして|\bfix\b", value))
+    if stop:
+        if phase in BUILD_PHASES and (build or retry) and not checker and (retry or "再ビルド" in value):
+            return "stop_build_repair" if repair else "stop_build"
+        return "clarify"
+    if checker:
+        return "checker_repair" if repair else "checker"
+    if build:
+        return "build_repair" if repair else "build"
+    if retry or re.fullmatch(r"\s*(?:もう一回|もう一度|再度)(?:お願い|お願いします)?[。.!！\s]*", value):
+        return "clarify"
+    return "junie"
+
+
+def target_versions(worktree, unit):
+    return {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}
+
+
+def saved_edits(queue):
+    return {name: edit["id"] for name, edit in queue["edits"].items()}
+
+
+def _finish(entry, status, message):
+    entry.update(status=status, message=message)
+    entry["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def invalidate_queued_steering(queue):
+    """後から保存した版に、まだ渡していない指示を黙って適用しない。"""
+    for entry in queue.get("conversation", []):
+        if entry["status"] != "steering":
+            continue
+        prompt = next((p for p in queue["prompts"] if p["id"] == entry["id"] and p["status"] == "queued"), None)
+        if prompt is not None:
+            queue["prompts"].remove(prompt)
+            _finish(entry, "failed", "保存版が更新されました。エディタで確認して指示を送信し直してください。")
+
+
+def _diagnostic(run_path, kind):
+    from .workflow import _review_log
+
+    text, truncated = _review_log(run_path, f"{kind}.log")
+    return {"kind": kind, "text": text[-8_000:], "truncated": truncated or len(text) > 8_000} if text else None
+
+
+class JunieConversations:
+    def __init__(self, manager):
+        self.manager = manager
+        self.wake = Event()
+        self.runs = set()
+        self.cancelled = {}
+        self.thread = None
+
+    def start(self):
+        root = self.manager.root
+        if root and self.thread is None:
+            self.scan()
+            self.thread = Thread(target=self.dispatch, name="junie-conversations", daemon=True)
+            self.thread.start()
+
+    def scan(self):
+        self.runs = {path.parent.name for path in self.manager.queue_path.parent.glob("*/editor.json")} | self.runs
+        self.wake.set()
+
+    def submit(self, run_id, action):
+        identifier = action.get("id")
+        if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier):
+            raise ValueError("指示 ID が無効です。画面から送信し直してください。")
+        text = editor_text(action.get("text"), 4_000).strip()
+        if not text:
+            raise ValueError("指示を入力してください。")
+        run_path, worktree, _, unit = load_saved_run(self.manager.config, run_id)
+        with editor_queue(run_path) as queue, self.manager.condition:
+            history = queue.setdefault("conversation", [])
+            for entry in history:
+                if entry["id"] == identifier:
+                    if entry["text"] != text:
+                        raise ValueError("同じ指示 ID がすでに使われています。")
+                    return entry
+            if sum(entry["status"] in PENDING for entry in history) >= 16:
+                raise ValueError("処理待ちの指示が最大件数に達しました。先に確認待ちの指示に回答してください。")
+            entry = {
+                "id": identifier, "text": text, "status": "received",
+                "received_at": datetime.now(timezone.utc).isoformat(),
+                "edit_revision": queue.get("edit_revision"), "edits": saved_edits(queue),
+                "targets": target_versions(worktree, unit),
+            }
+            if question := self.manager.get(run_id).state.get("junie_request"):
+                entry["junie_question"] = question["id"]
+            history.append(entry)
+        return entry
+
+    def notify(self, run_id):
+        with self.manager.condition:
+            if self.manager.closing:
+                return
+            self.runs.add(run_id)
+            self.start()
+            self.wake.set()
+
+    def dispatch(self):
+        while not self.manager.closing:
+            self.wake.wait(.2)
+            self.wake.clear()
+            with self.manager.condition:
+                run_ids = tuple(self.runs)
+                config = self.manager.config.copy()
+            for run_id in run_ids:
+                try:
+                    pending = self.advance(config, run_id)
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+                    continue
+                if not pending:
+                    # 受付直後の通知との競合を避け、Runの次回操作でも再検査する。
+                    with self.manager.condition:
+                        if not self.wake.is_set():
+                            self.runs.discard(run_id)
+
+    def advance(self, config, run_id):
+        from .dashboard import _prompt_timing
+
+        run_path, worktree, _, unit = load_saved_run(config, run_id)
+        with editor_queue(run_path) as queue, self.manager.condition:
+            if self.manager.closing or config["run_root"] != self.manager.root:
+                return False
+            history = queue.get("conversation", [])
+            cancelled = self.cancelled.get(run_id)
+            for entry in history:
+                if entry["id"] == cancelled and entry["status"] == "waiting":
+                    _finish(entry, "cancelled", "実行待ちの検証を取り消しました。")
+                    # 履歴を保存した後の巡回で、再起動用の取消記録を除去する。
+                    return True
+            if cancelled:
+                self.cancelled.pop(run_id)
+                self.manager.persist()
+            if not any(entry["status"] in PENDING for entry in history):
+                return False
+            view = self.manager.get(run_id)
+            _, _, record, _ = load_saved_run(config, run_id)
+            job = self.manager.jobs.get(run_id, {})
+            state = view.state
+            phase = record["status"]
+            for entry in history:
+                status = entry["status"]
+                if status == "running" and job.get("conversation_id") != entry["id"]:
+                    _finish(entry, "unknown", "前回は処理が開始されました。結果をログで確認し、必要なら新しい指示を送ってください。")
+                if status == "steering":
+                    prompt = next((p for p in queue["prompts"] if p["id"] == entry["id"]), {})
+                    if prompt.get("status") == "sent":
+                        _finish(entry, "done", "Junie の指示への対応が移行先に反映されました。")
+                    elif not job and state.get("ready"):
+                        if prompt.get("status") in {"steering", "applying", "sending"}:
+                            _finish(entry, "unknown", "Junie への送信は始まりました。結果をエディタとログで確認してください。")
+                        else:
+                            entry["message"] = "指示は保留中です。同じ Run を再開したときに Junie に渡します。"
+            for entry in history:
+                if entry["status"] != "received":
+                    continue
+                intent = _intent(entry["text"], phase)
+                if intent in {"status", "build_status", "checker_status"}:
+                    current = "実行待ち" if state.get("queued") else PHASES.get(phase, "状況を確認中")
+                    message = f"現在の工程は「{current}」です。"
+                    if intent != "status":
+                        kind = intent.removesuffix("_status")
+                        code = record.get(f"{kind}_exit_code")
+                        prior = record.get("last_diagnostics", {}).get(kind, {}) if code is None else {}
+                        code = prior.get("code", code)
+                        log = prior.get("log") or (_diagnostic(run_path, kind) if code is not None else None)
+                        entry["logs"] = [log] if log else []
+                        if code is not None:
+                            message += f" 直近の終了コードは {code} です。"
+                        detail = prior.get("error") or (record.get("error") if (phase in BUILD_PHASES) == (kind == "build") else None)
+                        if detail:
+                            message += f" {detail}"
+                        if code is None and not log:
+                            message += " 保存済みの結果はありません。"
+                    _finish(entry, "done", message)
+                    continue
+                question = next((old for old in reversed(history) if old["status"] == "clarification"), None)
+                request = state.get("junie_request")
+                if entry.get("junie_question") and (not request or entry["junie_question"] != request["id"]):
+                    _finish(entry, "failed", "Junie の確認は更新されました。現在の質問を確認してください。")
+                    continue
+                if request and entry.get("junie_question"):
+                    choices = request["options"]
+                    option = next((choice for choice in choices if entry["text"] in (choice["label"], choice["id"])), None)
+                    if option is not None:
+                        entry["question"] = request["title"]
+                        accepted = view.answer_junie({"request_id": request["id"], "option_id": option["id"],
+                                                      "operation_id": state["operation_id"]})
+                        _finish(entry, "done" if accepted else "failed", "Junie に回答しました。" if accepted
+                                else "確認が更新されました。現在の質問を確認してください。")
+                        continue
+                    if question is None:
+                        entry["question"] = request["title"]
+                        _finish(entry, "failed", "回答は表示されている選択肢の文言で入力してください。")
+                        continue
+                if question:
+                    answer = _answer_kind(entry["text"])
+                    if answer is None:
+                        _finish(entry, "failed", "「ビルドだけ」「チェッカーまで」「キャンセル」のいずれかで回答してください。")
+                    elif answer == "cancel":
+                        _finish(question, "cancelled", "指示を取り消しました。")
+                        _finish(entry, "done", "確認待ちの指示を取り消しました。")
+                    else:
+                        # 回答時点で選んだ保存版を使う。
+                        question.update(intent=answer, status="waiting", answer=entry["text"],
+                                        edit_revision=entry["edit_revision"], edits=entry["edits"], targets=entry["targets"])
+                        _finish(entry, "done", "確認への回答を受け付けました。")
+                    continue
+                if intent == "clarify":
+                    question = "ビルドだけですか？ チェッカーまで実行しますか？"
+                    entry.update(status="clarification", message=question, question=question)
+                elif intent == "unsupported":
+                    _finish(entry, "failed", "この欄では移行先の編集指示と設定済みのビルド・チェッカーを受け付けます。")
+                else:
+                    entry.update(status="waiting", intent=intent)
+
+            entry = next((item for item in history if item["status"] == "waiting"), None)
+            if entry is None:
+                return any(item["status"] in PENDING for item in history)
+            intent = entry["intent"]
+            if intent == "junie":
+                if entry["edit_revision"] != queue.get("edit_revision"):
+                    _finish(entry, "failed", "保存版が更新されました。エディタで確認して指示を送信し直してください。")
+                    return True
+                timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
+                                        live=bool(view.control and view.control.junie_steering))
+                if timing is None:
+                    entry["message"] = "現在の工程が終わってから、Junie に渡せるか確認します。"
+                    if state.get("ready") and not job:
+                        _finish(entry, "failed", "この工程から Junie に指示を渡せません。進捗を確認してください。")
+                elif sum(prompt["status"] != "sent" for prompt in queue["prompts"]) < 16:
+                    queue["prompts"].append({"id": entry["id"], "text": entry["text"], "status": "queued"})
+                    message = {
+                        "immediate": "実行中の Junie に追加指示を渡します。",
+                        "repair_restart": "修正を区切り、保存した編集と指示を合流します。",
+                        "checkpoint": "現在の作業区間の終了後に Junie に渡します。",
+                        "resume": "同じ Run を再開したときに Junie に渡します。",
+                    }
+                    entry.update(status="steering", message=message[timing], plan=message[timing])
+                return True
+            if job:
+                if job.get("conversation_id") == entry["id"]:
+                    return True
+                if (intent.startswith("stop_build") and not entry.get("stop_checked")
+                        and job.get("conversation_id") != entry["id"]):
+                    entry["stop_checked"] = True
+                    if phase == "building" and view.control and view.control.request_build_stop():
+                        view.request_stop({"operation_id": state["operation_id"]})
+                        entry["plan"] = entry["message"] = "現在のビルドの停止を待ち、保存した版で再ビルドします。"
+                if intent == "diff" and view.control and not state.get("generating_anchors"):
+                    view.request_stop({"operation_id": state["operation_id"]})
+                entry.setdefault("message", "現在の処理の終了を待ちます。")
+                return True
+            if intent == "diff":
+                agent = run_path / "agent-workspace"
+                current = target_versions(worktree, unit)
+                baseline = (record.get("verification") or {}).get("target_hashes", record.get("target_hashes", {}))
+                drafts = target_versions(agent, unit) if agent.is_dir() and not agent.is_symlink() else {}
+                changed = [name for name, digest in current.items()
+                           if name in queue["edits"] or name in baseline and baseline[name] != digest
+                           or drafts.get(name) not in (None, digest)]
+                entry["review_targets"] = changed
+                message = "確認範囲を現在の移行先に絞りました。"
+                _finish(entry, "done", message + ("エディタの「差分」で表示された対象を確認してください。" if changed
+                                                  else "保存記録と照合できる差分はありませんでした。"))
+                return True
+            mode = intent.removeprefix("stop_")
+            if mode not in REBUILD or not state.get("ready"):
+                return True
+            if mode.startswith("checker") and checker_command_for_unit(config, unit) is None:
+                _finish(entry, "failed", "チェッカーが設定されていません。設定タブでコマンドを確認してください。")
+                return True
+            if any(other["unit_id"] == record["unit_id"] for other in self.manager.jobs.values()):
+                entry["message"] = "同じ移行単位の別の Run が終わるまで待機します。"
+                return True
+            self.manager.enqueue(view, {"action": "conversation", "conversation_id": entry["id"]})
+            self.manager.persist()
+            self.manager.start_pending()
+            operation = {"build": "保存版をビルドします。", "build_repair": "保存版をビルドし、失敗した場合は Junie に修正を依頼します。",
+                         "checker": "保存版をビルドし、成功後にチェッカーを実行します。",
+                         "checker_repair": "Junie に指摘の修正を依頼し、ビルドとチェッカーを実行します。"}[mode]
+            entry.setdefault("plan", operation)
+            entry["message"] = "実行枠が空き次第、処理を開始します。"
+            return True
+
+
+def run_instruction(config, run_id, identifier):
+    from .workflow import resume_with_junie
+
+    run_path, _, _, _ = load_saved_run(config, run_id)
+    with editor_queue(run_path) as queue:
+        entry = next(item for item in queue["conversation"] if item["id"] == identifier)
+        if entry["status"] != "waiting":
+            raise ValueError("指示は開始済みか終了済みです。履歴を確認してください。")
+        entry.update(status="running", message="保存版を照合して検証を開始します。", started_at=datetime.now(timezone.utc).isoformat())
+        instruction = entry.copy()
+    return resume_with_junie(config, run_id, verification_request=instruction)
+
+
+def finish_instruction(config, run_id, identifier, result, error=None):
+    run_path, _, record, _ = load_saved_run(config, run_id)
+    with editor_queue(run_path) as queue:
+        entry = next((item for item in queue.get("conversation", []) if item["id"] == identifier), None)
+        if entry is None or entry["status"] not in {"waiting", "running"}:
+            return
+        if result and result.get("request_id") == identifier:
+            entry["result_status"] = result["status"]
+            entry["built_targets"] = result["verification"]["target_hashes"]
+            entry["logs"] = [log for kind in ("build", "checker")
+                             if kind == "build" or result.get("checker_log_path")
+                             if (log := _diagnostic(run_path, kind))]
+            detail = result.get("error") or record.get("error")
+            message = f"結果は「{PHASES.get(result['status'], '確認待ち')}」です。"
+            _finish(entry, "done", f"{message} {detail}" if detail else message)
+        elif isinstance(error, KeyboardInterrupt):
+            _finish(entry, "cancelled", "処理を停止しました。進捗と保存した編集を確認してください。")
+        else:
+            _finish(entry, "failed", format_error(error) if error else "検証結果を確認できませんでした。進捗を確認してください。")

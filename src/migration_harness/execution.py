@@ -10,7 +10,7 @@ from concurrent.futures import Future
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from threading import Event
+from threading import Event, Lock
 from typing import Callable, Iterator
 
 
@@ -28,6 +28,15 @@ class ExecutionControl:
     on_junie_request: Callable[[dict | None], Future[str] | None] | None = None
     trusted_junie_workspaces: set[str] = field(default_factory=set)
     junie_steering: bool = False
+    _build_lock: Lock = field(default_factory=Lock, repr=False)
+    _building: bool = False
+
+    def request_build_stop(self) -> bool:
+        with self._build_lock:
+            if not self._building:
+                return False
+            self.cancelled.set()
+            return True
 
 
 _control: ContextVar[ExecutionControl | None] = ContextVar("execution_control", default=None)
@@ -54,6 +63,23 @@ def junie_dashboard_control() -> ExecutionControl | None:
 def check_cancelled() -> None:
     if (control := _control.get()) is not None and control.cancelled.is_set():
         raise OperationCancelled("ダッシュボードから停止しました。")
+
+
+@contextmanager
+def build_process_scope() -> Iterator[None]:
+    control = _control.get()
+    if control is None:
+        yield
+        return
+    with control._build_lock:
+        check_cancelled()
+        control._building = True
+    try:
+        yield
+    finally:
+        with control._build_lock:
+            control._building = False
+            check_cancelled()
 
 
 def report_activity(message: str, *, kind: str = "activity", detail: str = "") -> None:

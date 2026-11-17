@@ -34,6 +34,7 @@ from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset, safe_target
 from migration_harness.junie_cli import list_models
+from migration_harness.junie_conversation import finish_instruction, invalidate_queued_steering, run_instruction
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.run_records import load_saved_run, run_observer
 from migration_harness.settings_form import build_settings_draft
@@ -527,6 +528,8 @@ class Dashboard:
                                             })
                                             record_operator_edit(queue, name, content, draft)
                                             original, content = editor_target(worktree, Path(name))
+                                        queue["edit_revision"] = secrets.token_hex(12)
+                                        invalidate_queued_steering(queue)
                                 else:
                                     raise ValueError("現在の工程ではこの操作を受け付けられません。")
                             payload = {
@@ -541,6 +544,8 @@ class Dashboard:
                                 "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
                                 "status": phase, "operator_question": record.get("operator_question"),
                             }
+                            if manager:
+                                payload.update(conversation=queue.get("conversation", []), can_prompt=True)
                     self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 except _ERRORS as exc:
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
@@ -762,6 +767,20 @@ class Dashboard:
                     self.save_settings(action)
                     return
                 if editor:
+                    if action.get("kind") == "conversation" and manager:
+                        run_id = self.dashboard.state.get("run_id")
+                        try:
+                            if not run_id or run_id != action.get("run_id"):
+                                raise ValueError("表示中の実行が変わりました。")
+                            entry = manager.conversations.submit(run_id, action)
+                        except _ERRORS as exc:
+                            self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                        else:
+                            try:
+                                self.send_body(202, "application/json", json.dumps(entry, ensure_ascii=False).encode())
+                            finally:
+                                manager.conversations.notify(run_id)
+                        return
                     self.send_editor(action)
                     return
                 if prompts:
@@ -916,6 +935,7 @@ def execute_dashboard_action(view, config, action):
     token = run_observer.set(view.observe)
     result = None
     run_id = action["run_id"]
+    conversation_id = action.get("conversation_id")
     try:
         with control_scope(view.control):
             kind = action["action"]
@@ -929,6 +949,9 @@ def execute_dashboard_action(view, config, action):
                 _, _, result, _ = load_saved_run(config, run_id)
             elif kind == "run":
                 result = run_with_junie(config, action["unit_id"], run_id=run_id)
+            elif kind == "conversation":
+                result = run_instruction(config, run_id, conversation_id)
+                finish_instruction(config, run_id, conversation_id, result)
             elif kind == "accept":
                 review_checker(config, run_id, action["finding_id"], action["reason"])
                 _, _, result, _ = load_saved_run(config, run_id)
@@ -942,6 +965,11 @@ def execute_dashboard_action(view, config, action):
             view.observe(result)
             view.ready(config, result, "判断理由を記録しました。" if kind == "accept" else "")
     except (*_ERRORS, KeyboardInterrupt) as exc:
+        if conversation_id:
+            try:
+                finish_instruction(config, run_id, conversation_id, None, exc)
+            except _ERRORS as save_error:
+                exc.add_note(f"Junie の履歴を保存できませんでした。{format_error(save_error)}")
         stopped = isinstance(exc, KeyboardInterrupt) or bool(view.control and view.control.cancelled.is_set())
         try:
             _, _, result, _ = load_saved_run(config, run_id)
@@ -1024,6 +1052,8 @@ def run_dashboard(
             thread.start()
             try:
                 manager.start_pending()
+                with manager.condition:
+                    manager.conversations.start()
                 while True:
                     try:
                         action = view.actions.get(timeout=0.25)

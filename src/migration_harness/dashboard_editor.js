@@ -352,10 +352,14 @@
   }
 
   function renderPrompts() {
-    const key = JSON.stringify([state.prompts, state.can_prompt]);
+    const key = JSON.stringify([state.run_id, state.prompts, state.conversation, state.can_prompt,
+      progress().status, Boolean(progress().junie_request)]);
     if (key === shownPrompts) return;
     shownPrompts = key;
-    promptList.replaceChildren(...state.prompts.map(message => {
+    const conversation = state.conversation || [];
+    const ids = new Set(conversation.map(message => message.id));
+    const lastVerification = conversation.findLast(entry => entry.result_status);
+    promptList.replaceChildren(...state.prompts.filter(message => !ids.has(message.id)).map(message => {
       const item = document.createElement("li");
       const author = Object.assign(document.createElement("span"), {className: "editor-muted", textContent: "あなた"});
       const text = Object.assign(document.createElement("p"), {textContent: message.text});
@@ -375,21 +379,64 @@
         item.append(button);
       }
       return item;
+    }), ...conversation.map(message => {
+      const item = document.createElement("li");
+      const promptText = Object.assign(document.createElement("p"), {textContent: message.text});
+      const status = Object.assign(document.createElement("p"), {
+        className: "editor-chat-reply",
+        textContent: [...new Set([message.question, message.answer && `回答：${message.answer}`,
+          message.plan, message.message || "受け付けました。"].filter(Boolean))].join("\n"),
+      });
+      item.append(promptText, status);
+      const targets = Object.entries(message.built_targets || {});
+      if (targets.length) {
+        const version = Object.assign(document.createElement("p"), {className: "editor-muted",
+          textContent: targets.map(([name, hash]) => `${name} · ${hash || "ファイルなし"}`).join("\n")});
+        item.append(version);
+      }
+      if (message.review_targets?.length) {
+        item.append(Object.assign(document.createElement("p"), {className: "editor-muted",
+          textContent: message.review_targets.join("\n")}));
+      }
+      for (const log of message.logs || []) {
+        const details = document.createElement("details");
+        const summary = Object.assign(document.createElement("summary"), {
+          textContent: (log.kind === "build" ? "ビルド出力" : "チェッカー出力") + (log.truncated ? "（末尾）" : ""),
+        });
+        const output = Object.assign(document.createElement("pre"), {textContent: log.text});
+        details.append(summary, output);
+        item.append(details);
+      }
+      if (message === lastVerification
+          && message.result_status === progress().status && !progress().junie_request) {
+        const label = {build_failed: "ビルド失敗を確認", checker_needs_review: "チェッカー出力を確認",
+          checker_failed: "チェッカー出力を確認"}[message.result_status];
+        if (label) {
+          const button = Object.assign(document.createElement("button"), {className: "button", type: "button", textContent: label});
+          button.addEventListener("click", () => find("#toggle").click());
+          item.append(button);
+        }
+      }
+      return item;
     }));
   }
 
   function updateChat() {
     renderPrompts();
-    const question = state.operator_question;
-    setText("#editor-operator-question", question ? "Junie からの確認\n" + question
-      + "\n回答を Junie に送ってから、進捗タブで実行を再開してください。" : "");
+    const liveQuestion = progress().junie_request;
+    const question = liveQuestion?.title || state.operator_question;
+    const instructions = liveQuestion
+      ? "\nこの欄に選択肢の文言を入力してください。\n" + liveQuestion.options.map(option => option.label).join("、")
+      : "\n回答を Junie に送ってから、進捗タブで実行を再開してください。";
+    setText("#editor-operator-question", question ? "Junie からの確認\n" + question + instructions : "");
     find("#editor-operator-question").hidden = !question;
     const showAgent = state.source === "agent-workspace";
     const snapshot = progress();
     const activity = find("#editor-junie-activity");
     activity.textContent = showAgent && !snapshot.ready ? snapshot.activity?.message || "" : "";
     activity.hidden = !activity.textContent;
-    find("#editor-prompt-timing").textContent = !state.can_prompt ? "現在の工程では指示を登録できません。"
+    find("#editor-prompt-timing").textContent = state.conversation && !editPrompt ? "工程の確認、追加指示、ビルドやチェッカーの再実行を依頼できます。"
+      : !state.can_prompt ? "現在の工程では指示を登録できません。"
       : state.prompt_timing === "repair_restart" ? "保存した編集を反映して Junie に指示を渡し直し、対応後に再ビルドします。"
       : state.prompt_timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
       : state.prompt_timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
@@ -536,6 +583,7 @@
   save.addEventListener("click", saveDraft);
   cancelEdit.addEventListener("click", finishPromptEdit);
   prompt.addEventListener("input", updateSendButton);
+  const submittedMessages = new Map();
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const text = prompt.value.trim();
@@ -544,8 +592,22 @@
     const version = ++revision;
     updateChat();
     report("#editor-prompt-error");
+    const runId = state.run_id;
     try {
-      const data = await request("editor", {kind: "prompt", run_id: state.run_id, id: editPrompt, text});
+      if (state.conversation && !editPrompt) {
+        let submission = submittedMessages.get(runId);
+        if (submission?.text !== text) {
+          submission = {id: crypto.randomUUID().replaceAll("-", ""), text};
+          submittedMessages.set(runId, submission);
+        }
+        const entry = await request("editor", {kind: "conversation", run_id: runId, ...submission});
+        submittedMessages.delete(runId);
+        if (version !== revision) return;
+        state.conversation = [...state.conversation.filter(item => item.id !== entry.id), entry];
+        prompt.value = "";
+        return;
+      }
+      const data = await request("editor", {kind: "prompt", run_id: runId, id: editPrompt, text});
       if (version !== revision) return;
       state.prompts = data.prompts;
       if (editPrompt) finishPromptEdit();
