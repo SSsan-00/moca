@@ -126,6 +126,34 @@ async function checkProgressSelection() {
   assert.equal(runtime.connected, true);
   streams[0].onmessage({data: JSON.stringify({run_id: "A"})});
   assert.equal(runtime.snapshot.run_id, "B", "events from the old connection must be ignored");
+
+  const requests = [];
+  const bindStart = source.indexOf("function runFetch(");
+  const bindEnd = source.indexOf("const tokenRuns", bindStart);
+  assert.ok(bindStart >= 0 && bindEnd > bindStart, "missing dashboard workspace actions");
+  Object.assign(runtime, {
+    Headers, dashboardRevision: 0,
+    bindHarnessWorkspace(actions) { runtime.actions = actions; },
+    fetch(path, options) {
+      const body = options.body ? JSON.parse(options.body) : {};
+      requests.push({path, headers: options.headers, body});
+      return Promise.resolve({ok: true, json: async () => ({run_id: body.run_id})});
+    },
+  });
+  vm.runInContext(source.slice(bindStart, bindEnd), runtime);
+  await runtime.actions.execute("hide-run", {run_id: "A"});
+  assert.equal(runtime.selectedRunId, "B", "deleting a different run must preserve the selection");
+  assert.equal(streams.length, 2);
+  const deleting = runtime.actions.execute("hide-run", {run_id: "B"});
+  await flush();
+  assert.equal(runtime.selectedRunId, "");
+  assert.equal(runtime.snapshot.run_id, "B", "the previous snapshot may still be visible while reconnecting");
+  await runtime.runFetch("control");
+  assert.equal(requests.at(-1).headers.get("X-Run-ID"), null);
+  streams[2].onmessage({data: JSON.stringify({status: "idle"})});
+  await deleting;
+  await runtime.actions.execute("prepare", {unit_ids: ["new-unit"]});
+  assert.equal(requests.at(-1).headers.get("X-Run-ID"), null, "new runs must omit the deleted run's ID");
 }
 
 (async () => {
