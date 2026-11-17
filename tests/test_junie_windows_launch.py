@@ -256,7 +256,7 @@ class JunieLaunchTests(unittest.TestCase):
             process.poll.return_value = 0
             command = ["junie", "--prompt", "private-prompt"]
 
-            def start(_):
+            def start(_, **streams):
                 log.write_text(
                     "2026-11-16 01:02:03.000 [main] INFO  JunieRunner - private-info-not-for-report\n"
                     "2026-11-16 01:02:03.100 [main] ERROR JunieRunner - JLine returned dumb.\n"
@@ -321,7 +321,7 @@ class JunieLaunchTests(unittest.TestCase):
                 "\tat example.Terminal.last(Terminal.kt:999)\n"
             )
 
-            def start(_):
+            def start(_, **streams):
                 log.write_text(
                     f"2026-11-16 12:29:14.752 [main] INFO  JunieRunner - Startup: Junie 26.11.1 (4020.10) (pid=71220); log file: {log}\n"
                     f"2026-11-16 12:29:14.777 [main] INFO  JunieRunner - user.dir: {os.getcwd()}\n"

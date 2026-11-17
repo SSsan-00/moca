@@ -573,7 +573,7 @@ class JunieControlTests(unittest.TestCase):
             self.assertTrue(marker.exists(), "test child did not start")
             child_pid = int(marker.read_text())
 
-            def launch(_):
+            def launch(_, **streams):
                 self.control.cancelled.set()
                 return process
 

@@ -30,6 +30,7 @@ from .execution import (
     junie_dashboard_control, report_activity,
 )
 from .files import has_symlink_component, safe_target
+from .junie_process import JunieProcess
 from .junie_thoughts import JunieThoughts
 
 if TYPE_CHECKING:
@@ -234,7 +235,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
     return line, interpreter, environment
 
 
-def _launch_process(command: list[str], **streams: Any) -> subprocess.Popen:
+def _launch_process(command: list[str], *, owned=False, terminal=False, **streams: Any) -> subprocess.Popen:
     check_cancelled()
     executable = None
     interpreter = None
@@ -252,6 +253,8 @@ def _launch_process(command: list[str], **streams: Any) -> subprocess.Popen:
             environment = os.environ.copy()
         # JunieのPythonツールが補助モジュールを読んでも、読み取り専用資料の隣にキャッシュを作らせない。
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        if owned:
+            return JunieProcess(resolved, terminal=terminal, cwd=cwd, env=environment, **streams)
         return subprocess.Popen(resolved, cwd=cwd, env=environment, **streams)
     except (OSError, ValueError) as exc:
         raise JunieLaunchError(command, cwd, executable, exc, interpreter=interpreter) from exc
@@ -273,6 +276,8 @@ def has_completion_record(path: Path, token: str) -> bool:
 
 def _close_junie(process: subprocess.Popen) -> int:
     """Junieの終了を待ち、次のカプセルと端末操作が重ならないようにする。"""
+    if isinstance(process, JunieProcess):
+        return process.stop()
     if process.poll() is not None:
         return process.returncode
     try:
@@ -859,7 +864,7 @@ class _AcpSession:
             if not line:
                 if self.prompt_finished and self.steering_waiting is None:
                     return True
-                raise JunieSessionError(self.command, self.process.poll() or 1, "JunieのACP接続が終了しました。")
+                raise JunieSessionError(self.command, self.process.returncode or 1, "JunieのACP接続が終了しました。")
             try:
                 message = json.loads(line)
                 if not isinstance(message, dict):
@@ -956,6 +961,20 @@ def _run_session(
     acp = None
     thoughts = None
     completed = False
+    stopped = False
+
+    def stop() -> int:
+        nonlocal stopped
+        if not stopped:
+            try:
+                code = _close_junie(process)
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                raise JunieStopError(
+                    "Junieの終了を確認できませんでした。起動した端末で終了してから再開してください。"
+                ) from exc
+            stopped = True
+            return code
+        return process.returncode
 
     def completion_ready() -> bool:
         return (
@@ -979,6 +998,8 @@ def _run_session(
         # 明示した読み取り専用タスクだけ、最終回答を呼び出し元で検証・保存する。
         if cancellable and accept_result is not None and events.result is not None:
             result, events.result = events.result, None
+            stop()
+            check_cancelled()
             accept_result(result)
         return failed
 
@@ -1007,14 +1028,14 @@ def _run_session(
         thought_path = dashboard.junie_thoughts_path if dashboard is not None else None
         streams = {"stderr": subprocess.PIPE} if thought_path is not None else {}
         if headless:
-            process = _launch_process(command, stdin=subprocess.DEVNULL, **streams)
+            process = _launch_process(command, owned=True, stdin=subprocess.DEVNULL, **streams)
         elif dashboard is None:
             # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
-            process = _launch_process(command)
+            process = _launch_process(command, owned=True, terminal=True)
         else:
             # ACPではプロンプトを起動引数から外し、初期化後のsession/prompt要求で送る。
             acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
-            process = _launch_process(acp_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
+            process = _launch_process(acp_command, owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
             acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request,
                               completion_path, token, prompts)
             acp.request(1, "initialize", protocolVersion=1, clientCapabilities={})
@@ -1031,19 +1052,29 @@ def _run_session(
                 report_activity("保存した編集と追加指示を反映するため、現在のJunie修正を切り替えます。")
                 raise JunieEditHandoff()
             try:
-                exit_code = process.wait(timeout=0.25)
+                if isinstance(process, JunieProcess):
+                    process.wait_for_launcher(timeout=0.25)
+                    exit_code = stop()
+                    if process.terminal_interrupted():
+                        raise KeyboardInterrupt
+                else:
+                    exit_code = process.wait(timeout=0.25)
             except subprocess.TimeoutExpired:
                 check_cancelled()
                 # 完了記録での早期終了は対話・ACPだけ。非対話モードはプロセスの自然終了を待つ。
                 if not headless and completion_ready():
-                    exit_code = _close_junie(process)
-                    completed = True
+                    exit_code = stop()
+                    check_cancelled()
+                    completed = completion_ready()
                     return exit_code
                 if time.monotonic() >= next_poll:
                     next_poll = time.monotonic() + 0.5
                     if poll():
-                        _close_junie(process)
+                        stop()
                         raise JunieConnectionError("Junie model service connection failed")
+                    if stopped:
+                        completed = completion_ready()
+                        return 0 if acp is not None else process.returncode
                 if acp is not None:
                     try:
                         finished = acp.advance()
@@ -1054,7 +1085,8 @@ def _run_session(
                             raise
                         raise JunieSessionError(command, 1, "JunieのACP応答に必要な項目がありません。") from None
                     if finished:
-                        _close_junie(process)
+                        stop()
+                        check_cancelled()
                         if poll() and not has_completion_record(completion_path, token):
                             raise JunieConnectionError("Junie model service connection failed")
                         completed = completion_ready()
@@ -1063,7 +1095,7 @@ def _run_session(
                     dashboard.junie_steering = bool(prompts is not None and acp.steering_supported and acp.session_id
                                                    and not acp.pending and not acp.prompt_finished)
                 now = time.monotonic()
-                if now >= next_heartbeat and process.poll() is None:
+                if now >= next_heartbeat:
                     elapsed = int(now - (events.last_event_at if events.last_event_at is not None else started))
                     detail = (
                         f"最後のイベントから{elapsed}秒" if events.last_event_at is not None
@@ -1086,20 +1118,16 @@ def _run_session(
                     )
                 completed = completion_ready()
                 return exit_code
-    except (KeyboardInterrupt, OSError, ValueError) as exc:
-        if process is not None and process.poll() is None:
-            try:
-                if acp is not None and isinstance(exc, KeyboardInterrupt):
-                    try:
-                        acp.cancel()
-                    except OSError:
-                        pass
-                _close_junie(process)
-            except OSError as cleanup_error:
-                # 書き込みが続いている可能性があるため、通常の通信再試行には進ませない。
-                raise JunieStopError(
-                    "Junieの終了を確認できませんでした。起動した端末で終了してから再開してください。"
-                ) from cleanup_error
+    except JunieStopError:
+        raise
+    except BaseException as exc:
+        if process is not None and not stopped and (isinstance(process, JunieProcess) or process.poll() is None):
+            if acp is not None and isinstance(exc, KeyboardInterrupt):
+                try:
+                    acp.cancel()
+                except OSError:
+                    pass
+            stop()
         raise
     finally:
         try:

@@ -95,7 +95,7 @@ class RunManager:
                                   "message": "準備が完了していません。移行単位を選んで新しく実行してください。"})
                 continue
             view = self.get(run_id) if job["action"] not in {"run", "prepare"} else self.new_view(run_id, job["unit_id"])
-            self.enqueue(view, job)
+            self.enqueue(view, job, operation_id=job.get("operation_id"))
         self.persist()
         if self.conversations.thread:
             self.conversations.runs.clear()
@@ -143,10 +143,13 @@ class RunManager:
                 self.views[run_id] = view
             return self.views[run_id]
 
-    def enqueue(self, view, action):
+    def enqueue(self, view, action, *, operation_id=None):
         """新規・再開・復元を同じFIFOキューと画面状態へ登録する。"""
         run_id = view.state["run_id"]
-        self.jobs[run_id] = {**action, "run_id": run_id, "unit_id": view.state["unit_id"]}
+        self.jobs[run_id] = {
+            **action, "run_id": run_id, "unit_id": view.state["unit_id"],
+            "operation_id": operation_id or uuid.uuid4().hex,
+        }
         view.publish({**view.state, "ready": False, "queued": True, "cancellable": False,
                       "operation_id": None, "stop_requested": False,
                       "generating_anchors": action["action"] == "anchors"})
@@ -254,7 +257,7 @@ class RunManager:
                 job["config"] = copy.deepcopy(self.config)
                 view = self.views[run_id]
                 view.publish({**view.state, "queued": False})
-                view.begin_operation()
+                view.begin_operation(job["operation_id"])
                 self.persist()
                 thread = Thread(target=self.execute, args=(run_id,), daemon=True, name=f"migration-{run_id[:8]}")
                 self.workers[run_id] = thread

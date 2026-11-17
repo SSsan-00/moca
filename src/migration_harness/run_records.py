@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from time import sleep
 from typing import Any, Literal
 
 from . import junie_cli
@@ -50,7 +51,6 @@ def execution_lock(config: dict[str, Any], name: str, *, wait: bool = False) -> 
                 if not wait:
                     raise RuntimeError("この実行は別の処理で使用中です。終了してから再開してください。") from None
                 from .execution import check_cancelled
-                from time import sleep
                 check_cancelled()
                 sleep(.05)
         try:
@@ -84,7 +84,15 @@ def replace_run_record(path: Path, record: dict[str, Any]) -> None:
     """呼び出し元がロックした状態で、JSONファイルを置き換える。"""
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    for attempt in range(11):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as exc:
+            # An open reader on Windows can briefly prevent replacement of the old JSON.
+            if getattr(exc, "winerror", None) not in {5, 32} or attempt == 10:
+                raise
+            sleep(.02)
 
 
 def _notify_run_observer(record: dict[str, Any]) -> None:
