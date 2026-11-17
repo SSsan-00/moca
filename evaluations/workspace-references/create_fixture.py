@@ -162,7 +162,8 @@ if actual != expected:
 source = pathlib.Path('Pages/Invoices/InvoicePage.cs').read_text(encoding='utf-8')
 if re.search(r'\\bPreviewNet\\s*\\(', source):
     errors.append('POLICY Pages/Invoices/InvoicePage.cs:1 warning: finalized invoices are using preview behavior')
-print('\\n'.join(errors) if errors else 'PASS: 12 rows x 4 policy/language combinations; exact values, rounding, order, duplicates and labels')
+if errors:
+    print('\\n'.join(errors))
 sys.exit(bool(errors))
 """)
 # Force a compiling semantic error so the real checker, not a manual prompt, starts repair.

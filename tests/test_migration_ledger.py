@@ -62,7 +62,7 @@ class LedgerReviewTest(HarnessCase):
     def test_checker_success_sentence_counts_as_current_verification(self):
         self.settings["checker_command"] = [
             sys.executable, "-X", "utf8", "-c",
-            "import sys; print('確認結果：特に気になる点はありません。'); sys.exit(1)",
+            "import sys; print('特に気になる点はありません。'); sys.exit(1)",
         ]
         self.prepare_for_verification()
         self.assertEqual(self.verify()["status"], "checker_succeeded")

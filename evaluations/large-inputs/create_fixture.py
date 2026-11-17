@@ -128,7 +128,8 @@ for name, value in ''' + repr(markers) + '''.items():
 for helper in ("CatalogLabels.Prefix", "SharedSuffix.Value"):
     if helper not in source:
         errors.append(f"REF Pages/Catalog/CatalogPage.cs:1 warning: use {helper}")
-print("\\n".join(errors) if errors else "PASS: all six rule constants and both adjacent helpers")
+if errors:
+    print("\\n".join(errors))
 sys.exit(bool(errors))
 ''')
 write("break.py", '''from pathlib import Path

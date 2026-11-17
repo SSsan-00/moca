@@ -59,7 +59,6 @@ def main():
         print(f"FIXTURE_SEQUENCE {TARGET}:1 error: expected {json.dumps(expected)}, got {json.dumps(items.values)}")
         return 1
 
-    print(f"Matched {len(expected)} list items in order.")
     return 0
 
 

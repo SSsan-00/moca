@@ -269,7 +269,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         for number in (2, 3):
             ranges.append({**ranges[0], "start_line": number, "end_line": number})
         path.write_text(json.dumps(manifest), encoding="utf-8")
-        check_passed = ("fixture-checker", 0, b"clean\n")
+        check_passed = ("fixture-checker", 0, b"")
         self.resume(self.build, check_passed)
         self.assertEqual(completion(), {"complete": False, "verification_passed": True, "reviewed": 0, "total": 3})
 
@@ -306,14 +306,14 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
     # 承認や修正履歴がない手編集でも、再ビルドが先に走ることを検証する。
     def test_manual_edit_rebuilds_before_rechecking_without_history_or_approvals(self):
         self.target.write_text("class ManuallyEdited {}\n", encoding="utf-8")
-        result = self.resume(self.build, ("fixture-checker", 0, b"no findings\n"))
+        result = self.resume(self.build, ("fixture-checker", 0, b""))
         self.assertEqual(result["status"], "checker_succeeded")
         saved = self.record()
         self.assertEqual(saved["status"], "checker_succeeded")
         self.assertEqual(saved["build_exit_code"], 0)
         self.assertEqual(saved["build_log_path"], str(self.build_log))
         self.assertEqual(self.build_log.read_bytes(), self.build[2])
-        self.assertEqual(self.checker_log.read_bytes(), b"no findings\n")
+        self.assertEqual(self.checker_log.read_bytes(), b"")
 
     # 新しいビルドが失敗した場合に、以前の成功を再利用しないことを検証する。
     def test_failed_rebuild_stops_before_checker_and_records_current_failure(self):
@@ -349,7 +349,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             completion.write_text(token, encoding="utf-8")
             return 0
 
-        commands, calls = self.mock_commands(self.build, ("fixture-checker", 0, b"ok\n"))
+        commands, calls = self.mock_commands(self.build, ("fixture-checker", 0, b""))
         with (
             commands, redirect_stdout(io.StringIO()),
             patch.object(junie_cli, "require_interactive_cli"),
@@ -392,7 +392,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             self.assertEqual((self.run_path / "build-before-repair-1.log").read_bytes(), error)
             repair.reset_mock()
             error = error.replace(b"CS1002: ; expected", b"CS1513: } expected")
-            result = self.resume(("dotnet", 1, error), self.build, ("fixture-checker", 0, b"fixed\n"))
+            result = self.resume(("dotnet", 1, error), self.build, ("fixture-checker", 0, b""))
             self.assertEqual(result["status"], "checker_succeeded")
             repair.assert_called_once()
             self.assertEqual([entry["kind"] for entry in self.record()["repair_history"]], ["build", "build"])
@@ -418,7 +418,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         ):
             result = self.resume(
                 ("dotnet", 1, f"{self.target}(1,1): error CS1002: ; expected\n".encode()),
-                self.build, ("fixture-checker", 0, b"ok\n"),
+                self.build, ("fixture-checker", 0, b""),
             )
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual([item["message"] for item in updates if item["kind"] == "phase"], [
@@ -433,7 +433,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 1
         build_failure = ("dotnet", 1, f"{self.target}(5,3): error CS1002: ; expected\n".encode())
         check_failure = ("fixture-checker", 1, self.diagnostic)
-        success = (self.build, ("fixture-checker", 0, b"fixed\n"))
+        success = (self.build, ("fixture-checker", 0, b""))
         original_record = self.record()
         for responses in ((build_failure,), (self.build, check_failure)):
             with self.subTest(phase=responses[-1][0]):
@@ -463,7 +463,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         ):
             result = self.resume(
                 self.build, ("fixture-checker", 2, log),
-                self.build, ("fixture-checker", 0, b"fixed\n"),
+                self.build, ("fixture-checker", 0, b""),
             )
         self.assertEqual(result["status"], "checker_succeeded")
         repair.assert_called_once()
@@ -514,7 +514,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         ):
             result = self.resume(
                 self.build, ("fixture-checker", 1, self.diagnostic),
-                self.build, ("fixture-checker", 0, b"fixed\n"),
+                self.build, ("fixture-checker", 0, b""),
             )
         self.assertEqual(result["status"], "checker_succeeded")
         repair.assert_called_once()
@@ -664,7 +664,7 @@ class SavedDashboardTests(SavedRunFixture):
             }) as response:
                 self.assertEqual(response.status, 202)
 
-        mock, calls = self.mock_commands(("dotnet", 0, b"build ok"), ("fixture-checker", 0, b"check ok"))
+        mock, calls = self.mock_commands(("dotnet", 0, b"build ok"), ("fixture-checker", 0, b""))
         with mock, patch.object(workflow, "_repair_target") as repair:
             result = self.open_dashboard(send_instruction, resume=True)
         self.assertEqual(result["status"], "checker_succeeded")
@@ -692,7 +692,7 @@ class SavedDashboardTests(SavedRunFixture):
             }) as response:
                 self.assertEqual(response.status, 202)
 
-        commands, calls = self.mock_commands(("dotnet", 0, b"ok\n"), ("fixture-checker", 0, b"ok\n"))
+        commands, calls = self.mock_commands(("dotnet", 0, b"ok\n"), ("fixture-checker", 0, b""))
         with commands:
             result = self.open_dashboard(inspect, resume=True)
         self.assertEqual(result["status"], "checker_succeeded")
@@ -966,7 +966,7 @@ target = "Search.cs"
 
     # 保存済みRunを開くだけでは再開せず、操作を受けてから実行することを検証する。
     def test_saved_resumable_run_waits_for_explicit_resume(self):
-        mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b"clean\n"))
+        mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b""))
         before = self.record_path.read_bytes()
 
         def inspect(url):
@@ -986,7 +986,7 @@ target = "Search.cs"
 
     def test_resume_from_run_selection_rechecks_the_selected_run(self):
         self.config["diff_viewer_html"] = None
-        mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b"clean\n"))
+        mock, calls = self.mock_commands(("dotnet", 0, b"rebuilt\n"), ("fixture-checker", 0, b""))
 
         def inspect(url):
             revision, state = self.get_ready_event(url)

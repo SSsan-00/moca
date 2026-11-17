@@ -21,7 +21,7 @@ class UnitCheckerTests(HarnessCase):
         self.settings = self.config()
         self.path = Path(self.settings["config_path"])
         self.content = self.path.read_text(encoding="utf-8")
-        self.command = [sys.executable, "-c", "print('unit checker')"]
+        self.command = [sys.executable, "-X", "utf8", "-c", "print('特に気になる点はありません。')"]
 
     def configure(self, command):
         draft = build_settings_draft(self.content, {"units": {"0": {"checker_command": command}}})
@@ -111,7 +111,7 @@ class UnitCheckerTests(HarnessCase):
             self.assertTrue(view.state["resumable"])
         record = json.loads((Path(result["run_path"]) / "run.json").read_bytes())
         self.assertEqual(record["verification"]["checker_command"], self.command)
-        self.assertEqual(Path(result["checker_log_path"]).read_text().strip(), "unit checker")
+        self.assertEqual(Path(result["checker_log_path"]).read_text(encoding="utf-8").strip(), "特に気になる点はありません。")
         self.assertIsNone(self.settings["checker_command"])
 
     def test_checker_failure_can_resume_with_only_unit_command(self):
@@ -134,7 +134,7 @@ class UnitCheckerTests(HarnessCase):
         self.settings["checker_command"] = [sys.executable, "-c", "print('shared')"]
         self.settings["units"].append({"id": "other", "checker_command": ["other"]})
         self.assertTrue(self.completion())
-        self.settings["units"][0]["checker_command"] = [sys.executable, "-c", "print('changed')"]
+        self.settings["units"][0]["checker_command"] = [sys.executable, "-c", "pass # changed checker"]
         self.assertFalse(self.completion())
         with self.build_stub():
             workflow.resume_with_junie(self.settings, self.run_id)
@@ -145,7 +145,7 @@ class UnitCheckerTests(HarnessCase):
     def test_cli_override_records_unit_default_for_ledger_checks(self):
         self.configure(self.command)
         self.prepare_verification()
-        override = [sys.executable, "-c", "print('CLI checker')"]
+        override = [sys.executable, "-c", "pass # CLI checker"]
         with (
             self.build_stub(), redirect_stdout(io.StringIO()),
             patch.object(sys, "argv", ["harness", "resume", "--config", str(self.path), "--run-id", self.run_id,

@@ -36,7 +36,8 @@ for helper in ['LocalLabels.Prefix','SharedSuffix.Value']:
     if helper not in s: errors.append(f'REF Pages/Orders/OrderPage.cs:1 warning: use {helper} from existing context')
 actual=json.loads(subprocess.check_output(['dotnet','run','--no-build'],text=True))
 if actual!=json.loads(pathlib.Path('expected.json').read_text()): errors.append('DATA Pages/Orders/OrderPage.cs:1 warning: output differs from the exact original ordered data and required prefix/suffix')
-print('\\n'.join(errors) if errors else 'PASS: 24 ordered values, 8 rule markers, both adjacent helpers')
+if errors:
+    print('\\n'.join(errors))
 sys.exit(bool(errors))
 ''')
 # Force one repair to verify that rules are read during repairs too.

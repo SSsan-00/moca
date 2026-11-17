@@ -118,7 +118,7 @@ class TaskGuidelinesTests(unittest.TestCase):
 
 class CycleRecoveryTests(SavedRunFixture):
     build = ("dotnet", 0, b"build passed\n")
-    success = ("fixture-checker", 0, b"checker passed\n")
+    success = ("fixture-checker", 0, b"")
     first = b"A Example.cs:1 warning: wrong price\n"
     second = b"B Example.cs:2 warning: wrong total\n"
 
@@ -188,6 +188,35 @@ class CycleRecoveryTests(SavedRunFixture):
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual(repair.call_count, 2)
         self.assertTrue(all(entry["kind"] == "build" for entry in self.record()["repair_history"]))
+
+    def test_mixed_output_continues_after_partial_progress_and_preserves_full_diagnostic(self):
+        self.config["max_repair_attempts"] = 2
+        first = self.first + self.second + b"Static check failed: 2 findings.\n"
+        second = self.second + b"Static check failed: 1 findings.\n"
+        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+            result = self.resume(
+                self.build, ("fixture-checker", 1, first),
+                self.build, ("fixture-checker", 1, second), self.build, ("fixture-checker", 0, b""),
+            )
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual([call.args[5] for call in repair.call_args_list], [first.decode(), second.decode()])
+        self.assertEqual(len(self.record()["repair_history"]), 2)
+
+    def test_mixed_output_repetition_stops_with_legacy_history(self):
+        self.config["max_repair_attempts"] = 2
+        diagnostic = self.second + b"Static check failed: 1 findings.\n"
+        log = self.run_path / "checker-before-repair-1.log"
+        log.write_bytes(diagnostic)
+        findings, _ = workflow.checker_findings(log, self.worktree)
+        self.save_record({**self.record(), "repair_history": [{
+            "findings": [findings[0].finding_id, hashlib.sha256(" ".join(diagnostic.decode().split()).encode()).hexdigest()],
+            "raw_checker_output": True,
+        }]})
+        with patch.object(workflow, "_repair_target") as repair:
+            result = self.resume(self.build, ("fixture-checker", 1, diagnostic))
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
+        repair.assert_not_called()
 
     def test_large_repeated_build_errors_repair_once_and_keep_complete_log(self):
         self.config["max_repair_attempts"] = 2

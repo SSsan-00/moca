@@ -79,14 +79,15 @@ for label in labels:
             assert helpers_used
         if filename == ".before-repair.cs.txt":
             initial_helpers_used = helpers_used
-    expected = "PASS: 19997 ordered values, 10 rule markers, both adjacent helpers"
+    # 合格時は無出力。保存済みの旧ベンチマークの成功ログも再解析できる。
+    expected = {"", "PASS: 19997 ordered values, 10 rule markers, both adjacent helpers"}
     if initial_passed:
-        assert expected in (worktree / ".initial-check.log").read_text(encoding="utf-8")
-        assert expected in (run_path / "checker.log").read_text(encoding="utf-8")
+        assert (worktree / ".initial-check.log").read_text(encoding="utf-8").strip() in expected
+        assert (run_path / "checker.log").read_text(encoding="utf-8").strip() in expected
         assert len(run["repair_history"]) == 1
         assert [line.split()[0] for line in (run_path / "checker-before-repair-1.log").read_text(encoding="utf-8").splitlines()] == ["R4", "ORD", "T90"]
     if run["status"] == "checker_succeeded":
-        assert expected in (run_path / "checker.log").read_text(encoding="utf-8")
+        assert (run_path / "checker.log").read_text(encoding="utf-8").strip() in expected
 
     sessions = []
     for path in Path.home().glob(".junie/sessions/*/events.jsonl"):

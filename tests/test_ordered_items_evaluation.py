@@ -24,6 +24,7 @@ class OrderedItemsEvaluationTests(unittest.TestCase):
     def test_correct_output_passes(self):
         result = self.score(self.expected)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout + result.stderr, b"")
 
     def test_incorrect_sequences_fail(self):
         cases = {

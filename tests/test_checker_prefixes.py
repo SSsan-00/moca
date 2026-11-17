@@ -105,11 +105,11 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
 
 class PrefixedCheckerRepairTests(SavedRunFixture):
     build = ("dotnet", 0, b"build passed\n")
-    success = ("fixture-checker", 0, b"checker passed\n")
+    success = ("fixture-checker", 0, b"")
 
-    def test_success_sentence_with_surrounding_response_skips_repair(self):
+    def test_success_sentence_with_bom_and_whitespace_skips_repair(self):
         self.config["max_repair_attempts"] = 2
-        text = "確認が完了しました。\r\n特に気になる点はありません。\r\n以上です。\r\n"
+        text = "\r\n  特に気になる点はありません。\t\r\n"
         for exit_code in (0, 1):
             with self.subTest(exit_code=exit_code), patch.object(workflow, "_repair_target") as repair:
                 result = self.resume(self.build, ("fixture-checker", exit_code, text.encode("utf-8-sig")))
@@ -118,6 +118,21 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
             self.assertEqual(self.record()["checker_success_message"], "特に気になる点はありません。")
             self.assertIsNone(result["error"])
             repair.assert_not_called()
+
+    def test_quoted_success_or_success_mixed_with_other_output_needs_review(self):
+        for text in (
+            json.dumps({"error": "出力が不一致", "expected": checker_output.CHECKER_SUCCESS_MESSAGE,
+                        "actual": "問題あり"}, ensure_ascii=False),
+            '期待値: "特に気になる点はありません。"\n実際: 問題あり',
+            "```text\n特に気になる点はありません。\n```",
+            "特に気になる点はありません。\n追加チェックで不一致を検出しました。",
+        ):
+            for exit_code in (0, 1):
+                with self.subTest(text=text, exit_code=exit_code), patch.object(workflow, "_repair_target") as repair:
+                    result = self.resume(self.build, ("fixture-checker", exit_code, text.encode()))
+                self.assertEqual(result["status"], "checker_needs_review")
+                self.assertNotIn("checker_success_message", self.record())
+                repair.assert_not_called()
 
     def test_success_sentence_cannot_override_findings_or_incomplete_process(self):
         success = "特に気になる点はありません。\n".encode()
@@ -139,6 +154,44 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
         result = self.resume(self.build, ("fixture-checker", 1, diagnostic().encode()))
         self.assertEqual(result["status"], "checker_needs_review")
         self.assertNotIn("checker_success_message", self.record())
+
+    def test_zero_exit_raw_output_reaches_junie_and_is_rechecked(self):
+        self.config["max_repair_attempts"] = 1
+        (self.run_path / "agent-workspace").mkdir()
+        original = self.record()
+        for text in ('{"expected":42,"actual":0}\r\n', "合計が一致しません。期待値42、実際0。\n"):
+            with self.subTest(text=text):
+                self.save_record(original)
+                self.target.write_text("class Original {}\n", encoding="utf-8")
+
+                def repair(command, completion, token, targets, **kwargs):
+                    guidelines = Path(command[command.index("--ide-guidelines") + 1])
+                    bundle = json.loads(guidelines.read_bytes().split(b"\n\n")[-1])
+                    self.assertIn(text + "\n", bundle.values())
+                    self.assertIn(".migration-materials/source-0001.md", bundle)
+                    targets[0].write_text("class Repaired {}\n", encoding="utf-8")
+                    completion.write_text(token)
+                    return 0
+
+                with patch.object(junie_cli, "require_interactive_cli"), patch.object(
+                    junie_cli, "run_interactive", side_effect=repair,
+                ) as junie:
+                    result = self.resume(self.build, ("fixture-checker", 0, text.encode()),
+                                         self.build, ("fixture-checker", 0, b""))
+                self.assertEqual(result["status"], "checker_succeeded")
+                self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class Repaired {}\n")
+                self.assertEqual((self.run_path / "checker-before-repair-1.log").read_bytes(), text.encode())
+                junie.assert_called_once()
+
+    def test_zero_exit_unreadable_or_oversized_output_is_not_accepted(self):
+        self.config["max_repair_attempts"] = 1
+        for output, reason in ((b"\xff", "output_encoding"), (b"\0", "output_unreadable"),
+                               (b"x" * 65_537, "output_too_large")):
+            with self.subTest(reason=reason), patch.object(workflow, "_repair_target") as repair:
+                result = self.resume(self.build, ("fixture-checker", 0, output))
+            self.assertEqual(result["status"], "checker_needs_review")
+            self.assertEqual(self.record()["checker_review_reason"], reason)
+            repair.assert_not_called()
 
     def test_zero_exit_code_with_findings_can_be_reviewed_and_repaired(self):
         self.resume(self.build, ("fixture-checker", 0, diagnostic().encode()))

@@ -24,12 +24,15 @@ class CommandPathsTests(HarnessCase):
         settings = self.config('targets = ["First.cs", "Second.cs"]')
         self.path = Path(settings["config_path"])
         content = self.path.read_text(encoding="utf-8").replace('worktree_root = "trees"', 'worktree_root = "作業 ツリー"')
-        self.command = [sys.executable, "-c", "import json,sys; print(json.dumps(sys.argv[1:]))",
-                        "{build_project}", "{target}", "{worktree}"]
+        arguments = ["{build_project}", "{target}", "{worktree}"]
+        self.command = [sys.executable, "-c",
+                        "import json,sys,pathlib; pathlib.Path('checker-args.json').write_text(json.dumps(sys.argv[1:]))",
+                        *arguments]
+        script = [sys.executable, "-c", "import json,sys; print(json.dumps(sys.argv[1:]))", *arguments]
         draft = build_settings_draft(content, {
             "build": {"project": "App.csproj"},
             "checker": {"command": self.command},
-            "scripts": [{"phase": "after_build", "command": self.command}],
+            "scripts": [{"phase": "after_build", "command": script}],
         })
         self.path.write_text(draft["content"], encoding="utf-8")
         self.settings = load_config(self.path)
@@ -74,7 +77,8 @@ class CommandPathsTests(HarnessCase):
                 for _ in range(2):
                     self.assertEqual(self.verify(result)["status"], "checker_succeeded")
                     run_path = Path(result["run_path"])
-                    self.assertEqual(json.loads((run_path / "checker.log").read_text()), expected)
+                    self.assertEqual((run_path / "checker.log").read_bytes(), b"")
+                    self.assertEqual(json.loads((root / "checker-args.json").read_text()), expected)
                     script_lines = (run_path / "after_build.log").read_text().splitlines()
                     self.assertEqual(json.loads(script_lines[-1]), expected)
                     self.assertTrue(workflow.migration_ledger(self.settings, result["run_id"])["completion"]["verification_passed"])

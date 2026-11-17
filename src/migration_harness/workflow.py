@@ -1856,7 +1856,9 @@ def _run_verification(
                     raise CheckerRepairBlocked("output_encoding", "unrecognized checker output encoding; inspect checker.log") from None
                 if not diagnostic.strip() or "\0" in diagnostic:
                     raise CheckerRepairBlocked("output_unreadable", "unrecognized checker output has no readable diagnostic; inspect checker.log")
-                fingerprints.add(hashlib.sha256(" ".join(diagnostic.split()).encode("utf-8")).hexdigest())
+                # 混在形式は全文で再発を判定し、減った指摘の一部が残るだけでは止めない。
+                fingerprints = {hashlib.sha256(" ".join(diagnostic.split()).encode("utf-8")).hexdigest()}
+                legacy_fingerprints = set()
                 repair_targets = targets
             else:
                 if sum(len(finding.diagnostic) + 1 for finding in remaining) > 8_000:

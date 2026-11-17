@@ -75,8 +75,6 @@ def check():
     if issues:
         print(f"Static check failed: {len(issues)} findings. Compare the original source and both targets.")
         return 1
-    print(f"PASS (static only): {counts['policy_fields']} contract values, {counts['sql_structures']} SQL structures, "
-          f"{counts['rejection_codes']} rejection codes; runtime behavior is unverified.")
     return 0
 
 

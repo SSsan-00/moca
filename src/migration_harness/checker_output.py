@@ -25,20 +25,19 @@ _CHECKER_FIELD = re.compile(
 
 
 def checker_response_status(log_path: Path) -> str | None:
+    """無出力以外は応答を判定し、成功文言の引用や未知の形式も確認に回す。"""
     with log_path.open("rb") as stream:
         raw = stream.read(65_537)
     if len(raw) > 65_536:
-        return None
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return None
-    # 不完全な指摘やコード内の成功文言を、問題なしの応答と誤認しない。
-    if any(_CHECKER_FIELD.fullmatch(line) or _CHECKER_FINDING.fullmatch(line.strip()) for line in text.splitlines()):
         return "checker_needs_review"
-    if CHECKER_SUCCESS_MESSAGE in text and "\0" not in text:
+    try:
+        text = raw.decode("utf-8-sig").strip()
+    except UnicodeDecodeError:
+        return "checker_needs_review"
+    # ログやJSONの値に含まれた文言を、チェッカー自身の合格判定として扱わない。
+    if text == CHECKER_SUCCESS_MESSAGE:
         return "checker_succeeded"
-    return None
+    return "checker_needs_review" if text else None
 
 
 def _checker_diagnostics(log_path: Path) -> Iterator[str]:

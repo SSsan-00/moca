@@ -17,7 +17,7 @@ app.mkdir(parents=True, exist_ok=False)
 )
 (app / "check.py").write_text(
     "import pathlib,sys\nn=int(sys.argv[1])\ns=pathlib.Path(f'Unit{n}.cs').read_text()\n"
-    "assert f'Unit{n}' in s and 'Label' in s and f'unit-{n}' in s, s\nprint(f'PASS unit-{n}')\n"
+    "assert f'Unit{n}' in s and 'Label' in s and f'unit-{n}' in s, s\n"
 )
 config = f'''[project]
 root = {json.dumps(str(app))}
