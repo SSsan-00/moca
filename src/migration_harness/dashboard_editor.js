@@ -442,7 +442,7 @@
     const activity = find("#editor-junie-activity");
     activity.textContent = showAgent && !snapshot.ready ? snapshot.activity?.message || "" : "";
     activity.hidden = !activity.textContent;
-    find("#editor-prompt-timing").textContent = state.status_only ? "「今何してる？」と送ると、現在の工程を確認できます。"
+    find("#editor-prompt-timing").textContent = state.status_only ? "準備完了までは工程を確認できます。"
       : state.conversation && !editPrompt ? "工程の確認、追加指示、ビルドやチェッカーの再実行を依頼できます。"
       : !state.can_prompt ? "現在の工程では指示を登録できません。"
       : state.prompt_timing === "repair_restart" ? "保存した編集を反映して Junie に指示を渡し直し、対応後に再ビルドします。"
