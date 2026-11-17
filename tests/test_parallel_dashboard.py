@@ -398,10 +398,18 @@ class ParallelDashboardTests(HarnessCase):
         operation_id = self.manager.jobs[run_id]["operation_id"]
         self.manager.limit = 1
         with patch.object(run_manager, "monotonic", return_value=10) as clock:
-            with patch.object(self.manager, "persist", side_effect=PermissionError("fixture: queue unavailable")):
+            with (self.manager.condition,
+                  patch.object(self.manager, "persist", side_effect=PermissionError("fixture: queue unavailable")) as persist):
                 self.manager.start_pending()
+                self.manager.retry_queue()
+                persist.assert_called_once()
+                clock.return_value = 11
+                self.manager.retry_queue()
+                clock.return_value = 12
+                self.manager.retry_queue()
+                self.assertEqual(persist.call_count, 2)
             self.manager.close()
-            clock.return_value = 12
+            clock.return_value = 20
             with patch.object(self.manager, "persist") as persist:
                 self.manager.retry_queue()
                 persist.assert_not_called()

@@ -31,6 +31,7 @@ class RunManager:
         self.results = {}
         self.closing = False
         self._queue_retry_at = None
+        self._queue_retry_delay = 1.0
         self.owner = None
         self.root = None
         self.scope = None
@@ -71,6 +72,7 @@ class RunManager:
         self.scope = scope
         self.root = root
         self._queue_retry_at = None
+        self._queue_retry_delay = 1.0
         if updated is not None:
             self.config.update(updated)
         self.blocked_conversations = blocked
@@ -312,7 +314,8 @@ class RunManager:
     def _defer_queue_retry(self):
         """既存の巡回で共有キューの保存を再試行するよう予約する。"""
         if not self.closing:
-            self._queue_retry_at = monotonic() + 1.0
+            self._queue_retry_at = monotonic() + self._queue_retry_delay
+            self._queue_retry_delay = min(2 * self._queue_retry_delay, 8.0)
             self.conversations.start()
 
     def retry_queue(self):
@@ -327,6 +330,8 @@ class RunManager:
                 return
             self._queue_retry_at = None
             self.start_pending()
+            if self._queue_retry_at is None:
+                self._queue_retry_delay = 1.0
 
     def block_conversations(self, run_id, message):
         """終了未確認のRunを会話処理から保留する。"""
