@@ -15,20 +15,24 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .errors import format_error, safe_command
 from .execution import (
     HEARTBEAT_SECONDS, ExecutionControl, OperationCancelled, check_cancelled, is_controlled,
     junie_dashboard_control, report_activity,
 )
-from .files import has_symlink_component
+from .files import has_symlink_component, safe_target
+
+if TYPE_CHECKING:
+    from .editor_queue import LivePrompts
 
 
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
@@ -587,10 +591,13 @@ def run_interactive(
     *, report_usage: Callable[[list[int]], None] | None = None,
     accept_result: Callable[[str], None] | None = None,
     prefer_task: bool = False,
+    prompts: LivePrompts | None = None,
 ) -> int:
     """Junieを選択したモードで起動し、通信障害時は同じ作業場所で再試行する。"""
     # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
     task_supported = None
+    if prompts is not None:
+        prompts.recover()
     if prefer_task:
         task_supported = _supports_task(command[0])
         if task_supported:
@@ -612,7 +619,7 @@ def run_interactive(
                 )]
             try:
                 return _run_session(invocation, completion_path, token, targets,
-                                    report_usage=report_usage, accept_result=accept_result)
+                                    report_usage=report_usage, accept_result=accept_result, prompts=prompts)
             except JunieAcpModelUnavailable:
                 # 非対話モードでは操作ごとの確認がなくなるため、自動では切り替えない。
                 dashboard = junie_dashboard_control()
@@ -631,7 +638,7 @@ def run_interactive(
                 report_activity("Junie を非対話モードで再試行します。")
                 command = _task_command(command)
             return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets,
-                                report_usage=report_usage, accept_result=accept_result)
+                                report_usage=report_usage, accept_result=accept_result, prompts=prompts)
         except JunieConnectionError as exc:
             if attempt == len(delays):
                 raise JunieConnectionError(
@@ -650,10 +657,21 @@ def run_interactive(
             check_cancelled()
 
 
+@dataclass
+class _SteeringRequest:
+    identifiers: list[str]
+    receipt: Path
+    token: str
+    accepted: bool = False
+
+
 class _AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
-    def __init__(self, process: subprocess.Popen, command: list[str], project: Path, show_request: Callable) -> None:
+    def __init__(
+        self, process: subprocess.Popen, command: list[str], project: Path, show_request: Callable,
+        completion_path: Path, token: str, prompts: LivePrompts | None,
+    ) -> None:
         self.process = process
         self.command = command
         self.project = project
@@ -663,6 +681,16 @@ class _AcpSession:
         self.tool_calls: dict[str, dict] = {}
         self.pending: tuple[int | str, Future[str]] | None = None
         self.startup_deadline = time.monotonic() + 30
+        self.prompts = prompts
+        self.completion_path = completion_path
+        self.token = token
+        self.steering_supported = False
+        self.steering_requests: dict[int, _SteeringRequest] = {}
+        self.steering_waiting: int | None = None
+        self.steering_deadline = 0.0
+        self.next_request_id = 4
+        self.prompt_finished = False
+        self.steering_new_turn = False
         # stdoutの行待ちを別スレッドに任せ、監視側は停止要求や許可への回答を確認し続ける。
         self.reader = Thread(target=self._read, daemon=True)
         self.reader.start()
@@ -681,6 +709,48 @@ class _AcpSession:
 
     def request(self, request_id: int, method: str, **params: Any) -> None:
         self.send(id=request_id, method=method, params=params)
+
+    def steer(self) -> None:
+        if (self.prompts is None or not self.steering_supported or self.session_id is None
+                or self.pending or self.steering_waiting is not None or self.prompt_finished
+                or has_completion_record(self.completion_path, self.token)):
+            return
+        token = uuid.uuid4().hex
+        receipt = safe_target(self.project, Path(".migration-scratch") / f"steering-{token}.txt")
+        receipt.parent.mkdir(exist_ok=True)
+        identifiers, text = self.prompts.take()
+        if not identifiers:
+            return
+        request_id = self.next_request_id
+        self.next_request_id += 1
+        self.steering_requests[request_id] = _SteeringRequest(identifiers, receipt, token)
+        self.steering_waiting = request_id
+        self.steering_deadline = time.monotonic() + 30
+        # 元の完了記録との競合を避け、追加指示にも今回専用の完了記録を要求する。
+        instruction = (
+            "Operator follow-up for the current task. Apply this instruction now, within the original "
+            "workspace and target constraints, preserving human edits and completed work:\n"
+            f"{text}\n\nContinue the original assignment as well. After fully applying this follow-up, "
+            f"write exactly {token} to `.migration-scratch/{receipt.name}`. "
+            "Do not write this receipt while blocked or awaiting an operator answer. "
+            f"After all work is complete, write exactly {self.token} to `{self.completion_path.name}` "
+            "as the final file action, even if that file already exists."
+        )
+        self.request(request_id, "_session/steering", sessionId=self.session_id,
+                     prompt=[{"type": "text", "text": instruction}])
+        report_activity("実行中のJunieへ追加指示を送っています。")
+
+    def steering_complete(self) -> bool:
+        return self.steering_waiting is None and all(
+            request.accepted and not has_symlink_component(self.project, request.receipt.relative_to(self.project))
+            and has_completion_record(request.receipt, request.token)
+            for request in self.steering_requests.values()
+        )
+
+    def finish_prompts(self, success: bool) -> None:
+        if self.prompts is not None:
+            for request in self.steering_requests.values():
+                self.prompts.finish(request.identifiers, success and request.accepted)
 
     def permission(self, request_id: int | str, params: dict) -> None:
         tool = params["toolCall"]
@@ -731,6 +801,8 @@ class _AcpSession:
             except Empty:
                 break
             if not line:
+                if self.prompt_finished and self.steering_waiting is None:
+                    return True
                 raise JunieSessionError(self.command, self.process.poll() or 1, "JunieのACP接続が終了しました。")
             try:
                 message = json.loads(line)
@@ -741,7 +813,21 @@ class _AcpSession:
             request_id = message.get("id")
             method = message.get("method")
             params = message.get("params", {})
-            if method and request_id is not None:
+            if not method and request_id == self.steering_waiting and request_id is not None:
+                request = self.steering_requests[request_id]
+                result = message.get("result")
+                outcome = result.get("outcome") if isinstance(result, dict) else None
+                self.steering_waiting = None
+                if "error" not in message and outcome in ("injected", "startedNewTurn"):
+                    request.accepted = True
+                    self.steering_new_turn |= outcome == "startedNewTurn"
+                    report_activity("Junieが追加指示を受け取りました。処理の完了を待っています。")
+                else:
+                    self.steering_supported = False
+                    self.prompts.finish(request.identifiers, False)
+                    del self.steering_requests[request_id]
+                    report_activity("追加指示を送信待ちに戻しました。画面に表示されたタイミングで渡します。")
+            elif method and request_id is not None:
                 if method == "session/request_permission" and params.get("sessionId") == self.session_id:
                     self.permission(request_id, params)
                     if self.pending:
@@ -764,18 +850,26 @@ class _AcpSession:
                     raise JunieSessionError(self.command, 1, detail)
                 result = message.get("result", {})
                 if request_id == 1 and result.get("protocolVersion") == 1:
+                    # バージョン番号では推測せず、接続先が宣言する対応能力で切り替える。
+                    metadata = result.get("_meta")
+                    steering = metadata.get("steering") if isinstance(metadata, dict) else None
+                    self.steering_supported = isinstance(steering, dict) and steering.get("supported") is True
                     self.request(2, "session/new", cwd=str(self.project), mcpServers=[])
                 elif request_id == 2 and result.get("sessionId"):
                     self.session_id = result["sessionId"]
                     self.request(3, "session/prompt", sessionId=self.session_id,
                                  prompt=[{"type": "text", "text": self.command[-1]}])
                 elif request_id == 3:
-                    return True
+                    self.prompt_finished = True
+                    if self.steering_waiting is None and not self.steering_new_turn:
+                        return True
                 else:
                     raise JunieSessionError(self.command, 1, "JunieのACP初期化応答が無効です。")
         if self.session_id is None and time.monotonic() >= self.startup_deadline:
             raise JunieSessionError(self.command, 1, "JunieのACP接続がタイムアウトしました。Junie CLIのバージョンとログを確認してください。")
-        return False
+        if self.steering_waiting is not None and time.monotonic() >= self.steering_deadline:
+            raise JunieSessionError(self.command, 1, "追加指示の受信を確認できませんでした。指示を送信待ちに戻します。実行を再開してください。")
+        return self.prompt_finished and self.steering_waiting is None and not self.steering_new_turn
 
     def cancel(self) -> None:
         if self.pending:
@@ -794,6 +888,7 @@ def _run_session(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
     accept_result: Callable[[str], None] | None = None,
+    prompts: LivePrompts | None = None,
 ) -> int:
     """成果物と完了記録がそろえばJunieのセッションを閉じる。"""
     check_cancelled()
@@ -803,6 +898,17 @@ def _run_session(
     restore_terminal = _save_terminal_mode() if dashboard is None and not headless else None
     process = None
     acp = None
+    completed = False
+
+    def completion_ready() -> bool:
+        return (
+            has_completion_record(completion_path, token)
+            and (acp is None or acp.steering_complete())
+            and all(
+                path.is_file() and not has_symlink_component(root, path.relative_to(root))
+                and path.resolve().is_relative_to(root.resolve()) for path in targets
+            )
+        )
 
     def poll(*, cancellable: bool = True) -> bool:
         failed = events.read_new_events(cancellable=cancellable)
@@ -840,7 +946,8 @@ def _run_session(
             # ACPではプロンプトを起動引数から外し、初期化後のsession/prompt要求で送る。
             acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
             process = _launch_process(acp_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-            acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request)
+            acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request,
+                              completion_path, token, prompts)
             acp.request(1, "initialize", protocolVersion=1, clientCapabilities={})
         started = time.monotonic()
         report_activity("Junieのプロセスを起動しました。")
@@ -854,15 +961,10 @@ def _run_session(
             except subprocess.TimeoutExpired:
                 check_cancelled()
                 # 完了記録での早期終了は対話・ACPだけ。非対話モードはプロセスの自然終了を待つ。
-                if (
-                    not headless and has_completion_record(completion_path, token)
-                    and all(
-                        path.is_file() and not has_symlink_component(root, path.relative_to(root))
-                        and path.resolve().is_relative_to(root.resolve())
-                        for path in targets
-                    )
-                ):
-                    return _close_junie(process)
+                if not headless and completion_ready():
+                    exit_code = _close_junie(process)
+                    completed = True
+                    return exit_code
                 if time.monotonic() >= next_poll:
                     next_poll = time.monotonic() + 0.5
                     if poll():
@@ -881,7 +983,11 @@ def _run_session(
                         _close_junie(process)
                         if poll() and not has_completion_record(completion_path, token):
                             raise JunieConnectionError("Junie model service connection failed")
+                        completed = completion_ready()
                         return 0
+                    acp.steer()
+                    dashboard.junie_steering = bool(prompts is not None and acp.steering_supported and acp.session_id
+                                                   and not acp.pending and not acp.prompt_finished)
                 now = time.monotonic()
                 if now >= next_heartbeat and process.poll() is None:
                     elapsed = int(now - (events.last_event_at if events.last_event_at is not None else started))
@@ -893,6 +999,10 @@ def _run_session(
                     next_heartbeat = now + HEARTBEAT_SECONDS
             else:
                 check_cancelled()
+                if acp is not None and acp.steering_requests:
+                    # プロセスが先に終了しても、直前に届いた受信確認を取りこぼさない。
+                    acp.reader.join(timeout=1)
+                    acp.advance()
                 if poll() and not has_completion_record(completion_path, token):
                     raise JunieConnectionError("Junie model service connection failed")
                 # 終了コード0でも、対応するセッションも完了記録もなければ起動失敗として診断する。
@@ -900,6 +1010,7 @@ def _run_session(
                     raise JunieSessionError(
                         command, exit_code, events.startup_diagnostics(process.pid, command),
                     )
+                completed = completion_ready()
                 return exit_code
     except (KeyboardInterrupt, OSError, ValueError) as exc:
         if process is not None and process.poll() is None:
@@ -919,7 +1030,10 @@ def _run_session(
     finally:
         try:
             if dashboard is not None:
+                dashboard.junie_steering = False
                 dashboard.on_junie_request(None)
+            if acp is not None:
+                acp.finish_prompts(completed)
             if acp is not None and process.poll() is not None:
                 acp.close()
             if process is not None and report_usage is not None:

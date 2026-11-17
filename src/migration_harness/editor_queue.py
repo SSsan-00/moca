@@ -1,9 +1,10 @@
-"""Run単位で、エディタからの編集と追加指示をJunieの区切りまで保持する。"""
+"""Run単位で、エディタからの編集と追加指示の反映待ちを管理する。"""
 from __future__ import annotations
 
 import json
 import secrets
 from contextlib import contextmanager
+from dataclasses import dataclass
 from difflib import unified_diff
 from pathlib import Path
 from subprocess import run
@@ -103,5 +104,35 @@ def dispatch_prompts(queue: dict[str, Any]) -> str:
 
 def finish_prompts(queue: dict[str, Any], success: bool) -> None:
     for prompt in queue["prompts"]:
-        if prompt["status"] == "sending":
+        if prompt["status"] in {"sending", "applying"}:
             prompt["status"] = "sent" if success else "queued"
+
+
+@dataclass
+class LivePrompts:
+    """実行途中に送った指示だけを追跡し、未完了なら通常の送信待ちに戻す。"""
+
+    run_path: Path
+
+    def recover(self) -> None:
+        with editor_queue(self.run_path) as queue:
+            for prompt in queue["prompts"]:
+                if prompt["status"] in {"steering", "applying"}:
+                    prompt["status"] = "queued"
+
+    def take(self) -> tuple[list[str], str]:
+        with editor_queue(self.run_path) as queue:
+            # 保留中の手修正に対する指示は、ファイルを合流できる区切りまで待つ。
+            if queue["edits"]:
+                return [], ""
+            prompts = [prompt for prompt in queue["prompts"] if prompt["status"] == "queued"]
+            for prompt in prompts:
+                prompt["status"] = "steering"
+            return [prompt["id"] for prompt in prompts], "\n".join(prompt["text"] for prompt in prompts)
+
+    def finish(self, identifiers: list[str], success: bool) -> None:
+        with editor_queue(self.run_path) as queue:
+            for prompt in queue["prompts"]:
+                if prompt["id"] in identifiers and prompt["status"] == "steering":
+                    # Junieの完了と、ハーネスによる検証・反映の完了を区別する。
+                    prompt["status"] = "applying" if success else "queued"

@@ -55,10 +55,12 @@ PROGRESS_FIELDS = (
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
 
-def _prompt_timing(config, state, run_path, record) -> str | None:
+def _prompt_timing(config, state, run_path, record, *, live: bool = False) -> str | None:
     if state.get("stop_requested") or state.get("generating_anchors"):
         return None
     phase = record["status"]
+    if live and not state.get("ready") and phase in {"junie_running", "editor_followup", "repairing"}:
+        return "immediate"
     if phase == "prepared" or phase in QUEUE_PHASES or (
         phase in {"script_running", "script_failed"}
         and record.get("script_phase") in {"after_prepare", "before_migration"}
@@ -352,7 +354,9 @@ class Dashboard:
                                 if state.get("run_id") != run_id:
                                     raise ValueError("表示中の実行が変わりました。")
                                 _, _, record, _ = load_saved_run(config, run_id)
-                                timing = _prompt_timing(config, state, run_path, record)
+                                timing = _prompt_timing(config, state, run_path, record,
+                                                        live=bool(dashboard.control and dashboard.control.junie_steering
+                                                                  and not queue["edits"]))
                                 if action is not None:
                                     if timing is None:
                                         raise ValueError("現在の工程では指示を登録できません。")
@@ -437,7 +441,9 @@ class Dashboard:
                             busy_other = state.get("generating_anchors") or state.get("stop_requested")
                             queued = bool(from_agent and phase in QUEUE_PHASES and not busy_other)
                             direct = bool(state.get("ready") and not busy_other and phase not in AGENT_PHASES)
-                            prompt_timing = _prompt_timing(config, state, run_path, record)
+                            prompt_timing = _prompt_timing(config, state, run_path, record,
+                                                          live=bool(dashboard.control and dashboard.control.junie_steering
+                                                                    and not queue["edits"]))
                             read_error = None
                             try:
                                 original, content = editor_target(root, Path(name)) if name else (None, "")
@@ -462,6 +468,7 @@ class Dashboard:
                                             raise ValueError("Junie の最新版を確認してから競合を解消してください。")
                                         edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
                                         queue["edits"][name] = edit
+                                        prompt_timing = _prompt_timing(config, state, run_path, record)
                                     else:
                                         if content != base:
                                             raise ValueError("ファイルが更新されました。差分を確認してください。")

@@ -50,7 +50,7 @@ class MultipleTargetsTest(HarnessCase):
 
     def edit_with_junie(self, *, complete=True, outside=False, scratch=False):
         """Junieの編集結果と完了記録を、テストの条件に合わせて用意する。"""
-        def run(args, completion, token, targets, *, report_usage=None):
+        def run(args, completion, token, targets, *, report_usage=None, prompts=None):
             """Junieに相当する処理として、両方の移行先へ変更を保存する。"""
             self.assertEqual(tuple(path.name for path in targets), self.targets)
             self.assertIn("extract the exact ordered data mechanically from the assigned PHP lines", args[-1])
@@ -144,7 +144,7 @@ class MultipleTargetsTest(HarnessCase):
         self.assertEqual(self.record()["completed_capsules"], 0)
         self.assertEqual((self.worktree / self.targets[1]).read_text(encoding="utf-8"), f"original {self.targets[1]}")
 
-        def resume_junie(args, completion, token, targets, *, report_usage=None):
+        def resume_junie(args, completion, token, targets, *, report_usage=None, prompts=None):
             """Junieの再開前に二つ目まで復旧していることを確認する。"""
             self.assertEqual((self.worktree / self.targets[1]).read_text(encoding="utf-8"), f"migrated {self.targets[1]}")
             return self.edit_with_junie()(args, completion, token, targets)
@@ -279,7 +279,7 @@ class MultipleTargetsTest(HarnessCase):
                 if case == "missing_reference":
                     model.unlink()
 
-                def repair(command, completion, token, targets, *, report_usage=None):
+                def repair(command, completion, token, targets, *, report_usage=None, prompts=None):
                     """Junieの起動直前に参照用の内容と、実際に編集するファイルを確認する。"""
                     target, = targets
                     self.assertEqual(target, agent / page_name)
@@ -335,12 +335,12 @@ class MultipleTargetsTest(HarnessCase):
                 return subprocess.CompletedProcess(command, 1)
             return subprocess.CompletedProcess(command, 0)
 
-        def interrupt(command, completion, token, targets, *, report_usage=None):
+        def interrupt(command, completion, token, targets, *, report_usage=None, prompts=None):
             target, = targets
             target.write_text("draft")
             raise KeyboardInterrupt
 
-        def complete(command, completion, token, targets, *, report_usage=None):
+        def complete(command, completion, token, targets, *, report_usage=None, prompts=None):
             target, = targets
             self.assertIn("partial edits from an interrupted repair", command[-1])
             self.assertEqual(target.read_text(), "draft")

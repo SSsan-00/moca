@@ -72,7 +72,7 @@ class CapsulePreparationTests(HarnessCase):
         observed_lines = []
         final_reviews = []
 
-        def junie(command, completion, token, agent_targets, *, report_usage=None):
+        def junie(command, completion, token, agent_targets, *, report_usage=None, prompts=None):
             self.assertIn("`メニュー`", command[-1])
             final_reviews.append("Check exact branch conditions and selector strings" in command[-1])
             context = (completion.parent / ".migration-context.md").read_bytes().decode("utf-8")
@@ -222,7 +222,7 @@ class CapsulePreparationTests(HarnessCase):
                 return subprocess.CompletedProcess(args, 0)
             return subprocess_run(args, **kwargs)
 
-        def migrate(args, completion, token, targets, *, report_usage=None):
+        def migrate(args, completion, token, targets, *, report_usage=None, prompts=None):
             target, = targets
             calls.append("junie")
             self.assertEqual(target.read_bytes(), draft.read_bytes())
@@ -270,7 +270,7 @@ class CapsulePreparationTests(HarnessCase):
         run_id = failure.exception.run_id
         config["scripts"]["after_prepare"][1] = [sys.executable, "-c", "pass"]
 
-        def migrate(args, completion, token, targets, *, report_usage=None):
+        def migrate(args, completion, token, targets, *, report_usage=None, prompts=None):
             target, = targets
             target.write_text("class Migrated {}")
             completion.write_text(token)
@@ -296,7 +296,7 @@ class CapsulePreparationTests(HarnessCase):
         config = load_config(self.config_path({**PHP, "end_line": 3}, CONSTRAINT, RULES))
         observed_contexts = []
 
-        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
             guidelines = Path(command[command.index("--ide-guidelines") + 1])
@@ -448,7 +448,7 @@ class CapsulePreparationTests(HarnessCase):
         reference.write_text(json.dumps(edited), encoding="utf-8")
         config["diff_viewer_html"] = "viewer.html"
 
-        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             proposal, = targets
             numbered_php = (proposal.parent / "left.txt").read_text(encoding="utf-8")
@@ -474,7 +474,7 @@ class CapsulePreparationTests(HarnessCase):
         record_path.write_text(json.dumps(record), encoding="utf-8")
         observed = []
 
-        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
             proposal, = targets
             guide = self.read_json(proposal.parent / "guide.json")
             observed.append(guide["examples"])
@@ -524,7 +524,7 @@ class CapsulePreparationTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "Source.php"):
             capture_workspace(config, result["run_id"])
 
-        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
+        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
             """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
             self.assertEqual((target.parent / ".migration-context.md").read_bytes(), expected_context)

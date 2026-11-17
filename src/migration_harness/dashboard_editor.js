@@ -353,7 +353,7 @@
       const item = document.createElement("li");
       const author = Object.assign(document.createElement("span"), {className: "editor-muted", textContent: "あなた"});
       const text = Object.assign(document.createElement("p"), {textContent: message.text});
-      const label = {queued: "送信待ち", sending: "処理中", sent: "送信済み"}[message.status];
+      const label = {queued: "送信待ち", steering: "Junie に送信・処理中", applying: "反映確認中", sending: "処理中", sent: "送信済み"}[message.status];
       const status = Object.assign(document.createElement("span"), {className: "editor-muted", textContent: label});
       item.append(author, text, status);
       if (message.status === "queued" && state.can_prompt) {
@@ -384,6 +384,7 @@
     activity.textContent = showAgent && !snapshot.ready ? snapshot.activity?.message || "" : "";
     activity.hidden = !activity.textContent;
     find("#editor-prompt-timing").textContent = !state.can_prompt ? "現在の工程では指示を登録できません。"
+      : state.prompt_timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
       : state.prompt_timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
       : "現在の作業区間が終わると Junie に渡します。";
     updateSendButton();

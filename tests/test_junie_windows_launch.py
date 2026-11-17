@@ -41,7 +41,7 @@ class JunieLaunchTests(unittest.TestCase):
                 else:
                     require_terminal.assert_called_once_with()
                     expected = command
-                run.assert_called_once_with(expected, completion, "token", (), report_usage=None, accept_result=None)
+                run.assert_called_once_with(expected, completion, "token", (), report_usage=None, accept_result=None, prompts=None)
 
     def test_native_launch_uses_resolved_path_and_inherits_terminal(self):
         executable = os.path.abspath("Junie Tools/junie.exe")

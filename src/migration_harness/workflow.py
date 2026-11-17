@@ -28,7 +28,7 @@ from . import junie_cli
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
 from .config import find_unit, target_paths
 from .editor_queue import (
-    EDITOR_TARGET_SUFFIXES, dispatch_prompts, editor_queue, editor_target, finish_prompts, merge_edit,
+    EDITOR_TARGET_SUFFIXES, LivePrompts, dispatch_prompts, editor_queue, editor_target, finish_prompts, merge_edit,
     record_operator_edit,
 )
 from .errors import format_error
@@ -775,6 +775,7 @@ def _run_editor_followup(
         junie_cli.run_interactive(
             command, completion, token, tuple(safe_target(agent_root, target) for target in targets),
             report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
+            prompts=LivePrompts(record_path.parent),
         )
     except KeyboardInterrupt:
         raise RunInterrupted(record["run_id"]) from None
@@ -1010,6 +1011,7 @@ def _run_prepared_with_junie(
                 exit_code = junie_cli.run_interactive(
                     command, completion_path, completion_token, agent_targets,
                     report_usage=junie_usage_recorder(run_path, "migration", index),
+                    prompts=LivePrompts(run_path),
                 )
             except KeyboardInterrupt:
                 interrupted = True
@@ -1038,9 +1040,8 @@ def _run_prepared_with_junie(
             write_run_record(record_path, record)
             raise
         finally:
-            if extra:
-                with editor_queue(run_path) as queue:
-                    finish_prompts(queue, complete)
+            with editor_queue(run_path) as queue:
+                finish_prompts(queue, complete)
         if interrupted:
             record.update(status="interrupted", error="interrupted by user; current capsule can be resumed")
             write_run_record(record_path, record)
@@ -1345,14 +1346,19 @@ def _attempt_repair(
     record["status"] = "repairing"
     record_path = run_path / "run.json"
     write_run_record(record_path, record)
+    repaired = False
     try:
         _repair_target(config, targets, repair_targets, worktree, run_path, findings, record)
+        repaired = True
     except (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
         # 起動・通信の問題では修正枠を消費せず、同じ試行を再開できるようにする。
         raise
     except (OSError, RuntimeError, ValueError):
         _charge_repair(record)
         raise
+    finally:
+        with editor_queue(run_path) as queue:
+            finish_prompts(queue, repaired)
     _charge_repair(record)
     write_run_record(record_path, record)
 
@@ -1455,6 +1461,7 @@ def _repair_target(
         exit_code = junie_cli.run_interactive(
             command, completion_path, token, agent_targets,
             report_usage=junie_usage_recorder(run_path, phase),
+            prompts=LivePrompts(run_path),
         )
     except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError):
         attempt.pop("draft", None)

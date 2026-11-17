@@ -2266,7 +2266,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
     const timingNote = document.querySelector("#progress-prompt-timing");
     const feedback = document.querySelector("#progress-prompt-feedback");
     const list = document.querySelector("#progress-prompt-list");
-    const labels = {queued: "送信待ち", sending: "Junie が実行中", sent: "反映済み"};
+    const labels = {queued: "送信待ち", steering: "Junie に送信・処理中", applying: "反映確認中", sending: "Junie が実行中", sent: "反映済み"};
     let renderedPrompts = "";
     function showError(error) {
       feedback.textContent = error?.message || "";
@@ -2278,6 +2278,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
       send.disabled = !available || !timing || saving || !bytes || bytes > 4_000;
       input.readOnly = saving;
       const message = bytes > 4_000 ? "指示を 4,000 バイト以下にしてください。"
+        : timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
         : timing === "checkpoint" ? "現在の作業区間が終わると Junie に渡します。"
         : timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
         : loading ? "指示を読み込んでいます…" : "現在の工程では指示を登録できません。";

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import sys
+import textwrap
 from contextlib import redirect_stdout
 from pathlib import Path
 from threading import Thread
@@ -13,6 +15,7 @@ from urllib.request import Request, urlopen
 from fixtures import HarnessCase
 from migration_harness import dashboard, editor_queue, junie_cli, run_records, workflow
 from migration_harness.config import load_config
+from migration_harness.execution import control_scope
 
 BASE = "class Page\n{\n    int First = 1;\n    int Middle = 0;\n    int Last = 1;\n}\n"
 
@@ -53,6 +56,127 @@ class DashboardEditorTests(HarnessCase):
             "base": state["content"], "content": content, "edit_id": (state["edit"] or {}).get("id"),
             "resolve": resolve,
         })
+
+    def test_http_prompt_reaches_active_junie_before_capsule_finishes_and_is_applied_once(self):
+        self.view.begin_operation()
+        received = []
+        launches = []
+        control = self.view.control
+
+        def activity(entry):
+            self.view.activity(entry)
+            if entry["message"] == "Junieのプロセスを起動しました。":
+                state = self.request("prompts")
+                self.request("prompts", {"run_id": state["run_id"], "text": "Last を 42 にしてください。"})
+            elif "追加指示を受け取りました" in entry["message"]:
+                state = self.request("prompts")
+                self.assertEqual(state["timing"], "immediate")
+                self.assertEqual(state["prompts"][0]["status"], "steering")
+                received.append(state)
+
+        control.on_activity = activity
+
+        def trust(request):
+            if request is not None:
+                from concurrent.futures import Future
+                answer = Future()
+                answer.set_result("trust")
+                return answer
+
+        control.on_junie_request = trust
+        launch = junie_cli._launch_process
+
+        def launch_agent(command, **streams):
+            launches.append(command)
+            root = Path(command[command.index("--project") + 1])
+            script = f"import os; os.chdir({str(root)!r})\n" + textwrap.dedent("""
+                import json, re, sys, time
+                from pathlib import Path
+                def read():
+                    return json.loads(sys.stdin.readline())
+                def send(**message):
+                    print(json.dumps(dict(jsonrpc="2.0", **message)), flush=True)
+                assert read()["method"] == "initialize"
+                send(id=1, result={"protocolVersion": 1, "_meta": {"steering": {"supported": True}}})
+                assert read()["method"] == "session/new"
+                send(id=2, result={"sessionId": "migration"})
+                original = read()
+                assert original["method"] == "session/prompt"
+                steer = read()
+                assert steer["method"] == "_session/steering"
+                text = steer["params"]["prompt"][0]["text"]
+                assert "Last を 42" in text
+                send(id=steer["id"], result={"outcome": "injected"})
+                time.sleep(0.4)
+                path = Path("Page.cs")
+                path.write_text(path.read_text(encoding="utf-8-sig").replace("Last = 1", "Last = 42"))
+                receipt = re.search(r"write exactly ([a-f0-9]+) to `([^`]+)`", text)
+                Path(receipt[2]).write_text(receipt[1])
+                completion = re.search(r"write exactly ([a-f0-9]+) to `(migration-complete-[^`]+)`", text)
+                Path(completion[2]).write_text(completion[1])
+                send(id=3, result={"stopReason": "end_turn"})
+                sys.stdin.read()
+            """)
+            return launch([sys.executable, "-u", "-c", script], **streams)
+
+        def verify(config, unit, result, record):
+            self.assertEqual(record["completed_capsules"], 1)
+            self.assertIn("Last = 42", (Path(result["worktree_path"]) / "Page.cs").read_text(encoding="utf-8-sig"))
+            self.assertEqual(self.request("prompts")["prompts"][0]["status"], "sent")
+            return result
+
+        with (
+            control_scope(control),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "_launch_process", side_effect=launch_agent),
+            patch.object(workflow, "_verify_worktree", side_effect=verify) as verified,
+            patch.dict("os.environ", {"JUNIE_HOME": str(self.root / "junie-home")}),
+        ):
+            workflow.run_with_junie(self.settings, "sample")
+        self.assertEqual(len(received), 1)
+        self.assertEqual(len(launches), 1)
+        verified.assert_called_once()
+
+    def test_pending_human_edits_change_live_prompt_timing_to_checkpoint(self):
+        self.view.begin_operation()
+
+        def junie(command, completion, token, targets, **kwargs):
+            self.view.control.junie_steering = True
+            state = self.request()
+            self.assertEqual(state["prompt_timing"], "immediate")
+            saved = self.queue_edit(state, BASE.replace("Last = 1", "Last = 42"))
+            self.assertEqual(saved["prompt_timing"], "checkpoint")
+            self.assertEqual(self.request("prompts")["timing"], "checkpoint")
+            self.view.control.junie_steering = False
+            completion.write_text(token)
+            return 0
+
+        with patch.object(junie_cli, "require_interactive_cli"), \
+                patch.object(junie_cli, "run_interactive", side_effect=junie), \
+                patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result):
+            result = workflow.run_with_junie(self.settings, "sample")
+        self.assertIn("Last = 42", (Path(result["worktree_path"]) / "Page.cs").read_text(encoding="utf-8-sig"))
+
+    def test_live_prompt_is_requeued_if_the_result_changes_unlisted_files(self):
+        def junie(command, completion, token, targets, **kwargs):
+            run_path = completion.parent.parent
+            with editor_queue.editor_queue(run_path) as queue:
+                editor_queue.add_prompt(queue, {"text": "Last を更新してください。"})
+            prompts = kwargs["prompts"]
+            identifiers, _ = prompts.take()
+            prompts.finish(identifiers, True)
+            targets[0].write_text(BASE.replace("Last = 1", "Last = 42"))
+            (completion.parent / "unexpected.txt").write_text("unexpected")
+            completion.write_text(token)
+            return 0
+
+        with patch.object(junie_cli, "require_interactive_cli"), \
+                patch.object(junie_cli, "run_interactive", side_effect=junie):
+            with self.assertRaisesRegex(ValueError, "outside the configured targets"):
+                workflow.run_with_junie(self.settings, "sample")
+        state = self.request("prompts")
+        self.assertEqual(state["prompts"][0]["status"], "queued")
+        self.assertNotIn("Last = 42", (Path(self.view.state["worktree_path"]) / "Page.cs").read_text(encoding="utf-8-sig"))
 
     def test_editor_accepts_eight_mib_and_rejects_larger_files_without_changing_them(self):
         path = self.project / "Page.cs"

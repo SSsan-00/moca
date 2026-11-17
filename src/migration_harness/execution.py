@@ -27,6 +27,7 @@ class ExecutionControl:
     cancelled: Event = field(default_factory=Event)
     on_junie_request: Callable[[dict | None], Future[str] | None] | None = None
     trusted_junie_workspaces: set[str] = field(default_factory=set)
+    junie_steering: bool = False
 
 
 _control: ContextVar[ExecutionControl | None] = ContextVar("execution_control", default=None)
