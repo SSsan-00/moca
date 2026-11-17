@@ -257,7 +257,7 @@
       ? "同じ箇所が変更されました。差分を確認し、下書きに合流結果を書いて保存してから移行を再開してください。"
       : (state.source === "agent-workspace" ? "Junie の更新あり。" : "ファイルの更新あり。")
         + "編集中の下書きは保持されています。");
-    save.disabled = switching || !state.can_save || saving || (!dirty() && !conflict);
+    save.disabled = switching || state.run_id !== progress().run_id || !state.can_save || saving || (!dirty() && !conflict);
     save.textContent = conflict ? "競合を解消して保存" : "保存";
     setText("#editor-save-status", state.read_error ? "ファイルを表示できません"
       : dirty() ? "未保存の変更あり"
@@ -328,7 +328,7 @@
   }
 
   function updateSendButton() {
-    sendButton.disabled = switching || !state?.can_prompt || sending || !prompt.value.trim();
+    sendButton.disabled = switching || state?.run_id !== progress().run_id || !state?.can_prompt || sending || !prompt.value.trim();
   }
 
   function promptMode() {
@@ -393,7 +393,7 @@
       : state.prompt_timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
       : "現在の作業区間が終わると Junie に渡します。";
     updateSendButton();
-    prompt.disabled = switching || !state.can_prompt || sending;
+    prompt.disabled = switching || state.run_id !== progress().run_id || !state.can_prompt || sending;
     cancelEdit.disabled = !editPrompt || sending;
   }
 
@@ -531,7 +531,7 @@
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const text = prompt.value.trim();
-    if (!text || switching || sending || !state.can_prompt) return;
+    if (!text || switching || state.run_id !== progress().run_id || sending || !state.can_prompt) return;
     sending = true;
     revision++;
     updateChat();
