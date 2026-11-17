@@ -1262,7 +1262,7 @@ _CHECKER_FINDING = re.compile(
     r"(?P<rule>[\w.-]+)\s+(?P<path>.+?):(?P<line>\d+)(?::\d+)?\s+(?P<severity>warning|error):\s*(?P<message>.+)",
     re.IGNORECASE,
 )
-_CHECKER_FIELDS = ("ファイル", "対象", "内容", "行番号", "コード", "備考")
+_CHECKER_FIELDS = ("ファイル", "対処", "内容", "行番号", "コード", "備考")
 _CHECKER_SUCCESS_MESSAGE = "特に気になる点はありません。"
 _CHECKER_FIELD = re.compile(
     r"\s*(?P<field>" + "|".join(r"\s*".join(name) for name in _CHECKER_FIELDS)
@@ -1325,7 +1325,7 @@ def _prefixed_checker_fields(diagnostic: str) -> dict[str, str] | None:
                 return None
             fields[current] = match["value"]
         elif line.strip():
-            if current not in {"内容", "コード", "備考"}:
+            if current not in {"対処", "内容", "コード", "備考"}:
                 return None
             fields[current] += "\n" + line
         elif current:
@@ -1368,7 +1368,7 @@ def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFindi
             key = (match["rule"].casefold(), " ".join(match["message"].split()))
         elif fields:
             path_text, line, severity = fields["ファイル"].strip(), fields["行番号"].strip(), "finding"
-            key = ("prefixed", *(" ".join(fields[name].split()) for name in ("対象", "内容", "備考")),
+            key = ("prefixed", *(" ".join(fields[name].split()) for name in ("対処", "内容", "備考")),
                    fields["コード"].strip())
         else:
             unrecognized = True
@@ -1558,7 +1558,7 @@ def _repair_target(
                  if attempt["details"].get("raw_checker_output") else "")
     if attempt["details"].get("kind") != "build":
         diagnosis += (
-            "For Japanese prefixed findings, ファイル identifies the file, 対象 the affected symbol or operation, "
+            "For Japanese prefixed findings, ファイル identifies the file, 対処 the suggested fix, "
             "内容 the issue, 行番号 the reported line, コード the reported code, and 備考 additional context. "
             "Labels may contain spaces and use either colon width. Use all fields together to guide the repair, "
             "and verify the reported code against the current target and original PHP. "

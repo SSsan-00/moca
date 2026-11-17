@@ -10,8 +10,8 @@ from migration_harness import junie_cli, workflow
 from test_checker_resume_review_dashboard import SavedRunFixture
 
 
-def diagnostic(path="Example.cs", line="12", target="CalculateTotal", message="合計に送料を含めてください"):
-    return (f"ファイル: {path}\n対　象: {target}\n内　容: {message}\n行番号: {line}\n"
+def diagnostic(path="Example.cs", line="12", remedy="送料を加算する", message="合計に送料を含めてください"):
+    return (f"ファイル: {path}\n対　処: {remedy}\n内　容: {message}\n行番号: {line}\n"
             "コード: return subtotal;\n備　考: 元PHPの送料加算を確認してください\n")
 
 
@@ -32,7 +32,7 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
         variants = [
             diagnostic(line="23").replace("　", ""),
             "\ufeff" + diagnostic(line="23").replace(": ", "　：\t").replace("\n", "\r\n"),
-            diagnostic(line="23").replace("ファイル:", "  フ ァ イ ル :").replace("対　象:", "対\t象  :")
+            diagnostic(line="23").replace("ファイル:", "  フ ァ イ ル :").replace("対　処:", "対\t処  :")
             .replace("行番号:", "行　番 号:").replace("コード:", "コ ー ド :"),
         ]
         for text in variants:
@@ -48,7 +48,7 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
         old, _ = self.parse(legacy)
         findings, unknown = self.parse(
             legacy + "\n\n" + diagnostic("Pages/Menu.cshtml") + "\n"
-            + diagnostic("Pages\\Menu.cshtml.cs", target="LoadMenu") + legacy,
+            + diagnostic("Pages\\Menu.cshtml.cs", remedy="メニューを読み込む") + legacy,
         )
         self.assertFalse(unknown)
         self.assertEqual([item.path for item in findings],
@@ -57,15 +57,17 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
         self.assertEqual(findings[-1].finding_id, old[0].finding_id)
         self.assertNotEqual(findings[1].finding_id, findings[2].finding_id)
 
-    def test_multiline_content_code_and_notes_reach_diagnostic_unchanged(self):
-        text = diagnostic().replace("コード: return subtotal;", "コード:\n    var total = subtotal;\n\n    return total;")
+    def test_multiline_remedy_content_code_and_notes_reach_diagnostic_unchanged(self):
+        remedy = "送料を加算する\n税込金額を返す"
+        text = diagnostic(remedy=remedy).replace("コード: return subtotal;", "コード:\n    var total = subtotal;\n\n    return total;")
         text = text.replace("行番号:", "送料が欠落しています\n行番号:") + "    税計算の順序も維持してください\n"
         findings, unknown = self.parse(text)
         self.assertFalse(unknown)
         self.assertEqual(findings[0].diagnostic, text.strip())
+        self.assertEqual(workflow._prefixed_checker_fields(text)["対処"], remedy)
 
-    def test_empty_target_code_and_notes_are_allowed(self):
-        text = "ファイル: Example.cs\n対象:\n内容: 送料が欠落\n行番号: 1\nコード:\n備考:\n"
+    def test_empty_remedy_code_and_notes_are_allowed(self):
+        text = "ファイル: Example.cs\n対処:\n内容: 送料が欠落\n行番号: 1\nコード:\n備考:\n"
         findings, unknown = self.parse(text)
         self.assertFalse(unknown)
         self.assertEqual(len(findings), 1)
@@ -73,7 +75,7 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
     def test_different_context_cannot_reuse_approval(self):
         original, _ = self.parse(diagnostic())
         for text in (
-            diagnostic(path="Other.cs"), diagnostic(target="OtherMethod"), diagnostic(message="税が欠落"),
+            diagnostic(path="Other.cs"), diagnostic(remedy="共通メソッドに委譲する"), diagnostic(message="税が欠落"),
             diagnostic().replace("return subtotal;", "return tax;"),
             diagnostic().replace("元PHPの送料加算を確認してください", "税込金額を使ってください"),
         ):
@@ -85,9 +87,9 @@ class PrefixedCheckerParsingTests(unittest.TestCase):
     def test_malformed_blocks_preserve_raw_output_fallback(self):
         for text in (
             diagnostic().replace("行番号: 12\n", ""), diagnostic(line="不明"), diagnostic(line="0"),
-            diagnostic(path=""), diagnostic(message=""), diagnostic() + "対象: duplicate\n",
+            diagnostic(path=""), diagnostic(message=""), diagnostic() + "対処: duplicate\n",
             diagnostic().replace("return subtotal;", "return\0subtotal;"),
-            diagnostic().replace("対　象:", "unknown prefix:"), diagnostic(path="../Outside.cs"),
+            diagnostic().replace("対　処:", "unknown prefix:"), diagnostic(path="../Outside.cs"),
         ):
             with self.subTest(text=text):
                 findings, unknown = self.parse(text)
@@ -149,7 +151,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
 
     def test_remaining_blocks_continue_repair_after_line_and_spacing_changes(self):
         self.config["max_repair_attempts"] = 2
-        first = diagnostic(target="CalculateTax", message="税を加算してください")
+        first = diagnostic(remedy="税を加算する", message="税を加算してください")
         second = diagnostic()
         shifted = diagnostic(line="15").replace("　", " ").replace(":", "：")
         with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
@@ -206,7 +208,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
             self.assertIn(text, bundle.values())
             self.assertIn(".migration-materials/source-0001.md", bundle)
             prompt = command[command.index("--prompt") + 1]
-            self.assertIn("対象 the affected symbol or operation", prompt)
+            self.assertIn("対処 the suggested fix", prompt)
             self.assertIn("備考 additional context", prompt)
             target, = targets
             target.write_text("class Repaired {}\n", encoding="utf-8")
