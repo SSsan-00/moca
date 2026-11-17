@@ -156,8 +156,49 @@ async function checkProgressSelection() {
   assert.equal(requests.at(-1).headers.get("X-Run-ID"), null, "new runs must omit the deleted run's ID");
 }
 
+async function checkCancelledComparison() {
+  const source = fs.readFileSync(process.argv[3], "utf8");
+  const start = source.indexOf("async function openSnapshot(");
+  const end = source.indexOf("viewer.addEventListener", start);
+  assert.ok(start >= 0 && end > start, "missing dashboard comparison handler");
+  const requests = [];
+  const popups = [];
+  const opened = [];
+  const runtime = vm.createContext({
+    snapshot: {run_id: "A"}, snapshotting: false, dashboardRevision: 0, document,
+    migrationLedgerDialog: {open: false},
+    syncActions() {}, showComparisonStatus() {},
+    comparisonPath(runId, id) { return runId + "/" + id; },
+    reserveComparisonTab() {
+      const popup = {closed: false, close() { this.closed = true; }};
+      popups.push(popup);
+      return popup;
+    },
+    runFetch(path) { return new Promise(resolve => requests.push({path, resolve})); },
+    displayComparison(url) { opened.push(url); },
+  });
+  vm.runInContext(source.slice(start, end), runtime);
+  const cancelled = runtime.openSnapshot({withAnchors: true});
+  assert.equal(runtime.snapshotting, true);
+  requests[0].resolve({ok: false, text: async () => "取り消しました"});
+  await cancelled;
+  assert.equal(popups[0].closed, true);
+  assert.equal(runtime.snapshotting, false);
+  const plain = runtime.openSnapshot();
+  assert.equal(requests[1].path, "comparison");
+  requests[1].resolve({ok: true, json: async () => ({run_id: "A", id: "plain"})});
+  await plain;
+  runtime.snapshot = {run_id: "B"};
+  const retry = runtime.openSnapshot({withAnchors: true});
+  assert.equal(requests[2].path, "control");
+  requests[2].resolve({ok: true, json: async () => ({run_id: "B", id: "anchors"})});
+  await retry;
+  assert.deepEqual(opened, ["A/plain.html", "B/anchors.html"]);
+}
+
 (async () => {
   await checkProgressSelection();
+  await checkCancelledComparison();
   const initial = tick();
   take().resolve(response("A"));
   await initial;
