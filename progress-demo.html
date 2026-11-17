@@ -417,6 +417,7 @@
     .demo-badge, .state { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
     .demo-badge { background: var(--amber-soft); color: var(--amber); }
     .demo-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #c78912; }
+    .progress-overview { min-width: 0; }
     .runbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 66px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
     .run-meta { min-width: 0; flex: 1; }
     .run-titleline { display: flex; align-items: center; gap: 9px; }
@@ -427,6 +428,9 @@
     .elapsed span { color: var(--muted); font-size: 10px; line-height: 1; }
     .elapsed strong { color: var(--ink); font: 650 12px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
     .state { width: 154px; height: 38px; flex: 0 0 154px; justify-content: flex-start; overflow: hidden; padding-block: 0; background: var(--blue-soft); color: var(--blue); }
+    #run-state { width: auto; min-width: min(154px, 100%); max-width: 100%; flex: 0 1 auto; }
+    #run-state .state-orb { flex-shrink: 0; }
+    #state-label { overflow: hidden; text-overflow: ellipsis; }
     .state[data-state="complete"] { background: var(--green-soft); color: var(--green); }
     .state[data-state="paused"] { background: var(--surface-muted); color: var(--muted); }
     .state[data-state="waiting"] { background: var(--amber-soft); color: var(--amber); }
@@ -439,8 +443,7 @@
     #editor-junie-status .state-orb { flex-shrink: 0; }
     .editor-chat-body #editor-junie-activity { margin-top: 6px; }
     .controls { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 7px; }
-    #toggle { width: 128px; }
-    [data-live] #toggle { width: auto; min-width: 128px; }
+    #toggle { min-width: 128px; }
     #stop[hidden], #toggle[hidden] { display: none; }
     #restart { width: 84px; }
     .button { display: inline-flex; height: 38px; min-height: 38px; align-items: center; justify-content: center; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); cursor: pointer; white-space: nowrap; transition: background 140ms ease, border-color 140ms ease, transform 100ms ease; }
@@ -714,9 +717,10 @@
       .run-meta { flex-basis: 100%; }
       .elapsed { width: 92px; height: 34px; flex-basis: 92px; padding-inline: 7px; }
       .state { width: 114px; height: 34px; flex-basis: 114px; margin-left: 0; }
+      #run-state { min-width: min(114px, 100%); }
       .controls { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
       .button { padding-inline: 9px; font-size: 12px; }
-      #toggle { width: 106px; }
+      #toggle { min-width: 106px; }
       #restart { width: 68px; }
       .panel-head { padding-inline: 14px; }
       .flow { padding-inline: 14px; }
@@ -758,7 +762,6 @@
     [data-live] #restart { display: none; }
     [data-live] .review-location { grid-template-columns: 1fr; margin-top: 0; }
     [data-live] .review-actions .comparison-option-panel { inset-inline: 0 auto; }
-    [data-live] #state-label { white-space: normal; }
     html:not([data-viewer-enabled]) :is(.comparison-control, .migration-ledger-comparisons) { display: none; }
     [data-viewer-enabled] .controls { flex-wrap: wrap; }
     @media (max-width: 820px) {
