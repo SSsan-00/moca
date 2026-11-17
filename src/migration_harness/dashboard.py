@@ -452,8 +452,7 @@ class Dashboard:
                             from_agent = phase in AGENT_PHASES and agent_root.is_dir()
                             root = agent_root if from_agent else worktree
                             busy_other = state.get("generating_anchors") or state.get("stop_requested")
-                            queued = bool(from_agent and phase in QUEUE_PHASES and not busy_other)
-                            direct = bool(state.get("ready") and not busy_other and phase not in AGENT_PHASES)
+                            queued = bool(queue["edits"] or not state.get("ready") or busy_other or phase in AGENT_PHASES)
                             prompt_timing = _prompt_timing(config, state, run_path, record,
                                                           live=bool(dashboard.control and dashboard.control.junie_steering
                                                                     and not queue["edits"]))
@@ -469,36 +468,41 @@ class Dashboard:
                             if action is not None:
                                 if action.get("kind") == "prompt" and prompt_timing:
                                     add_prompt(queue, action)
-                                elif action.get("kind") == "save" and name and original is not None and (queued or direct):
+                                elif action.get("kind") == "save" and name:
                                     base = editor_text(action.get("base"))
                                     draft = editor_text(action.get("content"))
                                     if action.get("edit_id") != (edit["id"] if edit else None):
                                         raise ValueError("保存済みの編集が別の画面で変更されました。")
-                                    if queued:
-                                        if edit and edit["status"] == "conflict" and (
-                                            not action.get("resolve") or base != content
-                                        ):
-                                            raise ValueError("Junie の最新版を確認してから競合を解消してください。")
-                                        edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
-                                        queue["edits"][name] = edit
-                                        prompt_timing = _prompt_timing(config, state, run_path, record)
-                                    else:
-                                        if content != base:
-                                            raise ValueError("ファイルが更新されました。差分を確認してください。")
-                                        with worktree_source_lock, dashboard.condition:
-                                            if dashboard.state.get("run_id") != run_id or not dashboard.state.get("ready"):
-                                                raise ValueError("処理が始まりました。終了後に保存してください。")
+                                    with worktree_source_lock, dashboard.condition:
+                                        state = dashboard.state
+                                        if state.get("run_id") != run_id:
+                                            raise ValueError("表示中の実行が変わりました。")
+                                        # 保存直前に実行が始まった場合も、編集をRunへ退避する。
+                                        busy_other = state.get("generating_anchors") or state.get("stop_requested")
+                                        queued = bool(queued or not state.get("ready") or busy_other or content != base)
+                                        if queued:
+                                            if edit and edit["status"] == "conflict" and (
+                                                not action.get("resolve") or base != content
+                                            ):
+                                                raise ValueError("最新版との差分を確認し、競合を解消して保存してください。")
+                                            edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
+                                            queue["edits"][name] = edit
+                                            prompt_timing = _prompt_timing(config, state, run_path, record)
+                                        else:
                                             _save_build_review_edit(worktree, targets, {
-                                                "target": name, "version": hashlib.sha256(original).hexdigest(), "content": draft,
+                                                "target": name, "version": hashlib.sha256(original).hexdigest() if original is not None else None,
+                                                "content": draft,
                                             })
-                                        record_operator_edit(queue, name, content, draft)
-                                        content = draft
+                                            record_operator_edit(queue, name, content, draft)
+                                            original, content = editor_target(worktree, Path(name))
                                 else:
                                     raise ValueError("現在の工程ではこの操作を受け付けられません。")
                             payload = {
                                 "run_id": run_id, "targets": names, "target": name, "content": content, "edit": edit,
                                 "source": "agent-workspace" if from_agent else "worktree",
-                                "can_save": bool(original is not None and (queued or direct)), "queued": queued,
+                                "can_save": bool(name and read_error is None), "queued": queued,
+                                "save_timing": ("checkpoint" if queued and not state.get("ready") and not busy_other
+                                                and phase in QUEUE_PHASES else "resume" if queued else "immediate"),
                                 "exists": original is not None, "read_error": read_error,
                                 "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,
                                 "prompts": queue["prompts"], "capsule": record.get("current_capsule"),

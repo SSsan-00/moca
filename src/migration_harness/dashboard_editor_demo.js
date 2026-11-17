@@ -107,7 +107,8 @@ window.harnessEditorDemo = (() => {
         advance();
       }, 3800);
     }
-    return structuredClone({...demo, target, content: file.content, edit: file.edit});
+    return structuredClone({...demo, save_timing: demo.queued ? "checkpoint" : "immediate",
+      target, content: file.content, edit: file.edit});
   }
 
   function update() {
