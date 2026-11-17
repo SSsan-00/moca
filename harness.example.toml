@@ -41,12 +41,17 @@ max_context_chars = 500000
 [checker]
 # 実行ファイル名と引数を個別に並べる。相対パスの基準はworktreeのルート。
 # command = ["py", "-3", "tools/check_migration.py"]
+# 引数の別名は実行時にworktree内の絶対パスへ展開する。
+# {build_project}: [build].project（設定必須）、{target}: 移行先の先頭、{worktree}: worktreeルート。
+# command = ["py", "-3", "tools/check_migration.py", "--project", "{build_project}", "--target", "{target}"]
 # ビルドとチェッカーの修正を合わせて、既定はRunごとに最大2回。中断した試行は数えない。
 # 0は自動修正なし。
 # max_repair_attempts = 2
 
 [scripts]
 # 各工程に、実行ファイルと引数の配列を実行順で指定する。
+# 通常コマンドではチェッカーと同じ別名を使える（before_prepareと@copy-migration-draftを除く）。
+# after_build = [["py", "-3", "tools/export_results.py", "{build_project}", "{target}"]]
 # before_prepare = [["powershell.exe", "-NoProfile", "-File", "tools/prepare-legacy.ps1"]]
 # 仮移行ファイルのコピー元はアプリルートからの相対パス、または外部ファイルの絶対パス。
 # コピー先はアプリルートからの相対パス、またはアプリ内の絶対パス。書き込みはworktree内に限る。

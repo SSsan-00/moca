@@ -28,6 +28,7 @@ from typing import Any
 
 from . import junie_cli
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
+from .command_paths import expand_command_paths
 from .config import checker_command_for_unit, find_unit, target_paths
 from .editor_queue import (
     EDITOR_TARGET_SUFFIXES, LivePrompts, dispatch_prompts, editor_queue, editor_target, finish_prompts, merge_edit,
@@ -204,6 +205,11 @@ def _run_script_phase(
                 if phase == "before_migration" and command[0] == "@copy-migration-draft":
                     script = harness_asset("tools/copy_migration_draft.py")
                     invocation = [sys.executable, str(script), *command[1:]]
+                else:
+                    invocation = expand_command_paths(
+                        command, None if phase == "before_prepare" else cwd,
+                        config.get("build_project"), (record or {}).get("target"),
+                    )
                 completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
@@ -1193,6 +1199,7 @@ def _checker_repair_reason(error: BaseException) -> str:
 
 def _run_checker(
     command: list[str], result: dict[str, Any], record: dict[str, Any],
+    build_project: str | None,
 ) -> tuple[dict[str, Any], list[CheckerFinding], bool]:
     """元の出力を保存し、読み取れた指摘をその時点のファイル内容にひも付ける。"""
     run_path = Path(result["run_path"])
@@ -1212,10 +1219,11 @@ def _run_checker(
         # stdoutとstderrをそのまま保存し、利用者のチェッカー固有の出力形式を保つ。
         with log_path.open("wb") as log:
             try:
+                command = expand_command_paths(command, Path(result["worktree_path"]), build_project, record["target"])
                 completed = run_process(
                     command, label="チェッカー", cwd=result["worktree_path"], stdout=log, stderr=subprocess.STDOUT, check=False,
                 )
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 log.write((format_error(exc, command=command, cwd=result["worktree_path"]) + "\n").encode("utf-8"))
                 raise
         record["checker_exit_code"] = completed.returncode
@@ -1240,7 +1248,7 @@ def _run_checker(
                 record.update(status="checker_needs_review", checker_review_reason="output_error", error=format_error(exc))
         elif completed.returncode < 0:
             record.update(checker_review_reason="checker_incomplete", error="checker did not complete normally")
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         record.update(status="checker_failed", checker_review_reason="checker_incomplete",
                       error=format_error(exc, command=command, cwd=result["worktree_path"]))
     except KeyboardInterrupt:
@@ -1662,6 +1670,7 @@ _verification_cache: tuple[Path | None, dict[Path, tuple[tuple[int, ...], str]]]
 
 def _verification_fingerprint(
     worktree: Path, build_project: str | None, checker: list[str] | None, scripts: dict[str, Any],
+    target: str | None = None,
 ) -> str | None:
     """作業ツリー内のビルド入力と、検証コマンドが直接使うファイルを照合する。"""
     # 照合できない場合はNoneを返す。以前の検証成功を現在も有効とは扱わない。
@@ -1731,6 +1740,7 @@ def _verification_fingerprint(
             commands.append(checker)
         # 実行ファイルや、ファイルとして存在する引数の内容変更も検出する。
         for command in commands:
+            command = expand_command_paths(command, worktree, build_project, target)
             executable = command[0]
             search_path = None
             if os.name != "nt":
@@ -2057,7 +2067,7 @@ def _run_verification(
     history = record.setdefault("repair_history", [])
 
     def current_fingerprint() -> str | None:
-        return _verification_fingerprint(worktree, config["build_project"], command, scripts)
+        return _verification_fingerprint(worktree, config["build_project"], command, scripts, unit["target"])
 
     def save_verification() -> None:
         record["verification"]["scripts_passed"] = True
@@ -2123,7 +2133,7 @@ def _run_verification(
         if fingerprint is not None and (scripts.get("after_build") or scripts.get("before_checker")):
             if fingerprint != current_fingerprint():
                 fingerprint = None
-        checked, findings, use_raw_output = _run_checker(command, verified, record)
+        checked, findings, use_raw_output = _run_checker(command, verified, record, config["build_project"])
         if record.get("checker_exit_code") is not None:
             _run_script_phase(config, "after_checker", worktree, run_path, record)
         if checked["status"] == "checker_succeeded":
@@ -2315,7 +2325,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
     if verification_passed:
         verification_passed = fingerprint == _verification_fingerprint(
-            worktree, config["build_project"], configured_checker, scripts,
+            worktree, config["build_project"], configured_checker, scripts, unit["target"],
         )
 
     return {

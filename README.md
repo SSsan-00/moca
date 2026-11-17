@@ -222,6 +222,24 @@ checker_command = ["py", "-3", "tools/check_menu.py"]
 
 優先順位は `--checker-command` → 移行単位の `checker_command` → `[checker].command` です。フォームを空欄に戻すと共通設定を使い、共通設定もなければチェッカーは実行しません。TOMLでは未指定に戻す場合に `checker_command` の行を削除します（空配列は無効）。再開時も対象の移行単位の設定を使い、使用するチェッカーが変わった場合は台帳で再検証が必要になります。`max_repair_attempts` は従来どおりRun全体の共通上限です。
 
+チェッカーと `[scripts]` の通常コマンドには、実行時に絶対パスへ展開する次の別名を指定できます。Run IDを設定ファイルに書く必要はありません。ダッシュボードの引数欄や `--checker-command` でも使えます。
+
+| 別名 | 展開先 |
+| --- | --- |
+| `{build_project}` | そのRunのworktree内にある `[build].project` のファイル。使用時は `[build].project` の設定が必要です。 |
+| `{target}` | そのRunのworktree内にある移行先ファイル。`targets` が複数なら設定順の先頭を使います。 |
+| `{worktree}` | そのRunのworktreeのルートディレクトリ。 |
+
+```toml
+[checker]
+command = ["py", "-3", "tools/check_migration.py", "--project", "{build_project}", "--target", "{target}"]
+
+[scripts]
+after_build = [["py", "-3", "tools/export_results.py", "{build_project}", "{target}"]]
+```
+
+引数の一部にも使えるため、`"--project={build_project}"` や `"{worktree}/Pages/Menu.cshtml"` も指定できます。空白を含むパスも1つの引数として渡します。展開先はビルド・検証に使うworktreeで、Junieが直接編集する `agent-workspace` は指定しません。worktree作成前の `before_prepare` では使用できません。仮C#取り込みの `@copy-migration-draft` は従来のコピー元・コピー先の指定方法を使い、別名は展開しません。
+
 ### ビルドエラーとチェッカーの指摘を自動修正する
 
 `max_repair_attempts` は、1つのRunで実行するJunieのビルド・チェッカー修正の合計上限です。既定値は `2` で、`0` は自動修正を無効にします。ビルドでは、移行先を指すC#・Razorのコンパイラエラーを修正し、再ビルドします。大量の同種エラーは全行を検査してまとめ、修正前の全文ログを `build-before-repair-N.log` に保存します。修正が進まない場合、異なる指摘が多すぎる場合、移行先外の指摘、依存関係などのエラーは人が確認します。
