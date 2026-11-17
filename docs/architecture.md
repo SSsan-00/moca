@@ -2,6 +2,157 @@
 
 Python のハーネスが入力の固定、実行順序、ファイル反映、検証、再開を管理します。Junie CLI はハーネスが用意した作業領域で C#／Razor を生成・修正し、.NET SDK と任意のチェッカーは別の Git worktree で動きます。添付の構成図を起点に、現在の実装の呼び出し順と保存境界を示します。設定項目の一覧は [技術仕様](../SPEC.md)、並行処理の契約は [Run の状態とロック契約](run-state-contracts.md) を参照してください。
 
+## 全処理順を一枚で見る
+
+この図は新規 `run` の通常経路を左から右へ示し、失敗後の再開先と完了判定を同じ図にまとめています。設定によって存在しないフックやチェッカーはスキップされます。レビューと修正の反復、ダッシュボードからの人の介入、保存状態からの再開は下段の分岐を参照してください。
+
+```mermaid
+flowchart TB
+    subgraph S1[1 準備と入力固定]
+        direction LR
+        Start[CLI またはダッシュボード
+config を検証]
+        NewRun[Run ID を採番
+Run lock → prepare lock]
+        BeforePrep[before_prepare
+アプリルートで実行]
+        Validate[設定入力の存在を確認]
+        Pin[PHP 原文をコピー・文字コード確定
+SHA-256 と行範囲を manifest に保存]
+        Capsule[共有資料と入力を
+上限内のカプセルに分割]
+        Worktree[Git の base_ref から
+detached worktree を作成]
+        Prepared[Run に worktree・モデル・進捗を保存
+after_prepare]
+        PrepFail[準備失敗]
+        Start --> NewRun --> BeforePrep --> Validate --> Pin --> Capsule --> Worktree --> Prepared
+        BeforePrep -.-> PrepFail
+        Validate -.-> PrepFail
+        Pin -.-> PrepFail
+        Capsule -.-> PrepFail
+        Worktree -.-> PrepFail
+    end
+
+    subgraph S2[2 Junie によるカプセル移行]
+        direction LR
+        BeforeMig[before_migration と draft_imports
+agent-workspace を初期化]
+        Detail[詳細ルールを一度判定
+必須・対象詳細・参照資料を配置]
+        Part{未完了カプセルがある}
+        StagePart[担当範囲・境界抜粋・累積原文を配置]
+        Intervention[保留編集・追加指示・質問を処理]
+        Conflict{編集競合または
+未回答の質問}
+        Checkpoint[editor_checkpoint
+回答・編集後に同じ Run を再開]
+        Junie[Junie をカプセル単位で起動
+端末 CLI またはダッシュボード ACP]
+        Outcome{完了トークン・全対象・
+プロセス終了を確認}
+        Apply[対象外変更・UTF-8・旧版を照合
+旧新ハッシュ保存後 worktree に反映]
+        Applied[completed_capsules を保存
+次のカプセルへ]
+        MigStop[停止・質問・不完全出力
+Run 状態と下書きを保存]
+        FinalEdit[最終チェックポイント
+手修正と追加指示を処理]
+        Finished[junie_finished]
+        BeforeMig --> Detail --> Part
+        Part -->|はい| StagePart --> Intervention --> Conflict
+        Conflict -->|はい| Checkpoint
+        Checkpoint -.->|回答・解消後| Part
+        Conflict -->|いいえ| Junie --> Outcome
+        Outcome -->|有効| Apply --> Applied --> Part
+        Outcome -->|未完了・停止| MigStop
+        Part -->|いいえ| FinalEdit --> Finished
+    end
+
+    subgraph S3[3 ビルド・チェッカー・修正]
+        direction LR
+        AfterMig[after_migration]
+        BeforeBuild[保留反映を復旧
+before_build・対象 hash と設定を記録]
+        Build[dotnet build]
+        BuildPass{ビルド成功}
+        AfterBuild[after_build]
+        CheckerEnabled{チェッカー設定あり}
+        Checker[before_checker → checker
+終了コード取得時 after_checker]
+        Judge{応答と指摘を判定}
+        Verified{検証成功
+ビルドのみ、またはチェッカー成功・有効承認}
+        Repairable{対象を特定でき、反復・上限内}
+        Repair[Junie が対象移行先を修正
+修正前診断と履歴を保存]
+        VerifyStop[ビルド・チェッカー失敗
+レビュー待ち・ログを保存]
+        AfterMig --> BeforeBuild --> Build --> BuildPass
+        BuildPass -->|はい| AfterBuild --> CheckerEnabled
+        BuildPass -->|いいえ| Repairable
+        CheckerEnabled -->|なし| Verified
+        CheckerEnabled -->|あり| Checker --> Judge
+        Judge -->|成功または承認済みのみ残る| Verified
+        Judge -->|指摘または異常| Repairable
+        Repairable -->|はい| Repair --> BeforeBuild
+        Repairable -->|いいえ| VerifyStop
+    end
+
+    subgraph S4[4 Diff Viewer・台帳レビュー]
+        direction LR
+        Snapshot[固定 PHP と現在の移行先を比較
+必要なら対応行候補を生成]
+        Review{全 PHP 範囲に
+有効な判断と理由がある}
+        Ledger{verification_passed
+かつ PHP 範囲が1件以上
+かつ reviewed == total}
+        Complete[completion.complete = true]
+        NotComplete[未完了
+版変更は stale・再検証]
+        Verified --> Snapshot --> Review --> Ledger
+        Ledger -->|はい| Complete
+        Ledger -->|いいえ| NotComplete
+        Review -.->|不足・対象版変更| NotComplete
+    end
+
+    PrepFail -.->|修復後は新しい Run| Start
+    Prepared --> BeforeMig
+    Finished --> AfterMig
+    MigStop -.->|resume: 状態・ハッシュ照合後| Part
+    VerifyStop -.->|resume: ビルドから再検証| BeforeBuild
+    NotComplete -.->|レビュー記録後に再判定| Snapshot
+    Complete --> End[Run の処理完了]
+
+    User[利用者
+ダッシュボード]
+    User -.->|編集・追加指示・質問回答・停止| Intervention
+    User -.->|検証依頼・指摘確認| BeforeBuild
+    User -.->|対応範囲の確認と理由記録| Review
+    RunData[("run_root<br/>run.json・manifest・ログ<br/>editor.json・review-snapshots")]
+    Agent[("agent-workspace<br/>Junie の下書き・資料")]
+    Tree[("worktree_root / Run ID<br/>移行後アプリ")]
+    CapsuleStore[("run_root / Run ID / capsule<br/>固定 PHP・カプセル・資料")]
+    Capsule --> CapsuleStore
+    CapsuleStore --> StagePart
+    BeforeMig --> Agent
+    Junie <--> Agent
+    Agent -->|対象ファイルを検証して反映| Tree
+    Worktree --> Tree
+    Tree --> Build
+    Tree --> Checker
+    Tree --> Snapshot
+    NewRun --> RunData
+    Prepared --> RunData
+    Applied --> RunData
+    Checkpoint --> RunData
+    Verified --> RunData
+    Review --> RunData
+    RunData -.->|保存状態と再開位置| Part
+```
+
 ## 1. コンポーネントと作業領域
 
 ```mermaid
