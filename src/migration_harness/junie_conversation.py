@@ -66,7 +66,8 @@ def _status_intent(value):
     checker = re.search(CHECKER_TERM, value)
     if (checker or re.search(BUILD_TERM, value)) and (
         re.search(r"なぜ|どうして|原因|結果|ログ|状態|状況|進捗|\b(?:why|status|results?|logs?)\b", value)
-        or re.search(r"終わった|終えた|落ちた|通った|済み|実行中|かどうか|(?:は|って)(?:どう|まだ)\s*\?", value)
+        or re.search(r"終わった|終えた|落ちた|通った|済み|実行中|かどうか|(?:は|って)(?:どう|まだ)\s*\?"
+                     r"|(?:ビルド|チェッカー)(?:は|が|を)?\s*(?:した|しました|回った)(?:の|か)?\s*[?。]*$", value)
         or re.search(r"(?:[?]|のですか|ましたか|したの\s*$|したか\s*$)", value)
         and re.search(r"成功|失敗|完了|終了|実行した|停止|終わ|\b(?:ran|done|finish\w*|pass\w*|fail\w*|succeed\w*|running)\b", value)
     ):

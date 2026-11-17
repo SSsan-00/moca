@@ -142,8 +142,10 @@ class JunieConversationTests(SavedRunFixture):
         queries = {
             "なぜビルドが失敗したの？": "CS1002",
             "ビルドは終わった？": "CS1002",
+            "ビルドした？": "CS1002",
             "前回のビルドの結果を教えて": "CS1002",
             "チェッカーは成功した？": "previous finding",
+            "チェッカー回った？": "previous finding",
             "チェッカーはもう実行したのですか": "previous finding",
             "Why did the checker fail?": "previous finding",
         }
