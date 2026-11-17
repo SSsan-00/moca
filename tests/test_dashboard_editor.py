@@ -301,7 +301,9 @@ class DashboardEditorTests(HarnessCase):
                         self.assertEqual(state["prompts"][0]["status"], "queued")
 
     def test_edits_submitted_as_repair_finishes_are_applied_before_rebuilding(self):
+        self.settings.update(junie_model="sonnet", junie_effort="high")
         result = self.finished_run()
+        self.settings.update(junie_model="opus", junie_effort="low")
         run_path, worktree, _, _ = run_records.load_saved_run(self.settings, result["run_id"])
         self.view.begin_operation()
         calls, builds = [], []
@@ -316,6 +318,8 @@ class DashboardEditorTests(HarnessCase):
 
         def junie(command, completion, token, targets, **kwargs):
             calls.append(command)
+            self.assertEqual(command[command.index("--model") + 1], "sonnet")
+            self.assertEqual(command[command.index("--effort") + 1], "high")
             if len(calls) == 1:
                 targets[0].write_text(BASE.replace("First = 1", "First = 2"))
             else:

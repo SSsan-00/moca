@@ -481,7 +481,7 @@ class JunieControlTests(unittest.TestCase):
         self.assertEqual(self.messages[-1]["message"], "Junieの通信に失敗しました。再試行を待っています。")
 
     def test_controlled_retries_keep_original_total_delay_and_prompt(self):
-        command = ["junie", "--max-steps", "30", "--prompt", "PRIVATE"]
+        command = junie_cli.build_command(self.root, "PRIVATE", 30, model="sonnet", effort="high")
         with (patch.object(junie_cli, "_run_session", side_effect=[
                   junie_cli.JunieConnectionError("offline"), junie_cli.JunieConnectionError("offline"), 0,
               ]) as launch, patch.object(junie_cli.time, "sleep") as sleep, redirect_stdout(io.StringIO())):
@@ -490,7 +490,8 @@ class JunieControlTests(unittest.TestCase):
         self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 4)
         self.assertTrue(all(call.args[0] == 0.25 for call in sleep.call_args_list))
         self.assertEqual(command[-1], "PRIVATE")
-        self.assertEqual(launch.call_args.args[0][:-1], command[:-1])
+        for call in launch.call_args_list:
+            self.assertEqual(call.args[0][:-1], command[:-1])
 
     def test_heartbeat_reports_liveness_and_time_since_actual_event_without_printing(self):
         clock = [0.0]

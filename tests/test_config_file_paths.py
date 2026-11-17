@@ -119,10 +119,15 @@ class ConfigFilePathTests(HarnessCase):
         second_reference = self.root / "another.json"
         second_reference.write_text(self.reference.read_text(encoding="utf-8").replace("example", "other").replace("Example", "Other"), encoding="utf-8")
         self.raw["diff_viewer"]["anchor_reference"] = [self.reference.name, str(second_reference)]
+        self.raw["junie"] = {"model": "sonnet", "effort": "high"}
         config = self.load()
         prepared = workflow.prepare_run(config, "orders")
+        config.update(junie_model="opus", junie_effort="low")
 
         def junie(command, completion, token, targets, **kwargs):
+            self.assertEqual(command[command.index("--model") + 1], "sonnet")
+            self.assertEqual(command[command.index("--effort") + 1], "high")
+            self.assertTrue(kwargs["prefer_task"])
             guide = json.loads((completion.parent / "guide.json").read_bytes())
             self.assertEqual(guide["examples"], [
                 {"left": "function example() {}", "right": "void Example() {}"},

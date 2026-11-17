@@ -36,6 +36,7 @@ def main() -> None:
                 for flag in ("--version", "--help"):
                     command = junie_cli.build_command(
                         root, '起動確認 "quotes" & | %PATH% !NAME!\nsecond line', 2, guidelines=guidelines,
+                        model="sonnet", effort="high",
                     )
                     command.insert(1, flag)
                     print(f"Launching {extension}: {flag}", flush=True)

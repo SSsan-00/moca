@@ -16,7 +16,8 @@ from migration_harness.errors import format_error
 
 class JunieLaunchTests(unittest.TestCase):
     def test_preferred_task_checks_the_help_before_selecting_a_mode(self):
-        command = junie_cli.build_command(Path("project"), "anchor prompt", 7, guidelines=Path("rules.md"))
+        command = junie_cli.build_command(Path("project"), "anchor prompt", 7, guidelines=Path("rules.md"),
+                                          model="sonnet", effort="high")
         completion = Path("project/complete.txt")
         for option in ("--task=<text>", "--task-file=<path>"):
             with (
@@ -36,7 +37,7 @@ class JunieLaunchTests(unittest.TestCase):
                     require_terminal.assert_not_called()
                     expected = [
                         "junie", "--project", "project", "--ide-guidelines", "rules.md",
-                        "--max-steps", "7", "--task", "anchor prompt",
+                        "--max-steps", "7", "--model", "sonnet", "--effort", "high", "--task", "anchor prompt",
                     ]
                 else:
                     require_terminal.assert_called_once_with()
@@ -404,7 +405,8 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                     "pathlib.Path(os.environ['PHP_TO_CSHARP_TEST_RESULT']).write_text(json.dumps({\n"
                     "'argv': sys.argv[1:], 'prompt': os.environ.get('JUNIE_PROMPT'),\n"
                     "'project': os.environ.get('JUNIE_PROJECT'), 'cwd': os.getcwd(),\n"
-                    "'guidelines': os.environ.get('JUNIE_IDE_GUIDELINES')\n"
+                    "'guidelines': os.environ.get('JUNIE_IDE_GUIDELINES'),\n"
+                    "'model': os.environ.get('JUNIE_MODEL'), 'effort': os.environ.get('JUNIE_EFFORT')\n"
                     "}), encoding='utf-8')\n"
                     "sys.exit(7)\n", encoding="utf-8",
                 )
@@ -412,9 +414,11 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                 project = str(root) + "\\"
                 guidelines = str(root / "必須事項 & details.md")
                 literal = "space &|<>^() %JUNIE_TEST_EXPAND% !JUNIE_TEST_EXPAND! tail\\"
-                command = ["junie", "--project", project, "--ide-guidelines", guidelines, "--max-steps", "2", "--literal", literal, "--prompt", prompt]
+                command = ["junie", "--project", project, "--ide-guidelines", guidelines, "--max-steps", "2",
+                           "--model", "sonnet", "--effort", "high", "--literal", literal, "--prompt", prompt]
                 with patch.dict(os.environ, {
                     "PATH": str(root), "PATHEXT": ".COM;.EXE;.BAT;.CMD", "JUNIE_TEST_EXPAND": "SHOULD_NOT_EXPAND",
+                    "JUNIE_MODEL": "opus", "JUNIE_EFFORT": "low",
                     "PHP_TO_CSHARP_TEST_PYTHON": sys.executable,
                     "PHP_TO_CSHARP_TEST_CAPTURE": str(capture), "PHP_TO_CSHARP_TEST_RESULT": str(result),
                 }), patch.object(junie_cli.os, "getcwd", return_value=str(root)):
@@ -428,6 +432,8 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                 self.assertEqual(data["prompt"], prompt)
                 self.assertEqual(data["project"], project)
                 self.assertEqual(data["guidelines"], guidelines)
+                self.assertEqual(data["model"], "sonnet")
+                self.assertEqual(data["effort"], "high")
                 self.assertEqual(data["argv"], ["--max-steps", "2", "--literal", literal])
                 self.assertEqual(data["cwd"], str(root))
                 self.assertFalse((root / "injected.txt").exists())

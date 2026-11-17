@@ -64,10 +64,18 @@ class ModelSettingsTests(HarnessCase):
             self.assertEqual(settings["junie_effort"], effort)
 
     def test_prepared_run_keeps_model_when_settings_change_including_default(self):
-        for model in ("sonnet", None):
-            with self.subTest(model=model):
+        (self.project / "details.md").write_text("Preserve the greeting text.", encoding="utf-8")
+        self.path.write_text(self.path.read_text() + '''
+[[project.migration_rules]]
+path = "details.md"
+usage = "reference"
+description = "When producing text output"
+''', encoding="utf-8")
+        self.settings = load_config(self.path)
+        choices = [("sonnet", value) for value in (None, "none", "minimal", "low", "medium", "high", "xhigh", "max")]
+        for model, effort in [*choices, (None, None)]:
+            with self.subTest(model=model, effort=effort):
                 self.settings["junie_model"] = model
-                effort = "high" if model else None
                 self.settings["junie_effort"] = effort
                 prepared = workflow.prepare_run(self.settings, "sample")
                 record_path = Path(prepared["run_path"]) / "run.json"
@@ -75,15 +83,23 @@ class ModelSettingsTests(HarnessCase):
                 self.assertEqual(json.loads(record_path.read_text())["junie_effort"], effort)
                 self.settings["junie_model"] = "opus"
                 self.settings["junie_effort"] = "low"
-                with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", return_value=1) as run:
+                def junie(command, completion, token, targets, **kwargs):
+                    if kwargs.get("accept_result"):
+                        kwargs["accept_result"](json.dumps({"review_token": token, "decisions": {
+                            "rule-0001.txt": {"applies": True, "reason": "Produces a greeting"},
+                        }}))
+                    return 1
+
+                with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=junie) as run:
                     workflow.resume_with_junie(self.settings, prepared["run_id"])
-                command = run.call_args.args[0]
-                if model:
-                    self.assertEqual(command[command.index("--model") + 1], model)
-                    self.assertEqual(command[command.index("--effort") + 1], effort)
-                else:
-                    self.assertNotIn("--model", command)
-                    self.assertNotIn("--effort", command)
+                self.assertEqual(run.call_count, 2)  # Rule review, then migration.
+                for call in run.call_args_list:
+                    command = call.args[0]
+                    for flag, value in (("--model", model), ("--effort", effort)):
+                        if value:
+                            self.assertEqual(command[command.index(flag) + 1], value)
+                        else:
+                            self.assertNotIn(flag, command)
 
     def test_old_run_does_not_pick_up_new_effort_setting(self):
         self.settings["junie_model"] = "sonnet"
