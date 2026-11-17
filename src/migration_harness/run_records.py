@@ -143,10 +143,7 @@ def junie_usage_recorder(
     return report
 
 
-def load_saved_run(
-    config: dict[str, Any], run_id: str,
-) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
-    """保存済みのプロジェクト・移行先・作業場所を現在の設定と照合する。"""
+def validate_run_id(run_id: str) -> None:
     try:
         parsed_run_id = uuid.UUID(run_id)
     except ValueError as exc:
@@ -154,6 +151,12 @@ def load_saved_run(
     if str(parsed_run_id) != run_id:
         raise ValueError("run ID must use its canonical UUID format")
 
+
+def load_saved_run(
+    config: dict[str, Any], run_id: str,
+) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
+    """保存済みのプロジェクト・移行先・作業場所を現在の設定と照合する。"""
+    validate_run_id(run_id)
     run_root = Path(config["run_root"]).resolve()
     run_path = (run_root / run_id).resolve()
     if run_path.parent != run_root or not run_path.is_dir():

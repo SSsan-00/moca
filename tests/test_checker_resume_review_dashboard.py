@@ -6,9 +6,11 @@ import subprocess
 import sys
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -247,6 +249,39 @@ class SavedRunFixture(unittest.TestCase):
 
 
 class CheckerResumeAndReviewTests(SavedRunFixture):
+    def test_concurrent_checker_approval_is_rejected_and_can_be_retried(self):
+        self.checker_log.write_bytes(
+            b"A Example.cs:1 warning: first finding\nB Example.cs:2 warning: second finding\n",
+        )
+        record = self.record()
+        record["review_file_hashes"] = {"Example.cs": workflow.review_target_hash(self.worktree, Path("Example.cs"))}
+        self.save_record(record)
+        parse = workflow.checker_findings
+        findings, _ = parse(self.checker_log, self.worktree)
+        parsed, release = Event(), Event()
+
+        def hold_first_parse(*args):
+            result = parse(*args)
+            if not parsed.is_set():
+                parsed.set()
+                self.assertTrue(release.wait(5))
+            return result
+
+        def approve(index):
+            return workflow.review_checker(self.config, self.run_id, findings[index].finding_id, f"reason {index}")
+
+        with patch.object(workflow, "checker_findings", side_effect=hold_first_parse), ThreadPoolExecutor() as pool:
+            first = pool.submit(approve, 0)
+            try:
+                self.assertTrue(parsed.wait(5))
+                with self.assertRaisesRegex(RuntimeError, "使用中"):
+                    approve(1)
+            finally:
+                release.set()
+            first.result(timeout=5)
+        approve(1)
+        self.assertEqual([row["reason"] for row in self.record()["checker_reviews"]], ["reason 0", "reason 1"])
+
     """再開時の検証順序とチェッカー指摘の判定を検証する。"""
 
     build = ("dotnet", 0, b"rebuilt edited target\n")

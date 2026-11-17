@@ -37,7 +37,7 @@ from .errors import format_error
 from .execution import check_cancelled, report_activity, run_process
 from .files import harness_asset, has_symlink_component, safe_target, sha256_file
 from .rule_materials import detail_index, render_guidelines, selected_details
-from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, write_run_record
+from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, validate_run_id, write_run_record
 from .source_context import stage_target_context
 from .timings import freeze_timings
 from .worktree_targets import (
@@ -2154,6 +2154,16 @@ def review_checker(
     """指摘を一覧し、指定された承認は現在のファイル内容を照合して記録する。"""
     if (finding_id is None) != (reason is None) or (reason is not None and not reason.strip()):
         raise ValueError("--accept requires a finding ID and a non-empty --reason")
+    if finding_id is None:
+        return _review_checker(config, run_id, None, None)
+    validate_run_id(run_id)
+    with execution_lock(config, run_id):
+        return _review_checker(config, run_id, finding_id, reason)
+
+
+def _review_checker(
+    config: dict[str, Any], run_id: str, finding_id: str | None, reason: str | None,
+) -> dict[str, Any]:
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     allowed_status = {"checker_needs_review"} if finding_id is not None else {"checker_needs_review", "checker_accepted"}
     if (record.get("status") not in allowed_status or record.get("checker_exit_code") is None
@@ -2181,14 +2191,15 @@ def review_checker(
         target_hash = hashes.get(finding.path)
         if not target_hash:
             raise ValueError("the reviewed file changed or was missing; resume to get current findings")
-        record.setdefault("checker_reviews", []).append({
+        review = {
             "finding_id": finding.finding_id,
             "diagnostic": finding.diagnostic,
             "target_sha256": target_hash,
             "reason": reason.strip(),
             "accepted_at": datetime.now(timezone.utc).isoformat(),
-        })
-        write_run_record(run_path / "run.json", record)
+        }
+        with edit_run_record(run_path / "run.json") as (latest, changes):
+            changes["checker_reviews"] = [*latest.get("checker_reviews", []), review]
         accepted.add(finding.finding_id)
     return {
         "findings": [
