@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 import codecs
 import errno
@@ -1123,7 +1124,8 @@ def _build_worktree(
     command = ["dotnet", "build"]
 
     record.update(status="building", build_exit_code=None, build_log_path=str(log_path))
-    for key in ("error", "checker_exit_code", "checker_log_path", "review_file_hashes", "checker_review_reason"):
+    for key in ("error", "checker_exit_code", "checker_log_path", "review_file_hashes", "checker_review_reason",
+                "checker_success_message"):
         record.pop(key, None)
     write_run_record(record_path, record)
     print(f"Building in {worktree} (log: {log_path})", flush=True)
@@ -1201,6 +1203,7 @@ def _run_checker(
     record.update(status="checking", checker_exit_code=None, checker_log_path=str(log_path), review_file_hashes={})
     record.pop("error", None)
     record.pop("checker_review_reason", None)
+    record.pop("checker_success_message", None)
     write_run_record(record_path, record)
     print(f"Running checker in {result['worktree_path']} (log: {log_path})", flush=True)
     report_activity("独自チェッカーで確認しています", kind="phase",
@@ -1217,19 +1220,24 @@ def _run_checker(
                 raise
         record["checker_exit_code"] = completed.returncode
         record["status"] = "checker_succeeded" if completed.returncode == 0 else "checker_needs_review"
-        if completed.returncode > 0:
+        if completed.returncode >= 0:
             worktree = Path(result["worktree_path"])
             try:
                 findings, unrecognized = _checker_findings(log_path, worktree)
-                record["review_file_hashes"] = {
-                    path: _review_target_hash(worktree, Path(path))
-                    for path in {finding.path for finding in findings}
-                }
-                use_raw_output = unrecognized
-                if unrecognized:
-                    record["error"] = "checker output includes unrecognized text. Inspect checker.log before resuming."
+                response_status = _checker_response_status(log_path)
+                if not findings and response_status == "checker_succeeded":
+                    record.update(status="checker_succeeded", checker_success_message=_CHECKER_SUCCESS_MESSAGE)
+                elif findings or completed.returncode > 0 or response_status == "checker_needs_review":
+                    record["status"] = "checker_needs_review"
+                    record["review_file_hashes"] = {
+                        path: _review_target_hash(worktree, Path(path))
+                        for path in {finding.path for finding in findings}
+                    }
+                    use_raw_output = unrecognized
+                    if unrecognized:
+                        record["error"] = "checker output includes unrecognized text. Inspect checker.log before resuming."
             except (OSError, RuntimeError, ValueError) as exc:
-                record.update(checker_review_reason="output_error", error=format_error(exc))
+                record.update(status="checker_needs_review", checker_review_reason="output_error", error=format_error(exc))
         elif completed.returncode < 0:
             record.update(checker_review_reason="checker_incomplete", error="checker did not complete normally")
     except OSError as exc:
@@ -1254,6 +1262,79 @@ _CHECKER_FINDING = re.compile(
     r"(?P<rule>[\w.-]+)\s+(?P<path>.+?):(?P<line>\d+)(?::\d+)?\s+(?P<severity>warning|error):\s*(?P<message>.+)",
     re.IGNORECASE,
 )
+_CHECKER_FIELDS = ("ファイル", "対象", "内容", "行番号", "コード", "備考")
+_CHECKER_SUCCESS_MESSAGE = "特に気になる点はありません。"
+_CHECKER_FIELD = re.compile(
+    r"\s*(?P<field>" + "|".join(r"\s*".join(name) for name in _CHECKER_FIELDS)
+    + r")\s*[:：]\s*(?P<value>.*)"
+)
+
+
+def _checker_response_status(log_path: Path) -> str | None:
+    with log_path.open("rb") as stream:
+        raw = stream.read(65_537)
+    if len(raw) > 65_536:
+        return None
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    # 不完全な指摘やコード内の成功文言を、問題なしの応答と誤認しない。
+    if any(_CHECKER_FIELD.fullmatch(line) or _CHECKER_FINDING.fullmatch(line.strip()) for line in text.splitlines()):
+        return "checker_needs_review"
+    if _CHECKER_SUCCESS_MESSAGE in text and "\0" not in text:
+        return "checker_succeeded"
+    return None
+
+
+def _checker_diagnostics(log_path: Path) -> Iterator[str]:
+    """ファイル欄から次の指摘までをまとめ、コードや備考の改行を残す。"""
+    block = []
+    with log_path.open("rb") as stream:
+        for index, data in enumerate(stream):
+            try:
+                raw = data.decode("utf-8-sig" if index == 0 else "utf-8")
+            except UnicodeDecodeError:
+                if block:
+                    yield "\n".join(block).strip()
+                    block = []
+                yield "\0"
+                continue
+            for line in raw.splitlines():
+                field = _CHECKER_FIELD.fullmatch(line)
+                starts_block = field is not None and "".join(field["field"].split()) == "ファイル"
+                if block and (starts_block or _CHECKER_FINDING.fullmatch(line.strip())):
+                    yield "\n".join(block).strip()
+                    block = []
+                if starts_block or block:
+                    block.append(line)
+                elif line.strip():
+                    yield line.strip()
+    if block:
+        yield "\n".join(block).strip()
+
+
+def _prefixed_checker_fields(diagnostic: str) -> dict[str, str] | None:
+    fields = {}
+    current = None
+    for line in diagnostic.splitlines():
+        match = _CHECKER_FIELD.fullmatch(line)
+        if match:
+            current = "".join(match["field"].split())
+            if current in fields:
+                return None
+            fields[current] = match["value"]
+        elif line.strip():
+            if current not in {"内容", "コード", "備考"}:
+                return None
+            fields[current] += "\n" + line
+        elif current:
+            fields[current] += "\n"
+    if (set(fields) != set(_CHECKER_FIELDS) or "\0" in diagnostic
+            or not fields["ファイル"].strip() or not fields["内容"].strip()
+            or not re.fullmatch(r"0*[1-9][0-9]*", fields["行番号"].strip())):
+        return None
+    return fields
 
 
 def _review_target_hash(worktree: Path, relative_target: Path) -> str | None:
@@ -1279,38 +1360,38 @@ def _checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFindi
     worktree = worktree.resolve()
     findings = []
     unrecognized = False
-    with log_path.open("rb") as stream:
-        for index, data in enumerate(stream):
-            try:
-                raw = data.decode("utf-8-sig" if index == 0 else "utf-8")
-            except UnicodeDecodeError:
-                unrecognized = True
-                continue
-            for line in raw.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                match = _CHECKER_FINDING.fullmatch(line)
-                if match is None or "\0" in match["path"]:
-                    unrecognized = True
-                    continue
-                path = Path(match["path"].replace("\\", "/"))
-                try:
-                    resolved = (worktree / path).resolve()
-                except (OSError, RuntimeError, ValueError):
-                    unrecognized = True
-                    continue
-                if not resolved.is_relative_to(worktree):
-                    unrecognized = True
-                    continue
-                relative = resolved.relative_to(worktree).as_posix()
-                # 行・列のずれは同じ指摘と扱う。旧履歴の修正識別子はルールと本文だけを使う。
-                key = (match["rule"].casefold(), " ".join(match["message"].split()))
-                repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
-                # 承認用のIDには対象パスと重大度も含め、別ファイルの指摘へ承認を流用しない。
-                review_key = (*key, relative, match["severity"].lower())
-                finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
-                findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, line, match["line"]))
+    for diagnostic in _checker_diagnostics(log_path):
+        match = _CHECKER_FINDING.fullmatch(diagnostic)
+        fields = None if match else _prefixed_checker_fields(diagnostic)
+        if match:
+            path_text, line, severity = match["path"], match["line"], match["severity"].lower()
+            key = (match["rule"].casefold(), " ".join(match["message"].split()))
+        elif fields:
+            path_text, line, severity = fields["ファイル"].strip(), fields["行番号"].strip(), "finding"
+            key = ("prefixed", *(" ".join(fields[name].split()) for name in ("対象", "内容", "備考")),
+                   fields["コード"].strip())
+        else:
+            unrecognized = True
+            continue
+        if "\0" in path_text:
+            unrecognized = True
+            continue
+        path = Path(path_text.replace("\\", "/"))
+        try:
+            resolved = (worktree / path).resolve()
+        except (OSError, RuntimeError, ValueError):
+            unrecognized = True
+            continue
+        if not resolved.is_relative_to(worktree):
+            unrecognized = True
+            continue
+        relative = resolved.relative_to(worktree).as_posix()
+        # 行・列のずれは同じ指摘と扱う。旧形式の識別子は互換性を保つ。
+        repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
+        # 承認用のIDには対象パスと重大度も含め、別ファイルの指摘へ承認を流用しない。
+        review_key = (*key, relative, severity)
+        finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
+        findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, diagnostic, line))
     return findings, unrecognized or not findings
 
 
@@ -1475,6 +1556,13 @@ def _repair_target(
                  "and the source and target files. If the output is inconclusive, or the failure is caused by the "
                  "checker or environment, leave the code untouched. "
                  if attempt["details"].get("raw_checker_output") else "")
+    if attempt["details"].get("kind") != "build":
+        diagnosis += (
+            "For Japanese prefixed findings, ファイル identifies the file, 対象 the affected symbol or operation, "
+            "内容 the issue, 行番号 the reported line, コード the reported code, and 備考 additional context. "
+            "Labels may contain spaces and use either colon width. Use all fields together to guide the repair, "
+            "and verify the reported code against the current target and original PHP. "
+        )
     prompt = (
         f"{material_instructions}Read `{findings_path.name}` and repair only {names} in this workspace. "
         f"{diagnosis}"
@@ -2200,7 +2288,11 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     scripts = _verification_scripts(config, configured_checker)
     fingerprint = verification.get("input_fingerprint")
     status = record["status"]
-    checker_passed = status == "checker_succeeded" and record.get("checker_exit_code") == 0
+    checker_passed = status == "checker_succeeded" and (
+        record.get("checker_exit_code") == 0
+        or ((record.get("checker_exit_code") or 0) > 0
+            and record.get("checker_success_message") == _CHECKER_SUCCESS_MESSAGE)
+    )
     if status == "checker_accepted":
         approved_file_hashes = record.get("review_file_hashes", {})
         checker_passed = bool(approved_file_hashes) and all(
@@ -2360,7 +2452,8 @@ def review_checker(
         raise ValueError("--accept requires a finding ID and a non-empty --reason")
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     allowed_status = {"checker_needs_review"} if finding_id is not None else {"checker_needs_review", "checker_accepted"}
-    if record.get("status") not in allowed_status or (record.get("checker_exit_code") or 0) <= 0:
+    if (record.get("status") not in allowed_status or record.get("checker_exit_code") is None
+            or record["checker_exit_code"] < 0):
         raise ValueError("run has no checker findings to review")
     log_path = run_path / "checker.log"
     if log_path.is_symlink() or not log_path.is_file():

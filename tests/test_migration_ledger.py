@@ -59,6 +59,17 @@ class LedgerReviewTest(HarnessCase):
         """台帳の対象範囲を、毎回ディスクの最新状態から取得する。"""
         return workflow.migration_ledger(self.settings, self.run_id)["capsules"][0]["sources"][0]
 
+    def test_checker_success_sentence_counts_as_current_verification(self):
+        self.settings["checker_command"] = [
+            sys.executable, "-X", "utf8", "-c",
+            "import sys; print('確認結果：特に気になる点はありません。'); sys.exit(1)",
+        ]
+        self.prepare_for_verification()
+        self.assertEqual(self.verify()["status"], "checker_succeeded")
+        self.assertTrue(self.completion()["complete"])
+        self.target.write_text("public void Changed() {}\n", encoding="utf-8")
+        self.assertFalse(self.completion()["complete"])
+
     # 移行先の編集後も判断理由を保持し、従来の確認を失効させることを検証する。
     def test_keeps_review_reason_and_flags_stale_after_edit(self):
         record = json.loads(self.record_path.read_text(encoding="utf-8"))
