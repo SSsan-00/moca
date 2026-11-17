@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -58,6 +59,7 @@ class MultipleTargetsTest(HarnessCase):
             self.assertIn("Never add an explicit route to a bare @page", args[-1])
             self.assertIn("fully qualified type in @model", args[-1])
             self.assertIn("Razor encodes that expression once", args[-1])
+            self.assertIn("UTF-8 with BOM (EF BB BF)", args[-1])
             for path in targets:
                 path.write_text(f"migrated {path.name}", encoding="utf-8")
             if outside:
@@ -73,6 +75,40 @@ class MultipleTargetsTest(HarnessCase):
         """対話端末だけを差し替えて通常の再開経路を呼ぶ。"""
         with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", run):
             return workflow.resume_with_junie(self.settings, self.prepared["run_id"])
+
+    def test_outputs_keep_utf8_bom_newlines_and_recovery_hashes_on_repeated_application(self):
+        contents = {
+            self.targets[0]: '// 日本語😀\r\nclass Page {}\r\n'.encode("utf-8"),
+            self.targets[1]: '@page\n<p>日本語😀</p>\r'.encode("utf-8-sig"),
+        }
+
+        def junie(args, completion, token, targets, **kwargs):
+            for path in targets:
+                path.write_bytes(contents[path.name])
+            return 0
+
+        self.resume(junie)
+        expected = {name: data.decode("utf-8-sig").encode("utf-8-sig") for name, data in contents.items()}
+        for _ in range(2):
+            record = self.record()
+            for name, data in expected.items():
+                self.assertEqual((self.worktree / name).read_bytes(), data)
+                self.assertEqual((self.run_path / "agent-workspace" / name).read_bytes(), data)
+                self.assertEqual(record["target_hashes"][name], hashlib.sha256(data).hexdigest())
+            self.resume(lambda *args, **kwargs: 0)
+
+    def test_non_utf8_output_is_rejected_before_any_worktree_file_is_replaced(self):
+        def junie(args, completion, token, targets, **kwargs):
+            targets[0].write_bytes(b"class Page {}\r\n")
+            targets[1].write_bytes("日本語".encode("cp932"))
+            completion.write_text(token)
+            return 0
+
+        with self.assertRaisesRegex(ValueError, "UTF-8"):
+            self.resume(junie)
+        for name in self.targets:
+            self.assertEqual((self.worktree / name).read_bytes(), f"original {name}".encode("utf-8"))
+        self.assertNotIn("target_apply_pending", self.record())
 
     # 中断時の編集が残り、再開後に両方のファイルを比較できることを検証する。
     def test_partial_edits_are_kept_and_both_targets_are_compared(self):
@@ -109,7 +145,7 @@ class MultipleTargetsTest(HarnessCase):
         self.assertTrue((self.run_path / "agent-workspace/.migration-scratch/values.json").is_file())
         self.assertFalse((self.worktree / ".migration-scratch").exists())
         for name in self.targets:
-            self.assertEqual((self.worktree / name).read_text(), f"migrated {name}")
+            self.assertEqual((self.worktree / name).read_bytes(), f"migrated {name}".encode("utf-8-sig"))
 
     def test_scratch_does_not_allow_symlinks_or_hide_changes_to_materials(self):
         agent = self.run_path / "agent-workspace"
@@ -134,7 +170,7 @@ class MultipleTargetsTest(HarnessCase):
 
         def fail_second_file(source, target):
             """二つ目の移行先を置き換える箇所でだけ障害を起こす。"""
-            if Path(target).name == self.targets[1]:
+            if Path(target) == self.worktree / self.targets[1]:
                 raise OSError("fixture failure applying second target")
             return real_replace(source, target)
 
@@ -146,7 +182,7 @@ class MultipleTargetsTest(HarnessCase):
 
         def resume_junie(args, completion, token, targets, *, report_usage=None, prompts=None):
             """Junieの再開前に二つ目まで復旧していることを確認する。"""
-            self.assertEqual((self.worktree / self.targets[1]).read_text(encoding="utf-8"), f"migrated {self.targets[1]}")
+            self.assertEqual((self.worktree / self.targets[1]).read_bytes(), f"migrated {self.targets[1]}".encode("utf-8-sig"))
             return self.edit_with_junie()(args, completion, token, targets)
 
         with patch.object(workflow, "_verify_worktree", wraps=lambda _config, _unit, result, _record: result):
@@ -160,7 +196,7 @@ class MultipleTargetsTest(HarnessCase):
 
         def fail_second_file(source, target):
             """二つ目の移行先を置き換える箇所でだけ障害を起こす。"""
-            if Path(target).name == self.targets[1]:
+            if Path(target) == self.worktree / self.targets[1]:
                 raise OSError("fixture failure applying second target")
             return real_replace(source, target)
 
@@ -264,7 +300,7 @@ class MultipleTargetsTest(HarnessCase):
             """ビューが未修正のときだけ、そのファイルに指摘を出す。"""
             if command[0] == "git":
                 return run_process(command, **kwargs)
-            if command[0] == "fixture-checker" and page.read_bytes() != b"repaired using NewName":
+            if command[0] == "fixture-checker" and page.read_text(encoding="utf-8-sig") != "repaired using NewName":
                 kwargs["stdout"].write(f"RZ1 {page_name}:1 warning: use NewName\n".encode())
                 return subprocess.CompletedProcess(command, 1)
             return subprocess.CompletedProcess(command, 0)
@@ -288,6 +324,7 @@ class MultipleTargetsTest(HarnessCase):
                     self.assertIn("extract the exact ordered data mechanically", command[-1])
                     self.assertIn("fully qualified type in @model", command[-1])
                     self.assertIn("Razor encodes that expression once", command[-1])
+                    self.assertIn("UTF-8 with BOM (EF BB BF)", command[-1])
                     self.assertEqual(target.read_bytes(), b"latest view before repair")
                     self.assertEqual((agent / model_name).read_bytes(), b"latest model with NewName")
                     target.write_bytes(b"repaired using NewName")
@@ -302,7 +339,7 @@ class MultipleTargetsTest(HarnessCase):
                     result = self.resume(repair)
                 if case == "success":
                     self.assertEqual(result["status"], "checker_succeeded")
-                    self.assertEqual(page.read_bytes(), b"repaired using NewName")
+                    self.assertEqual(page.read_bytes(), "repaired using NewName".encode("utf-8-sig"))
                     self.assertEqual(model.read_bytes(), b"latest model with NewName")
                 else:
                     self.assertEqual(result["status"], "checker_needs_review")
@@ -330,7 +367,7 @@ class MultipleTargetsTest(HarnessCase):
         def check(command, **kwargs):
             if command[0] == "git":
                 return run_process(command, **kwargs)
-            if command[0] == "fixture-checker" and (Path(kwargs["cwd"]) / page).read_text() != "ready":
+            if command[0] == "fixture-checker" and (Path(kwargs["cwd"]) / page).read_text(encoding="utf-8-sig") != "ready":
                 kwargs["stdout"].write(f"RZ1 {page}:1 error: fix output\n".encode())
                 return subprocess.CompletedProcess(command, 1)
             return subprocess.CompletedProcess(command, 0)
@@ -368,7 +405,7 @@ class MultipleTargetsTest(HarnessCase):
         def check(command, **kwargs):
             if command[0] == "git":
                 return run_process(command, **kwargs)
-            if command[0] == "fixture-checker" and (self.worktree / page).read_text() != "ready":
+            if command[0] == "fixture-checker" and (self.worktree / page).read_text(encoding="utf-8-sig") != "ready":
                 kwargs["stdout"].write(f"RZ1 {page}:1 error: fix output\n".encode())
                 return subprocess.CompletedProcess(command, 1)
             return subprocess.CompletedProcess(command, 0)

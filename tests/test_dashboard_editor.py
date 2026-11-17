@@ -363,7 +363,7 @@ class DashboardEditorTests(HarnessCase):
                     self.assertEqual(self.request()["edit"]["content"], text)
 
                     def junie(command, completion, token, targets, **kwargs):
-                        self.assertEqual(targets[0].read_text(encoding="utf-8"), text)
+                        self.assertEqual(targets[0].read_bytes(), text.encode("utf-8-sig"))
                         completion.write_text(token)
                         return 0
 
@@ -374,12 +374,12 @@ class DashboardEditorTests(HarnessCase):
                 else:
                     self.assertTrue(saved["exists"])
                     self.assertIsNone(saved["edit"])
-                self.assertEqual(target.read_text(encoding="utf-8"), text)
+                self.assertEqual(target.read_bytes(), text.encode("utf-8-sig"))
                 with self.assertRaisesRegex(ValueError, "更新"):
                     workflow._save_build_review_edit(target.parents[1], (Path(name),), {
                         "target": name, "version": None, "content": "overwrite",
                     })
-                self.assertEqual(target.read_text(encoding="utf-8"), text)
+                self.assertEqual(target.read_bytes(), text.encode("utf-8-sig"))
 
     def test_http_prompt_reaches_active_junie_before_capsule_finishes_and_is_applied_once(self):
         self.view.begin_operation()
@@ -637,9 +637,9 @@ shared = true
 
         def build(config, unit, result, record):
             worktree = Path(result["worktree_path"])
-            self.assertEqual((worktree / "Index.cshtml").read_text(encoding="utf-8"),
+            self.assertEqual((worktree / "Index.cshtml").read_text(encoding="utf-8-sig"),
                              updated["Index.cshtml"].replace("Orders", "Recent orders"))
-            self.assertEqual((worktree / "Index.cshtml.cs").read_text(encoding="utf-8"), updated["Index.cshtml.cs"])
+            self.assertEqual((worktree / "Index.cshtml.cs").read_text(encoding="utf-8-sig"), updated["Index.cshtml.cs"])
             return result
 
         with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=junie), \
@@ -724,7 +724,7 @@ shared = true
             agent.assert_called_once()
             verified.assert_called_once()
         saved = Path(result["worktree_path"]) / "Page.cs"
-        self.assertEqual(saved.read_text(encoding="utf-8"), resolution)
+        self.assertEqual(saved.read_text(encoding="utf-8-sig"), resolution)
 
     def test_prompt_queued_in_first_segment_reaches_the_next_segment_once(self):
         (self.project / "source.php").write_text("<?php /* " + "x" * 2100 + " */", encoding="utf-8")

@@ -112,7 +112,7 @@ class CapsulePreparationTests(HarnessCase):
         self.assertEqual(record["completed_capsules"], agent.call_count)
         for name in targets:
             target = Path(record["worktree_path"]) / name
-            self.assertEqual(target.read_text(encoding="utf-8"), f"migrated {target.name}")
+            self.assertEqual(target.read_bytes(), f"migrated {target.name}".encode("utf-8-sig"))
         manifest = self.read_json(record_path.parent / "capsule" / "manifest.json")
         pin, = manifest["php_sources"]
         self.assertEqual((record_path.parent / "capsule" / pin["snapshot"]).read_bytes(), source_bytes)
@@ -307,7 +307,7 @@ class CapsulePreparationTests(HarnessCase):
                 target.write_bytes(b"class Partial {}\n")
                 raise KeyboardInterrupt
             if len(observed_contexts) == 3:
-                self.assertEqual(target.read_bytes(), b"class Partial {}\n")
+                self.assertEqual(target.read_bytes(), "class Partial {}\n".encode("utf-8-sig"))
                 self.assertIn("This capsule was interrupted", command[-1])
             completion.write_text(token, encoding="ascii")
             return 0

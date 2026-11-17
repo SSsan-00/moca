@@ -685,6 +685,7 @@ class SavedDashboardTests(SavedRunFixture):
             with urlopen(f"{url}build-review?run_id={self.run_id}&target={self.target.name}", timeout=3) as response:
                 source = json.load(response)
             self.assertEqual(source["content"], original)
+            self.assertEqual(source["bom_bytes"], 3)
             with self.post(url, "build-response", {
                 "action": "build-response", "revision": revision,
                 "edit": {"target": self.target.name, "version": source["version"], "content": edited},
@@ -696,7 +697,7 @@ class SavedDashboardTests(SavedRunFixture):
             result = self.open_dashboard(inspect, resume=True)
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual(len(calls), 2)
-        self.assertEqual(self.target.read_text(encoding="utf-8"), edited)
+        self.assertEqual(self.target.read_bytes(), edited.encode("utf-8-sig"))
 
     # 完了状態で外部コマンドを起動せず、記録と比較を閲覧できることを検証する。
     def test_complete_runs_show_saved_results_ledger_and_diff_without_running_commands(self):

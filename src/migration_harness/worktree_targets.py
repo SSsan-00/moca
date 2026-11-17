@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -18,6 +19,24 @@ worktree_source_lock = RLock()
 def target_hash(path: Path) -> str | None:
     """移行先の未作成状態をハッシュの不一致と区別して扱う。"""
     return sha256_file(path) if path.is_file() else None
+
+
+def _ensure_utf8_bom(path: Path) -> None:
+    data = path.read_bytes()
+    try:
+        data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError(f"移行先ファイルは UTF-8 で保存してください: {path.name}") from None
+    if data.startswith(codecs.BOM_UTF8):
+        return
+    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        temporary.write_bytes(codecs.BOM_UTF8 + data)
+        shutil.copymode(path, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def finish_pending_targets(
@@ -78,7 +97,11 @@ def apply_agent_targets(
         pending = {}
         for relative in targets:
             name = relative.as_posix()
-            after = target_hash(safe_target(agent_root, relative))
+            source = safe_target(agent_root, relative)
+            if source.is_file():
+                # 復旧用ハッシュと次回のJunie入力も、BOM付きの保存バイト列にそろえる。
+                _ensure_utf8_bom(source)
+            after = target_hash(source)
             if after is not None and after != before[name]:
                 pending[name] = {"before": before[name], "after": after}
         if pending:

@@ -218,5 +218,5 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
         with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", side_effect=repair):
             result = self.resume(self.build, ("fixture-checker", 1, text.encode()), self.build, self.success)
         self.assertEqual(result["status"], "checker_succeeded")
-        self.assertEqual(self.target.read_text(), "class Repaired {}\n")
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class Repaired {}\n")
         self.assertEqual((self.run_path / "checker-before-repair-1.log").read_text(encoding="utf-8"), text)
