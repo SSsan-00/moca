@@ -405,6 +405,8 @@ Junieがステップ上限に達した場合、ダッシュボードから同じ
 ## 仕様と参考資料
 
 - [技術仕様](SPEC.md)
+- [アーキテクチャと実行フロー](docs/architecture.md)
+- [Junie の技術質問スキル](.junie/skills/harness-architecture/SKILL.md)。ハーネスのフォルダで `junie` を起動し、入力欄で `/harness-architecture ビルド成功から移行台帳の完了判定までを、実装を根拠に説明してください` と依頼できます。`/skills` で有効状態を確認できます。 [Junie の Agent Skills](https://junie.jetbrains.com/docs/agent-skills.html)
 - [実装フローの図解](migration-harness-spec.html)
 - [進捗画面デモ（模擬データ）](progress-demo.html)
 - GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
