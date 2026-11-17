@@ -204,16 +204,16 @@ class DashboardEditorTests(HarnessCase):
                         assert request["method"] == "session/prompt"
                         prompt = request["params"]["prompt"][0]["text"]
                         target = Path("Page.cs")
-                        target.write_text(target.read_text(encoding="utf-8-sig").replace("First = 1", "First = 2"))
+                        target.write_text(target.read_text(encoding="utf-8-sig").replace("First = 1", "First = 2"), encoding="utf-8")
                         if handing_off:
                             send(id=100, method="session/request_permission", params={"sessionId": "repair",
                                  "toolCall": {"toolCallId": "ready", "title": "修正を継続"},
                                  "options": [{"optionId": "allow", "name": "許可", "kind": "allow_once"}]})
                             sys.stdin.read()
                         else:
-                            assert "Last = 42" in target.read_text()
+                            assert "Last = 42" in target.read_text(encoding="utf-8-sig")
                             instruction = re.search(r"Read and follow the operator's instruction in `([^`]+)`", prompt)
-                            assert instruction and "保存した Last = 42" in Path(instruction[1]).read_text()
+                            assert instruction and "保存した Last = 42" in Path(instruction[1]).read_text(encoding="utf-8")
                             match = re.search(r"write exactly `([a-f0-9]+)` as plain text to `(migration-complete-[^`]+)`", prompt)
                             assert match
                             Path(match[2]).write_text(match[1])
@@ -363,7 +363,7 @@ class DashboardEditorTests(HarnessCase):
                     self.assertEqual(self.request()["edit"]["content"], text)
 
                     def junie(command, completion, token, targets, **kwargs):
-                        self.assertEqual(targets[0].read_text(), text)
+                        self.assertEqual(targets[0].read_text(encoding="utf-8"), text)
                         completion.write_text(token)
                         return 0
 
@@ -374,12 +374,12 @@ class DashboardEditorTests(HarnessCase):
                 else:
                     self.assertTrue(saved["exists"])
                     self.assertIsNone(saved["edit"])
-                self.assertEqual(target.read_text(), text)
+                self.assertEqual(target.read_text(encoding="utf-8"), text)
                 with self.assertRaisesRegex(ValueError, "更新"):
                     workflow._save_build_review_edit(target.parents[1], (Path(name),), {
                         "target": name, "version": None, "content": "overwrite",
                     })
-                self.assertEqual(target.read_text(), text)
+                self.assertEqual(target.read_text(encoding="utf-8"), text)
 
     def test_http_prompt_reaches_active_junie_before_capsule_finishes_and_is_applied_once(self):
         self.view.begin_operation()
