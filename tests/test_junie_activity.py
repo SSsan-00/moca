@@ -480,6 +480,16 @@ class JunieControlTests(unittest.TestCase):
         launch.assert_called_once()
         self.assertEqual(self.messages[-1]["message"], "Junieの通信に失敗しました。再試行を待っています。")
 
+    def test_wrapped_unconfirmed_stop_prevents_connection_retry(self):
+        error = junie_cli.JunieConnectionError("cleanup connection error")
+        error.__context__ = junie_cli.JunieStopError("termination unconfirmed")
+        with (patch.object(junie_cli, "_run_session", side_effect=[error, 0]) as launch,
+              patch.object(junie_cli.time, "sleep") as sleep,
+              self.assertRaisesRegex(junie_cli.JunieConnectionError, "cleanup connection error")):
+            junie_cli.run_interactive(["junie", "--prompt", "PRIVATE"], self.root / "done", "this-launch", ())
+        launch.assert_called_once()
+        sleep.assert_not_called()
+
     def test_controlled_retries_keep_original_total_delay_and_prompt(self):
         command = junie_cli.build_command(self.root, "PRIVATE", 30, model="sonnet", effort="high")
         with (patch.object(junie_cli, "_run_session", side_effect=[

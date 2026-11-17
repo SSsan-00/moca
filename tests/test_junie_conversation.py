@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from migration_harness import dashboard, workflow
+from migration_harness import dashboard, run_manager, workflow
 from migration_harness.editor_queue import editor_queue
 from migration_harness.execution import check_cancelled, current_operation_id
 from migration_harness.junie_conversation import _intent
@@ -1007,6 +1007,173 @@ class JunieConversationTests(SavedRunFixture):
             self.assertIn("終了を確認できません", self.manager.get(self.run_id).state["error_details"])
             self.assertEqual(self.target.read_bytes(), original)
             run.assert_not_called()
+
+    def test_wrapped_unconfirmed_stop_blocks_build_repair_followup(self):
+        self.check_repair_cleanup_failure("build", unconfirmed=True)
+
+    def test_wrapped_unconfirmed_stop_blocks_checker_repair_followup(self):
+        self.check_repair_cleanup_failure("checker", unconfirmed=True)
+
+    def test_ordinary_repair_cleanup_failure_allows_waiting_build(self):
+        self.check_repair_cleanup_failure("checker", unconfirmed=False)
+
+    def check_repair_cleanup_failure(self, phase, *, unconfirmed):
+        self.config["max_repair_attempts"] = 1
+        (self.run_path / "agent-workspace").mkdir()
+        entered, release = Event(), Event()
+        calls = []
+        original = self.target.read_bytes()
+        expected = ["dotnet"] if phase == "build" else ["dotnet", "fixture-checker"]
+
+        def external(command, *, stdout, **kwargs):
+            calls.append(command[0])
+            if len(calls) == len(expected):
+                diagnostic = (b"Example.cs(1,1): error CS1002: missing semicolon\n" if phase == "build"
+                              else b"Example.cs:1 warning: fixture finding\n")
+                stdout.write(diagnostic)
+                return subprocess.CompletedProcess(command, 1)
+            return subprocess.CompletedProcess(command, 0)
+
+        def repair(command, completion, token, targets, **kwargs):
+            targets[0].write_text("class Draft {}\n", encoding="utf-8")
+            entered.set()
+            if not release.wait(8):
+                raise TimeoutError("fixture did not release repair")
+            if unconfirmed:
+                raise workflow.junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
+            raise workflow.junie_cli.JunieSessionError(command, 1, "fixture: repair failed after confirmed exit")
+
+        def close_prompts(queue, success):
+            raise PermissionError("fixture: editor cleanup I/O failed")
+
+        with (patch.object(workflow, "run_process", side_effect=external),
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=repair) as junie,
+              patch.object(workflow, "finish_prompts", side_effect=close_prompts)):
+            self.start_build()
+            try:
+                self.assertTrue(entered.wait(5), self.record())
+                build, _ = self.send("ビルドして")
+                self.wait_for(build, "waiting")
+                checker, _ = self.send("チェッカーを実行して")
+                self.wait_for(checker, "waiting")
+            finally:
+                release.set()
+            for identifier in (build, checker):
+                entry = self.wait_for(identifier, "failed" if unconfirmed else "done")
+                if unconfirmed:
+                    self.assertIn("termination unconfirmed", entry["message"])
+            self.wait_until_idle()
+            junie.assert_called_once()
+        self.assertEqual(calls, expected if unconfirmed else [*expected, "dotnet", "dotnet", "fixture-checker"])
+        self.assertEqual(self.target.read_bytes(), original)
+        if unconfirmed:
+            self.assertIn("editor cleanup I/O failed", self.record()["error"])
+            self.assertIn("termination unconfirmed", self.record()["error"])
+
+    def test_stop_fence_retries_failed_editor_write_and_keeps_other_run_available(self):
+        self.check_stop_fence(restart=False, fail_queue=False)
+
+    def test_stop_fence_survives_restart_from_saved_block(self):
+        self.check_stop_fence(restart=True, fail_queue=False)
+
+    def test_stop_fence_survives_restart_from_running_job_when_queue_write_also_fails(self):
+        self.check_stop_fence(restart=True, fail_queue=True)
+
+    def check_stop_fence(self, *, restart, fail_queue):
+        self.config["max_repair_attempts"] = 1
+        (self.run_path / "agent-workspace").mkdir()
+        other, other_path, other_tree = self.add_saved_run("other")
+        entered, release = Event(), Event()
+        enforce_failure, dispatcher_retry = Event(), Event()
+        transient = 2
+        editor_attempts = 0
+        calls = []
+        replace = Path.replace
+        queue_path = self.manager.queue_path
+
+        def replace_record(source, target):
+            nonlocal editor_attempts, transient
+            if target == self.run_path / "editor.json":
+                if enforce_failure.is_set():
+                    editor_attempts += 1
+                    if editor_attempts > 22:
+                        dispatcher_retry.set()
+                elif dispatcher_retry.is_set() and transient:
+                    transient -= 1
+                else:
+                    return replace(source, target)
+            elif not (target == queue_path and fail_queue and enforce_failure.is_set()):
+                return replace(source, target)
+            error = PermissionError("fixture: Windows sharing violation")
+            error.winerror = 32
+            raise error
+
+        def repair(*args, **kwargs):
+            entered.set()
+            if not release.wait(8):
+                raise TimeoutError("fixture did not release repair")
+            raise workflow.junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
+
+        def external(command, *, cwd, **kwargs):
+            calls.append((Path(cwd), command[0]))
+            return subprocess.CompletedProcess(command, 0)
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=repair) as junie,
+              patch.object(workflow, "run_process", side_effect=external),
+              patch.object(Path, "replace", replace_record)):
+            self.send("この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度")
+            try:
+                self.assertTrue(entered.wait(5))
+                waiting, _ = self.send("ビルドして")
+                self.wait_for(waiting, "waiting")
+                enforce_failure.set()
+            finally:
+                release.set()
+            self.wait_until_idle()
+            self.assertTrue(dispatcher_retry.wait(5), "editor replacement was not retried after the worker exited")
+            self.assertEqual(self.wait_for(waiting, "waiting")["status"], "waiting")
+            self.assertEqual(calls, [])
+            self.assertIn("保存できません", self.manager.get(self.run_id).state["message"])
+            with self.assertRaises(HTTPError) as denied:
+                self.start_build()
+            with denied.exception as response:
+                self.assertEqual(response.code, 409)
+            saved = json.loads(queue_path.read_bytes())
+            if fail_queue:
+                self.assertTrue(any(job["run_id"] == self.run_id and job["running"] for job in saved["jobs"]))
+            else:
+                self.assertIn(self.run_id, saved["blocked_conversations"])
+                sibling, _ = self.send("ビルドして", run_id=other)
+                self.wait_for(sibling, "done", run_path=other_path)
+            if restart:
+                # Queue storage is available again. The editor file is still locked.
+                if fail_queue:
+                    self.server_cleanup.close()
+                    enforce_failure.clear()
+                    with patch.object(run_manager, "load_dashboard_record", side_effect=PermissionError(
+                        "fixture: run record temporarily unavailable during restart",
+                    )):
+                        self.start_server()
+                    enforce_failure.set()
+                else:
+                    self.restart_server()
+                with self.manager.condition:
+                    self.manager.conversations.start()
+                self.assertIn(self.run_id, self.manager.blocked_conversations)
+                self.assertEqual(self.wait_for(waiting, "waiting")["status"], "waiting")
+            enforce_failure.clear()
+            self.assertEqual(self.wait_for(waiting, "failed")["id"], waiting)
+            with self.manager.condition:
+                self.assertTrue(self.manager.condition.wait_for(
+                    lambda: self.run_id not in self.manager.blocked_conversations, timeout=5,
+                ))
+            self.restart_server()
+            self.assertEqual(self.send("ビルドして", waiting)[1]["status"], "failed")
+            junie.assert_called_once()
+        self.assertEqual(transient, 0)
+        self.assertEqual(calls, [] if fail_queue else [(other_tree, "dotnet")])
 
     def test_checker_repair_passes_instruction_to_junie_and_respects_run_limit(self):
         self.config["max_repair_attempts"] = 1

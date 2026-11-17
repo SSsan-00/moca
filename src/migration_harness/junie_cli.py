@@ -56,6 +56,20 @@ class JunieStopError(OSError):
     """終了を確認できなかったため、編集の反映や次の起動へ進めない。"""
 
 
+def unconfirmed_junie_stop(error: BaseException) -> JunieStopError | None:
+    """診断の保存などで別の例外が出ても、未確認の終了を見落とさない。"""
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, JunieStopError):
+            return current
+        if id(current) not in seen:
+            seen.add(id(current))
+            pending.extend(link for link in (current.__context__, current.__cause__) if link is not None)
+    return None
+
+
 class JunieLaunchError(OSError):
     """起動診断を文字列にも残し、保存済みRunから原因を確認できるようにする。"""
 
@@ -681,7 +695,9 @@ def run_interactive(
             try:
                 return _run_session(invocation, completion_path, token, targets,
                                     report_usage=report_usage, accept_result=accept_result, prompts=prompts)
-            except JunieAcpModelUnavailable:
+            except JunieAcpModelUnavailable as exc:
+                if unconfirmed_junie_stop(exc) is not None:
+                    raise
                 # 非対話モードでは操作ごとの確認がなくなるため、自動では切り替えない。
                 dashboard = junie_dashboard_control()
                 if dashboard is None or task_supported is False:
@@ -701,6 +717,8 @@ def run_interactive(
             return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets,
                                 report_usage=report_usage, accept_result=accept_result, prompts=prompts)
         except JunieConnectionError as exc:
+            if unconfirmed_junie_stop(exc) is not None:
+                raise
             if attempt == len(delays):
                 raise JunieConnectionError(
                     "Junie could not reach the model service after 2 retries. Resume this Run after the connection recovers."
