@@ -30,6 +30,8 @@ max_context_chars = 500000
 # path = "docs/examples/menu/Menu.cs"
 
 [junie]
+# 設定タブでも選択可能。省略するとJunieの既定モデルを使う。
+# model = "sonnet"
 # 任意の正の整数。省略するとJunie CLI側の設定に従う。
 # max_steps = 20
 

@@ -129,15 +129,43 @@ def require_interactive_cli() -> None:
         raise JunieLaunchError(["junie"], None, None, exc) from exc
 
 
-def build_command(project: Path, prompt: str, max_steps: int | None, *, guidelines: Path | None = None) -> list[str]:
+def build_command(
+    project: Path, prompt: str, max_steps: int | None, *, guidelines: Path | None = None, model: str | None = None,
+) -> list[str]:
     command = ["junie", "--project", str(project), "--brave"]
     if guidelines is not None:
         # 本文をコマンド引数に展開せず、既存のJunie指示に追加する（Windowsの長さ制限も回避）。
         command.extend(["--ide-guidelines", str(guidelines)])
     if max_steps is not None:
         command.extend(["--max-steps", str(max_steps)])
+    if model:
+        command.extend(["--model", model])
     # 再試行時に続きを促す文を付けるため、プロンプトを末尾に置く。
     return [*command, "--prompt", prompt]
+
+
+def list_models() -> list[dict[str, str]]:
+    """インストール済みCLIのモデル候補を、タスクを開始せずに取得する。"""
+    process = _launch_process(["junie", "list-models"], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        output, _ = process.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        _close_junie(process)
+        process.communicate()
+        raise ValueError("Junieのモデル一覧の取得がタイムアウトしました。") from None
+    if process.returncode:
+        raise ValueError("このJunie CLIではモデル一覧を取得できませんでした。")
+    try:
+        models = json.loads(output)["models"]
+        if not isinstance(models, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]
+            or not isinstance(item.get("displayName"), str) for item in models
+        ):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        raise ValueError("Junieのモデル一覧を読み取れませんでした。") from None
+    return [{"id": item["id"], "name": item["displayName"]} for item in models]
 
 
 def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]]:
@@ -157,6 +185,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
         variable = {
             "--prompt": "JUNIE_PROMPT", "--task": "JUNIE_TASK", "--project": "JUNIE_PROJECT", "-p": "JUNIE_PROJECT",
             "--ide-guidelines": "JUNIE_IDE_GUIDELINES",
+            "--model": "JUNIE_MODEL",
         }.get(option)
         if variable:
             if not separator:

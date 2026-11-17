@@ -543,7 +543,7 @@ async function responseError(response) {
 function runFetch(path, options = {}) {
   const headers = new Headers(options.headers);
   const runId = selectedRunId || snapshot.run_id;
-  if (runId && !["workspace", "token-runs", "settings"].includes(path)) headers.set("X-Run-ID", runId);
+  if (runId && !["workspace", "token-runs", "settings", "junie-models"].includes(path)) headers.set("X-Run-ID", runId);
   return fetch(path, {...options, headers});
 }
 
@@ -566,6 +566,7 @@ async function workspaceRequest(path, payload) {
 bindHarnessWorkspace({
   readRuns: () => workspaceRequest("workspace"),
   readSettings: () => workspaceRequest("settings"),
+  readModels: () => workspaceRequest("junie-models"),
   previewSettings: (content, changes) => workspaceRequest("settings", {mode: "preview", content, changes}),
   saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: dashboardRevision}),
   execute: async (action, payload) => {

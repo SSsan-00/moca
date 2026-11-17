@@ -33,6 +33,7 @@ from migration_harness.editor_queue import (
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset, safe_target
+from migration_harness.junie_cli import list_models
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.run_records import load_saved_run, run_observer
 from migration_harness.settings_form import build_settings_draft
@@ -352,6 +353,13 @@ class Dashboard:
                     self.send_workspace(include_usage=True)
                 elif self.path.partition("?")[0] == prefix + "settings":
                     self.send_settings()
+                elif self.path.partition("?")[0] == prefix + "junie-models":
+                    try:
+                        body = json.dumps({"models": list_models()}).encode()
+                    except _ERRORS as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                    else:
+                        self.send_body(200, "application/json", body)
                 elif self.path.partition("?")[0] == prefix + "prompts":
                     self.send_prompts()
                 elif self.path.partition("?")[0] == prefix + "checker-output":

@@ -10,7 +10,7 @@ from typing import Any
 from migration_harness import junie_cli
 from migration_harness.diff_viewer import capture_workspace, save_workspace, snapshot_bytes
 from migration_harness.execution import check_cancelled, report_activity
-from migration_harness.run_records import junie_usage_recorder
+from migration_harness.run_records import junie_usage_recorder, load_saved_run
 from migration_harness.workflow import migration_ledger, record_migration_candidates
 
 
@@ -176,7 +176,9 @@ def generate_anchors(
             f"Check the result against the exact numbered lines, then create {completion.name} containing exactly "
             f"{token} as a separate file write. Leave the completion file absent if interrupted."
         )
-        command = junie_cli.build_command(agent, prompt, config["junie_max_steps"])
+        _, _, record, _ = load_saved_run(config, run_id)
+        command = junie_cli.build_command(agent, prompt, config["junie_max_steps"],
+                                          model=record.get("junie_model", config.get("junie_model")))
         junie_cli.run_interactive(
             command, completion, token, (result,), report_usage=junie_usage_recorder(run_path, "anchors"),
             prefer_task=True,

@@ -107,6 +107,7 @@ def _create_worktree(
         "context_capsules": context["capsule_count"],
         "max_context_chars": config["max_context_chars"],
         "junie_max_steps": config["junie_max_steps"],
+        "junie_model": config.get("junie_model"),
         "resume_attempts": 0,
         "segmentation_policy": "line_with_character_fallback_and_overlap",
         "source_boundary_review_required": context["source_boundary_review_required"],
@@ -443,7 +444,7 @@ def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> s
 
 def _review_detail_applicability(
     run_path: Path, capsule: Path, manifest: dict[str, Any], targets: tuple[Path, ...],
-    record: dict[str, Any], max_steps: int | None,
+    record: dict[str, Any], max_steps: int | None, *, model: str | None = None,
 ) -> frozenset[str] | None:
     index = detail_index(manifest)
     if not index:
@@ -589,7 +590,7 @@ def _review_detail_applicability(
             "exclude scopes clearly absent from the migration. " + result_instruction
             + "Use only files in this workspace."
         )
-        command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines)
+        command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines, model=model)
         junie_cli.run_interactive(
             command, completion, token, (output,), report_usage=junie_usage_recorder(run_path, "rule_review"),
             accept_result=save_decisions if context is not None else None,
@@ -791,7 +792,7 @@ def _run_editor_followup(
     guidelines, supplied = _task_guidelines(agent_root, inputs)
     prompt = context + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
-                                      guidelines=guidelines)
+                                      guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")))
     allowed = {*targets, completion.relative_to(agent_root)}
     before = _unlisted_workspace_files(agent_root, allowed)
     try:
@@ -889,6 +890,7 @@ def _run_prepared_with_junie(
             selected = _review_detail_applicability(
                 run_path, capsule, manifest, relative_targets, record,
                 record.get("junie_max_steps", config["junie_max_steps"]),
+                model=record.get("junie_model", config.get("junie_model")),
             )
     except KeyboardInterrupt as exc:
         record.update(status="interrupted", error="detail applicability review was interrupted; resume this Run")
@@ -1029,7 +1031,8 @@ def _run_prepared_with_junie(
         guidelines, supplied = _task_guidelines(agent_root, inputs)
         prompt = context + prompt
         other_files = _unlisted_workspace_files(agent_root, allowed)
-        command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines)
+        command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
+                                          model=record.get("junie_model", config.get("junie_model")))
         try:
             try:
                 exit_code = junie_cli.run_interactive(
@@ -1467,7 +1470,8 @@ def _repair_target(
     context, report = _operator_edit_context(run_path, agent_root, token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
     prompt = context + prompt
-    command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines)
+    command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
+                                      model=record.get("junie_model", config.get("junie_model")))
     allowed = {*repair_targets, completion_path.relative_to(agent_root)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     report_activity(f"Junieが{reason}を修正しています", kind="phase",

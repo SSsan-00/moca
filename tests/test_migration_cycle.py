@@ -139,6 +139,8 @@ class CycleRecoveryTests(SavedRunFixture):
         self.assertIn("assertion failed", (self.run_path / "after_build.log").read_text())
 
     def test_operator_repair_gets_original_output_source_and_instruction_together(self):
+        self.save_record({**self.record(), "junie_model": "sonnet"})
+        self.config["junie_model"] = "opus"
         (self.run_path / "agent-workspace").mkdir()
         self.target.write_text("class Example { const int Manual = 11; const int Requested = 0; }", encoding="utf-8")
         diagnostic = '{"expected": "reviewer value", "actual": 0}\r\n'
@@ -146,6 +148,7 @@ class CycleRecoveryTests(SavedRunFixture):
         instruction = "手修正の11を維持してください。\r\nRequestedを29にしてください。"
 
         def junie(command, completion, token, targets, **kwargs):
+            self.assertEqual(command[command.index("--model") + 1], "sonnet")
             guidelines = Path(command[command.index("--ide-guidelines") + 1])
             bundle = json.loads(guidelines.read_bytes().split(b"\n\n")[-1])
             self.assertEqual(bundle[".migration-materials/source-0001.md"], "example")

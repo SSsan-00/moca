@@ -16,7 +16,7 @@ _TABLE_FIELDS = {
     "project": ("root", "worktree_root", "run_root", "base_ref", "max_context_chars"),
     "build": ("project",),
     "checker": ("command", "max_repair_attempts"),
-    "junie": ("max_steps",),
+    "junie": ("max_steps", "model"),
     "diff_viewer": ("html", "enabled", "anchor_reference"),
 }
 _NUMERIC_FIELDS = {

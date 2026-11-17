@@ -971,6 +971,19 @@
                 </div>
                 <label for="settings-base-ref">作業ツリーの基準リビジョン</label>
                 <input id="settings-base-ref" data-section="project" data-setting="base_ref" placeholder="HEAD（既定）" autocomplete="off">
+                <label for="settings-junie-model">Junieで使うモデル</label>
+                <select id="settings-junie-model" class="workspace-select" data-section="junie" data-setting="model" aria-describedby="settings-junie-model-status">
+                  <option value="">Junieの既定モデル</option>
+                  <option value="junie-lite">Junie Lite</option>
+                  <option value="sonnet">Claude Sonnet</option>
+                  <option value="opus">Claude Opus</option>
+                  <option value="gpt">GPT</option>
+                  <option value="gpt-codex">GPT Codex</option>
+                  <option value="gemini-pro">Gemini Pro</option>
+                  <option value="gemini-flash">Gemini Flash</option>
+                  <option value="grok">Grok</option>
+                </select>
+                <p class="settings-material-range" id="settings-junie-model-status" role="status" hidden></p>
                 <div class="settings-pair">
                   <div>
                     <label for="settings-context-limit">カプセルの文字数上限</label>
@@ -1555,7 +1568,7 @@ function validateRuleUsage(item) {
   }
 }
 
-function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct, canConfigure = canAct}) {
+function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettings, saveSettings, execute, canAct, canConfigure = canAct}) {
   const runsUI = bindRunManager({readRuns, execute, canAct});
   window.harnessRuns = runsUI;
   const settings = document.querySelector("#workspace-config-form");
@@ -1575,6 +1588,9 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   const draftImportList = document.querySelector("#settings-draft-imports");
   const addDraftImport = document.querySelector("#settings-draft-import-add");
   const materialFields = ["migrationRules", "references"];
+  const modelSelect = document.querySelector("#settings-junie-model");
+  const modelStatus = document.querySelector("#settings-junie-model-status");
+  const fallbackModels = [...modelSelect.options].slice(1).map(option => ({id: option.value, name: option.text}));
   const added = new WeakSet();
   const formFeedback = form => form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
   const emptyChanges = () => ({project: {}, units: {}});
@@ -1587,6 +1603,36 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   let readingTOML = false;
   let busy = false;
   let lastRunRequest = 0;
+  let modelRequest = 0;
+
+  function selectModel(value) {
+    if (value && ![...modelSelect.options].some(option => option.value === value)) {
+      modelSelect.add(new Option(`${value}（指定済み）`, value));
+    }
+    modelSelect.value = value;
+  }
+
+  async function loadModels() {
+    if (!readModels) return;
+    const request = ++modelRequest;
+    modelStatus.hidden = false;
+    modelStatus.textContent = "Junieのモデル候補を読み込んでいます。";
+    let models = fallbackModels;
+    let message = "";
+    try {
+      const data = await readModels();
+      if (!data.models.length) throw new Error("empty models");
+      models = data.models;
+    } catch {
+      message = "一覧を取得できないため、代表的な候補を表示しています。Junieのインストール・バージョンを確認して「読み込み直す」を押してください。";
+    }
+    if (request !== modelRequest) return;
+    const selected = modelSelect.value;
+    modelSelect.replaceChildren(new Option("Junieの既定モデル", ""), ...models.map(model => new Option(model.name, model.id)));
+    selectModel(selected);
+    modelStatus.textContent = message;
+    modelStatus.hidden = !message;
+  }
   const draftTargets = () => [...new Set(settingsForm?.units.flatMap(entry => entry.targets) ?? [])];
   workspaceControls = () => {
     const available = canConfigure() && !busy;
@@ -1979,7 +2025,8 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       for (const field of projectFields) field.value = settingsForm.project[field.dataset.setting] ?? "";
       for (const field of tableFields) {
         const value = settingsForm[field.dataset.section][field.dataset.setting];
-        field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+        if (field === modelSelect) selectModel(value ?? "");
+        else field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
       }
       showMaterials(settingsForm.migrationRules, "migrationRules");
       showMaterials(settingsForm.references);
@@ -2038,6 +2085,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
       }
       settingsVersion = data.version;
       showSettingsDraft(data, true);
+      loadModels();
       changes = emptyChanges();
       previewPending = readingTOML = false;
       document.querySelector("#workspace-config-path").textContent = data.path;
@@ -2615,7 +2663,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
           command: read(checker, "command") ?? [],
           max_repair_attempts: read(checker, "max_repair_attempts") ?? "",
         },
-        junie: {max_steps: read(findTable("junie"), "max_steps")},
+        junie: {max_steps: read(findTable("junie"), "max_steps"), model: read(findTable("junie"), "model")},
         diff_viewer: {
           html: read(findTable("diff_viewer"), "html"),
           anchor_reference: read(findTable("diff_viewer"), "anchor_reference"),

@@ -137,6 +137,12 @@ def load_config(path: Path) -> dict[str, Any]:
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
         raise ValueError("[junie] must be a table")
+    junie_model = junie.get("model")
+    if junie_model is not None:
+        if not isinstance(junie_model, str) or any(character.isspace() or ord(character) < 32 or ord(character) == 127
+                                                   for character in junie_model) or junie_model.startswith("-"):
+            raise ValueError("Junieのモデルは、空白を含まないモデルIDで指定してください。既定値に戻す場合は空欄にしてください。")
+        junie_model = junie_model or None
     junie_max_steps = junie.get("max_steps")
     if junie_max_steps is not None and (
         isinstance(junie_max_steps, bool) or not isinstance(junie_max_steps, int) or junie_max_steps < 1
@@ -248,6 +254,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "diff_viewer_anchor_reference": [resolve_output(path) for path in anchor_references],
         "max_repair_attempts": max_repair_attempts,
         "junie_max_steps": junie_max_steps,
+        "junie_model": junie_model,
         "units": normalized_units,
     }
 
