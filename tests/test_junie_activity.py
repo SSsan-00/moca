@@ -185,9 +185,9 @@ class JunieEventTests(unittest.TestCase):
             self.assertFalse(events.read_new_events())
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual([entry["message"] for entry in self.messages], [
-            "Junieのセッションに更新がありました。", "Junieのツール実行: read_file", "Junieのツール実行: tool",
-            "Junieのツール実行: terminal", "Junieのツール実行: view_files",
-            "Junieのツール実行: file_changes", "Junieのモデル応答を受信しました。",
+            "Junieのセッションに更新がありました。", "Junieからファイルの読み取りの報告が届きました。",
+            "Junieからツールの実行の報告が届きました。", "Junieからコマンドの実行の報告が届きました。",
+            "Junieからファイルの変更の報告が届きました。", "Junieのモデル応答を受信しました。",
         ])
         self.assertTrue(all(entry["kind"] == "activity" for entry in self.messages))
         self.assertNotIn("PRIVATE", json.dumps(self.messages))

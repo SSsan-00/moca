@@ -48,7 +48,7 @@ from migration_harness.worktree_targets import worktree_source_lock
 PROGRESS_FIELDS = (
     "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule",
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
-    "build_exit_code", "build_log_path",
+    "build_exit_code", "build_log_path", "build_attempt_seconds",
     "checker_exit_code", "checker_log_path", "checker_review_reason", "error",
     "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at",
 )
@@ -118,7 +118,8 @@ class Dashboard:
                 self.activity, on_junie_request=self.show_junie_request,
                 trusted_junie_workspaces=self.trusted_junie_workspaces,
             )
-            state = {key: value for key, value in self.state.items() if key != "activity"}
+            state = {key: value for key, value in self.state.items()
+                     if key not in {"activity", "phase_activity", "latest_activity", "heartbeat"}}
             self.publish({**state, "ready": False, "cancellable": True,
                           "operation_id": secrets.token_hex(16), "stop_requested": False})
 
@@ -127,7 +128,16 @@ class Dashboard:
             if not self.control or self.state.get("ready"):
                 return
             self.activity_sequence += 1
-            self.publish({**self.state, "activity": {**entry, "sequence": self.activity_sequence}})
+            state = {**self.state, "activity": {**entry, "sequence": self.activity_sequence}}
+            if entry.get("kind") == "phase":
+                state["phase_activity"] = entry.copy()
+                state.pop("latest_activity", None)
+                state.pop("heartbeat", None)
+            elif entry.get("kind") == "heartbeat":
+                state["heartbeat"] = entry.copy()
+            else:
+                state["latest_activity"] = entry.copy()
+            self.publish(state)
 
     def show_junie_request(self, request: dict | None) -> Future[str] | None:
         with self.condition:
@@ -189,6 +199,9 @@ class Dashboard:
                     "operation_id", "cancellable", "stop_requested", "activity", "generating_anchors",
                     "diff_viewer_enabled", "junie_request",
                 ) if key in self.state and (key != "activity" or state.get("run_id") == self.state.get("run_id"))}
+                if (state.get("run_id"), state.get("status")) == (self.state.get("run_id"), self.state.get("status")):
+                    operation.update((key, self.state[key]) for key in
+                                     ("phase_activity", "latest_activity", "heartbeat") if key in self.state)
                 self.publish({**state, **operation, "token_usage": usage})
             elif usage != self.state.get("token_usage", []):
                 self.publish({**self.state, "token_usage": usage})

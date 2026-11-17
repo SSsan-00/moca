@@ -313,7 +313,13 @@ def _event_activity(entry: dict[str, Any]) -> str:
                 "writefile": "write_file", "editfile": "edit_file", "terminal": "terminal",
             }.get(normalized, "tool")
         if tool:
-            return f"Junieのツール実行: {tool}"
+            action = {
+                "terminal": "コマンドの実行", "view_files": "ファイルの読み取り",
+                "file_changes": "ファイルの変更", "search": "ソースの検索", "skill": "作業手順の確認",
+                "read_file": "ファイルの読み取り", "write_file": "ファイルの書き込み",
+                "edit_file": "ファイルの編集", "tool": "ツールの実行",
+            }[tool]
+            return f"Junieから{action}の報告が届きました。"
     return "Junieのセッションに更新がありました。"
 
 

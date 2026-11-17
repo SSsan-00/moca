@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
+from time import monotonic
 from typing import Any
 
 from . import junie_cli
@@ -1128,6 +1129,10 @@ def _build_worktree(
         record.pop(key, None)
     write_run_record(record_path, record)
     print(f"Building in {worktree} (log: {log_path})", flush=True)
+    report_activity(
+        "再ビルドを実行しています" if record.get("build_attempt_seconds") else "ビルドを実行しています",
+        kind="phase", detail="コンパイラで構文・型を確認しています。ビルドが成功してからチェッカーへ進みます。",
+    )
     try:
         # MSBuildの出力は実行データ側に残し、アプリの差分に混ぜない。
         with log_path.open("wb") as log:
@@ -1137,7 +1142,11 @@ def _build_worktree(
                     if not target.is_relative_to(worktree.resolve()) or not target.is_file():
                         raise ValueError(f"build project is missing or outside the worktree: {build_project}")
                     command.append(str(target))
-                completed = run_process(command, label="ビルド", cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
+                started = monotonic()
+                try:
+                    completed = run_process(command, label="ビルド", cwd=worktree, stdout=log, stderr=subprocess.STDOUT, check=False)
+                finally:
+                    record.setdefault("build_attempt_seconds", []).append(monotonic() - started)
             except (OSError, ValueError) as exc:
                 log.write((format_error(exc, command=command, cwd=worktree) + "\n").encode("utf-8"))
                 raise
@@ -1196,6 +1205,8 @@ def _run_checker(
     record.pop("checker_review_reason", None)
     write_run_record(record_path, record)
     print(f"Running checker in {result['worktree_path']} (log: {log_path})", flush=True)
+    report_activity("独自チェッカーで確認しています", kind="phase",
+                    detail="ビルドは成功しました。設定済みのチェッカーの結果を待っています。")
     try:
         # stdoutとstderrをそのまま保存し、利用者のチェッカー固有の出力形式を保つ。
         with log_path.open("wb") as log:
@@ -1369,6 +1380,14 @@ def _repair_target(
     worktree: Path, run_path: Path, findings: str, record: dict[str, Any],
 ) -> None:
     """全移行先の現行版を渡し、今回の修正対象だけを作業ツリーに反映する。"""
+    attempt = record["repair_pending"]
+    reason = "ビルドエラー" if attempt["details"].get("kind") == "build" else "チェッカーの指摘"
+    automatic = sum("instruction" not in entry for entry in record.get("repair_history", [])) + 1
+    mode = ("追加指示による修正" if attempt["details"].get("instruction")
+            else f"自動修正 {automatic}/{config['max_repair_attempts']}回目")
+    progress_context = f"{mode}。対象: {', '.join(path.as_posix() for path in repair_targets)}。"
+    report_activity("修正に必要な資料を準備しています", kind="phase",
+                    detail=progress_context + " 元のPHP・適用ルール・エラーをそろえています。")
     junie_cli.require_interactive_cli()
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.is_dir():
@@ -1380,7 +1399,6 @@ def _repair_target(
         capsule, manifest, agent_root, targets=repair_targets, selected=selected, repair=True,
     )
     material_instructions += stage_target_context(worktree, targets, capsule, agent_root)
-    attempt = record["repair_pending"]
     draft = attempt.get("draft", {})
     with worktree_source_lock:
         source_files = {path: safe_target(worktree, path) for path in targets}
@@ -1457,6 +1475,8 @@ def _repair_target(
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines)
     allowed = {*repair_targets, completion_path.relative_to(agent_root)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
+    report_activity(f"Junieが{reason}を修正しています", kind="phase",
+                    detail=progress_context + " 修正が終わったら、変更内容を照合して再ビルドします。")
     try:
         phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
         exit_code = junie_cli.run_interactive(
@@ -1477,6 +1497,8 @@ def _repair_target(
             # 安全に照合できない下書きは再開時に作業ツリーから同期し直す。
             pass
         raise
+    report_activity("Junieの修正結果を確認しています", kind="phase",
+                    detail=progress_context + " 完了記録・対象外の変更・手修正との競合を確認しています。")
     if _unlisted_workspace_files(agent_root, allowed) != other_files:
         raise CheckerRepairBlocked("unexpected_changes", "Junie changed files outside the repair targets; inspect the agent workspace")
     agent_targets = tuple(safe_target(agent_root, path) for path in repair_targets)
@@ -1781,6 +1803,8 @@ def _repair_build_failure(
     limit = config["max_repair_attempts"]
     history = record["repair_history"]
     log = run_path / "build.log"
+    report_activity("ビルドエラーを確認しています", kind="phase",
+                    detail="エラーの内容・修正対象・残りの自動修正回数を調べています。チェッカーはまだ実行しません。")
     # 上限はビルド・チェッカー共通の自動修正回数。利用者が明示した修正指示は数えない。
     automatic_attempts = sum("instruction" not in attempt for attempt in history)
     if automatic_attempts >= limit or not record.get("build_exit_code"):
@@ -1902,6 +1926,8 @@ def _run_verification(
     # 修正に成功したらここへ戻り、変更後のファイルを必ずビルドから検証し直す。
     while True:
         write_run_record(record_path, record, timing_stage=4)
+        report_activity("ビルド前のファイルを照合しています", kind="phase",
+                        detail="変更後のソースとビルド設定を確認し、今回の検証対象を記録しています。")
         fingerprint = current_fingerprint()
         _run_script_phase(config, "before_build", worktree, run_path, record)
         if fingerprint is not None and scripts.get("before_build") and fingerprint != current_fingerprint():

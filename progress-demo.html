@@ -318,6 +318,14 @@
     .run-name { min-width: 0; margin: 0; overflow: hidden; font-size: 13px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
     .run-titleline .demo-badge { flex: 0 0 auto; padding: 3px 8px; font-size: 10px; }
     .run-detail { margin-top: 2px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .work-status { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); overflow-wrap: anywhere; }
+    .work-status[hidden] { display: none; }
+    .work-status-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; }
+    .work-status h2 { margin: 3px 0; font-size: 14px; line-height: 1.6; }
+    .work-status p { margin: 4px 0 0; font-size: 12px; line-height: 1.7; }
+    .work-status-caption, .work-status-meta { color: var(--muted); font-size: 11px; }
+    .work-status-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-variant-numeric: tabular-nums; }
+    .work-status a { display: inline-flex; align-items: center; min-height: 28px; color: var(--blue); text-underline-offset: 3px; }
     .elapsed { display: flex; width: 108px; height: 38px; flex: 0 0 108px; flex-direction: column; justify-content: center; gap: 1px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; }
     .elapsed span { color: var(--muted); font-size: 10px; line-height: 1; }
     .elapsed strong { color: var(--ink); font: 650 12px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
@@ -682,6 +690,7 @@
   </div>
   <div class="workspace-panels">
   <section class="workspace-pane" id="workspace-progress" role="tabpanel" aria-labelledby="tab-progress" tabindex="0">
+  <div class="progress-overview">
   <div class="runbar" aria-label="実行情報">
     <div class="run-meta"><div class="run-titleline"><h1 class="run-name">注文履歴ページの移行</h1><span class="demo-badge">模擬進捗</span></div><div class="run-detail">run-2026-11-14-001 · worktree: migration/order-history</div><p class="run-detail demo-comparison-status" id="demo-anchor-status" role="status" data-demo-only></p><p class="workspace-feedback" id="workspace-progress-feedback" role="status"></p></div>
     <time class="elapsed" id="elapsed" datetime="PT0S" aria-label="実行経過時間"><span>経過時間</span><strong id="elapsed-value">00:00:00</strong></time>
@@ -701,6 +710,16 @@
     </div>
   </div>
 
+  <section class="work-status" id="work-status" aria-labelledby="work-status-title" hidden>
+    <div class="work-status-head">
+      <div role="status"><span class="work-status-caption">現在の処理</span><h2 id="work-status-title"></h2><p id="work-status-detail"></p></div>
+      <span class="work-status-meta" id="work-status-elapsed" aria-live="off"></span>
+    </div>
+    <p id="work-status-activity"></p>
+    <p class="work-status-meta" id="work-status-note"></p>
+    <div class="work-status-meta"><span id="work-status-build"></span><a href="#activity-title">実行ログを見る</a></div>
+  </section>
+  </div>
   <div class="layout">
     <section class="panel" aria-labelledby="flow-title">
       <div class="panel-head"><h2 id="flow-title">実行フロー</h2><small id="step-count">工程 4 / 7</small></div>
@@ -2320,6 +2339,59 @@ function showMigrationLedger(ledger, snapshot, compare) {
     return {button, dialog, input, render, showError};
   }
 </script>
+<script>
+  // 実処理の報告と稼働確認を分け、デモ・本番で同じ表示を使う。
+  function renderWorkStatus(data, label, connected = true) {
+    const panel = document.querySelector("#work-status");
+    panel.hidden = !data.status || data.status === "idle"
+      || (data.ready && ["prepared", "build_succeeded", "checker_succeeded", "checker_accepted"].includes(data.status));
+    if (panel.hidden) return;
+    const put = (id, text) => {
+      const node = document.querySelector(`#work-status-${id}`);
+      if (node.textContent !== text) node.textContent = text;
+      node.hidden = !text;
+    };
+    const running = !data.ready;
+    const phase = running ? data.phase_activity : null;
+    let title = phase?.message || label;
+    let detail = phase?.detail || (running ? "工程の状況は実行ログにも記録しています。" : "実行ログで結果を確認できます。");
+    if (data.stop_requested) {
+      title = "処理の停止を待っています";
+      detail = "保存済みの編集を残して終了します。完了するまでお待ちください。";
+    } else if (data.junie_request) {
+      title = "操作の確認を待っています";
+      detail = "「Junie の確認を開く」から内容を確認して応答してください。";
+    } else if (data.ready && data.status === "build_failed") {
+      title = "ビルド失敗の確認が必要です";
+      detail = "「ビルド失敗を確認」からエラーを確認し、追加指示・手修正・再ビルドを選べます。";
+    } else if (data.ready && data.status === "checker_needs_review") {
+      title = "チェッカーの指摘の確認を待っています";
+      detail = "「チェッカー出力を確認」から元の出力と停止理由を確認し、必要に応じて追加指示を送れます。";
+    }
+    put("title", title);
+    put("detail", detail);
+    const now = connected && running ? Date.now() / 1000 : data.observed_at;
+    const age = entry => Number.isFinite(entry?.at) && Number.isFinite(now) ? Math.max(0, now - entry.at) : null;
+    const elapsed = age(phase);
+    put("elapsed", elapsed === null ? "" : `この処理の経過 ${formatDuration(elapsed * 1000)}`);
+    const latest = data.latest_activity;
+    const sinceReport = age(latest);
+    put("activity", latest ? `直近の作業報告: ${latest.message}` : "");
+    const heartbeatAge = age(data.heartbeat);
+    let note = !connected ? "接続を再試行しています。最後に受信した処理状況を表示しています。" : "";
+    if (connected && running && !data.junie_request && !data.stop_requested) {
+      const parts = [];
+      if (sinceReport !== null) parts.push(`作業報告から ${Math.floor(sinceReport)}秒`);
+      if (heartbeatAge !== null) parts.push(`稼働確認から ${Math.floor(heartbeatAge)}秒`);
+      if ((sinceReport ?? elapsed ?? 0) >= 30) parts.push("新しい作業報告を待っています。必要に応じて停止・追加指示ができます。");
+      note = parts.join(" · ");
+    }
+    put("note", note);
+    const attempts = data.build_attempt_seconds || [];
+    const lastBuild = attempts[attempts.length - 1];
+    put("build", Number.isFinite(lastBuild) ? `直前のビルド ${lastBuild.toFixed(1)}秒` : "");
+  }
+</script>
 <!-- dashboard-script -->
 <script>
   const steps = [...document.querySelectorAll(".step")];
@@ -2372,6 +2444,30 @@ function showMigrationLedger(ledger, snapshot, compare) {
   let humanReviewHandled = false;
   let correctionRequested = false;
   let capsuleInterrupted = false;
+  let demoPhase;
+  let demoRepairIndex = -1;
+  const demoRepairPhases = [
+    ["ビルドエラーを確認しています", "型名の誤りを検出しました。修正対象と残りの回数を確認しています。", 1800],
+    ["修正に必要な資料を準備しています", "自動修正 1/2回目。元のPHP・適用ルール・エラーをそろえています。", 1800],
+    ["Junieがビルドエラーを修正しています", "自動修正 1/2回目。対象: Pages/Orders/Index.cshtml.cs。修正後に再ビルドします。", 6000],
+    ["Junieの修正結果を確認しています", "対象外の変更や手修正との競合がないかを確認しています。", 1800],
+    ["再ビルドを実行しています", "修正したソースをビルドしています。成功後に独自チェッカーへ進みます。", 2400],
+  ];
+  function setDemoPhase(message, detail) {
+    demoPhase = {message, detail: `模擬データ · ${detail}`, at: Date.now() / 1000};
+    renderDemoWorkStatus();
+  }
+  function renderDemoWorkStatus() {
+    const status = current >= steps.length ? "checker_succeeded"
+      : state.dataset.state === "waiting" ? "checker_needs_review" : !playing ? "interrupted"
+      : ["preparing", "preparing", "prepared", "junie_running", "building", "checking", "checker_needs_review"][current];
+    const report = current === 4 && demoRepairIndex === 2
+      ? {message: "Junieからファイルの編集の報告が届きました。", at: demoPhase.at} : null;
+    renderWorkStatus({status, ready: !playing, phase_activity: demoPhase, latest_activity: report,
+      heartbeat: report && playing ? {at: Date.now() / 1000} : null,
+      observed_at: Date.now() / 1000, build_attempt_seconds: current === 4 && demoRepairIndex >= 0 ? [3.2] : []},
+    playing ? "工程を進めています" : "デモを一時停止しています");
+  }
   const demoMappings = new Map();
   const demoMigrationTargets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"];
   const demoRunID = "run-2026-11-14-001";
@@ -2708,6 +2804,9 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
     }
     if (index === 6 && !humanReviewHandled) requestHumanReview();
     if (migrationLedgerDialog.open) showDemoMigrationLedger();
+    if (index === 4) setDemoPhase("ビルドを実行しています", "構文・型の整合を確認しています。");
+    else if (index === 5) setDemoPhase("独自チェッカーで確認しています", "再ビルドは成功しました。チェッカーの結果を待っています。");
+    else setDemoPhase(stateLabel.textContent, "作業の区切りで進捗を更新します。");
   }
 
   // 指摘の見出しにフォーカスして確認を始める。
@@ -3078,6 +3177,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     state.classList.remove("is-running");
     stateLabel.textContent = interruptCapsule ? "中断" : "一時停止中";
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
+    renderDemoWorkStatus();
   }
 
   // 保留した工程から再生を続け、完了後は先頭の状態に戻す。
@@ -3095,6 +3195,8 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     stateLabel.textContent = steps[current].querySelector(".step-title").textContent + "中";
     state.dataset.state = "running";
     state.classList.add("is-running");
+    if (demoPhase) demoPhase.at = Date.now() / 1000;
+    renderDemoWorkStatus();
     scheduleNext();
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
@@ -3103,13 +3205,22 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   function scheduleNext() {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      if (current === 4 && demoRepairIndex + 1 < demoRepairPhases.length) {
+        const [title, detail] = demoRepairPhases[++demoRepairIndex];
+        setDemoPhase(title, detail);
+        stateLabel.textContent = demoRepairIndex === 4 ? "再ビルド中" : "ビルドエラーを修正中";
+        logHumanAction(title, detail);
+        scheduleNext();
+        return;
+      }
       updateStep(current + 1);
       if (playing && current < steps.length) scheduleNext();
-    }, durations[current] || 2300);
+    }, current === 4 && demoRepairIndex >= 0 ? demoRepairPhases[demoRepairIndex][2] : durations[current] || 2300);
   }
 
   // 模擬実行と比較候補を初期化し、先頭で一時停止する。
   function reset() {
+    demoRepairIndex = -1;
     clearTimeout(stopTimer);
     stopButton.disabled = false;
     stopButton.textContent = "停止";
@@ -3140,6 +3251,7 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
 
   // 全体と各工程の経過時間を同じ更新周期で表示する。
   function updateElapsed() {
+    renderDemoWorkStatus();
     const seconds = Math.floor((elapsedTotal + (elapsedStarted ? performance.now() - elapsedStarted : 0)) / 1000);
     elapsedValue.textContent = formatDuration(seconds * 1000);
     elapsed.dateTime = `PT${seconds}S`;

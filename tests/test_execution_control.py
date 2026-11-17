@@ -43,6 +43,28 @@ class TimingTests(unittest.TestCase):
 
 
 class ControlTests(unittest.TestCase):
+    def test_phase_and_work_report_survive_heartbeat_but_not_another_stage_or_run(self):
+        view = Dashboard()
+        view.observe({"run_id": "first", "status": "repairing"})
+        view.begin_operation()
+        phase = {"kind": "phase", "at": 10, "message": "修正中", "detail": "自動修正 1/2回目"}
+        report = {"kind": "activity", "at": 12, "message": "ファイルの編集"}
+        view.activity(phase)
+        view.activity(report)
+        view.activity({"kind": "heartbeat", "at": 20, "message": "alive"})
+        view.observe({"run_id": "first", "status": "repairing", "token_usage": [{"input": 10}]})
+        self.assertEqual(view.state["phase_activity"], phase)
+        self.assertEqual(view.state["latest_activity"], report)
+        self.assertEqual(view.state["heartbeat"]["at"], 20)
+        view.observe({"run_id": "first", "status": "building"})
+        self.assertFalse({"phase_activity", "latest_activity", "heartbeat"} & view.state.keys())
+        view.activity(phase)
+        view.observe({"run_id": "second", "status": "building"})
+        self.assertNotIn("phase_activity", view.state)
+        view.activity(phase)
+        view.begin_operation()
+        self.assertNotIn("phase_activity", view.state)
+
     def test_stop_is_bound_to_operation_even_after_activity_revision_changes(self):
         view = Dashboard()
         view.publish({"status": "prepared", "ready": True})
@@ -111,6 +133,7 @@ class ExecutionIntegrationTests(HarnessCase):
         with (
             patch.object(run_records, "update_timings",
                          side_effect=lambda record, **kwargs: update_timings(record, now=clock, **kwargs)),
+            patch.object(workflow, "monotonic", side_effect=lambda: clock),
             patch.object(workflow.junie_cli, "require_interactive_cli"),
             patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate),
             patch.object(workflow, "_verification_fingerprint", side_effect=fingerprint),
@@ -125,6 +148,7 @@ class ExecutionIntegrationTests(HarnessCase):
         self.assertIn(("build_succeeded", 5), updates)
         self.assertEqual(updates[-1], ("checker_succeeded", None))
         self.assertEqual([record["stage_timings"][str(i)]["elapsed_seconds"] for i in (3, 4, 5)], [13, 12, 16])
+        self.assertEqual(record["build_attempt_seconds"], [7])
 
     def test_stop_during_capsule_preparation_does_not_create_worktree(self):
         control = ExecutionControl(lambda _event: control.cancelled.set())
@@ -182,7 +206,13 @@ class ExecutionIntegrationTests(HarnessCase):
         stopped = json.loads(record_path.read_bytes())
         self.assertEqual(stopped["status"], "build_failed")
         self.assertEqual(stopped.get("repair_history", []), [])
-        with patch.object(workflow, "run_process", return_value=subprocess.CompletedProcess(["dotnet"], 0)):
+        self.assertEqual(len(stopped["build_attempt_seconds"]), 1)
+        with (
+            patch.object(workflow, "monotonic", side_effect=(10, 12)),
+            patch.object(workflow, "run_process", return_value=subprocess.CompletedProcess(["dotnet"], 0)),
+        ):
             resumed = workflow.resume_with_junie(self.settings, result["run_id"])
         self.assertEqual(resumed["status"], "build_succeeded")
         self.assertEqual(resumed["run_id"], result["run_id"])
+        saved = json.loads(record_path.read_bytes())
+        self.assertEqual(saved["build_attempt_seconds"], [*stopped["build_attempt_seconds"], 2])

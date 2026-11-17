@@ -56,9 +56,12 @@ def check_cancelled() -> None:
         raise OperationCancelled("ダッシュボードから停止しました。")
 
 
-def report_activity(message: str, *, kind: str = "activity") -> None:
+def report_activity(message: str, *, kind: str = "activity", detail: str = "") -> None:
     if (control := _control.get()) is not None:
-        control.on_activity({"at": time.time(), "kind": kind, "message": message})
+        entry = {"at": time.time(), "kind": kind, "message": message}
+        if detail:
+            entry["detail"] = detail
+        control.on_activity(entry)
 
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:

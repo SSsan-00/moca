@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from migration_harness import cli, dashboard, junie_cli, run_records, workflow
+from migration_harness.execution import ExecutionControl, control_scope
 from migration_harness.settings_form import build_settings_draft
 
 
@@ -395,6 +396,38 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             self.assertEqual(result["status"], "checker_succeeded")
             repair.assert_called_once()
             self.assertEqual([entry["kind"] for entry in self.record()["repair_history"]], ["build", "build"])
+
+    def test_build_recovery_reports_each_step_before_checker_runs(self):
+        self.config["max_repair_attempts"] = 1
+        (self.run_path / "agent-workspace").mkdir()
+        updates = []
+
+        def repair(command, completion, token, targets, **kwargs):
+            self.assertEqual(updates[-1]["message"], "Junieがビルドエラーを修正しています")
+            self.assertIn("自動修正 1/1回目", updates[-1]["detail"])
+            self.assertIn(self.target.name, updates[-1]["detail"])
+            self.assertNotIn("独自チェッカーで確認しています", [item["message"] for item in updates])
+            targets[0].write_text("class Fixed {}\n", encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        with (
+            control_scope(ExecutionControl(updates.append)),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=repair),
+        ):
+            result = self.resume(
+                ("dotnet", 1, f"{self.target}(1,1): error CS1002: ; expected\n".encode()),
+                self.build, ("fixture-checker", 0, b"ok\n"),
+            )
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual([item["message"] for item in updates if item["kind"] == "phase"], [
+            "ビルド前のファイルを照合しています", "ビルドを実行しています", "ビルドエラーを確認しています",
+            "修正に必要な資料を準備しています", "Junieがビルドエラーを修正しています",
+            "Junieの修正結果を確認しています", "ビルド前のファイルを照合しています",
+            "再ビルドを実行しています", "独自チェッカーで確認しています",
+        ])
+        self.assertEqual(len(self.record()["build_attempt_seconds"]), 2)
 
     def test_interrupted_repair_can_restart_with_a_one_attempt_limit(self):
         self.config["max_repair_attempts"] = 1
