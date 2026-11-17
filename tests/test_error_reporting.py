@@ -233,23 +233,19 @@ class DashboardErrorReportingTests(unittest.TestCase):
 
     def test_initial_failure_stays_open_and_can_start_another_run(self):
         failure = subprocess.CalledProcessError(9, ["git", "worktree", "add"], stderr="worktree detail")
+        view = dashboard.Dashboard()
         result = {"status": "prepared", "run_id": "saved-run"}
-
-        def retry(view, url):
+        action = {"action": "run", "unit_id": "example", "run_id": "saved-run"}
+        with patch.object(dashboard, "run_with_junie", side_effect=[failure, result]):
+            view.begin_operation()
+            dashboard.execute_dashboard_action(view, {}, action)
             self.assert_ready_error(view, "worktree detail")
             self.assertIn("Return code: 9", view.state["message"])
-            with urlopen(url, timeout=3) as response:
-                self.assertEqual(response.status, 200)
-            return {"action": "run", "unit_id": "example"}
-
-        def recovered(view, url):
-            self.assertTrue(view.state["ready"])
-            self.assertEqual(view.state["message"], "")
-            self.assertEqual(view.state["error_details"], "")
-            raise KeyboardInterrupt
-
-        with patch.object(dashboard, "run_with_junie", side_effect=[failure, result]):
-            self.open_dashboard({}, [retry, recovered], unit_id="example")
+            view.begin_operation()
+            dashboard.execute_dashboard_action(view, {}, action)
+        self.assertTrue(view.state["ready"])
+        self.assertEqual(view.state["message"], "")
+        self.assertEqual(view.state["error_details"], "")
 
     def test_saved_run_load_error_and_config_error_stay_visible(self):
         def inspect(view, url):
@@ -271,31 +267,28 @@ class DashboardErrorReportingTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_script_failure_with_unreadable_record_stays_recoverable(self):
-        def inspect(view, url):
-            self.assert_ready_error(view, "script failed")
-            self.assertIn("record unreadable", view.state["message"])
-            raise KeyboardInterrupt
-
+        view = dashboard.Dashboard()
+        view.begin_operation()
         with (
             patch.object(dashboard, "run_with_junie", side_effect=RunScriptError("script failed", "saved-run")),
             patch.object(dashboard, "load_saved_run", side_effect=OSError("record unreadable")),
         ):
-            self.open_dashboard({}, [inspect], unit_id="example")
+            dashboard.execute_dashboard_action(view, {}, {"action": "run", "run_id": "saved-run", "unit_id": "example"})
+        self.assert_ready_error(view, "script failed")
+        self.assertIn("record unreadable", view.state["message"])
 
     def test_initial_interruption_loads_saved_state_and_allows_resume(self):
         saved = {"status": "script_failed", "run_id": "saved-run"}
-
-        def inspect(view, url):
-            self.assertTrue(view.state["ready"])
-            self.assertTrue(view.state["resumable"])
-            self.assertEqual(view.state["run_id"], "saved-run")
-            raise KeyboardInterrupt
-
+        view = dashboard.Dashboard()
+        view.begin_operation()
         with (
             patch.object(dashboard, "run_with_junie", side_effect=RunInterrupted("saved-run")),
             patch.object(dashboard, "load_saved_run", return_value=(None, None, saved, None)),
         ):
-            _, result = self.open_dashboard({}, [inspect], unit_id="example")
+            result = dashboard.execute_dashboard_action(view, {}, {"action": "run", "run_id": "saved-run", "unit_id": "example"})
+        self.assertTrue(view.state["ready"])
+        self.assertTrue(view.state["resumable"])
+        self.assertEqual(view.state["run_id"], "saved-run")
         self.assertEqual(result, saved)
 
     def test_malformed_saved_state_does_not_close_dashboard(self):

@@ -108,6 +108,75 @@
     #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
     .workspace-feedback { min-width: 0; margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
     .workspace-feedback:empty { display: none; }
+    #workspace-runs { overflow: auto; }
+    .runs-heading, .runs-toolbar, .runs-new-controls, .runs-footer, .run-context { display: flex; align-items: center; gap: 12px; }
+    .runs-heading { justify-content: space-between; margin: 4px 0 18px; }
+    .runs-heading h1 { font-size: 26px; margin: 0 0 4px; }
+    .runs-heading p, .runs-hint, .runs-footer { color: var(--muted); font-size: 13px; margin: 0; }
+    .parallel-limit { display: flex; align-items: center; gap: 14px; white-space: nowrap; color: var(--muted); }
+    .parallel-limit strong { padding: 6px 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); }
+    .runs-new { padding: 18px; overflow: visible; }
+    .runs-new h2, .runs-toolbar h2 { font-size: 17px; margin: 0 0 10px; }
+    .runs-new-controls .button { min-height: 40px; height: auto; }
+    .runs-hint { margin-top: 9px; }
+    .unit-picker { position: relative; flex: 1; min-width: 0; }
+    .unit-picker summary { list-style: none; display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; min-height: 40px; border: 1px solid var(--border-hover); border-radius: 6px; background: var(--paper); cursor: pointer; }
+    .unit-picker summary::-webkit-details-marker { display: none; }
+    #unit-selection-label { overflow-wrap: anywhere; }
+    .unit-options { position: absolute; inset: calc(100% + 4px) 0 auto; z-index: 12; max-height: 280px; overflow: auto; padding: 6px; background: var(--paper); border: 1px solid var(--border-hover); border-radius: 8px; box-shadow: 0 8px 24px #17203318; }
+    .unit-options label { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px; border-radius: 4px; cursor: pointer; overflow-wrap: anywhere; }
+    .unit-options label:hover { background: var(--surface-hover); }
+    .unit-options input { width: 18px; height: 18px; flex: none; accent-color: var(--blue); }
+    .unit-options small { margin-left: auto; color: var(--muted); }
+    .runs-toolbar { flex-wrap: wrap; margin: 22px 0 12px; }
+    .runs-toolbar h2 { margin: 0 10px 0 0; white-space: nowrap; }
+    #run-count { color: var(--muted); font-weight: 400; font-size: 13px; }
+    .run-filters { display: flex; flex-wrap: wrap; gap: 5px; }
+    .run-filters button { min-height: 34px; padding: 5px 9px; border-radius: 6px; background: var(--paper); border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+    .run-filters button[aria-pressed="true"] { color: var(--blue-ink); background: var(--blue); border-color: var(--blue); }
+    #run-search { flex: 1; min-width: 180px; max-width: 310px; margin-left: auto; padding: 8px 12px; border: 1px solid var(--border-hover); border-radius: 6px; background: var(--paper); color: var(--ink); font: inherit; }
+    .runs-table-wrap { overflow: auto; }
+    .runs-table { width: 100%; border-collapse: collapse; text-align: left; }
+    .runs-table th { padding: 12px 16px; color: var(--muted); font-size: 12px; background: var(--surface-soft); font-weight: 600; white-space: nowrap; }
+    .runs-table td { padding: 13px 16px; border-top: 1px solid var(--line); vertical-align: middle; }
+    .runs-table tr[data-selected="true"] { background: var(--blue-soft); }
+    .run-unit { display: block; font-weight: 650; overflow-wrap: anywhere; }
+    .run-id { display: block; margin-top: 4px; font: 11px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+    .run-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; white-space: nowrap; }
+    .run-status[data-tone="active"] { color: var(--blue); }
+    .run-status[data-tone="review"] { color: var(--amber); }
+    .run-status[data-tone="done"] { color: var(--green); }
+    .run-status[data-tone="queued"], .run-status[data-tone="paused"] { color: var(--muted); }
+    .run-current { min-width: 110px; max-width: 260px; font-size: 13px; overflow-wrap: anywhere; }
+    .run-current progress { display: block; width: 100%; max-width: 190px; height: 5px; margin-top: 8px; accent-color: var(--blue); }
+    .run-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .run-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 180px; }
+    .run-actions .button { min-height: 32px; height: auto; padding: 5px 10px; font-size: 12px; }
+    .run-actions .run-text-action { border-color: transparent; background: transparent; color: var(--blue); }
+    .runs-empty { padding: 24px; color: var(--muted); text-align: center; }
+    .runs-footer { justify-content: space-between; flex-wrap: wrap; margin: 12px 0; font-size: 12px; }
+    .workspace-tabs .run-summary { margin-left: auto; font-size: 12px; padding-inline: 0; white-space: nowrap; }
+    .run-summary .attention { color: var(--amber); }
+    .run-context { margin-bottom: 10px; flex: none; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+    .run-context:empty { display: none; }
+    .run-context select { max-width: min(420px, 70vw); min-width: 0; padding: 5px 8px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 5px; font: inherit; min-height: 32px; }
+    .run-context .button { min-height: 32px; height: auto; font-size: 12px; }
+    #workspace-progress:has(.run-context:not(:empty)) { grid-template-rows: auto auto minmax(0, 1fr); }
+    #workspace-editor:not([hidden]) { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    :is(.unit-picker summary, .run-filters button, #run-search, .run-context select):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+    @media (max-width: 900px) { .workspace-tabs .run-summary { display: none; } .runs-table td, .runs-table th { padding: 12px 10px; } }
+    @media (max-width: 680px) {
+      .runs-heading { align-items: flex-start; gap: 8px; } .runs-heading p { max-width: 25em; } .runs-heading h1 { font-size: 22px; }
+      .parallel-limit { gap: 5px; font-size: 12px; } .parallel-limit strong { padding: 5px 9px; }
+      .runs-new { padding: 12px; } .runs-new-controls { flex-wrap: wrap; gap: 8px; } .unit-picker { flex-basis: 100%; }
+      .runs-toolbar { gap: 10px; } #run-search { flex-basis: 100%; max-width: none; order: 3; } .run-filters { gap: 4px; }
+      .runs-table, .runs-table tbody { display: block; } .runs-table thead { display: none; }
+      .runs-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 12px; gap: 8px; border-bottom: 1px solid var(--line); }
+      .runs-table td { display: block; padding: 0; border: 0; min-width: 0; } .runs-table td:first-child { grid-column: 1; }
+      .run-current { max-width: none; } .runs-table td:last-child { grid-column: 1 / -1; } .run-actions { min-width: 0; }
+      .run-id { font-size: 10px; } .run-time { text-align: right; font-size: 12px; } .run-context { gap: 6px; }
+      #workspace-editor:not([hidden]) { display: block; }
+    }
     .editor-layout:not([hidden]) {
       --editor-min-width: 220px;
       --junie-min-width: 230px;
@@ -689,10 +758,12 @@
     <button id="tab-runs" type="button" role="tab" aria-selected="false" aria-controls="workspace-runs" tabindex="-1">実行</button>
     <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="workspace-settings" tabindex="-1">設定</button>
     <button id="tab-tokens" type="button" role="tab" aria-selected="false" aria-controls="workspace-tokens" tabindex="-1">トークン使用量</button>
+    <button id="run-summary" class="run-summary" type="button" aria-label="実行一覧を表示"></button>
     <span class="workspace-tab-indicator" aria-hidden="true"></span>
   </div>
   <div class="workspace-panels">
   <section class="workspace-pane" id="workspace-progress" role="tabpanel" aria-labelledby="tab-progress" tabindex="0">
+  <div class="run-context" data-run-context></div>
   <div class="progress-overview">
   <div class="runbar" aria-label="実行情報">
     <div class="run-meta"><div class="run-titleline"><h1 class="run-name">注文履歴ページの移行</h1><span class="demo-badge">模擬進捗</span></div><div class="run-detail">run-2026-11-14-001 · worktree: migration/order-history</div><p class="run-detail demo-comparison-status" id="demo-anchor-status" role="status" data-demo-only></p><p class="workspace-feedback" id="workspace-progress-feedback" role="status"></p></div>
@@ -799,6 +870,7 @@
   </div>
   </section>
   <section class="workspace-pane" id="workspace-editor" role="tabpanel" aria-labelledby="tab-editor" tabindex="0" hidden>
+    <div class="run-context" data-run-context></div>
     <p id="editor-empty" class="workspace-feedback" role="status">実行タブで移行を始めるか、保存済みの実行を開いてください。</p>
     <div class="editor-layout" id="editor-layout" hidden>
       <section class="panel" id="editor-pane" aria-label="移行エディタ">
@@ -848,28 +920,21 @@
     </div>
   </section>
   <section class="workspace-pane" id="workspace-runs" role="tabpanel" aria-labelledby="tab-runs" tabindex="0" hidden>
-    <div class="panel workspace-tools">
-      <form id="workspace-new-run">
-        <h2>新規実行</h2>
-        <label for="workspace-unit">移行単位</label>
-        <select class="workspace-select" id="workspace-unit" required></select>
-        <div class="workspace-actions">
-          <button class="button primary" type="submit" value="run">移行を実行</button>
-          <button class="button" type="submit" value="prepare">準備</button>
-        </div>
-      </form>
-      <form id="workspace-open-run">
-        <h2>保存済みの実行</h2>
-        <label for="workspace-run-id">Run ID</label>
-        <input id="workspace-run-id" list="workspace-run-options" placeholder="候補から選択するか、Run IDを入力" autocomplete="off" required>
-        <datalist id="workspace-run-options"></datalist>
-        <div class="workspace-actions">
-          <button class="button primary" type="submit" value="resume-run">移行を再開</button>
-          <button class="button" type="submit" value="open-run">進捗を表示</button>
-        </div>
-      </form>
+    <header class="runs-heading"><div><h1>実行</h1><p>移行単位をまとめて実行し、Runごとに進捗を確認できます。</p></div><span class="parallel-limit">同時実行数 <strong>2</strong></span></header>
+    <form id="workspace-new-run" class="panel runs-new">
+      <h2>新規実行</h2>
+      <div class="runs-new-controls">
+        <details class="unit-picker" id="unit-picker"><summary><span id="unit-selection-label">移行単位を選択</span><span aria-hidden="true">⌄</span></summary><div class="unit-options" id="unit-options" aria-label="実行する移行単位"></div></details>
+        <button class="button" type="submit" value="prepare">準備のみ</button><button class="button primary" id="run-selected" type="submit" value="run" disabled>選択した単位を実行</button>
+      </div>
+      <p class="runs-hint">上限を超えたRunは実行待ちに追加されます。</p>
+    </form>
+    <section class="runs-list" aria-labelledby="runs-title">
+      <div class="runs-toolbar"><h2 id="runs-title">実行一覧 <span id="run-count"></span></h2><div class="run-filters" id="run-filters" role="group" aria-label="実行状態で絞り込み"></div><input id="run-search" type="search" aria-label="移行単位・Run IDで検索" placeholder="移行単位・Run IDで検索"></div>
       <p class="workspace-feedback" id="workspace-run-feedback" role="status"></p>
-    </div>
+      <div class="panel runs-table-wrap"><table class="runs-table"><thead><tr><th scope="col">移行単位 / Run ID</th><th scope="col">状態</th><th scope="col">現在の処理</th><th scope="col">経過時間</th><th scope="col">操作</th></tr></thead><tbody id="run-rows"></tbody></table><p id="runs-empty" class="runs-empty" role="status">実行一覧を読み込んでいます。</p></div>
+      <div class="runs-footer"><span>実行枠が空くと、待機中のRunを順に開始します。</span><span>詳細は「進捗」、編集は「エディタ」で行えます。</span></div>
+    </section>
   </section>
   <section class="workspace-pane" id="workspace-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
     <form class="panel workspace-tools workspace-settings" id="workspace-config-form">
@@ -1446,9 +1511,6 @@ workspaceTabs.addEventListener("keydown", event => {
 new ResizeObserver(positionTabIndicator).observe(workspaceTabs);
 positionTabIndicator();
 
-const workspaceUnit = document.querySelector("#workspace-unit");
-const workspaceRunID = document.querySelector("#workspace-run-id");
-const workspaceRunOptions = document.querySelector("#workspace-run-options");
 const workspaceConfig = document.querySelector("#workspace-config");
 const workspaceRunFeedback = document.querySelector("#workspace-run-feedback");
 const workspaceConfigFeedback = document.querySelector("#workspace-config-feedback");
@@ -1485,9 +1547,9 @@ function validateRuleUsage(item) {
   }
 }
 
-function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct}) {
-  const newRun = document.querySelector("#workspace-new-run");
-  const openRun = document.querySelector("#workspace-open-run");
+function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSettings, execute, canAct, canConfigure = canAct}) {
+  const runsUI = bindRunManager({readRuns, execute, canAct});
+  window.harnessRuns = runsUI;
   const settings = document.querySelector("#workspace-config-form");
   const reload = document.querySelector("#workspace-config-reload");
   const editToggle = document.querySelector("#workspace-config-toggle");
@@ -1519,9 +1581,8 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   let lastRunRequest = 0;
   const draftTargets = () => [...new Set(settingsForm?.units.flatMap(entry => entry.targets) ?? [])];
   workspaceControls = () => {
-    const available = canAct() && !busy;
-    for (const control of newRun.querySelectorAll("button")) control.disabled = !available || !workspaceUnit.value;
-    for (const control of openRun.querySelectorAll("button")) control.disabled = !available || !workspaceRunID.value.trim();
+    const available = canConfigure() && !busy;
+    runsUI.sync();
     settings.querySelector('button[type="submit"]').disabled = !available || previewPending || !settingsVersion
       || !workspaceConfig.value.trim() || !settingsForm;
     workspaceConfig.readOnly = !available || !settingsVersion || (previewPending && !readingTOML);
@@ -1955,22 +2016,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     }, 160);
   }
 
-  async function loadRuns() {
-    const request = ++lastRunRequest;
-    try {
-      const {units, runs} = await readRuns();
-      if (request !== lastRunRequest) return;
-      const selected = workspaceUnit.value;
-      workspaceUnit.replaceChildren(...units.map(unit => new Option(unit, unit)));
-      if (units.includes(selected)) workspaceUnit.value = selected;
-      workspaceRunOptions.replaceChildren(...runs.map(run => new Option(run.unit_id, run.run_id)));
-      workspaceRunFeedback.textContent = units.length ? "" : "設定タブで移行単位を登録してください。";
-    } catch (error) {
-      workspaceRunFeedback.textContent = error.message;
-    }
-    workspaceControls();
-  }
-
   async function loadSettings(force = false) {
     if (busy || (settingsVersion && !force)) return;
     busy = true;
@@ -1997,29 +2042,6 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
     }
   }
 
-  async function runAction(action, payload) {
-    if (busy || !canAct()) return;
-    busy = true;
-    workspaceControls();
-    try {
-      await execute(action, payload);
-      switchHarnessTab(0, true);
-    } catch (error) {
-      workspaceRunFeedback.textContent = error.message;
-    } finally {
-      busy = false;
-      workspaceControls();
-    }
-  }
-
-  newRun.addEventListener("submit", event => {
-    event.preventDefault();
-    if (workspaceUnit.value) runAction(event.submitter.value, {unit_id: workspaceUnit.value});
-  });
-  openRun.addEventListener("submit", event => {
-    event.preventDefault();
-    if (workspaceRunID.value.trim()) runAction(event.submitter.value, {run_id: workspaceRunID.value.trim()});
-  });
   settings.addEventListener("submit", async event => {
     event.preventDefault();
     if (settings.querySelector('button[type="submit"]').disabled) return;
@@ -2077,9 +2099,7 @@ function bindHarnessWorkspace({readRuns, readSettings, previewSettings, saveSett
   });
   workspaceConfig.addEventListener("input", () => schedulePreview(true));
   reload.addEventListener("click", () => loadSettings(true));
-  for (const control of [workspaceUnit, workspaceRunID]) control.addEventListener("input", workspaceControls);
   workspaceTabs.addEventListener("harnesstab", () => {
-    if (harnessTabs[activeHarnessTab].id === "tab-runs") loadRuns();
     if (harnessTabs[activeHarnessTab].id === "tab-settings") loadSettings();
   });
   workspaceControls();
@@ -2396,7 +2416,9 @@ function showMigrationLedger(ledger, snapshot, compare) {
     put("build", Number.isFinite(lastBuild) ? `直前のビルド ${lastBuild.toFixed(1)}秒` : "");
   }
 </script>
+<script src="./src/migration_harness/dashboard_runs.js"></script>
 <!-- dashboard-script -->
+<script src="./src/migration_harness/dashboard_runs_demo.js"></script>
 <script>
   const steps = [...document.querySelectorAll(".step")];
   const activity = document.querySelector("#activity");
@@ -2535,6 +2557,9 @@ id = "注文履歴"
 source = "php/orders.php"
 targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
 `;
+  for (const [name, file] of [["顧客詳細", "Customers"], ["売上集計", "Sales"], ["在庫照会", "Stock"], ["商品検索", "Products"], ["取引先一覧", "Partners"], ["請求一覧", "Invoices"], ["入金照合", "Payments"]]) {
+    demoSettings += `\n[[units]]\nid = "${name}"\nsource = "php/${file}.php"\ntargets = ["Pages/${file}.cs"]\n`;
+  }
   const demoUnits = () => [...demoSettings.matchAll(/^\s*id\s*=\s*"([^"\r\n]+)"/gm)].map(match => match[1]);
   // デモでは設定例とフォームから生成するTOMLを取り扱う。
   function demoSettingsDraft(content, changes = {}) {
@@ -2668,8 +2693,40 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
       return {content, form: null};
     }
   }
+  const demoRuns = createDemoRuns(demoRunID, demoUnits, renderParallelDemo);
+  let shownDemoRun;
+  let shownDemoStatus;
+  function renderParallelDemo(run) {
+    const changed = shownDemoRun !== run.run_id;
+    shownDemoRun = run.run_id;
+    document.querySelector(".run-name").textContent = `${run.unit_id} の移行`;
+    document.querySelector(".run-detail").textContent = `${run.run_id} · 模擬データ`;
+    const names = {queued: "実行待ち", preparing: "準備中", prepared: "準備完了", junie_running: "移行中", building: "ビルド中", checking: "チェック中", checker_needs_review: "確認待ち", checker_succeeded: "検証済み", interrupted: "停止中", cancelled: "取消済み"};
+    const stage = {preparing: 1, prepared: 2, junie_running: 3, building: 4, checking: 5, checker_needs_review: 6, checker_succeeded: 6}[run.status] ?? 3;
+    stateLabel.textContent = names[run.status] || run.status;
+    state.classList.toggle("is-running", !run.ready && !run.queued);
+    state.dataset.state = run.ready ? "paused" : "running";
+    steps.forEach((step, index) => {
+      step.classList.toggle("is-done", index < stage);
+      step.classList.toggle("is-active", index === stage && !run.ready);
+      step.querySelector(".step-status").textContent = index < stage ? "完了" : index === stage && !run.ready ? "処理中" : index === 6 && run.status === "checker_succeeded" ? "確認待ち" : "待機中";
+    });
+    document.querySelector("#step-count").textContent = `工程 ${Math.min(stage + 1, 7)} / 7`;
+    elapsedValue.textContent = formatDuration((run.elapsed_seconds || 0) * 1000);
+    stopButton.hidden = run.ready || run.queued;
+    stopButton.disabled = false;
+    stopButton.textContent = "停止";
+    toggle.hidden = !run.resumable;
+    toggle.textContent = run.status === "checker_succeeded" ? "ビルド・チェックを再実行" : "同じ実行を再開";
+    renderWorkStatus({...run, phase_activity: {message: names[run.status] || "準備中", detail: `模擬データ · ${run.unit_id}`, at: Date.now() / 1000}, observed_at: Date.now() / 1000}, "実行一覧から別のRunも確認できます");
+    if (changed) activity.replaceChildren();
+    if (changed || shownDemoStatus !== run.status) addEvent(new Date().toLocaleTimeString("ja-JP"), names[run.status] || "実行", `${run.unit_id} · 模擬データ`);
+    shownDemoStatus = run.status;
+    capsuleCall.textContent = `カプセル ${run.current_capsule} / ${run.context_capsules} · ${run.unit_id}`;
+    window.harnessRuns?.setSelected(run.run_id);
+  }
   bindHarnessWorkspace({
-    readRuns: async () => ({units: demoUnits(), runs: [{run_id: demoRunID, unit_id: "注文履歴"}]}),
+    readRuns: demoRuns.read,
     readSettings: async () => ({path: "harness.local.toml（デモ内）", version: "demo", ...demoSettingsDraft(demoSettings)}),
     previewSettings: async (content, changes) => demoSettingsDraft(content, changes),
     saveSettings: async content => {
@@ -2681,21 +2738,7 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
       document.documentElement.toggleAttribute("data-viewer-enabled", !!viewer?.html?.trim() && viewer.enabled !== "false");
       return {version: "demo"};
     },
-    execute: async (action, data) => {
-      if (action === "open-run" || action === "resume-run") {
-        if (data.run_id !== demoRunID) throw new Error("保存済みの候補からデモのRun IDを選択してください。");
-        if (action === "resume-run" && !playing) play();
-        return;
-      }
-      reset();
-      document.querySelector(".run-name").textContent = `${data.unit_id} の移行`;
-      if (action === "run") play();
-      else {
-        updateStep(3);
-        stop();
-        stateLabel.textContent = "準備完了";
-      }
-    },
+    execute: demoRuns.execute,
     canAct: () => true,
   });
   let demoCandidateWorkspace;
@@ -3304,21 +3347,9 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateElapsed();
   }
 
-  stopButton.addEventListener("click", () => {
-    if (!playing || stopButton.disabled) return;
-    stopButton.disabled = true;
-    stopButton.textContent = "停止を待っています";
-    stateLabel.textContent = "停止待ち";
-    clearTimeout(timer);
-    stopCapsuleCalls();
-    stopTimer = setTimeout(() => stop(true), 350);
-  });
-  toggle.addEventListener("click", () => {
-    if (state.dataset.state === "waiting") openReviewDialog();
-    else if (playing) stop(true);
-    else play();
-  });
-  document.querySelector("#restart").addEventListener("click", reset);
+  stopButton.addEventListener("click", () => demoRuns.execute("stop", {run_id: demoRuns.selected}));
+  toggle.addEventListener("click", () => demoRuns.execute("resume-run", {run_id: demoRuns.selected}));
+  document.querySelector("#restart").style.display = "none";
   document.querySelector("#ledger-list").addEventListener("click", event => {
     if (event.target.closest(".ledger-row")?.querySelector("[data-review-open]")) requestHumanReview();
   });
@@ -3355,15 +3386,9 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     filterButtons.forEach(item => item.setAttribute("aria-pressed", String(item.dataset.filter === ledgerFilter)));
     applyLedgerFilter();
   }));
-  if (reducedMotion) {
-    updateReviewCount();
-    stop();
-  }
-  else {
-    updateStep(current);
-    startElapsed();
-    scheduleNext();
-  }
+  stop();
+  demoRuns.select(demoRunID);
+
 </script>
 <script src="./src/migration_harness/dashboard_editor_demo.js" defer></script>
 <script src="./src/migration_harness/dashboard_editor.js" defer></script>

@@ -82,7 +82,7 @@ def _read_settings(path: Path) -> tuple[bytes, str]:
     return data, hashlib.sha256(data).hexdigest()
 
 
-def _save_settings(path: Path, content: str, version: str) -> dict[str, Any]:
+def _save_settings(path: Path, content: str, version: str, *, before_replace=None) -> dict[str, Any]:
     # 設定ファイルと同じディレクトリで検証し、相対パスの基準を保つ。
     with NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", newline="", delete=False) as stream:
         candidate = Path(stream.name)
@@ -91,8 +91,11 @@ def _save_settings(path: Path, content: str, version: str) -> dict[str, Any]:
         normalized = load_config(candidate)
         if _read_settings(path)[1] != version:
             raise ValueError("設定ファイルが更新されています。最新の設定を読み込み、変更を反映し直してください。")
+        normalized["config_path"] = str(path)
+        if before_replace:
+            before_replace(normalized)
         candidate.replace(path)
-        return {**normalized, "config_path": str(path)}
+        return normalized
     finally:
         candidate.unlink(missing_ok=True)
 
@@ -215,7 +218,7 @@ class Dashboard:
             "error_details": "",
             "resumable": can_resume_run(config, result),
             "diff_viewer_enabled": bool(config.get("diff_viewer_html")),
-            "cancellable": False, "stop_requested": False, "operation_id": None,
+            "cancellable": False, "stop_requested": False, "operation_id": None, "generating_anchors": False,
             "stage_timings": freeze_timings(self.state), "active_stage": None,
         }
         state.pop("review_error", None)
@@ -270,11 +273,21 @@ class Dashboard:
     ) -> ThreadingHTTPServer:
         """Runの画面、イベント、操作を同じローカルオリジンに公開する。"""
         dashboard = self
+        manager = getattr(self, "manager", None)
         # ポート番号だけで操作できないようにし、他サイトからのPOSTも拒否する。
         prefix = "/" + secrets.token_urlsafe(24) + "/"
 
         class Handler(BaseHTTPRequestHandler):
             """ダッシュボード専用のパスとオリジンでHTTPの受付範囲を絞る。"""
+
+            def bind_view(self) -> bool:
+                try:
+                    requested = self.headers.get("X-Run-ID") or parse_qs(urlsplit(self.path).query).get("run_id", [None])[0]
+                    self.dashboard = manager.get(requested) if manager else dashboard
+                    return True
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                    return False
 
             def log_message(self, format: str, *args: Any) -> None:
                 """継続接続のHTTPログがJunieの対話端末に混ざるのを防ぐ。"""
@@ -296,12 +309,19 @@ class Dashboard:
 
             def do_GET(self) -> None:
                 """閲覧用のアセット、進捗配信、保存された結果を振り分ける。"""
+                if self.headers.get("Host") != host or not self.path.startswith(prefix):
+                    self.send_error(403)
+                    return
+                if not self.bind_view():
+                    return
                 if self.headers.get("Host") != host:
                     self.send_error(403)
-                elif self.path == prefix:
+                elif self.path.partition("?")[0] == prefix:
                     self.send_body(200, "text/html; charset=utf-8", html)
                 elif self.path == prefix + "dashboard.js":
                     self.send_body(200, "text/javascript; charset=utf-8", script)
+                elif self.path == prefix + "dashboard_runs.js":
+                    self.send_body(200, "text/javascript; charset=utf-8", Path(__file__).with_name("dashboard_runs.js").read_bytes())
                 elif self.path == prefix + "dashboard_editor.js":
                     self.send_body(200, "text/javascript; charset=utf-8", Path(__file__).with_name("dashboard_editor.js").read_bytes())
                 elif self.path.startswith(prefix + "monaco/"):
@@ -324,23 +344,23 @@ class Dashboard:
                     self.send_editor()
                 elif self.path.partition("?")[0] == prefix + "editor-php":
                     self.send_editor_php()
-                elif self.path == prefix + "events":
+                elif self.path.partition("?")[0] == prefix + "events":
                     self.send_events()
-                elif self.path == prefix + "workspace":
+                elif self.path.partition("?")[0] == prefix + "workspace":
                     self.send_workspace()
-                elif self.path == prefix + "token-runs":
+                elif self.path.partition("?")[0] == prefix + "token-runs":
                     self.send_workspace(include_usage=True)
-                elif self.path == prefix + "settings":
+                elif self.path.partition("?")[0] == prefix + "settings":
                     self.send_settings()
-                elif self.path == prefix + "prompts":
+                elif self.path.partition("?")[0] == prefix + "prompts":
                     self.send_prompts()
                 elif self.path.partition("?")[0] == prefix + "checker-output":
                     self.send_checker_output()
                 elif self.path.partition("?")[0] == prefix + "build-review":
                     self.send_build_review()
-                elif self.path == prefix + "migration-ledger":
-                    run_id = dashboard.state.get("run_id")
-                    if run_id and dashboard.state.get("worktree_path"):
+                elif self.path.partition("?")[0] == prefix + "migration-ledger":
+                    run_id = self.dashboard.state.get("run_id")
+                    if run_id and self.dashboard.state.get("worktree_path"):
                         try:
                             ledger = migration_ledger(config, run_id)
                         except _ERRORS as exc:
@@ -355,7 +375,7 @@ class Dashboard:
                     self.send_error(404)
 
             def send_prompts(self, action: dict[str, Any] | None = None) -> None:
-                state = dashboard.state
+                state = self.dashboard.state
                 run_id = state.get("run_id")
                 payload = {"run_id": run_id, "timing": None, "prompts": []}
                 try:
@@ -364,13 +384,13 @@ class Dashboard:
                     if run_id and state.get("worktree_path"):
                         run_path, _, _, _ = load_saved_run(config, run_id)
                         with editor_queue(run_path) as queue:
-                            with dashboard.condition:
-                                state = dashboard.state
+                            with self.dashboard.condition:
+                                state = self.dashboard.state
                                 if state.get("run_id") != run_id:
                                     raise ValueError("表示中の実行が変わりました。")
                                 _, _, record, _ = load_saved_run(config, run_id)
                                 timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
-                                                        live=bool(dashboard.control and dashboard.control.junie_steering
+                                                        live=bool(self.dashboard.control and self.dashboard.control.junie_steering
                                                                   and not queue["edits"]))
                                 if action is not None:
                                     if timing is None:
@@ -385,7 +405,7 @@ class Dashboard:
 
             def send_editor_php(self) -> None:
                 query = parse_qs(urlsplit(self.path).query)
-                run_id = dashboard.state.get("run_id")
+                run_id = self.dashboard.state.get("run_id")
                 try:
                     if not run_id or query.get("run_id", [None])[0] != run_id:
                         raise ValueError("表示中の実行が変わりました。")
@@ -422,7 +442,7 @@ class Dashboard:
 
             def send_editor(self, action: dict[str, Any] | None = None) -> None:
                 query = parse_qs(urlsplit(self.path).query)
-                state = dashboard.state
+                state = self.dashboard.state
                 run_id = state.get("run_id")
                 try:
                     if not run_id or not state.get("worktree_path"):
@@ -434,7 +454,7 @@ class Dashboard:
                             raise ValueError("表示中の実行が変わりました。")
                         run_path, _, _, _ = load_saved_run(config, run_id)
                         with editor_queue(run_path) as queue:
-                            state = dashboard.state
+                            state = self.dashboard.state
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
                             _, worktree, record, unit = load_saved_run(config, run_id)
@@ -456,7 +476,7 @@ class Dashboard:
                             busy_other = state.get("generating_anchors") or state.get("stop_requested")
                             queued = bool(queue["edits"] or not state.get("ready") or busy_other or phase in AGENT_PHASES)
                             prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
-                                                          live=bool(dashboard.control and dashboard.control.junie_steering
+                                                          live=bool(self.dashboard.control and self.dashboard.control.junie_steering
                                                                     and not queue["edits"]))
                             read_error = None
                             try:
@@ -475,8 +495,8 @@ class Dashboard:
                                     draft = editor_text(action.get("content"))
                                     if action.get("edit_id") != (edit["id"] if edit else None):
                                         raise ValueError("保存済みの編集が別の画面で変更されました。")
-                                    with worktree_source_lock, dashboard.condition:
-                                        state = dashboard.state
+                                    with worktree_source_lock, self.dashboard.condition:
+                                        state = self.dashboard.state
                                         if state.get("run_id") != run_id:
                                             raise ValueError("表示中の実行が変わりました。")
                                         # 保存直前に実行が始まった場合も、編集をRunへ退避する。
@@ -517,8 +537,8 @@ class Dashboard:
 
             def send_checker_output(self) -> None:
                 query = parse_qs(urlsplit(self.path).query)
-                with dashboard.condition:
-                    state = dashboard.state
+                with self.dashboard.condition:
+                    state = self.dashboard.state
                     current_config = config.copy()
                 run_id = state.get("run_id")
                 if (not run_id or query.get("run_id") != [run_id] or not state.get("ready")
@@ -557,8 +577,8 @@ class Dashboard:
 
             def send_build_review(self) -> None:
                 query = parse_qs(urlsplit(self.path).query)
-                with dashboard.condition:
-                    state = dashboard.state
+                with self.dashboard.condition:
+                    state = self.dashboard.state
                     if (not state.get("ready") or state.get("status") != "build_failed"
                             or query.get("run_id") != [state.get("run_id")]):
                         self.send_body(409, "text/plain; charset=utf-8", "現在の実行から確認画面を開き直してください。".encode())
@@ -572,8 +592,16 @@ class Dashboard:
                     self.send_body(200, "application/json; charset=utf-8", json.dumps(review, ensure_ascii=False).encode())
 
             def send_workspace(self, *, include_usage: bool = False) -> None:
+                if manager:
+                    try:
+                        body = json.dumps(manager.workspace(include_usage=include_usage), ensure_ascii=False).encode()
+                    except _ERRORS as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", ("実行一覧を読み込めませんでした。設定と保存先を確認してください。\n" + format_error(exc)).encode())
+                    else:
+                        self.send_body(200, "application/json", body)
+                    return
                 try:
-                    with dashboard.condition:
+                    with self.dashboard.condition:
                         workspace_config = config.copy()
                     units = [unit["id"] for unit in workspace_config.get("units", [])]
                     records = Path(workspace_config["run_root"]).glob("*/run.json") if units else ()
@@ -609,7 +637,7 @@ class Dashboard:
             def send_comparison(self) -> None:
                 """保存済み比較をダウンロード用JSONか隔離されたViewerとして返す。"""
                 match = re.fullmatch(r"([^/]+)/([a-f0-9]{32})\.(html|json)", self.path.removeprefix(prefix + "review/"))
-                with dashboard.condition:
+                with self.dashboard.condition:
                     comparison_config = config.copy()
                 if not match or not comparison_config.get("run_root"):
                     self.send_error(404)
@@ -650,12 +678,12 @@ class Dashboard:
                 self.connection.settimeout(5)
                 try:
                     while True:
-                        with dashboard.condition:
-                            dashboard.condition.wait_for(
-                                lambda: dashboard.closed or dashboard.revision > cursor, timeout=10,
+                        with self.dashboard.condition:
+                            self.dashboard.condition.wait_for(
+                                lambda: self.dashboard.closed or self.dashboard.revision > cursor, timeout=10,
                             )
-                            events = [(seq, data) for seq, data in dashboard.events if seq > cursor]
-                            if dashboard.closed and not events:
+                            events = [(seq, data) for seq, data in self.dashboard.events if seq > cursor]
+                            if self.dashboard.closed and not events:
                                 return
                         if not events:
                             self.wfile.write(b": keep-alive\n\n")
@@ -674,11 +702,13 @@ class Dashboard:
                 if self.headers.get("Host") != host or self.headers.get("Origin") != "http://" + host:
                     self.send_error(403)
                     return
+                if not self.bind_view():
+                    return
                 comparison = self.path == prefix + "comparison"
-                settings = self.path == prefix + "settings"
+                settings = self.path.partition("?")[0] == prefix + "settings"
                 build_response = self.path == prefix + "build-response"
                 editor = self.path == prefix + "editor"
-                prompts = self.path == prefix + "prompts"
+                prompts = self.path.partition("?")[0] == prefix + "prompts"
                 limit = 16_384
                 if settings:
                     limit = 8 * 1024 * 1024
@@ -705,6 +735,12 @@ class Dashboard:
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
+                if manager and action.get("run_id"):
+                    try:
+                        self.dashboard = manager.get(action["run_id"])
+                    except _ERRORS as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                        return
                 if settings:
                     self.save_settings(action)
                     return
@@ -715,9 +751,9 @@ class Dashboard:
                     self.send_prompts(action)
                     return
                 if comparison:
-                    with dashboard.condition:
+                    with self.dashboard.condition:
                         comparison_config = config.copy()
-                        state = dashboard.state
+                        state = self.dashboard.state
                     try:
                         if not comparison_config.get("diff_viewer_html"):
                             raise ValueError("設定の差分ビューアーのHTMLを指定してください。")
@@ -737,12 +773,12 @@ class Dashboard:
                         raise ValueError
                     if action.get("action") not in (
                         "stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run",
-                        "build-response",
+                        "build-response", "cancel-queued",
                     ):
                         raise ValueError
                     if action["action"] in ("prepare", "run", "open-run", "resume-run"):
                         name = action.get("run_id" if action["action"] in ("open-run", "resume-run") else "unit_id")
-                        if not config.get("units") or not isinstance(name, str) or not name.strip():
+                        if not config.get("units") or (not action.get("unit_ids") and (not isinstance(name, str) or not name.strip())):
                             raise ValueError
                     if action["action"] == "accept" and (
                         not isinstance(action.get("finding_id"), str) or len(action["finding_id"]) != 12
@@ -766,19 +802,27 @@ class Dashboard:
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
+                if manager and action["action"] not in {"stop", "junie-answer", "anchors"}:
+                    try:
+                        result = manager.submit(action, self.dashboard)
+                    except _ERRORS as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                    else:
+                        self.send_body(202, "application/json", json.dumps(result).encode())
+                    return
                 if action["action"] == "stop":
-                    if dashboard.request_stop(action):
+                    if self.dashboard.request_stop(action):
                         self.send_body(202, "application/json", b"{}")
                     else:
                         self.send_error(409)
                 elif action["action"] == "junie-answer":
-                    if dashboard.answer_junie(action):
+                    if self.dashboard.answer_junie(action):
                         self.send_body(202, "application/json", b"{}")
                     else:
                         self.send_error(409)
                 elif action["action"] == "anchors":
                     self.send_anchored_comparison(action)
-                elif dashboard.submit(action):
+                elif self.dashboard.submit(action):
                     self.send_body(202, "application/json", b"{}")
                 else:
                     self.send_error(409)
@@ -799,16 +843,19 @@ class Dashboard:
                     self.send_error(400)
                     return
                 try:
-                    with dashboard.condition:
-                        if not dashboard.state.get("ready") or action["revision"] != dashboard.revision:
+                    with self.dashboard.condition:
+                        if (manager.busy if manager else not self.dashboard.state.get("ready") or action["revision"] != self.dashboard.revision):
                             raise ValueError("実行中の処理が終わってから設定を保存してください。")
                         path = Path(config["config_path"])
-                        updated = _save_settings(path, action["content"], action["version"])
+                        updated = _save_settings(path, action["content"], action["version"],
+                                                 before_replace=manager.configure if manager else None)
                         config.pop("checker_from_cli", None)
                         config.pop("toml_checker_command", None)
                         config.update(updated)
-                        dashboard.publish({"status": "idle", "ready": True, "settings_revision": dashboard.revision + 1,
-                                           "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
+                        if manager:
+                            manager.start_pending()
+                        self.dashboard.publish({**self.dashboard.state, "ready": True, "settings_revision": self.dashboard.revision + 1,
+                                                "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
                 except _ERRORS as exc:
                     message = f"設定を保存できませんでした。内容を確認してください。\n{format_error(exc)}"
                     self.send_body(409, "text/plain; charset=utf-8", message.encode())
@@ -823,7 +870,12 @@ class Dashboard:
                     return
                 # ブラウザーを閉じても端末側は結果を保存できる。応答は要求元だけに返す。
                 reply: Future[tuple[str, str, int]] = Future()
-                if not dashboard.submit({**action, "reply": reply}):
+                try:
+                    accepted = manager.submit({**action, "reply": reply, "run_id": self.dashboard.state.get("run_id")}, self.dashboard) if manager else self.dashboard.submit({**action, "reply": reply})
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                    return
+                if not accepted:
                     self.send_body(409, "text/plain; charset=utf-8", "実行中の処理が終わってから、もう一度お試しください。".encode())
                     return
                 try:
@@ -840,6 +892,62 @@ class Dashboard:
         print(f"Progress dashboard: http://{host}{prefix}", flush=True)
         print("Press Ctrl+C in this terminal to close the dashboard.", flush=True)
         return server
+
+
+def execute_dashboard_action(view, config, action):
+    """1つのRunだけの状態・入力待ち・停止要求をワーカースレッドに結び付ける。"""
+    token = run_observer.set(view.observe)
+    result = None
+    run_id = action["run_id"]
+    try:
+        with control_scope(view.control):
+            kind = action["action"]
+            if kind == "anchors":
+                path, count = generate_anchors(config, run_id, focus=action.get("focus"))
+                if action.get("reply"):
+                    action["reply"].set_result((run_id, path.stem, count))
+                _, _, result, _ = load_saved_run(config, run_id)
+            elif kind == "prepare":
+                prepare_run(config, action["unit_id"], run_id=run_id)
+                _, _, result, _ = load_saved_run(config, run_id)
+            elif kind == "run":
+                result = run_with_junie(config, action["unit_id"], run_id=run_id)
+            elif kind == "accept":
+                review_checker(config, run_id, action["finding_id"], action["reason"])
+                _, _, result, _ = load_saved_run(config, run_id)
+            else:
+                kwargs = {}
+                if kind == "build-response":
+                    kwargs["build_response"] = action
+                if "checker_instruction" in action:
+                    kwargs["checker_instruction"] = action["checker_instruction"]
+                result = resume_with_junie(config, run_id, **kwargs)
+            view.observe(result)
+            view.ready(config, result, "判断理由を記録しました。" if kind == "accept" else "")
+    except (*_ERRORS, KeyboardInterrupt) as exc:
+        stopped = isinstance(exc, KeyboardInterrupt) or bool(view.control and view.control.cancelled.is_set())
+        try:
+            _, _, result, _ = load_saved_run(config, run_id)
+            view.observe(result)
+            view.ready(config, result)
+        except _ERRORS as load_error:
+            if isinstance(exc, RunScriptError):
+                exc.__cause__ = load_error
+            view.publish({**view.state, "status": "preparation_interrupted" if stopped else "preparation_failed"})
+        if stopped:
+            view.control = None
+            view.publish({**view.state, "ready": True, "cancellable": False, "stop_requested": False,
+                          "operation_id": None, "generating_anchors": False,
+                          "stage_timings": freeze_timings(view.state), "active_stage": None,
+                          "message": "停止しました。同じRunから再開できます。" if result else
+                          "準備を停止しました。移行単位を選んで新しく実行してください。"})
+        else:
+            view.failed(exc)
+        if action.get("reply") and not action["reply"].done():
+            action["reply"].set_exception(ValueError("処理を停止しました。" if stopped else format_error(exc)))
+    finally:
+        run_observer.reset(token)
+    return result
 
 
 def run_dashboard(
@@ -882,133 +990,35 @@ def run_dashboard(
         view.publish({"status": "idle", "ready": True})
         options += " data-workspace"
     view.publish({**view.state, "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
+    html = html.replace("./src/migration_harness/dashboard_runs.js", "dashboard_runs.js")
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
     html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>'
-    with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
-        thread = Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        token = run_observer.set(view.observe)
+    from .run_manager import RunManager
 
-        def show_failure(error: BaseException) -> dict[str, Any] | None:
-            # 最終状態の公開まで操作受付を閉じ、新しい実行の状態を上書きしない。
-            with view.condition:
-                return finish_failure(error)
-
-        def finish_failure(error: BaseException) -> dict[str, Any] | None:
-            failed = None
-            stopped = isinstance(error, RunInterrupted) or (
-                isinstance(error, RunScriptError) and bool(view.control and view.control.cancelled.is_set())
-            )
-            failed_run_id = getattr(error, "run_id", None) or view.state.get("run_id")
-            preparation_only = (view.state.get("status") in {"preparation_failed", "preparation_interrupted"}
-                                and not view.state.get("worktree_path"))
-            if failed_run_id and not preparation_only:
-                try:
-                    _, _, failed, _ = load_saved_run(config, failed_run_id)
-                    view.observe(failed)
-                    view.ready(config, failed)
-                except _ERRORS as load_error:
-                    view.failed(load_error)
-                    return None
-            elif isinstance(error, RunScriptError):
-                view.publish({"status": "script_failed"})
-            if stopped:
-                resumable = bool(failed and can_resume_run(config, failed))
-                view.control = None
-                view.publish({**view.state, "ready": True, "resumable": resumable,
-                              "cancellable": False, "stop_requested": False, "operation_id": None,
-                              "stage_timings": freeze_timings(view.state), "active_stage": None,
-                              "error_details": "", "message": (
-                                  "停止しました。同じRun IDで再開できます。" if resumable else
-                                  "準備を停止しました。実行タブから再度準備してください。"
-                              )})
-            else:
-                view.failed(error)
-            return failed
-
-        def execute(function, *args, **kwargs):
-            with control_scope(view.control):
-                try:
-                    return function(*args, **kwargs)
-                except OperationCancelled:
-                    raise RunInterrupted(view.state.get("run_id", "")) from None
-
-        try:
-            # 実行とRunの保存はHTTPスレッドの外で行う。
-            if unit_id is not None and config_error is None:
-                view.begin_operation()
-                try:
-                    result = execute(run_with_junie, config, unit_id)
-                    view.ready(config, result)
-                except RunInterrupted as exc:
-                    result = show_failure(exc)
-                except _ERRORS as exc:
-                    result = show_failure(exc)
-            else:
-                result = saved
-            while True:
-                try:
-                    action = view.actions.get(timeout=0.25)
-                except KeyboardInterrupt:
-                    return result if result is not None and view.state.get("run_id") == result.get("run_id") else None
-                except Empty:
-                    continue
-                if action["action"] == "anchors":
-                    reply = action["reply"]
+    manager = RunManager(config, view)
+    view.manager = manager
+    try:
+        if unit_id is not None and config_error is None:
+            submitted = manager.submit({"action": "run", "unit_id": unit_id})
+            run_id = submitted["run_id"]
+            manager.default = manager.get(run_id)
+        with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                manager.start_pending()
+                while True:
                     try:
-                        source_run_id = view.state["run_id"]
-                        path, count = execute(
-                            generate_anchors, config, source_run_id, focus=action.get("focus"),
-                        )
-                    except KeyboardInterrupt:
-                        reply.set_exception(ValueError("Junieのアンカー生成を中断しました。"))
-                        view.publish({**view.state, "message": "アンカー生成を停止しました。移行結果は保存されています。"})
-                    except _ERRORS as exc:
-                        view.publish({**view.state, "error_details": format_error(exc),
-                                      "message": "アンカー生成に失敗しました。\n" + format_error(exc)})
-                        reply.set_exception(exc)
-                    else:
-                        reply.set_result((source_run_id, path.stem, count))
-                    finally:
-                        view.control = None
-                        view.publish({**view.state, "ready": True, "generating_anchors": False,
-                                      "cancellable": False, "stop_requested": False, "operation_id": None})
-                    continue
-                try:
-                    if action["action"] in ("open-run", "resume-run"):
-                        _, _, result, _ = load_saved_run(config, action["run_id"])
-                        view.observe(result)
-                        if action["action"] == "resume-run":
-                            result = execute(resume_with_junie, config, action["run_id"])
-                        view.ready(config, result)
-                    elif action["action"] in ("prepare", "run"):
-                        if action["action"] == "prepare":
-                            prepared = execute(prepare_run, config, action["unit_id"])
-                            _, _, result, _ = load_saved_run(config, prepared["run_id"])
-                        else:
-                            result = execute(run_with_junie, config, action["unit_id"])
-                        view.ready(config, result)
-                    elif action["action"] == "accept":
-                        review_checker(config, view.state["run_id"], action["finding_id"], action["reason"])
-                        view.ready(config, result, "判断理由を記録しました。")
-                    elif action["action"] == "build-response":
-                        result = execute(resume_with_junie, config, view.state["run_id"], build_response=action)
-                        view.ready(config, result)
-                    else:
-                        if "checker_instruction" in action:
-                            result = execute(resume_with_junie, config, view.state["run_id"],
-                                             checker_instruction=action["checker_instruction"])
-                        else:
-                            result = execute(resume_with_junie, config, view.state["run_id"])
-                        view.ready(config, result)
-                except RunInterrupted as exc:
-                    result = show_failure(exc)
-                except _ERRORS as exc:
-                    result = show_failure(exc)
-        finally:
-            run_observer.reset(token)
-            with view.condition:
-                view.closed = True
-                view.condition.notify_all()
-            server.shutdown()
-            thread.join()
+                        action = view.actions.get(timeout=0.25)
+                    except Empty:
+                        continue
+                    manager.submit(action, view)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                manager.close()
+                server.shutdown()
+                thread.join()
+    finally:
+        manager.close()
+    return manager.results.get(run_id, saved)

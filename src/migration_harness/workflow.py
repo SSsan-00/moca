@@ -38,7 +38,7 @@ from .errors import format_error
 from .execution import check_cancelled, report_activity, run_process
 from .files import harness_asset, has_symlink_component, safe_target, sha256_file
 from .rule_materials import detail_index, render_guidelines, selected_details
-from .run_records import edit_run_record, junie_usage_recorder, load_saved_run, write_run_record
+from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, write_run_record
 from .source_context import stage_target_context
 from .timings import freeze_timings
 from .worktree_targets import apply_agent_targets, finish_pending_targets, target_hash, worktree_source_lock
@@ -114,9 +114,14 @@ def _create_worktree(
     return worktree
 
 
-def prepare_run(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+def prepare_run(config: dict[str, Any], unit_id: str, *, run_id: str | None = None) -> dict[str, Any]:
+    run_id = str(uuid.UUID(run_id)) if run_id else str(uuid.uuid4())
+    with execution_lock(config, run_id), execution_lock(config, "prepare", wait=True):
+        return _prepare_run(config, unit_id, run_id)
+
+
+def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str, Any]:
     """入力を検証し、カプセルの作成が成功してから作業ツリーを作る。"""
-    run_id = str(uuid.uuid4())
     run_path = Path(config["run_root"]) / run_id
     unit = find_unit(config, unit_id)
     run_path.mkdir(parents=True, exist_ok=False)
@@ -2208,14 +2213,17 @@ def _run_verification(
             raise RunInterrupted(record["run_id"]) from None
 
 
-def run_with_junie(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
+def run_with_junie(config: dict[str, Any], unit_id: str, *, run_id: str | None = None) -> dict[str, Any]:
     """新規Runを準備し、移行から検証まで実行する。"""
     junie_cli.require_interactive_cli()
-    result = prepare_run(config, unit_id)
-    unit = find_unit(config, unit_id)
-    record_path = Path(result["run_path"]) / "run.json"
-    record = json.loads(record_path.read_text(encoding="utf-8"))
-    return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
+    run_id = str(uuid.UUID(run_id)) if run_id else str(uuid.uuid4())
+    with execution_lock(config, run_id):
+        with execution_lock(config, "prepare", wait=True):
+            result = _prepare_run(config, unit_id, run_id)
+        unit = find_unit(config, unit_id)
+        record_path = Path(result["run_path"]) / "run.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
 
 
 def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
@@ -2534,6 +2542,15 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
 
 
 def resume_with_junie(
+    config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
+    checker_instruction: str | None = None,
+) -> dict[str, Any]:
+    run_id = str(uuid.UUID(run_id))
+    with execution_lock(config, run_id):
+        return _resume_with_junie(config, run_id, build_response=build_response, checker_instruction=checker_instruction)
+
+
+def _resume_with_junie(
     config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
     checker_instruction: str | None = None,
 ) -> dict[str, Any]:

@@ -170,8 +170,8 @@ for (const mode of ["delayed", "ready", "slow-start", "abandoned", "unsupported"
                 serving.result(timeout=5)
 
     @staticmethod
-    def ready_event(url, *, after=0):
-        request = Request(url + "events", headers={"Last-Event-ID": str(after)})
+    def ready_event(url, *, after=0, run_id=None):
+        request = Request(url + "events" + ("?run_id=" + run_id if run_id else ""), headers={"Last-Event-ID": str(after)})
         with urlopen(request, timeout=3) as response:
             for line in response:
                 if line.startswith(b"id: "):
@@ -281,9 +281,11 @@ html = "viewer.html"
 
             revision, _ = self.ready_event(url, after=revision)
             self.post(url, "control", {"action": "open-run", "run_id": run_b_id, "revision": revision}, 202)
-            revision, state = self.ready_event(url, after=revision)
+            _, unchanged = self.ready_event(url)
+            self.assertEqual(unchanged["run_id"], run_a_id)
+            revision, state = self.ready_event(url, run_id=run_b_id)
             self.assertEqual(state["run_id"], run_b_id)
-            comparison_b = self.post(url, "comparison", {}, 201)
+            comparison_b = self.post(url, "comparison", {"run_id": run_b_id}, 201)
             workspace_b = self.read_comparison(f"{url}review/{run_b_id}/{comparison_b['id']}")["workspace"]
             self.assertEqual([part["fileName"] for part in workspace_b["leftSegments"]], ["source.php"])
             self.assertEqual(workspace_b["leftText"], "<?php echo 'Updated';\n")
@@ -296,9 +298,9 @@ html = "viewer.html"
             with urlopen(url + "settings", timeout=3) as response:
                 version = json.load(response)["version"]
             self.post(url, "settings", {"content": settings, "revision": revision, "version": version}, 200)
-            _, state = self.ready_event(url, after=revision)
-            self.assertEqual(state["status"], "idle")
-            self.assertNotIn("run_id", state)
+            _, state = self.ready_event(url)
+            self.assertEqual(state["run_id"], run_a_id)
+            self.assertEqual(state["status"], "build_succeeded")
             for path, snapshot in snapshots.items():
                 self.assertEqual(self.read_comparison(path), snapshot)
 

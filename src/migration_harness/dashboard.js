@@ -61,7 +61,9 @@ const scriptStages = {
   before_prepare: 0, after_prepare: 2, before_migration: 3, after_migration: 3,
   before_build: 4, after_build: 4, before_checker: 5, after_checker: 5,
 };
-let snapshot = {status: "preparing"};
+let snapshot = {status: "idle", ready: true};
+let selectedRunId = new URLSearchParams(location.search).get("run") || "";
+const runInputDrafts = new Map();
 let migrationCompletion;
 let migrationLedgerRequest = 0;
 let dashboardRevision = 0;
@@ -290,7 +292,7 @@ function syncBuildReview(canAct) {
 async function fetchBuildReview(runId, target) {
   const query = new URLSearchParams({run_id: runId});
   if (target) query.set("target", target);
-  const response = await fetch(`build-review?${query}`, {cache: "no-store"});
+  const response = await runFetch(`build-review?${query}`, {cache: "no-store"});
   if (!response.ok) throw await responseError(response);
   return response.json();
 }
@@ -461,7 +463,7 @@ async function answerJunie(requestId, optionId) {
   junieNotice.textContent = "回答を送信しています。";
   syncActions();
   try {
-    const response = await fetch("control", {
+    const response = await runFetch("control", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({action: "junie-answer", revision: dashboardRevision,
         operation_id: snapshot.operation_id, request_id: requestId, option_id: optionId}),
@@ -504,7 +506,7 @@ function describe(state) {
 async function loadMigrationLedger() {
   const request = ++migrationLedgerRequest;
   try {
-    const response = await fetch("migration-ledger", {cache: "no-store"});
+    const response = await runFetch("migration-ledger", {cache: "no-store"});
     if (!response.ok) throw await responseError(response);
     const ledger = await response.json();
     if (request !== migrationLedgerRequest || ledger.run_id !== snapshot.run_id) return;
@@ -538,11 +540,18 @@ async function responseError(response) {
   return new Error(`HTTP ${response.status} ${response.statusText}\n${await response.text()}`);
 }
 
+function runFetch(path, options = {}) {
+  const headers = new Headers(options.headers);
+  const runId = selectedRunId || snapshot.run_id;
+  if (runId && !["workspace", "token-runs", "settings"].includes(path)) headers.set("X-Run-ID", runId);
+  return fetch(path, {...options, headers});
+}
+
 async function workspaceRequest(path, payload) {
   const message = "操作できませんでした。接続と入力内容を確認して、もう一度お試しください。";
   let response;
   try {
-    response = await fetch(path, payload === undefined ? {cache: "no-store"} : {
+    response = await runFetch(path, payload === undefined ? {cache: "no-store"} : {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
     });
   } catch (error) {
@@ -559,8 +568,12 @@ bindHarnessWorkspace({
   readSettings: () => workspaceRequest("settings"),
   previewSettings: (content, changes) => workspaceRequest("settings", {mode: "preview", content, changes}),
   saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: dashboardRevision}),
-  execute: (action, payload) => workspaceRequest("control", {action, revision: dashboardRevision, ...payload}),
-  canAct: () => connected && snapshot.ready && !submitting,
+  execute: async (action, payload) => {
+    if (action === "open-run") return connectRun(payload.run_id);
+    return workspaceRequest("control", {action, revision: dashboardRevision, ...payload});
+  },
+  canAct: () => connected && !submitting,
+  canConfigure: () => connected && !submitting && !window.harnessRuns?.busy,
 });
 const tokenRuns = bindTokenRuns(run => {
   const phases = {rule_review: "詳細ルールの事前確認", build_repair: "ビルドの自動修正", checker_repair: "チェッカーの自動修正", anchors: "アンカー生成"};
@@ -905,7 +918,7 @@ async function send(action, fields = {finding_id: findings.value, reason: note.v
   submitting = true;
   syncActions();
   try {
-    const response = await fetch(action === "build-response" ? "build-response" : "control", {
+    const response = await runFetch(action === "build-response" ? "build-response" : "control", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(action === "stop"
         ? {action, operation_id: snapshot.operation_id, revision: dashboardRevision}
@@ -1014,7 +1027,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   showComparisonStatus(progress);
   try {
     const request = withAnchors ? {action: "anchors", revision: dashboardRevision, focus} : {run_id: sourceRunId, focus};
-    const response = await fetch(withAnchors ? "control" : "comparison", request ? {
+    const response = await runFetch(withAnchors ? "control" : "comparison", request ? {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request),
     } : {method: "POST"});
     if (!response.ok) throw new Error(await response.text());
@@ -1088,18 +1101,53 @@ element("#build-review-form").addEventListener("submit", async event => {
   }
 });
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
-const stream = new EventSource("events");
-stream.onopen = () => {
-  connected = true;
-  connection.textContent = "";
-  syncActions();
-};
-stream.onerror = () => {
+let stream;
+let streamGeneration = 0;
+function connectRun(runId = "") {
+  if (window.harnessEditorCanSwitch && !window.harnessEditorCanSwitch()) {
+    return Promise.reject(new Error("編集の保存または指示の送信が終わってから実行を切り替えてください。"));
+  }
+  const generation = ++streamGeneration;
+  stream?.close();
   connected = false;
-  connection.textContent = "接続を再試行中";
+  selectedRunId = runId;
+  document.dispatchEvent(new Event("harnessrunselect"));
   syncActions();
-};
-stream.onmessage = event => {
+  const url = new URL(location.href);
+  if (runId) url.searchParams.set("run", runId); else url.searchParams.delete("run");
+  history.replaceState(null, "", url);
+  stream = new EventSource(runId ? `events?run_id=${encodeURIComponent(runId)}` : "events");
+  return new Promise((resolve, reject) => {
+    let received = false;
+    stream.onopen = () => {
+      if (generation !== streamGeneration) return;
+      connected = true;
+      connection.textContent = "";
+      syncActions();
+    };
+    stream.onerror = () => {
+      if (generation !== streamGeneration) return;
+      connected = false;
+      connection.textContent = "接続を再試行中";
+      syncActions();
+      if (!received && runId && stream.readyState === EventSource.CLOSED) {
+        connectRun("").catch(() => {});
+      }
+      if (!received) reject(new Error("実行を開けませんでした。実行一覧から選び直してください。"));
+    };
+    stream.onmessage = event => {
+      if (generation !== streamGeneration) return;
+      receiveProgress(event);
+      if (!received) {
+        received = true;
+        document.dispatchEvent(new Event("harnessrunchange"));
+        resolve();
+      }
+    };
+  });
+}
+function receiveProgress(event) {
+
   const data = JSON.parse(event.data);
   // 時間・使用量・稼働通知だけの更新は、台帳や入力中の一覧を作り直さない。
   const {token_usage: previousUsage, observed_at: previousTime, stage_timings: previousTimings,
@@ -1113,13 +1161,18 @@ stream.onmessage = event => {
     && snapshot.review?.findings.some(item => item[0] === findings.value && !item[2])
     && data.review?.findings.some(item => item[0] === findings.value && item[2]);
   if (snapshot.run_id !== data.run_id) {
+    if (snapshot.run_id) runInputDrafts.set(snapshot.run_id, {
+      checker: checkerInstruction.value, prompt: progressPrompt.input.value, reason: note.value,
+    });
+    const draft = runInputDrafts.get(data.run_id) || {};
     checkerOutputRequest++;
     checkerDetails.open = false;
-    checkerInstruction.value = "";
+    checkerInstruction.value = draft.checker || "";
+    note.value = draft.reason || "";
     dialog.close();
     promptRequest++;
     progressPrompts = undefined;
-    progressPrompt.input.value = "";
+    progressPrompt.input.value = draft.prompt || "";
     progressPrompt.dialog.close();
     showComparisonStatus();
     activity.replaceChildren();
@@ -1127,6 +1180,11 @@ stream.onmessage = event => {
     previousLog = "";
   }
   snapshot = data;
+  selectedRunId = data.run_id || "";
+  const selectedUrl = new URL(location.href);
+  if (selectedRunId) selectedUrl.searchParams.set("run", selectedRunId); else selectedUrl.searchParams.delete("run");
+  if (selectedUrl.href !== location.href) history.replaceState(null, "", selectedUrl);
+  window.harnessRuns?.setSelected(data.run_id);
   if (progressChanged) {
     migrationLedgerRequest++;
     migrationCompletion = undefined;
@@ -1146,6 +1204,7 @@ stream.onmessage = event => {
 };
 setInterval(renderElapsed, 1000);
 setInterval(refreshProgressPrompts, 1000);
-if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(1);
+if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(harnessTabs.indexOf(element("#tab-runs")));
+connectRun(selectedRunId).catch(error => { element("#workspace-run-feedback").textContent = error.message; });
 render();
 document.documentElement.dataset.liveReady = "true";

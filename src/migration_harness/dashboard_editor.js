@@ -26,6 +26,8 @@
   const cancelEdit = find("#editor-cancel-prompt");
   const promptList = find("#editor-prompts");
   const documents = new Map();
+  const runDrafts = new Map();
+  let switching = false;
   let state;
   let current;
   let language = "target";
@@ -255,7 +257,7 @@
       ? "同じ箇所が変更されました。差分を確認し、下書きに合流結果を書いて保存してから移行を再開してください。"
       : (state.source === "agent-workspace" ? "Junie の更新あり。" : "ファイルの更新あり。")
         + "編集中の下書きは保持されています。");
-    save.disabled = !state.can_save || saving || (!dirty() && !conflict);
+    save.disabled = switching || !state.can_save || saving || (!dirty() && !conflict);
     save.textContent = conflict ? "競合を解消して保存" : "保存";
     setText("#editor-save-status", state.read_error ? "ファイルを表示できません"
       : dirty() ? "未保存の変更あり"
@@ -326,7 +328,7 @@
   }
 
   function updateSendButton() {
-    sendButton.disabled = !state?.can_prompt || sending || !prompt.value.trim();
+    sendButton.disabled = switching || !state?.can_prompt || sending || !prompt.value.trim();
   }
 
   function promptMode() {
@@ -391,7 +393,7 @@
       : state.prompt_timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
       : "現在の作業区間が終わると Junie に渡します。";
     updateSendButton();
-    prompt.disabled = !state.can_prompt || sending;
+    prompt.disabled = switching || !state.can_prompt || sending;
     cancelEdit.disabled = !editPrompt || sending;
   }
 
@@ -399,13 +401,16 @@
     if (expectedRevision !== revision) return;
     const previous = state;
     if (previous?.run_id !== data.run_id) {
+      if (previous?.run_id) runDrafts.set(previous.run_id, {prompt: prompt.value, editPrompt, newPromptDraft});
+      const draft = runDrafts.get(data.run_id) || {};
       selectedTarget = undefined;
       phpSource = undefined;
       phpRequest++;
       phpEditor?.setValue("");
       language = data.targets.length ? "target" : "php";
-      editPrompt = undefined;
-      prompt.value = "";
+      editPrompt = draft.editPrompt;
+      newPromptDraft = draft.newPromptDraft || "";
+      prompt.value = draft.prompt || "";
       promptMode();
     }
     state = data;
@@ -469,7 +474,7 @@
   }
 
   async function refresh() {
-    if (tab.getAttribute("aria-selected") !== "true" || refreshing || saving || sending) return;
+    if (tab.getAttribute("aria-selected") !== "true" || refreshing || saving || sending || switching) return;
     refreshing = true;
     const version = revision;
     const target = state?.run_id === progress().run_id && selectedTarget;
@@ -526,7 +531,7 @@
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const text = prompt.value.trim();
-    if (!text || sending || !state.can_prompt) return;
+    if (!text || switching || sending || !state.can_prompt) return;
     sending = true;
     revision++;
     updateChat();
@@ -544,6 +549,9 @@
       if (!prompt.disabled) prompt.focus();
     }
   });
+  window.harnessEditorCanSwitch = () => !saving && !sending;
+  document.addEventListener("harnessrunselect", () => { switching = true; revision++; if (state) { showSaveState(); updateChat(); } });
+  document.addEventListener("harnessrunchange", () => { switching = false; revision++; refresh(); });
   setInterval(refresh, 750);
   workspaceTabs.addEventListener("harnesstab", refresh);
 })();

@@ -19,6 +19,50 @@ run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("
 
 
 @contextmanager
+def execution_lock(config: dict[str, Any], name: str, *, wait: bool = False) -> Iterator[None]:
+    """JSON更新とは別に、CLIを含む実行全体と共有入力の準備を排他する。"""
+    directory = Path(config["run_root"]) / ".execution-locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / (name + ".lock")).open("a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+            lock.seek(0)
+            if not lock.read(1):
+                lock.write(b"\0")
+                lock.flush()
+            def acquire():
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            def release():
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            def acquire():
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            def release():
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        while True:
+            try:
+                acquire()
+                break
+            except OSError as exc:
+                import errno
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                if not wait:
+                    raise RuntimeError("この実行は別の処理で使用中です。終了してから再開してください。") from None
+                from .execution import check_cancelled
+                from time import sleep
+                check_cancelled()
+                sleep(.05)
+        try:
+            yield
+        finally:
+            release()
+
+
+@contextmanager
 def lock_run_record(path: Path) -> Iterator[None]:
     """Run単位で、ダッシュボードと別CLIの読み取り・更新を直列化する。"""
     # 置き換わるJSON本体とは別のファイルをロックする。run.jsonとeditor.jsonは別々にロックする。

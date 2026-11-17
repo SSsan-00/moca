@@ -1,6 +1,7 @@
 "use strict";
 
 window.harnessEditorDemo = (() => {
+  function createRun(runId) {
   const codeBehind = "Pages/Orders/Index.cshtml.cs";
   const razorPage = "Pages/Orders/Index.cshtml";
   const phpPath = "php/orders.php";
@@ -17,7 +18,6 @@ window.harnessEditorDemo = (() => {
     "    echo format_date($order->createdAt);",
     "}",
   ].join("\n");
-  const runId = "run-2026-11-14-001";
   const oldCall = "await _orders.ListAsync();";
   const files = new Map([[codeBehind, {
     before: oldCall,
@@ -153,18 +153,31 @@ window.harnessEditorDemo = (() => {
     }
   }
 
+  return {progress, request, update(run) {
+    Object.assign(demo, {status: run.status, queued: !run.ready, can_save: !!run.worktree_path,
+      can_prompt: !!run.worktree_path && !run.queued, capsule: run.current_capsule});
+    Object.assign(progress, {status: run.status, context_capsules: run.context_capsules});
+  }};
+  }
+  const sessions = new Map();
+  let active;
+  function select(run) {
+    if (!sessions.has(run.run_id)) sessions.set(run.run_id, createRun(run.run_id));
+    active = sessions.get(run.run_id);
+    active.update(run);
+  }
+  select(window.harnessDemoSelectedRun || {run_id: "run-2026-11-14-001", status: "junie_running", worktree_path: "demo", current_capsule: 3, context_capsules: 5});
   let promptTimer;
-  function renderPrompts() {
-    promptDialog.render({timing: demo.can_prompt ? "checkpoint" : null, prompts: demo.prompts});
+  async function renderPrompts() {
+    const session = active;
+    const data = await session.request("editor");
+    if (session !== active) return;
+    promptDialog.render({timing: data.can_prompt ? (data.queued ? "checkpoint" : "resume") : null, prompts: data.prompts});
   }
   const promptDialog = bindProgressPromptDialog({
-    open() {
-      renderPrompts();
-      clearInterval(promptTimer);
-      promptTimer = setInterval(renderPrompts, 250);
-    },
+    open() { renderPrompts(); clearInterval(promptTimer); promptTimer = setInterval(renderPrompts, 250); },
     async submit(text) {
-      await request("editor", {kind: "prompt", run_id: runId, text});
+      await active.request("editor", {kind: "prompt", run_id: active.progress.run_id, text});
       promptDialog.input.value = "";
       renderPrompts();
     },
@@ -172,6 +185,5 @@ window.harnessEditorDemo = (() => {
   });
   promptDialog.button.hidden = false;
   promptDialog.dialog.addEventListener("close", () => clearInterval(promptTimer));
-
-  return {progress, request};
+  return {get progress() { return active.progress; }, request: (...args) => active.request(...args), select};
 })();
