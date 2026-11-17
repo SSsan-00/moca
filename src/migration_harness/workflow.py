@@ -165,7 +165,7 @@ def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str,
             record.update(status="preparation_interrupted", error="準備を停止しました。実行タブから再度準備してください。")
             write_run_record(record_path, record)
         raise RunInterrupted(run_id) from None
-    except (OSError, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         if not record.get("worktree_path"):
             record.update(status="preparation_failed", error=format_error(exc))
             write_run_record(record_path, record)

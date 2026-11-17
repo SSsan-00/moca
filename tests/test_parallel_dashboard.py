@@ -222,6 +222,31 @@ class ParallelDashboardTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "UUID"):
             self.manager.hide_run("../another-run")
 
+    def test_hide_after_git_worktree_creation_fails(self):
+        self.settings["base_ref"] = "missing-git-base"
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        record_path = Path(self.settings["run_root"]) / run_id / "run.json"
+        record = json.loads(record_path.read_bytes())
+        self.assertEqual(record["status"], "preparation_failed")
+        self.assertNotIn("worktree_path", record)
+        self.manager.submit({"action": "hide-run", "run_id": run_id})
+        self.assertTrue(json.loads(record_path.read_bytes())["hidden_from_dashboard"])
+
+    def test_hide_rejects_a_dangling_run_record_symlink(self):
+        (self.project / "source.php").unlink()
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        path = Path(self.settings["run_root"]) / run_id / "run.json"
+        path.unlink()
+        try:
+            path.symlink_to(path.with_name("missing.json"))
+        except (NotImplementedError, OSError):
+            self.skipTest("Creating symlinks is unavailable")
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.manager.submit({"action": "hide-run", "run_id": run_id})
+        self.assertTrue(path.is_symlink())
+
     def test_create_run_after_hiding_the_selected_cancelled_run(self):
         self.manager.limit = 0
         run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
