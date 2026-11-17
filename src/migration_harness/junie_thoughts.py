@@ -25,6 +25,7 @@ _THOUGHT_LIMIT = 32_000
 
 
 def _entry(line: bytes, token: str) -> dict | None:
+    """Junieイベントを画面表示用の思考項目へ変換する。"""
     if b"AssistantTrajectoryElement" not in line:
         return None
     text = line.decode("utf-8", errors="replace")
@@ -53,6 +54,7 @@ def _entry(line: bytes, token: str) -> dict | None:
 
 class JunieThoughts:
     def __init__(self, stderr, log_directory: Path, existing_logs: set[Path], target: Path, token: str) -> None:
+        """Junie出力の追跡位置と保存状態を初期化する。"""
         self.directory = log_directory.resolve()
         self.existing_logs = existing_logs
         self.target = target
@@ -65,6 +67,7 @@ class JunieThoughts:
 
     def _read_stderr(self, stderr) -> None:
         # Junie のラッパーと実プロセスの PID は異なる。起動したプロセス自身の出力から特定する。
+        """標準エラーから新しい進捗行を読み取る。"""
         with stderr:
             for raw in stderr:
                 line = raw.decode("utf-8", errors="replace")
@@ -82,6 +85,7 @@ class JunieThoughts:
                         sys.stderr.flush()
 
     def poll(self) -> None:
+        """新しいJunie出力を取り込んで画面状態を更新する。"""
         source = self.source
         if source is None or source.is_symlink() or not source.is_file():
             return
@@ -112,6 +116,7 @@ class JunieThoughts:
         self.discarding = False
 
     def finish(self) -> None:
+        """終了時の出力を確定して読み取り資源を閉じる。"""
         self.reader.join(timeout=1)
         while True:
             offset = self.offset
@@ -121,6 +126,7 @@ class JunieThoughts:
 
 
 def read_junie_thoughts(run_root: Path, run_id: str, cursor: int) -> dict:
+    """保存済みJunie出力を画面表示用に読み取る。"""
     path = safe_target(run_root, Path(run_id, FILENAME))
     if not path.is_file():
         return {"cursor": 0, "entries": [], "reset": bool(cursor), "more": False}

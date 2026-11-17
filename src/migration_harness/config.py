@@ -13,12 +13,14 @@ REFERENCE_ROLES = ("reference_php", "reference_csharp", "reference_razor")
 
 
 def _draft_extension(path: Path) -> str:
+    """仮移行先の種類を判定する複合拡張子を返す。"""
     if path.name.lower().endswith(".cshtml.cs"):
         return ".cshtml.cs"
     return path.suffix.lower()
 
 
 def _draft_import_commands(unit: dict[str, Any], targets: list[Path], root: Path) -> list[list[str]]:
+    """移行単位の仮成果物コピー設定をコマンドへ変換する。"""
     sources = unit.get("draft_imports", [])
     scope = f"移行単位「{unit['id']}」の仮C#取り込み"
     if not isinstance(sources, list):
@@ -311,6 +313,7 @@ def load_config(path: Path) -> dict[str, Any]:
 def _normalize_input(
     item: Any, scope: str, *, root: Path, project_rule: bool = False, project_reference: bool = False,
 ) -> dict[str, Any]:
+    """入力資料のパスと範囲を正規化する。"""
     if not isinstance(item, dict):
         raise ValueError(f"{scope}: each [[units.inputs]] entry must be a table")
     item_path = _file_path(item.get("path"), root, scope)
@@ -356,6 +359,7 @@ def _normalize_input(
 
 
 def validate_rule_usage(usage: Any, description: Any) -> None:
+    """ルールの用途と説明の設定を検証する。"""
     if not isinstance(usage, str) or usage not in {"required", "reference"}:
         raise ValueError(
             "移行ルールの読み込み方（usage）は「毎回適用する必須事項」（required）または"
@@ -374,6 +378,7 @@ def validate_checker_command(command: Any) -> None:
 
 
 def is_command(command: Any) -> bool:
+    """値が実行可能なコマンドとして設定されているか判定する。"""
     return (
         isinstance(command, list) and bool(command)
         and all(isinstance(arg, str) and "\0" not in arg for arg in command)

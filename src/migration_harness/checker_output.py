@@ -68,6 +68,7 @@ def _checker_diagnostics(log_path: Path) -> Iterator[str]:
 
 
 def _prefixed_checker_fields(diagnostic: str) -> dict[str, str] | None:
+    """指摘フィールド名にチェッカーの接頭辞を付ける。"""
     fields = {}
     current = None
     for line in diagnostic.splitlines():

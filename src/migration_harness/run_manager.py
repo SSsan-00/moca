@@ -19,6 +19,7 @@ class RunManager:
     limit = 5
 
     def __init__(self, config, default):
+        """Run一覧、キュー、ワーカー、会話管理を初期化する。"""
         self.config = config
         self.default = default
         self.condition = default.condition
@@ -52,23 +53,7 @@ class RunManager:
             owner = execution_lock(config, "dashboard")
             owner.__enter__()
         try:
-            path = Path(root) / "dashboard-queue.json" if root else None
-            saved = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
-            jobs = saved.get("jobs", [])
-            cancelled = saved.get("cancelled_conversations", {})
-            blocked = saved.get("blocked_conversations", {})
-            for run_id, message in blocked.items():
-                validate_run_id(run_id)
-                if not isinstance(message, str) or not message:
-                    raise ValueError("保存済みの停止理由が不正です。")
-            if (jobs or cancelled or blocked) and saved.get("project_root") != config.get("project_root"):
-                raise ValueError("保存済みの実行待ち一覧とプロジェクトが異なります。保存先を確認してください。")
-            for job in jobs:
-                if str(uuid.UUID(job["run_id"])) != job["run_id"]:
-                    raise ValueError("実行待ち一覧のRun IDが不正です。")
-                find_unit(config, job["unit_id"])
-                if not job.get("running") and job["action"] not in {"run", "prepare"}:
-                    load_saved_run(config, job["run_id"])
+            jobs, cancelled, blocked = self._read_saved_queue(config, root)
         except BaseException:
             if owner is not self.owner and owner:
                 owner.__exit__(None, None, None)
@@ -89,10 +74,35 @@ class RunManager:
         if not root:
             return
         self.conversations.cancelled = cancelled
+        self._restore_saved_jobs(jobs)
+
+    def _read_saved_queue(self, config, root):
+        """保存済みキューを読み、復元前にRunと設定の整合性を確認する。"""
+        path = Path(root) / "dashboard-queue.json" if root else None
+        saved = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
+        jobs = saved.get("jobs", [])
+        cancelled = saved.get("cancelled_conversations", {})
+        blocked = saved.get("blocked_conversations", {})
+        for run_id, message in blocked.items():
+            validate_run_id(run_id)
+            if not isinstance(message, str) or not message:
+                raise ValueError("保存済みの停止理由が不正です。")
+        if (jobs or cancelled or blocked) and saved.get("project_root") != config.get("project_root"):
+            raise ValueError("保存済みの実行待ち一覧とプロジェクトが異なります。保存先を確認してください。")
+        for job in jobs:
+            if str(uuid.UUID(job["run_id"])) != job["run_id"]:
+                raise ValueError("実行待ち一覧のRun IDが不正です。")
+            find_unit(config, job["unit_id"])
+            if not job.get("running") and job["action"] not in {"run", "prepare"}:
+                load_saved_run(config, job["run_id"])
+        return jobs, cancelled, blocked
+
+    def _restore_saved_jobs(self, jobs):
+        """未起動ジョブだけをFIFOへ戻し、起動済み・保留中Runは止めて表示する。"""
         for job in jobs:
             run_id = job["run_id"]
             if job.get("running"):
-                # 起動済みの工程は繰り返さない。保存されたチェックポイントから明示的に再開する。
+                # 起動済みの工程は繰り返さず、保存されたチェックポイントから明示的な再開を待つ。
                 message = self.blocked_conversations.setdefault(
                     run_id, "前回の処理の終了を確認できません。ログと残存プロセスを確認してから指示を送信し直してください。",
                 )
@@ -115,13 +125,16 @@ class RunManager:
 
     @property
     def queue_path(self):
+        """実行待ちデータの保存先を返す。"""
         return Path(self.config["run_root"]) / "dashboard-queue.json"
 
     @property
     def busy(self):
+        """実行中または待機中のRunがあるか判定する。"""
         return bool(self.jobs)
 
     def persist(self):
+        """ジョブと会話保留状態をキュー保存先へ記録する。"""
         if not self.root:
             return
         jobs = [{key: value for key, value in job.items() if key not in {"reply", "config"}}
@@ -135,6 +148,7 @@ class RunManager:
         temporary.replace(self.queue_path)
 
     def new_view(self, run_id, unit_id):
+        """新しいRunの画面状態を作成する。"""
         view = type(self.default)()
         view.condition = self.condition
         view.publish({"run_id": run_id, "unit_id": unit_id, "status": "queued", "ready": False,
@@ -144,6 +158,7 @@ class RunManager:
         return view
 
     def get(self, run_id=None):
+        """Run IDに対応する画面状態を取得または復元する。"""
         with self.condition:
             if not run_id:
                 return self.default
@@ -169,6 +184,7 @@ class RunManager:
         self.pending.append(run_id)
 
     def cancel_queued(self, view):
+        """まだ開始していないRunの操作を取り消す。"""
         run_id = view.state["run_id"]
         if run_id not in self.pending:
             raise ValueError("このRunはすでに実行されています。一覧を更新して停止してください。")
@@ -191,6 +207,7 @@ class RunManager:
         return {"run_id": run_id}
 
     def hide_run(self, run_id):
+        """Runを一覧から隠し、記録ファイルは保持する。"""
         validate_run_id(run_id)
         candidate = Path(self.config["run_root"]).resolve() / run_id
         record_path = candidate / "run.json"
@@ -209,6 +226,7 @@ class RunManager:
         return {"run_id": run_id}
 
     def submit(self, action, selected=None):
+        """HTTP操作を検証し、Runを実行待ちへ登録する。"""
         from .workflow import can_resume_run
 
         with self.condition:
@@ -264,6 +282,7 @@ class RunManager:
             return {"run_ids": ids, "run_id": ids[0]}
 
     def start_pending(self):
+        """空きワーカー枠にFIFO順で処理を割り当てる。"""
         with self.condition:
             while self.pending and len(self.workers) < self.limit and not self.closing:
                 run_id = self.pending.popleft()
@@ -279,11 +298,13 @@ class RunManager:
                 thread.start()
 
     def block_conversations(self, run_id, message):
+        """終了未確認のRunを会話処理から保留する。"""
         with self.condition:
             self.blocked_conversations[run_id] = message
             self.conversations.notify(run_id)
 
     def execute(self, run_id):
+        """割り当て済みRunのworkflowを実行して結果を反映する。"""
         from .dashboard import execute_dashboard_action
         try:
             job = self.jobs[run_id]
@@ -308,6 +329,7 @@ class RunManager:
                     self.condition.notify_all()
 
     def workspace(self, *, include_usage=False):
+        """Runの保存状態と画面操作情報をまとめて返す。"""
         with self.condition:
             units = [unit["id"] for unit in self.config.get("units", [])]
             records = Path(self.config["run_root"]).glob("*/run.json") if units else ()
@@ -340,6 +362,7 @@ class RunManager:
                     "parallel_limit": self.limit, "busy": self.busy}
 
     def row(self, view):
+        """Run一覧に表示する要約を作成する。"""
         keys = ("run_id", "unit_id", "created_at", "status", "ready", "resumable", "worktree_path", "queued",
                 "operation_id", "cancellable", "stop_requested", "context_capsules", "current_capsule", "completed_capsules",
                 "active_stage", "stage_timings", "timing_updated_at", "phase_activity", "error", "message")
@@ -351,6 +374,7 @@ class RunManager:
         return row
 
     def close(self):
+        """新しい処理を止め、ワーカーと資源を終了する。"""
         with self.condition:
             self.closing = True
             self.conversations.wake.set()

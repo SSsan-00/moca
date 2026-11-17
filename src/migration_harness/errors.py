@@ -19,10 +19,12 @@ _VALUE = re.compile(
 
 
 def _text(value: object) -> str:
+    """例外や値を安全に表示できる文字列へ変換する。"""
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
 
 
 def _sensitive(flag: str) -> bool:
+    """機密情報を含む可能性がある値か判定する。"""
     name = flag.lstrip("-").replace("-", "").replace("_", "").lower()
     return any(word in name for word in (
         "token", "password", "passwd", "passphrase", "secret", "credential",
@@ -31,6 +33,7 @@ def _sensitive(flag: str) -> bool:
 
 
 def _redact_flags(text: str, values: set[str]) -> str:
+    """コマンド引数中の機密フラグを伏せる。"""
     replacements = []
     end = 0
     for flag in _FLAG.finditer(text):
@@ -55,6 +58,7 @@ def _redact_flags(text: str, values: set[str]) -> str:
 
 
 def _command(command: Command, values: set[str]) -> str:
+    """例外情報から実行コマンドを抽出する。"""
     if isinstance(command, (str, bytes, PathLike)):
         return _redact_flags(_text(command), values)
     args = [_text(arg) for arg in command]
@@ -76,6 +80,7 @@ def _command(command: Command, values: set[str]) -> str:
 
 
 def _redact(text: str, values: set[str]) -> str:
+    """診断文字列の機密値を伏せる。"""
     _redact_flags(text, values)
     variants = set()
     for value in values - {"", _REDACTED, repr(_REDACTED)}:
@@ -111,6 +116,7 @@ def format_error(
     contexts: dict[int, list[str]] = {}
 
     def collect(error: BaseException) -> None:
+        """例外連鎖から表示する診断を集める。"""
         if id(error) in messages:
             return
         messages[id(error)] = _text(error)
@@ -145,6 +151,7 @@ def format_error(
                 collect(child)
 
     def render(error: BaseException) -> str:
+        """例外と診断を利用者向けの安全な文面にする。"""
         if id(error) in seen:
             return ""
         seen.add(id(error))

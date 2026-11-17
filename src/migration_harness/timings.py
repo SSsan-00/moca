@@ -17,6 +17,7 @@ ACTIVE_STAGES = {"junie_running": 3, "editor_followup": 3, "repairing": 3, "buil
 def update_timings(
     record: dict[str, Any], *, stage: int | None | Literal["status"] = "status", now: float | None = None,
 ) -> None:
+    """工程遷移に応じてRunの経過時間を更新する。"""
     now = time.time() if now is None else now
     if stage == "status":
         status = record.get("status")

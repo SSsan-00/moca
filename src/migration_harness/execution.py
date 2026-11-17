@@ -35,6 +35,7 @@ class ExecutionControl:
     _building: bool = False
 
     def request_build_stop(self) -> bool:
+        """現在のビルド操作に対して停止を記録する。"""
         with self._build_lock:
             if not self._building:
                 return False
@@ -47,6 +48,7 @@ _control: ContextVar[ExecutionControl | None] = ContextVar("execution_control", 
 
 @contextmanager
 def control_scope(control: ExecutionControl | None) -> Iterator[None]:
+    """現在の実行制御と操作IDをスレッド文脈へ設定する。"""
     token = _control.set(control)
     try:
         yield
@@ -55,26 +57,31 @@ def control_scope(control: ExecutionControl | None) -> Iterator[None]:
 
 
 def is_controlled() -> bool:
+    """外部コマンドがハーネスの停止制御下にあるか判定する。"""
     return _control.get() is not None
 
 
 def current_operation_id() -> str | None:
+    """現在の実行操作IDを返す。"""
     control = _control.get()
     return control.operation_id if control is not None else None
 
 
 def junie_dashboard_control() -> ExecutionControl | None:
+    """Junie呼び出し用にダッシュボードの制御状態を設定する。"""
     control = _control.get()
     return control if control is not None and control.on_junie_request is not None else None
 
 
 def check_cancelled() -> None:
+    """現在の操作に停止要求がある場合は中断する。"""
     if (control := _control.get()) is not None and control.cancelled.is_set():
         raise OperationCancelled("ダッシュボードから停止しました。")
 
 
 @contextmanager
 def build_process_scope() -> Iterator[None]:
+    """ビルド本体の開始から終了までを停止判定対象にする。"""
     control = _control.get()
     if control is None:
         yield
@@ -91,6 +98,7 @@ def build_process_scope() -> Iterator[None]:
 
 
 def report_activity(message: str, *, kind: str = "activity", detail: str = "") -> None:
+    """現在のRunの進捗と工程を通知する。"""
     if (control := _control.get()) is not None:
         entry = {"at": time.time(), "kind": kind, "message": message}
         if detail:
@@ -100,6 +108,7 @@ def report_activity(message: str, *, kind: str = "activity", detail: str = "") -
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:
     # 子プロセスがファイルを書き続けないよう、専用のプロセス群ごと止める。
+    """所有する外部プロセス群を停止して終了を確認する。"""
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
     else:
