@@ -178,6 +178,7 @@ function bindRunManager({readRuns, execute, canAct}) {
           if (run.worktree_path) button("エディタ", "open-run", "editor");
           if (!run.ready && run.cancellable) button(run.stop_requested ? "停止中" : "停止", "stop", null, true);
           if (run.ready && run.resumable) button(tone === "done" ? "再検証" : "再開", "resume-run", null, true);
+          if (run.ready) button("削除", "hide-run");
         }
         actions.append(buttons);
         row.append(name, state, current, time, actions);
@@ -203,14 +204,21 @@ function bindRunManager({readRuns, execute, canAct}) {
   }
   async function act(action, runId, tab) {
     if (pending || !canAct()) return;
+    const run = data.runs.find(item => item.run_id === runId);
+    if (action === "hide-run" && !window.confirm(
+      `${run.unit_id}\nRun ID: ${runId}\n\nこのRunを実行一覧から削除しますか？ 作業ツリーとログは保存されます。`
+    )) return;
     pending = true;
     feedback.textContent = "";
     sync();
     try {
-      const run = data.runs.find(item => item.run_id === runId);
       await execute(action, {run_id: runId, operation_id: run?.operation_id, revision: run?.revision, tab});
       if (action === "open-run") { selectedRun = runId; goTab(tab === "editor" ? "#tab-editor" : "#tab-progress"); }
       await refresh();
+      if (action === "hide-run") {
+        feedback.textContent = "実行一覧から削除しました。";
+        search.focus();
+      }
     } catch (error) { feedback.textContent = error.message; }
     finally { pending = false; sync(); }
   }

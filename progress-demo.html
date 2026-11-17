@@ -156,11 +156,12 @@
     .run-current { min-width: 110px; max-width: 260px; font-size: 13px; overflow-wrap: anywhere; }
     .run-current progress { display: block; width: 100%; max-width: 190px; height: 5px; margin-top: 8px; accent-color: var(--blue); }
     .run-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .run-actions { display: grid; grid-template-columns: repeat(3, 84px); gap: 6px; width: 264px; }
+    .run-actions { display: grid; grid-template-columns: 76px 64px 74px 44px; gap: 6px; width: 276px; }
     .run-actions .button { width: 100%; min-width: 0; min-height: 32px; height: 32px; padding: 5px 6px; font-size: 12px; }
     .run-actions [data-action="open-runprogress"] { grid-column: 1; }
     .run-actions [data-action="open-runeditor"] { grid-column: 2; }
     .run-actions .run-text-action { grid-column: 3; border-color: transparent; background: transparent; color: var(--blue); }
+    .run-actions [data-action="hide-run"] { grid-column: 4; }
     .runs-empty { padding: 24px; color: var(--muted); text-align: center; }
     .runs-footer { justify-content: space-between; flex-wrap: wrap; margin: 12px 0; font-size: 12px; }
     .workspace-tabs .run-summary { margin-left: auto; font-size: 12px; padding-inline: 0; white-space: nowrap; }
@@ -182,7 +183,7 @@
       .runs-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 12px; gap: 8px; border-bottom: 1px solid var(--line); }
       .runs-table td { display: block; padding: 0; border: 0; min-width: 0; } .runs-table td:first-child { grid-column: 1; }
       .run-current { max-width: none; } .runs-table td:last-child { grid-column: 1 / -1; width: auto; }
-      .run-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 264px); }
+      .run-actions { grid-template-columns: repeat(3, minmax(0, 1fr)) 44px; width: min(100%, 276px); }
       .runs-table-wrap { scroll-padding-block: 8px; }
       .run-id { font-size: 10px; } .run-time { text-align: right; font-size: 12px; } .run-context { gap: 6px; }
       #workspace-editor:not([hidden]) { display: block; }

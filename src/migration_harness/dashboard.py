@@ -742,6 +742,10 @@ class Dashboard:
                             raise ValueError
                         if build_response != (action.get("action") == "build-response"):
                             raise ValueError
+                        if action.get("action") == "hide-run" and (
+                            not manager or not isinstance(action.get("run_id"), str) or not action["run_id"]
+                        ):
+                            raise ValueError
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
@@ -783,7 +787,7 @@ class Dashboard:
                         raise ValueError
                     if action.get("action") not in (
                         "stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run",
-                        "build-response", "cancel-queued",
+                        "build-response", "cancel-queued", "hide-run",
                     ):
                         raise ValueError
                     if action["action"] in ("prepare", "run", "open-run", "resume-run"):

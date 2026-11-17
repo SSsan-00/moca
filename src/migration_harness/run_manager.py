@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import Thread
 
 from .config import find_unit
-from .run_records import execution_lock, load_saved_run
+from .run_records import edit_run_record, execution_lock, load_saved_run
 
 
 class RunManager:
@@ -159,6 +159,18 @@ class RunManager:
         self.persist()
         return {"run_id": run_id}
 
+    def hide_run(self, run_id):
+        record_path = Path(self.config["run_root"]) / run_id / "run.json"
+        with execution_lock(self.config, run_id):
+            if record_path.exists():
+                run_path, _, _, _ = load_saved_run(self.config, run_id)
+                with edit_run_record(run_path / "run.json") as (_, changes):
+                    changes["hidden_from_dashboard"] = True
+            else:
+                self.views.pop(run_id, None)
+                self.results.pop(run_id, None)
+        return {"run_id": run_id}
+
     def submit(self, action, selected=None):
         from .workflow import can_resume_run
 
@@ -190,6 +202,8 @@ class RunManager:
                     return self.cancel_queued(view)
                 if not run_id or run_id in self.jobs or not view.state.get("ready"):
                     raise ValueError("このRunは処理中です。終了してから操作してください。")
+                if kind == "hide-run":
+                    return self.hide_run(run_id)
                 if any(job["unit_id"] == view.state["unit_id"] for job in self.jobs.values()):
                     raise ValueError("この移行単位は別のRunで実行中または実行待ちです。終了してから再開してください。")
                 if kind == "anchors" and not view.state.get("worktree_path"):
@@ -241,11 +255,14 @@ class RunManager:
             units = [unit["id"] for unit in self.config.get("units", [])]
             records = Path(self.config["run_root"]).glob("*/run.json") if units else ()
             rows = {}
+            hidden = set()
             for path in records:
                 try:
                     _, _, record, _ = load_saved_run(self.config, path.parent.name)
                     if include_usage:
                         rows[path.parent.name] = {key: record[key] for key in ("run_id", "unit_id", "created_at", "token_usage") if key in record}
+                    elif record.get("hidden_from_dashboard") is True:
+                        hidden.add(path.parent.name)
                     else:
                         view = self.get(path.parent.name)
                         if path.parent.name not in self.jobs:
@@ -261,7 +278,7 @@ class RunManager:
                 except (OSError, ValueError, KeyError, TypeError):
                     continue
             if not include_usage:
-                rows.update((run_id, self.row(view)) for run_id, view in self.views.items())
+                rows.update((run_id, self.row(view)) for run_id, view in self.views.items() if run_id not in hidden)
             return {"units": units, "runs": sorted(rows.values(), key=lambda row: row.get("created_at", ""), reverse=True),
                     "parallel_limit": self.limit, "busy": self.busy}
 

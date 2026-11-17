@@ -17,10 +17,14 @@ const queued = data => data.runs.filter(run => run.queued).sort((a, b) => a.queu
   assert.equal(data.parallel_limit, 5);
   assert.equal(active(data).length, 5);
   assert.deepEqual(queued(data).map(run => run.run_id), ["demo-payments"]);
+  await assert.rejects(demo.execute("hide-run", {run_id: "orders"}));
+  await assert.rejects(demo.execute("hide-run", {run_id: "demo-payments"}));
   await demo.execute("run", {unit_ids: ["商品検索", "取引先一覧"]});
   const waiting = queued(await demo.read()).map(run => run.run_id);
   assert.equal(waiting.length, 3);
   await demo.execute("cancel-queued", {run_id: "demo-payments"});
+  await demo.execute("hide-run", {run_id: "demo-payments"});
+  assert(!(await demo.read()).runs.some(run => run.run_id === "demo-payments"));
   await demo.execute("stop", {run_id: "orders"});
   data = await demo.read();
   assert.equal(active(data).length, 5);

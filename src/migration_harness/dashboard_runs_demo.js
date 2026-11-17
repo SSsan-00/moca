@@ -6,6 +6,7 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
   let selected = initialId;
   let sequence = 8;
   const pending = [];
+  const hidden = new Set();
   const make = (id, unit, status, ready, tick = 0) => ({run_id: id, unit_id: unit, status, ready, tick,
     junie_model: junie().model || null, junie_effort: junie().effort || null,
     created_at: new Date().toISOString(), context_capsules: 5, current_capsule: 1, completed_capsules: 0,
@@ -59,7 +60,7 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
   }, 3000);
   return {
     read: async () => {
-      return {units: units(), runs: structuredClone(runs.map(run => ({...run, queue_position: run.queued ? pending.indexOf(run) + 1 : undefined}))),
+      return {units: units(), runs: structuredClone(runs.filter(run => !hidden.has(run.run_id)).map(run => ({...run, queue_position: run.queued ? pending.indexOf(run) + 1 : undefined}))),
         parallel_limit: limit, busy: runs.some(run => !run.ready)};
     },
     async execute(action, data) {
@@ -81,6 +82,9 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
           selected = run.run_id;
           publish();
           document.dispatchEvent(new Event("harnessrunchange"));
+        } else if (action === "hide-run") {
+          if (!run.ready || run.queued) throw new Error("このRunは処理中です。終了してから操作してください。");
+          hidden.add(run.run_id);
         } else if (action === "stop") Object.assign(run, {ready: true, status: "interrupted"});
         else if (action === "cancel-queued") {
           if (!run.queued) throw new Error("このRunはすでに実行されています。一覧を更新して停止してください。");

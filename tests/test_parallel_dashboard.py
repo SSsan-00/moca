@@ -15,6 +15,7 @@ from fixtures import HarnessCase
 from migration_harness import dashboard, junie_cli, workflow
 from migration_harness.execution import check_cancelled, report_activity
 from migration_harness.run_manager import RunManager
+from migration_harness.run_records import execution_lock, load_saved_run, write_run_record
 
 
 class ParallelDashboardTests(HarnessCase):
@@ -98,6 +99,9 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_cancel_and_duplicate_enqueue_are_atomic(self):
         ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
+        for run_id in (ids[0], ids[5]):
+            with self.assertRaisesRegex(ValueError, "処理中"):
+                self.manager.submit({"action": "hide-run", "run_id": run_id})
         with self.assertRaisesRegex(ValueError, "実行中または実行待ち"):
             self.manager.submit({"action": "run", "unit_ids": ["unit-6", "unit-0"]})
         self.assertFalse(any(job["unit_id"] == "unit-6" for job in self.manager.jobs.values()))
@@ -105,6 +109,33 @@ class ParallelDashboardTests(HarnessCase):
         self.assertEqual(self.manager.get(ids[5]).state["status"], "cancelled")
         self.assertFalse(self.started[5].is_set())
         self.assertFalse((Path(self.settings["run_root"]) / ids[5]).exists())
+        self.manager.submit({"action": "hide-run", "run_id": ids[5]})
+        self.assertNotIn(ids[5], {row["run_id"] for row in self.manager.workspace()["runs"]})
+
+    def test_remove_saved_run_from_list_without_deleting_its_files(self):
+        removed, retained = [
+            self.manager.submit({"action": "prepare", "unit_id": unit})["run_id"]
+            for unit in ("unit-0", "unit-1")
+        ]
+        self.wait_until(lambda: not self.manager.busy)
+        run_path, worktree, record, _ = load_saved_run(self.settings, removed)
+        target = worktree / "Page0.cs"
+        target.write_text("class Preserved {}\n", encoding="utf-8")
+        with execution_lock(self.settings, removed):
+            with self.assertRaisesRegex(RuntimeError, "使用中"):
+                self.manager.submit({"action": "hide-run", "run_id": removed})
+
+        self.manager.submit({"action": "hide-run", "run_id": removed})
+        self.assertEqual([row["run_id"] for row in self.manager.workspace()["runs"]], [retained])
+        self.assertEqual({row["run_id"] for row in self.manager.workspace(include_usage=True)["runs"]}, {removed, retained})
+        # 一覧から削除する前に読み込んだ進捗が保存されても、削除状態は取り消されない。
+        write_run_record(run_path / "run.json", record)
+        self.manager.close()
+        with_run = RunManager(self.settings, dashboard.Dashboard())
+        self.addCleanup(with_run.close)
+        self.assertEqual([row["run_id"] for row in with_run.workspace()["runs"]], [retained])
+        self.assertEqual(with_run.get(removed).state["status"], "prepared")
+        self.assertEqual(target.read_text(encoding="utf-8"), "class Preserved {}\n")
 
     def test_resume_cannot_duplicate_a_unit_already_running(self):
         old = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
