@@ -1,54 +1,47 @@
 # Run の状態とロック契約
 
-[SPEC](../SPEC.md) の工程順序を変更する場合は、この文書の遷移表と回帰テストの対応も更新する。対象はダッシュボードと同じ保存先を開く CLI。
+工程の順序・保存形式・通常の再開条件は [技術仕様](../SPEC.md) を参照。この文書は、ダッシュボードの会話・編集・並行処理に関わる現在の状態と、変更時に守る条件をまとめる。
 
-## 状態と保存境界
+## 保存状態と責務
 
-| 状態 | 現行の遷移・保存・復元 |
+| 領域 | 現行の責務・保存境界 |
 | --- | --- |
-| 工程・実行枠 | `run.json` の `status`、カプセル番号、処理済み数、停止時点を [workflow](../src/migration_harness/workflow.py) が更新する。準備から Junie、検証へ進み、合流・競合・操作者への質問では `editor_checkpoint` で止まり得る。`RunManager.enqueue/start_pending/execute` は `dashboard-queue.json` に FIFO と起動済み印を保存し、未開始のジョブを復元する。起動済みは繰り返さず、保存チェックポイントを表示する。`ready` は画面の操作受付可否、`queued` は枠待ち、`stop_requested` は現在の操作に対する停止要求を表す。 |
-| 編集と追加指示 | [dashboard](../src/migration_harness/dashboard.py) の `send_editor` は Run・対象・編集 ID を照合する。実行中、既存の保留あり、または基準版が異なるときは `editor.json` に基準・本文・編集 ID・`edit_revision` を保存する。待機中のファイル内容は元の版。即時保存可能なら worktree を更新してから応答する。ワーカーは境界で `_apply_editor_edits` または `_apply_verification_edits` を通し、競合を保存して停止する。反映途中の I/O エラーでは適用済み分と保留分が残り得る。Junie からの反映は `target_apply_pending` に前後のハッシュを先に書き、`finish_pending_targets` が照合して残りを回復する。追加指示は `dispatch_prompts/finish_prompts/LivePrompts` が配信・反映を追跡し、未適用分を保留へ戻す。 |
-| 会話 | [junie_conversation](../src/migration_harness/junie_conversation.py) の `submit` が `editor.json` に `received` を保存して HTTP 202 を返す。準備中の照会は専用履歴へ保存する。 `advance` は照会、`clarification`、`waiting`、`steering` へ振り分ける。照会・既存確認への回答は新規16件枠を消費しない。回答は受付時の質問 ID を照合する。検証ワーカーの `run_instruction` は開始を `running` として保存してから workflow を呼ぶ。 `finish_instruction` は結果の指示 ID を照合し、結果・対象ハッシュ・ログを保存する。`done` には照会・回答・通常のビルド失敗も含まれる。取消済みは復元せず、起動済みで結果不明は `unknown`。未確認の条件は `failed` になり、再送を案内する。 |
-| 検証・台帳 | `_run_verification` は実行するコマンドと設定上必要なチェッカーを別々に記録する。チェッカー省略のビルドも必要性を保持する。`_missing_required_checker/can_resume_run/_resume_with_junie` は設定が欠けた Run の再開を止める。`migration_ledger` の `verification_passed` は最新対象ハッシュ、構成、フック、全カプセル、ビルド成功、必要なチェッカーの成功または有効な承認を照合する。`complete` には全 PHP 範囲の理由付き確認・除外も必要。`review_migration_ranges` の確認は、照合した版が変わると台帳上で `stale` になる。 |
+| Run工程 | [workflow.py](../src/migration_harness/workflow.py) が `run.json` の準備、カプセル、ビルド、チェッカー、修正、検証記録を更新する。ダッシュボード表示用の `ready` や `queued` は工程の成否とは別。実行待ちは [RunManager](../src/migration_harness/run_manager.py) が FIFO 順に扱い、`dashboard-queue.json` に操作IDと起動済み状態を保存する。 |
+| 編集 | [dashboard.py](../src/migration_harness/dashboard.py) と [editor_queue.py](../src/migration_harness/editor_queue.py) が Run・対象・編集版を照合し、手修正と追加指示を `editor.json` に保存する。即時保存できない編集は保留され、workflow の境界で適用する。対象の版が異なる場合は上書きせず停止し、競合と編集内容を残す。Junie結果の複数ファイル反映は `target_apply_pending` のハッシュで中断後の続きと外部変更を識別する。 |
+| 会話 | [junie_conversation.py](../src/migration_harness/junie_conversation.py) が受信本文を `editor.json` に記録してからHTTP 202を返す。照会、確認への回答、ビルド後チェッカー、Junieへの追加指示を振り分ける。回答は元の質問ID、検証依頼は対象版と先行ビルドの操作IDに結び付ける。実行開始は `running`、結果は指示ID・対象ハッシュ・ログとともに保存する。 |
+| 検証・完了 | workflow がビルドと必要なチェッカーを別々に記録する。 [migration_ledger](../src/migration_harness/workflow.py) は対象ハッシュ、構成、フック、カプセル、検証結果と理由付きの範囲レビューを照合する。検証成功だけでは移行完了にならず、全範囲の確認または理由付き除外が必要。 |
 
-### 競合する操作の順序
+待機ジョブは再起動時に未起動分だけ復元する。起動済みジョブは再実行せず、保存されたRunから利用者が再開する。実行中にJunieの終了を確認できなかった場合、同じRunの会話依頼を保留し、`blocked_conversations` に理由を保存する。保留依頼の失敗記録を書けない間もメモリ上の保留を解除せず、保存を再試行する。保留理由または起動済み印が残っていれば再起動後もそのRunを止める。両方の永続記録が失われた場合の再起動後の保証はないため、残存プロセスと記録を確認してから新しい依頼を送る。別Runは個別の保存が可能なら継続する。
 
-- **条件付き依頼** — 枠待ちの時点で RunManager のジョブに操作 ID を採番・保存する。会話は現在のジョブからその ID を採取し、実行枠に入ると同じ ID を `ExecutionControl` に渡す。 `_build_worktree` の通常終了記録が ID と非負の終了コードで一致して初めて待機条件を満たす。通常の終了コード 1 も条件を満たし、後続版自身が成功してからその版のチェッカーへ進む。取消・ビルド本体の停止・`before_build` 中の停止・対応 ID を保存していない旧形式には、その操作の通常終了記録がない。復元時も過去の成功を流用しない。
-- **停止と再開** — `Dashboard.request_stop` は表示版の更新をまたいでも操作 ID を照合する。会話による停止付き再ビルドは `ExecutionControl.request_build_stop` と `build_process_scope` がビルド本体の有効区間を共有する。自然終了が先なら後続は待機する。Junie は `_run_session` が同じ呼び出しのプロセス群を終了確認してから成果物の採用と次工程を許す。終了未確認は `JunieStopError` を通知し、その呼び出しの通常通信再試行や修正下書きの引継ぎを中止する。ダッシュボードでは同じ Run でその時点までに受け付けた実行待ちの依頼も失敗として記録する。診断保存などで別の例外が連鎖してもこの扱いを維持する。再開操作の前に残存プロセスの終了を利用者が確認する。
+## 重要な順序と不変条件
 
-### 停止未確認時の保存障害
+- 条件付きチェッカー依頼は、受付時点でRunManagerのジョブに保存された先行ビルド操作IDを使う。後から「現在のビルド」を推測しない。通常の終了コード0以外も先行ビルドの終了として識別するが、キャンセル、ビルド本体の停止、`before_build` での停止は条件を満たさない。依頼時に対象とした版を検証する。
+- 取消・再起動をまたいで、別の操作IDや過去の成功結果を流用しない。対応付けを復元できない旧形式依頼は安全側に失敗させる。状態照会は工程を再実行しない。
+- Junieの終了未確認は例外の `__cause__` / `__context__` に別の後始末エラーがあっても上位へ伝える。ビルド修正・チェッカー修正のどちらでも、終了未確認後に結果採用、後続工程、通常の自動再試行へ進まない。
+- 終了未確認後の保留はRun単位にする。履歴保存が失敗している間は同じRunの依頼を起動せず、回復時もまず失敗記録を保存してから保留を解除する。別Runの処理は不必要に止めない。
+- 完了判定は対象版と必要な検証の記録に加え、すべてのPHP範囲に有効な確認または理由付き除外があることを要求する。移行先版が変わったレビューは再確認が必要。
 
-- ビルド修正・チェッカー修正の後始末で記録の I/O エラーが重なった場合も、例外連鎖の `JunieStopError` を上位に伝える。診断には両方の例外を残す。
-- ダッシュボードは終了未確認の Run をメモリで直ちに保留し、同じ Run の実行待ちを失敗として保存する。保存障害中は待機指示を実行せず、保存エラーを表示する。`dashboard-queue.json` の `blocked_conversations` から再起動後も保留を復元する。実行開始時の記録を最後にキューを更新できなかった場合は、残っている起動済み印からその Run の待機指示を保守的に処理する。他の Run は、それぞれに必要な保存が可能なら通常どおり進む。
-- 待機履歴を保存してから保留を解除する。古い依頼は自動実行せず、残存プロセスを確認したうえで明示的に指示を送り直す。保留情報も起動済み印も復元できない保存先では、以前の停止を証明できない。キューの破損や記録消失時は、手動で残存プロセスと保存先を確認する。
+## ロック範囲
 
-## ロックの保護範囲とネスト
-
-| 保護 | 実際の取得・解放と代表経路 |
+| ロック | 保護範囲と注意点 |
 | --- | --- |
-| [`execution_lock`](../src/migration_harness/run_records.py) | 同じ `run_root` の別 CLI にも有効な OS ファイルロック。`resume_with_junie` と指摘を承認する `review_checker` は Run 単位で取得し、工程または承認が終わるまで保持する。新規・準備は Run → 同じ保存先の共有 `prepare` の順で取得し、共有入力の準備後に `prepare` を解放する。Run と `dashboard` 所有は競合時に即時拒否。 `prepare` は短い再試行間隔で取消確認を行う。`RunManager.configure/close` は `dashboard` 所有を設定の切替またはワーカー終了まで保持する。 |
-| `run.lock` / `editor.lock` | `lock_run_record` は JSON と別のロックファイルを使用。 `write_run_record/edit_run_record` と [`editor_queue`](../src/migration_harness/editor_queue.py) が担当ファイルの読取・変更・一時ファイル置換を保護する。POSIX は `flock` の待機、Windows は `msvcrt.locking` のバイト範囲ロックと OS エラー・再試行の挙動に従う。Windows で JSON の置換を既存の読取が一時的に妨げる場合は、書込ロックを保持したまま置換を短時間だけ再試行する。工程保存はレビューや使用量を最新記録から引き継ぎ、**run.lock 解放後**に observer から `Dashboard.observe/publish` の condition に入る。台帳の PHP 範囲レビューは Run 実行ロックを取らず、 `edit_run_record` 内で工程を再確認する。 `load_saved_run` の独立した読取は置換済みの JSON を読む。 |
-| `RunManager.condition` | 1 ダッシュボード内の全 Run で共有する再入可能な `Condition`。view、ジョブ、枠、操作 ID、画面イベントを保護する。会話の通常受付とディスパッチは editor.lock → condition と進み、 `advance` から `enqueue/persist/start_pending` を呼ぶ。新規スレッドは condition 内で起動してもそこで join しない。準備中照会の専用履歴は condition → 専用履歴ロックで、通常の editor.lock とは別。 `hide_run` は condition から非待機で Run 実行ロックを試す。 |
-| [`worktree_source_lock`](../src/migration_harness/worktree_targets.py) | 同一プロセスで全 Run に共通の `RLock`。HTTP 編集保存は editor.lock → worktree → condition と取り、直前の状態を再確認する。`save_target_edit` は worktree ロックを再入取得する。会話ワーカーのファイル適用は editor.lock → worktree、Junie 結果反映は worktree → run.lock の保存後に observer → condition と進み得る。別 CLI や直接編集にはこのメモリロックは効かないため、保存した版と現物を照合する。 |
-| [ビルド停止用ロック](../src/migration_harness/execution.py) | `ExecutionControl` ごとの `Lock`。会話側は condition 内で `request_build_stop` を呼ぶ。ワーカーは `build_process_scope` の入口と出口でビルド本体のフラグ・取消を照合する。ロック内で外部コマンド終了・observer・操作者の入力を待たない。 |
+| `execution_lock` ([run_records.py](../src/migration_harness/run_records.py)) | OSファイルロック。同じRunの再開・レビューの競合を防ぐ。準備はRunロックの後に共有 `prepare` ロックを取り、共有入力の固定後に解放する。RunManagerの `dashboard` 所有ロックは同じ保存先のダッシュボードを1プロセスに制限する。 |
+| `run.lock` / `editor.lock` | JSON本体とは別のファイルをロックし、読取・変更・置換を直列化する。Run observerへの通知は `run.lock` の解放後。WindowsのJSON置換は共有違反に対して短い上限付き再試行を行う。 |
+| `RunManager.condition` | 1ダッシュボード内のRun一覧、ジョブ、操作ID、会話スレッドと画面イベントを守る。待機依頼の保存・登録は会話履歴ロックからconditionへ進む。conditionを保持したまま外部コマンドやスレッド終了を待たない。 |
+| `worktree_source_lock` ([worktree_targets.py](../src/migration_harness/worktree_targets.py)) | 同一プロセス内で編集・反映を直列化する再入可能ロック。別プロセスには効かないため、保存版と現物のハッシュを照合する。 |
+| ビルド停止ロック ([execution.py](../src/migration_harness/execution.py)) | 個々の `ExecutionControl` で停止要求とビルド本体の有効期間を同期する。ロック中に外部コマンドや操作者の応答を待たない。 |
 
-SSE の `Condition.wait_for` は待機中に condition を解放し、復帰時に再取得する。Junie の承認は `Future` の完了を確認してから結果を読み、信頼確認の待機は取消を定期確認する。アンカー生成の HTTP 側 `Future.result()` と、 `RunManager.close` のワーカー・ディスパッチャへの join は condition の外。回答確定と枠待ちアンカーの取消では条件内で `Future` を決着させるため、同期 callback から別のロックを取る変更は再検討が必要。工程の実行ロックは外部コマンドや操作者の応答を待つ間も保持する。
+JSON用ロックと工程ロックは別物。ファイルのロック順やconditionを保持する範囲を変える場合は、CLI・HTTP・ワーカー・再起動の各経路でデッドロックと更新消失を再評価する。
 
-## 不変条件と横断回帰（#37）
+## 回帰テストとの対応
 
-「会話」は [test_junie_conversation.py](../tests/test_junie_conversation.py) を指す。着手時の main `c017acb` に #31（`477b5ec`, `1ac2c97`）、#32（`78bf039`, `da8d56d`, `170a50a`）、#33（`4addbe1`）の変更が含まれる。#34 の実行枠待ちと #35 の親先行終了は、同じ main で再現した残存経路。
+| 条件 | 主な既存テスト |
+| --- | --- |
+| 照会と受付済み版、先行ビルドの識別 | [test_junie_conversation.py](../tests/test_junie_conversation.py): `test_verification_status_questions_only_read_saved_information`、`test_conditional_checker_waits_for_build_and_verifies_saved_edit`、`test_conditional_checker_binds_to_build_waiting_for_a_real_worker_slot`、`test_queued_predecessor_identity_survives_restart_or_fails_on_cancellation` |
+| 回答・取消・再読込と検証要件 | [test_junie_conversation.py](../tests/test_junie_conversation.py): `test_full_conversation_allows_status_and_existing_answer`、`test_full_conversation_runs_checker_once_after_reload_and_answer`、`test_full_conversation_allows_cancellation_and_frees_one_slot`、`test_interrupted_followup_keeps_required_checker_across_restart` |
+| 停止・通常失敗・保存障害の分離 | [test_junie_conversation.py](../tests/test_junie_conversation.py): `test_wrapped_unconfirmed_stop_blocks_build_repair_followup`、`test_wrapped_unconfirmed_stop_blocks_checker_repair_followup`、`test_ordinary_repair_cleanup_failure_allows_waiting_build`、`test_stop_fence_retries_failed_editor_write_and_keeps_other_run_available`、`test_stop_fence_survives_restart_from_saved_block`、`test_stop_fence_survives_restart_from_running_job_when_queue_write_also_fails` |
+| 実子プロセスの終了確認 | [test_junie_process.py](../tests/test_junie_process.py): `test_natural_launcher_exit_confirms_no_late_writes_and_preserves_an_unrelated_process`、`test_launcher_exit_without_waitid_preserves_group_ownership`、`test_unconfirmed_exit_blocks_result_adoption_and_retry`、`test_windows_batch_launcher_owns_descendants_after_it_exits` |
+| 並行Runと同時編集 | [test_parallel_dashboard.py](../tests/test_parallel_dashboard.py): `test_five_workers_queue_stop_isolation_and_resume`、`test_same_target_runs_keep_editor_files_php_and_prompts_separate`。 [test_junie_conversation.py](../tests/test_junie_conversation.py): `test_razor_pair_verifies_both_saved_targets_while_another_run_builds` |
+| 台帳とレビューの版照合 | [test_migration_ledger.py](../tests/test_migration_ledger.py): `test_keeps_review_reason_and_flags_stale_after_edit`、`test_anchor_usage_keeps_reviews_written_by_another_cli`、`test_completion_requires_verification_record_but_no_worktree_fingerprint` |
 
-| 守る条件・シナリオ | 既存の根拠 | 今回確認する不足分 |
-| --- | --- | --- |
-| 読取専用照会・受付した版と結果の対応（T1） | 会話 `test_receipt_precedes_interpretation_and_query_does_not_stop_a_build`、`test_verification_status_questions_only_read_saved_information`、`test_stopping_before_build_does_not_use_the_preceding_operations_exit_code` | 会話 `test_conditional_checker_waits_for_build_and_verifies_saved_edit` に再送、再読込、チェッカー中の未検証、版ごとのハッシュ、最終レビュー後の完了を追加。 `test_conditional_checker_binds_to_build_waiting_for_a_real_worker_slot` と `test_queued_predecessor_identity_survives_restart_or_fails_on_cancellation` で枠待ちからの照合を検証。 |
-| 16件上限、確認への回答・取消、再送（T2） | 会話 `test_an_answer_cannot_be_applied_to_a_replacement_question`、`test_conversation_and_confirmation_are_isolated_between_runs` | `test_full_conversation_allows_status_and_existing_answer` と `test_full_conversation_allows_cancellation_and_frees_one_slot` に再読込を追加。 `test_full_conversation_runs_checker_once_after_reload_and_answer` がチェッカー回答、呼出し回数、残る15件を確認。 |
-| 検証要件の保持（T3） | 会話 `test_build_only_does_not_restore_a_null_cli_checker`、`test_restarted_conversation_cannot_drop_the_cli_checker_requirement`、`test_interrupted_followup_keeps_required_checker_across_restart`、`test_interrupted_followup_can_resume_when_no_checker_was_configured` | 既存テストが TOML 既定値上書き、CLI のみ、チェッカー不要、通常再開と会話再実行をカバーするため再利用。台帳の版失効と独立更新は [test_migration_ledger.py](../tests/test_migration_ledger.py) の `test_keeps_review_reason_and_flags_stale_after_edit` と `test_anchor_usage_keeps_reviews_written_by_another_cli`。 |
-| 停止・自然終了・再送・復元（T4） | 会話 `test_stop_and_rebuild_uses_saved_edit_once`、`test_restart_recovers_unexecuted_but_never_restarts_started_instructions`、`test_cancelling_queued_verification_cannot_enqueue_it_again`、[test_execution_control.py](../tests/test_execution_control.py) の `test_stop_is_bound_to_operation_even_after_activity_revision_changes` | `test_stop_after_natural_build_exit_waits_without_cancelling_checker` に待機時と再起動後の同一 ID 再送を追加し、実行中に停止できた場合も再起動後に同じハッシュを取得する。停止競合の合図は実フック処理に入る直前を同期し、実停止判定と workflow はそのまま使用。チェッカー直前の記録置換に Windows の一時的な共有違反を注入し、実行順序を維持することも検証。 |
-| 保存版の競合と Run 分離（T5） | 会話 `test_newer_saved_edit_invalidates_a_waiting_rebuild`、`test_conflicting_saved_edit_is_preserved_and_does_not_build`、[test_dashboard_editor.py](../tests/test_dashboard_editor.py) の `test_operation_starting_during_save_keeps_the_edit_without_changing_running_inputs`、`test_razor_pair_saves_both_targets_at_the_checkpoint`、[test_parallel_dashboard.py](../tests/test_parallel_dashboard.py) の `test_same_target_runs_keep_editor_files_php_and_prompts_separate` | `test_razor_pair_verifies_both_saved_targets_while_another_run_builds` で2ファイルの保存、古い依頼の拒否、最新2ファイルのビルドとチェッカー、並行 Run の継続および再読込後の台帳を確認。 |
-| 終了確認（#35） | [test_junie_activity.py](../tests/test_junie_activity.py) の `test_real_posix_launcher_and_child_stop_on_dashboard_cancellation`、[test_junie_dashboard_acp.py](../tests/test_junie_dashboard_acp.py) の `test_permission_choices_are_bound_to_the_current_request_and_returned_to_junie` | [test_junie_process.py](../tests/test_junie_process.py) の `test_natural_launcher_exit_confirms_no_late_writes_and_preserves_an_unrelated_process`、`test_cancel_when_launcher_exits_still_confirms_child_exit`、`test_unconfirmed_exit_blocks_result_adoption_and_retry`、`test_connection_retry_starts_only_after_the_previous_child_exits`。端末入力と Ctrl+C は `test_terminal_input_ctrl_c_and_foreground_restoration`、Windows バッチ継承は `test_windows_batch_launcher_owns_descendants_after_it_exits`。会話の `test_unconfirmed_junie_stop_does_not_continue_with_a_waiting_build` が修正結果の未採用と待機ジョブの中止を確認し、`test_unconfirmed_junie_stop_blocks_waiting_build_even_when_saving_diagnostics_fails` が診断保存に失敗した場合も検証。 |
-
-横断テストでは実 HTTP、RunManager、保存・再読込、workflow と台帳を通す。.NET とチェッカーの外部コマンドだけを同期・版検査付きの成功／失敗結果に置き換え、T3 の中断と完了には Junie の呼出し境界で停止または完了トークンを返す。#35 は実 Python 親子と ACP 代替プロセスを使う。
-
-## 保証の範囲
-
-通常の子は POSIX の専用プロセスグループ、Windows の呼び出し専用 Job Object を継承する。POSIX はリーダーを未回収のまま同じグループの終了を確認する。Python の `os.waitid` が使えない macOS 上の Python 3.11／3.12 では `ps` のゾンビ状態でリーダーの終了を観測する。対話時は前景端末を子グループに渡し、終了時に戻す。Windows はランチャーが動く前に Job へ所属させ、常駐メンバーがゼロになるまで確認する。独立したセッションやグループへの離脱、OS 全体の封じ込め、対話端末の Ctrl+Z によるジョブ制御は保証範囲外。会話のクラッシュをまたぐ完全な一度限りの実行や、worktree 全体のスナップショット分離も保証しない。別 OS の実行結果とスキップは、検証したコミットごとに報告する。
+横断ケースはHTTP受付・RunManager・保存と再読込・workflowを通す。Junieや.NETの実サービスは置換する統合テストがあるため、実環境の検証結果とは区別する。Windows Job Object、macOSの `waitid` 不在時の `/bin/ps` 観測などOS固有の保証は、実行したOSとPython版の結果に限る。

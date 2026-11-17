@@ -63,6 +63,7 @@ class RunInterrupted(KeyboardInterrupt):
 
 class RunScriptError(RuntimeError):
     def __init__(self, message: str, run_id: str | None) -> None:
+        """工程スクリプトの失敗情報を保持する。"""
         super().__init__(message)
         self.run_id = run_id
 
@@ -125,6 +126,7 @@ def _create_worktree(
 
 
 def prepare_run(config: dict[str, Any], unit_id: str, *, run_id: str | None = None) -> dict[str, Any]:
+    """新しいRunの入力と作業ツリーを準備する。"""
     run_id = str(uuid.UUID(run_id)) if run_id else str(uuid.uuid4())
     with execution_lock(config, run_id), execution_lock(config, "prepare", wait=True):
         return _prepare_run(config, unit_id, run_id)
@@ -188,6 +190,7 @@ def _run_script_phase(
     record: dict[str, Any] | None = None, *, once: bool = False,
     extra_commands: tuple[list[str], ...] = (),
 ) -> None:
+    """工程スクリプトを順に実行し成功分を記録する。"""
     commands = [*config.get("scripts", {}).get(phase, []), *extra_commands]
     if not commands or (record is not None and once and phase in record.get("completed_script_phases", [])):
         return
@@ -424,6 +427,7 @@ _EXACT_SOURCE_DATA = (
 
 
 def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> str:
+    """Razorページの複数ファイル構成に沿った指示を作る。"""
     if not any(path.suffix.lower() == ".cshtml" for path in targets):
         return ""
     route = (
@@ -450,6 +454,7 @@ def _review_detail_applicability(
     run_path: Path, capsule: Path, manifest: dict[str, Any], targets: tuple[Path, ...],
     record: dict[str, Any], max_steps: int | None, *, model: str | None = None, effort: str | None = None,
 ) -> frozenset[str] | None:
+    """詳細ルールの適用可否をJunieに判定させる。"""
     index = detail_index(manifest)
     if not index:
         return None
@@ -546,6 +551,7 @@ def _review_detail_applicability(
 
         def save_decisions(answer: str) -> None:
             # 原文と詳細索引の全文を渡した場合は、最終回答を照合してハーネス側で完了記録を作る。
+            """判定結果を検証してRun記録へ保存する。"""
             lines = answer.strip().splitlines()
             if len(lines) >= 2 and lines[0] in {"```", "```json"} and lines[-1] == "```":
                 answer = "\n".join(lines[1:-1])
@@ -649,6 +655,7 @@ def _apply_editor_edits(
 
 def _stage_operator_prompts(agent_root: Path, token: str, instruction: str) -> str:
     # 指示をファイルに置き、Windows のコマンドライン長制限を避ける。
+    """Runに保存された利用者指示を作業資料へ配置する。"""
     path = agent_root / f"checker-findings-{token}-operator.txt"
     with path.open("x", encoding="utf-8", newline="") as stream:
         stream.write(instruction + "\n")
@@ -659,6 +666,7 @@ def _operator_edit_context(
     run_path: Path, agent_root: Path, token: str, inputs: list[Path], question: str | None,
 ) -> tuple[str, Path | None]:
 
+    """保留編集をJunieへ渡す差分コンテキストを作る。"""
     with editor_queue(run_path) as queue:
         edits = queue.get("operator_edits", {})
     if not edits:
@@ -701,6 +709,7 @@ def _read_operator_review(
     report: Path | None, agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any],
     *, completed: bool,
 ) -> str | None:
+    """Junieの確認質問と編集結果を読み取る。"""
     if report is None:
         return None
     path = safe_target(agent_root, report)
@@ -1222,11 +1231,13 @@ class CheckerRepairBlocked(ValueError):
     """画面で案内する理由と、診断用の原文を保持する。"""
 
     def __init__(self, reason: str, message: str) -> None:
+        """自動修正を止めた理由を保持する。"""
         super().__init__(message)
         self.reason = reason
 
 
 def _checker_repair_reason(error: BaseException) -> str:
+    """チェッカー修正を止める条件を判定して理由を返す。"""
     if isinstance(error, CheckerRepairBlocked):
         return error.reason
     if isinstance(error, (junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieConnectionError)):
@@ -1552,6 +1563,7 @@ def _repair_target(
 
 
 def _verification_scripts(config: dict[str, Any], checker_command: list[str] | None) -> dict[str, Any]:
+    """現在の検証設定に対応する工程スクリプトを返す。"""
     phases = ("before_build", "after_build")
     if checker_command is not None:
         phases += ("before_checker", "after_checker")
@@ -1569,6 +1581,7 @@ _RAZOR_GENERATOR = "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerato
 
 def _razor_generated_path(page: Path) -> Path:
     # Razorの命名規則に合わせ、区切りを保ち、BMP外の文字はUTF-16の2単位分に置換する。
+    """Razor生成コードの診断から編集対象ページを特定する。"""
     name = "".join(
         char if char == "/" or (ord(char) <= 0xFFFF and (char.isalpha() or char.isdecimal()))
         else "__" if ord(char) > 0xFFFF else "_"
@@ -1578,6 +1591,7 @@ def _razor_generated_path(page: Path) -> Path:
 
 
 def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
+    """ビルド・チェッカー診断を人が確認しやすいログへ整える。"""
     log = safe_target(run_path, Path(name))
     if not log.is_file():
         return "", False
@@ -1592,6 +1606,7 @@ def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
 
 
 def _remember_diagnostic(run_path: Path, record: dict[str, Any], kind: str) -> None:
+    """修正履歴に診断の指紋と対象版を記録する。"""
     code = record.get(f"{kind}_exit_code")
     if code is None:
         return
@@ -1641,6 +1656,7 @@ def build_failure_review(config: dict[str, Any], run_id: str, target: str | None
 
 
 def _build_error_lines(log: str) -> list[str]:
+    """ビルド出力から修正可能な診断行を抽出する。"""
     lines = (line.strip() for line in log.splitlines())
     return list(dict.fromkeys(line for line in lines if _BUILD_ERROR.search(line)))
 
@@ -1649,6 +1665,7 @@ def _respond_to_build_failure(
     config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path,
     record: dict[str, Any], response: dict[str, Any],
 ) -> None:
+    """ビルド失敗を保存し修正または停止を決める。"""
     record_path = run_path / "run.json"
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
     check_cancelled()
@@ -1680,6 +1697,7 @@ def _respond_to_build_failure(
 
 
 def _repair_from_checker_instruction(config, targets, worktree, run_path, record, instruction):
+    """保存済み指摘をJunieへ渡して修正する。"""
     record_path = run_path / "run.json"
     status = record["status"]
     output, truncated = _review_log(run_path, "checker.log")
@@ -1704,6 +1722,7 @@ def _repair_from_checker_instruction(config, targets, worktree, run_path, record
 
 
 def _apply_verification_edits(run_path, worktree, unit, request):
+    """検証依頼に含まれる編集を対象版と照合して反映する。"""
     from .junie_conversation import saved_edits, target_versions
 
     targets = target_paths(unit)
@@ -1836,6 +1855,7 @@ def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
     *, request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """移行先と検証設定が記録済み版と一致するか確認する。"""
     record_path = Path(result["run_path"]) / "run.json"
     try:
         return _run_verification(config, unit, result, record, request=request)
@@ -1865,6 +1885,7 @@ def _run_verification(
     expected_targets = request.get("build_targets") if request else None
 
     def save_verification() -> None:
+        """検証結果と対象版をRun記録へ保存する。"""
         record["verification"]["scripts_passed"] = True
         write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
@@ -2278,6 +2299,7 @@ def review_checker(
 def _review_checker(
     config: dict[str, Any], run_id: str, finding_id: str | None, reason: str | None,
 ) -> dict[str, Any]:
+    """チェッカー指摘の承認内容を保存する。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     allowed_status = {"checker_needs_review"} if finding_id is not None else {"checker_needs_review", "checker_accepted"}
     if (record.get("status") not in allowed_status or record.get("checker_exit_code") is None
@@ -2334,6 +2356,7 @@ _SCRIPT_RESUME_STATUSES = {"script_running", "script_failed"}
 
 
 def _missing_required_checker(config: dict[str, Any], unit: dict[str, Any], record: dict[str, Any]) -> bool:
+    """再開に必要なチェッカー設定が不足しているか判定する。"""
     verification = record.get("verification") or {}
     # 旧形式でCLI由来のnullはコマンドを復元できないが、CLI指定があったことは分かる。
     required = (
@@ -2345,6 +2368,7 @@ def _missing_required_checker(config: dict[str, Any], unit: dict[str, Any], reco
 
 
 def _require_saved_checker(config: dict[str, Any], unit: dict[str, Any], record: dict[str, Any]) -> None:
+    """Runに保存されたチェッカー条件を再開前に確認する。"""
     if _missing_required_checker(config, unit, record):
         raise ValueError("この Run に必要なチェッカーを設定するか、--checker-command で再指定してください。")
 
@@ -2364,6 +2388,7 @@ def resume_with_junie(
     config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
     checker_instruction: str | None = None, verification_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """既存Runの整合性を検証して保存地点から再開する。"""
     run_id = str(uuid.UUID(run_id))
     with execution_lock(config, run_id):
         return _resume_with_junie(config, run_id, build_response=build_response, checker_instruction=checker_instruction,

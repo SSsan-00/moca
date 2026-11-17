@@ -62,6 +62,7 @@ _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, Type
 
 
 def _prompt_timing(config, state, run_path, record, *, live: bool = False, pending_edits: bool = False) -> str | None:
+    """保留中の指示に適用する送信タイミングを選ぶ。"""
     if state.get("stop_requested") or state.get("generating_anchors"):
         return None
     phase = record["status"]
@@ -82,6 +83,7 @@ def _prompt_timing(config, state, run_path, record, *, live: bool = False, pendi
 
 
 def _read_settings(path: Path) -> tuple[bytes, str]:
+    """設定ファイルの内容と版を読み取る。"""
     if not path.exists():
         return harness_asset("harness.example.toml").read_bytes(), "missing"
     data = path.read_bytes()
@@ -90,6 +92,7 @@ def _read_settings(path: Path) -> tuple[bytes, str]:
 
 def _save_settings(path: Path, content: str, version: str, *, before_replace=None) -> dict[str, Any]:
     # 設定ファイルと同じディレクトリで検証し、相対パスの基準を保つ。
+    """検証済み設定を版を照合して保存する。"""
     with NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", newline="", delete=False) as stream:
         candidate = Path(stream.name)
     try:
@@ -136,6 +139,7 @@ class Dashboard:
                           "operation_id": self.control.operation_id, "stop_requested": False})
 
     def activity(self, entry: dict[str, Any]) -> None:
+        """Runの状態と操作可能範囲を画面表示へ反映する。"""
         with self.condition:
             if not self.control or self.state.get("ready"):
                 return
@@ -152,6 +156,7 @@ class Dashboard:
             self.publish(state)
 
     def show_junie_request(self, request: dict | None) -> Future[str] | None:
+        """Junieの確認依頼をRunの画面状態へ表示する。"""
         with self.condition:
             state = self.state.copy()
             state.pop("junie_request", None)
@@ -163,6 +168,7 @@ class Dashboard:
             return self.junie_reply
 
     def answer_junie(self, action: dict) -> bool:
+        """表示中のJunie確認へ利用者の選択を返す。"""
         with self.condition:
             request = self.state.get("junie_request")
             option = action.get("option_id")
@@ -176,6 +182,7 @@ class Dashboard:
             return True
 
     def request_stop(self, action: dict[str, Any]) -> bool:
+        """表示中の操作IDに結び付けて停止を要求する。"""
         with self.condition:
             if (self.control is None or self.state.get("ready")
                     or action.get("operation_id") != self.state.get("operation_id")):
@@ -288,6 +295,7 @@ class Dashboard:
             """ダッシュボード専用のパスとオリジンでHTTPの受付範囲を絞る。"""
 
             def bind_view(self) -> bool:
+                """HTTP要求から対象Runの画面状態を取得する。"""
                 try:
                     requested = self.headers.get("X-Run-ID") or parse_qs(urlsplit(self.path).query).get("run_id", [None])[0]
                     self.dashboard = manager.get(requested) if manager else dashboard
@@ -391,6 +399,7 @@ class Dashboard:
                     self.send_error(404)
 
             def send_junie_thoughts(self) -> None:
+                """Runに保存されたJunieの思考表示を返す。"""
                 state = self.dashboard.state
                 args = parse_qs(urlsplit(self.path).query)
                 run_id = args.get("run_id", [None])[0]
@@ -415,6 +424,7 @@ class Dashboard:
                 self.send_body(200, "application/json", json.dumps({**batch, "live": live}, ensure_ascii=False).encode("utf-8"))
 
             def send_prompts(self, action: dict[str, Any] | None = None) -> None:
+                """追加指示の受付状態を画面へ返す。"""
                 state = self.dashboard.state
                 run_id = state.get("run_id")
                 payload = {"run_id": run_id, "timing": None, "prompts": []}
@@ -444,6 +454,7 @@ class Dashboard:
                     self.send_body(409, "text/plain; charset=utf-8", str(exc).encode("utf-8", errors="replace"))
 
             def send_editor_php(self) -> None:
+                """Runに固定されたPHP入力を読み取り専用で返す。"""
                 query = parse_qs(urlsplit(self.path).query)
                 run_id = self.dashboard.state.get("run_id")
                 try:
@@ -481,6 +492,7 @@ class Dashboard:
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
 
             def send_editor(self, action: dict[str, Any] | None = None) -> None:
+                """対象ファイルの内容と版をエディタへ返す。"""
                 query = parse_qs(urlsplit(self.path).query)
                 state = self.dashboard.state
                 run_id = state.get("run_id")
@@ -587,6 +599,7 @@ class Dashboard:
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
 
             def send_checker_output(self) -> None:
+                """最新チェッカー結果と対象版を返す。"""
                 query = parse_qs(urlsplit(self.path).query)
                 with self.dashboard.condition:
                     state = self.dashboard.state
@@ -627,6 +640,7 @@ class Dashboard:
                         return
 
             def send_build_review(self) -> None:
+                """ビルド失敗と修正確認に必要な情報を返す。"""
                 query = parse_qs(urlsplit(self.path).query)
                 with self.dashboard.condition:
                     state = self.dashboard.state
@@ -643,6 +657,7 @@ class Dashboard:
                     self.send_body(200, "application/json; charset=utf-8", json.dumps(review, ensure_ascii=False).encode())
 
             def send_workspace(self, *, include_usage: bool = False) -> None:
+                """Runの状態と画面操作情報を返す。"""
                 if manager:
                     try:
                         body = json.dumps(manager.workspace(include_usage=include_usage), ensure_ascii=False).encode()
@@ -675,6 +690,7 @@ class Dashboard:
                 self.send_body(200, "application/json", body)
 
             def send_settings(self) -> None:
+                """設定フォーム用の現在値と選択肢を返す。"""
                 try:
                     path = Path(config["config_path"])
                     data, version = _read_settings(path)
@@ -901,6 +917,7 @@ class Dashboard:
                     self.send_error(409)
 
             def save_settings(self, action: dict[str, Any]) -> None:
+                """利用者の設定変更を検証して保存する。"""
                 if action.get("mode") == "preview":
                     if not isinstance(action.get("content"), str) or not isinstance(action.get("changes"), dict):
                         self.send_error(400)

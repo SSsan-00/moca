@@ -64,6 +64,7 @@ def _reviewed_examples(config: dict[str, Any], run_id: str) -> list[dict[str, st
     snapshots: dict[str, dict[str, Any]] = {}
 
     def bounds(segments: list[dict[str, Any]], area: dict[str, Any]) -> tuple[int, int]:
+        """確認済み対応例が参照する行範囲を返す。"""
         segment = next(item for item in segments if Path(item["fileName"]) == Path(area["path"]))
         offset = segment["startLine"] - 2
         return offset + area["start_line"], offset + area["end_line"]
@@ -93,6 +94,7 @@ def _reviewed_examples(config: dict[str, Any], run_id: str) -> list[dict[str, st
 
 
 def _reference_examples_for_paths(references: list[Path]) -> list[dict[str, str]]:
+    """指定対象に対応する参考実装例を選ぶ。"""
     examples = []
     for index, reference in enumerate(references, 1):
         check_cancelled()
@@ -105,6 +107,7 @@ def _reference_examples_for_paths(references: list[Path]) -> list[dict[str, str]
 
 
 def _automatic_examples(config: dict[str, Any], run_id: str) -> list[dict[str, str]]:
+    """PHPと移行先の自動対応候補を列挙する。"""
     references = config.get("diff_viewer_anchor_reference")
     return _reference_examples_for_paths(references) if references else _reviewed_examples(config, run_id)
 

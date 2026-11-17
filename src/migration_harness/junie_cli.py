@@ -77,6 +77,7 @@ class JunieLaunchError(OSError):
         self, command: list[str], cwd: str | None, executable: str | None, cause: Exception,
         *, interpreter: str | None = None,
     ) -> None:
+        """Junieの起動失敗と診断情報を保持する。"""
         self.command = command.copy()
         self.cwd = cwd
         self.executable = executable
@@ -93,6 +94,7 @@ class JunieSessionError(OSError):
     """終了コードが0でも、セッションを開始できなかった終了を報告する。"""
 
     def __init__(self, command: list[str], exit_code: int, details: str) -> None:
+        """Junieセッション失敗と通信情報を保持する。"""
         self.command = command.copy()
         self.returncode = exit_code
         super().__init__(
@@ -106,6 +108,7 @@ class JunieAcpModelUnavailable(JunieSessionError):
 
 
 def _resolve_executable(name: str) -> str:
+    """Junie実行ファイルの場所を環境から解決する。"""
     executable = shutil.which(name)
     if executable is None:
         raise FileNotFoundError(errno.ENOENT, "Junie CLI was not found on PATH (or is not executable)", name)
@@ -153,6 +156,7 @@ def build_command(
     project: Path, prompt: str, max_steps: int | None, *, guidelines: Path | None = None, model: str | None = None,
     effort: str | None = None,
 ) -> list[str]:
+    """Junie CLIの対話起動コマンドを組み立てる。"""
     command = ["junie", "--project", str(project), "--brave"]
     if guidelines is not None:
         # 本文をコマンド引数に展開せず、既存のJunie指示に追加する（Windowsの長さ制限も回避）。
@@ -250,6 +254,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
 
 
 def _launch_process(command: list[str], *, owned=False, terminal=False, **streams: Any) -> subprocess.Popen:
+    """所有範囲を設定してJunieプロセスを起動する。"""
     check_cancelled()
     executable = None
     interpreter = None
@@ -332,6 +337,7 @@ def _close_junie(process: subprocess.Popen) -> int:
 
 def _is_junie_connection_failure(entry: dict[str, Any]) -> bool:
     # ツール単位の失敗では再起動せず、MainAgentの接続失敗が確定したイベントだけを拾う。
+    """例外連鎖がJunieの通信失敗か判定する。"""
     event = entry.get("event")
     if entry.get("kind") != "SessionA2uxEvent" or not isinstance(event, dict) or event.get("state") != "FAILED":
         return False
@@ -394,6 +400,7 @@ class _JunieSessionEvents:
     """今回の起動と照合できたJunieのセッションだけを監視する。"""
 
     def __init__(self, token: str, *, headless_project: Path | None = None) -> None:
+        """セッションログの読取位置と解析状態を初期化する。"""
         self.token = token
         self.headless_project = headless_project
         try:
@@ -421,12 +428,14 @@ class _JunieSessionEvents:
         self.last_event_at: float | None = None
 
     def _paths(self) -> Iterator[Path]:
+        """セッションで参照するイベントファイルを列挙する。"""
         try:
             yield from self.sessions.glob("*/events.jsonl")
         except OSError:
             return
 
     def _log_paths(self) -> Iterator[Path]:
+        """セッションのログファイルを列挙する。"""
         try:
             yield from self.logs.glob("log-*.log")
         except OSError:
@@ -489,6 +498,7 @@ class _JunieSessionEvents:
         return "\n".join(details)
 
     def _new_lines(self, path: Path, *, cancellable: bool) -> Iterator[bytes]:
+        """前回以降に追加されたログ行を読み取る。"""
         stat = path.stat()
         identity = (stat.st_dev, stat.st_ino)
         cursor = self.cursors.get(path)
@@ -600,6 +610,7 @@ class _JunieSessionEvents:
         return False
 
     def _count_usage(self, event: Any) -> None:
+        """イベントからトークン使用量の差分を数える。"""
         agent = event.get("agentEvent") if isinstance(event, dict) else None
         if not isinstance(agent, dict) or agent.get("kind") != "LlmResponseMetadataEvent":
             return
@@ -621,6 +632,7 @@ class _JunieSessionEvents:
 def _confirm_dashboard_launch(
     dashboard: ExecutionControl, title: str, detail: str, option: str, label: str,
 ) -> bool:
+    """画面で今回のJunie起動方法を利用者に確認する。"""
     reply = dashboard.on_junie_request({
         "title": title, "detail": detail,
         "options": [
@@ -656,6 +668,7 @@ def _supports_task(executable: str) -> bool:
 
 
 def _task_command(command: list[str]) -> list[str]:
+    """Junieの非対話タスク起動コマンドを組み立てる。"""
     return [part for part in command[:-2] if part != "--brave"] + ["--task", command[-1]]
 
 
@@ -751,6 +764,7 @@ class _AcpSession:
         self, process: subprocess.Popen, command: list[str], project: Path, show_request: Callable,
         completion_path: Path, token: str, prompts: LivePrompts | None,
     ) -> None:
+        """ACPセッションと入出力・完了状態を初期化する。"""
         self.process = process
         self.command = command
         self.project = project
@@ -775,6 +789,7 @@ class _AcpSession:
         self.reader.start()
 
     def _read(self) -> None:
+        """標準出力から次のACPメッセージを読み取る。"""
         try:
             for line in self.process.stdout:
                 self.messages.put(line)
@@ -783,13 +798,16 @@ class _AcpSession:
             self.messages.put(b"")
 
     def send(self, **message: Any) -> None:
+        """ACPメッセージをJunieへ送信する。"""
         self.process.stdin.write((json.dumps({"jsonrpc": "2.0", **message}) + "\n").encode("utf-8"))
         self.process.stdin.flush()
 
     def request(self, request_id: int, method: str, **params: Any) -> None:
+        """応答を待つACPリクエストを送信する。"""
         self.send(id=request_id, method=method, params=params)
 
     def steer(self) -> None:
+        """実行中のJunieへ追加指示を送る。"""
         if (self.prompts is None or not self.steering_supported or self.session_id is None
                 or self.pending or self.steering_waiting is not None or self.prompt_finished
                 or has_completion_record(self.completion_path, self.token)):
@@ -820,6 +838,7 @@ class _AcpSession:
         report_activity("実行中のJunieへ追加指示を送っています。")
 
     def steering_complete(self) -> bool:
+        """送信した追加指示が反映されたか判定する。"""
         return self.steering_waiting is None and all(
             request.accepted and not has_symlink_component(self.project, request.receipt.relative_to(self.project))
             and has_completion_record(request.receipt, request.token)
@@ -827,11 +846,13 @@ class _AcpSession:
         )
 
     def finish_prompts(self, success: bool) -> None:
+        """配信済み追加指示の処理結果を確定する。"""
         if self.prompts is not None:
             for request in self.steering_requests.values():
                 self.prompts.finish(request.identifiers, success and request.accepted)
 
     def permission(self, request_id: int | str, params: dict) -> None:
+        """Junieの操作許可要求を利用者へ渡して回答を返す。"""
         tool = params["toolCall"]
         # 許可要求だけでは省略される情報を、先に受け取ったツール更新から補う。
         details = {**self.tool_calls.get(tool["toolCallId"], {}), **tool}
@@ -951,12 +972,14 @@ class _AcpSession:
         return self.prompt_finished and self.steering_waiting is None and not self.steering_new_turn
 
     def cancel(self) -> None:
+        """実行中のACPリクエストを取り消す。"""
         if self.pending:
             self.send(id=self.pending[0], result={"outcome": {"outcome": "cancelled"}})
         if self.session_id:
             self.send(method="session/cancel", params={"sessionId": self.session_id})
 
     def close(self) -> None:
+        """ACP標準入出力とセッション資源を閉じる。"""
         self.process.stdin.close()
         self.reader.join(timeout=1)
         if not self.reader.is_alive():
@@ -982,6 +1005,7 @@ def _run_session(
     stopped = False
 
     def stop() -> int:
+        """実行中のJunieセッションと子プロセスを停止する。"""
         nonlocal stopped
         if not stopped:
             try:
@@ -995,6 +1019,7 @@ def _run_session(
         return process.returncode
 
     def completion_ready() -> bool:
+        """セッション完了を確定できる状態か判定する。"""
         return (
             has_completion_record(completion_path, token)
             and (acp is None or acp.steering_complete())
@@ -1005,6 +1030,7 @@ def _run_session(
         )
 
     def poll(*, cancellable: bool = True) -> bool:
+        """セッション終了とイベント更新を監視する。"""
         if thoughts is not None:
             collect_thoughts(thoughts.poll)
         failed = events.read_new_events(cancellable=cancellable)
@@ -1022,6 +1048,7 @@ def _run_session(
         return failed
 
     def collect_thoughts(read: Callable[[], None]) -> None:
+        """セッション中に記録された思考表示を回収する。"""
         nonlocal thoughts
         try:
             read()

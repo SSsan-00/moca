@@ -16,6 +16,7 @@ from .files import has_symlink_component, sha256_file
 
 
 def _reserved(path: Path) -> bool:
+    """固定資料として扱う予約済みファイル名か判定する。"""
     return any(part.lower() in {".git", ".hg", ".svn"} for part in path.parts) or bool(
         path.parts and (path.parts[0].lower() == "migration-read-rules.py" or path.parts[0].lower().startswith(
             (".migration-", "migration-complete-", "checker-findings-", "migration-rule-reads-")
@@ -24,6 +25,7 @@ def _reserved(path: Path) -> bool:
 
 
 def _safe(root: Path, relative: Path) -> Path:
+    """参照コピーに使える安全な相対パスか検証する。"""
     if relative.anchor or ".." in relative.parts:
         raise ValueError(f"invalid target context path: {relative}")
     if root.is_symlink() or has_symlink_component(root, relative):
@@ -32,11 +34,13 @@ def _safe(root: Path, relative: Path) -> Path:
 
 
 def _stamp(path: Path) -> tuple:
+    """固定資料の識別に使う版情報を計算する。"""
     value = path.lstat()
     return (value.st_dev, value.st_ino, value.st_mode, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
 
 
 def _copy(source: Path, destination: Path, expected: str | None = None) -> str:
+    """参照ファイルを安全なコピー先へ固定する。"""
     before = _stamp(source)
     if not stat.S_ISREG(before[2]):
         raise ValueError(f"target context requires a regular file: {source}")
@@ -93,6 +97,7 @@ def stage_target_context(
     report_activity("移行先の参照資料を検証・復元しています。")
 
     def progress(relative: Path) -> None:
+        """参照ファイルの収集状況を呼び出し元へ通知する。"""
         nonlocal processed, last_report
         check_cancelled()
         processed += 1
@@ -111,6 +116,7 @@ def stage_target_context(
             visited = set()
 
             def visit(relative: Path) -> None:
+                """ディレクトリを走査して参照対象を固定する。"""
                 progress(relative)
                 if relative in visited or relative in targets or _reserved(relative):
                     return

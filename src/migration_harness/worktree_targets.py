@@ -53,6 +53,7 @@ def read_target(root: Path, target: Path) -> tuple[bytes | None, str]:
 
 
 def target_newline(data: bytes) -> str:
+    """編集保存時に使う対象ファイルの改行形式を返す。"""
     if b"\r\n" in data:
         return "\r\n"
     if b"\r" in data and b"\n" not in data:
@@ -104,6 +105,7 @@ def save_target_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, 
 
 
 def _ensure_utf8_bom(path: Path) -> None:
+    """反映前のソースをUTF-8 BOM付きに正規化する。"""
     data = path.read_bytes()
     try:
         data.decode("utf-8-sig")

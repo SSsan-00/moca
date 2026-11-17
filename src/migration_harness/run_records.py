@@ -29,16 +29,20 @@ def execution_lock(config: dict[str, Any], name: str, *, wait: bool = False) -> 
             import msvcrt
             # Windowsはロック領域の読み取りも拒否する。EOF以降もロックできるので初期化は不要。
             def acquire():
+                """OS固有の方法で実行ロックを取得する。"""
                 lock.seek(0)
                 msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
             def release():
+                """OS固有の方法で実行ロックを解放する。"""
                 lock.seek(0)
                 msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
             def acquire():
+                """OS固有の方法で実行ロックを取得する。"""
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             def release():
+                """OS固有の方法で実行ロックを解放する。"""
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         while True:
             try:
@@ -96,6 +100,7 @@ def replace_run_record(path: Path, record: dict[str, Any]) -> None:
 
 
 def _notify_run_observer(record: dict[str, Any]) -> None:
+    """保存済みRunの更新を登録済みobserverへ通知する。"""
     observer = run_observer.get()
     if observer is not None:
         observer(record)
@@ -136,6 +141,7 @@ def junie_usage_recorder(
 ) -> Callable[[list[int]], None]:
     """同じ工程・カプセルの使用量を保存するコールバックを作る。"""
     def report(delta: list[int]) -> None:
+        """トークン使用量を工程・カプセル単位で加算保存する。"""
         with edit_run_record(run_path / "run.json") as (record, changes):
             rows = record.get("token_usage", [])
             row = next((row for row in rows if row["phase"] == phase and row.get("capsule") == capsule), None)
@@ -152,6 +158,7 @@ def junie_usage_recorder(
 
 
 def validate_run_id(run_id: str) -> None:
+    """Run IDが正規形式のUUIDか検証する。"""
     try:
         parsed_run_id = uuid.UUID(run_id)
     except ValueError as exc:
@@ -163,6 +170,7 @@ def validate_run_id(run_id: str) -> None:
 def _load_run_identity(
     config: dict[str, Any], run_id: str,
 ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    """保存先・Run記録・設定済み移行単位を照合する。"""
     validate_run_id(run_id)
     run_root = Path(config["run_root"]).resolve()
     run_path = run_root / run_id
@@ -189,6 +197,7 @@ def _load_run_identity(
 
 
 def _saved_worktree(config: dict[str, Any], run_id: str, record: dict[str, Any]) -> Path:
+    """Run記録から設定に合うworktreeパスを検証する。"""
     worktree_root = Path(config["worktree_root"]).resolve()
     if not isinstance(record.get("worktree_path"), str):
         raise ValueError("run record is missing its worktree path")

@@ -29,9 +29,11 @@ _BOOL = win.BOOL
 
 class WindowsJob:
     def __init__(self):
+        """子プロセスを所有するWindows Job Objectを作成する。"""
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 
         def bind(name, result, *arguments):
+            """Windows API関数の引数型と戻り値型を設定する。"""
             function = getattr(kernel, name)
             function.restype = result
             function.argtypes = arguments
@@ -53,6 +55,7 @@ class WindowsJob:
             raise ctypes.WinError(ctypes.get_last_error())
 
     def start(self, process):
+        """起動を保留したプロセスをJobへ登録して開始する。"""
         if not self._assign(self.handle, int(process._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
         # Popen closes CreateProcess's thread handle. A suspended launcher has one primary thread.
@@ -82,9 +85,11 @@ class WindowsJob:
             self._close(snapshot)
 
     def stop(self, deadline):
+        """Job内の子プロセスを終了し空になるまで待つ。"""
         accounting = _JobAccounting()
 
         def active():
+            """Job内に実行中のプロセスが残っているか調べる。"""
             if not self._query(self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
                 raise ctypes.WinError(ctypes.get_last_error())
             return accounting.active_processes
@@ -97,4 +102,5 @@ class WindowsJob:
             time.sleep(.025)
 
     def close(self):
+        """Job Objectのハンドルを閉じる。"""
         self._close(self.handle)
