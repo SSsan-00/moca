@@ -108,7 +108,11 @@
     #workspace-runs .workspace-actions .button { min-width: 0; min-height: 40px; height: auto; padding-block: 6px; white-space: normal; text-align: center; }
     .workspace-feedback { min-width: 0; margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
     .workspace-feedback:empty { display: none; }
-    #workspace-runs { overflow: auto; }
+    #workspace-runs { overflow: hidden; }
+    #workspace-runs:not([hidden]) { display: flex; flex-direction: column; }
+    .runs-heading, .runs-new, .runs-toolbar, .runs-footer { flex: none; }
+    .runs-list { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    #workspace-run-feedback { flex: none; max-height: 6em; overflow: auto; margin-top: 0; margin-bottom: 8px; }
     .runs-heading, .runs-toolbar, .runs-new-controls, .runs-footer, .run-context { display: flex; align-items: center; gap: 12px; }
     .runs-heading { justify-content: space-between; margin: 4px 0 18px; }
     .runs-heading h1 { font-size: 26px; margin: 0 0 4px; }
@@ -135,9 +139,11 @@
     .run-filters button { min-height: 34px; padding: 5px 9px; border-radius: 6px; background: var(--paper); border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
     .run-filters button[aria-pressed="true"] { color: var(--blue-ink); background: var(--blue); border-color: var(--blue); }
     #run-search { flex: 1; min-width: 180px; max-width: 310px; margin-left: auto; padding: 8px 12px; border: 1px solid var(--border-hover); border-radius: 6px; background: var(--paper); color: var(--ink); font: inherit; }
-    .runs-table-wrap { overflow: auto; }
+    .runs-table-wrap { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-block: 44px 8px; }
+    .runs-table-wrap:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
     .runs-table { width: 100%; border-collapse: collapse; text-align: left; }
-    .runs-table th { padding: 12px 16px; color: var(--muted); font-size: 12px; background: var(--surface-soft); font-weight: 600; white-space: nowrap; }
+    .runs-table th { position: sticky; top: 0; z-index: 1; padding: 12px 16px; color: var(--muted); font-size: 12px; background: var(--surface-soft); font-weight: 600; white-space: nowrap; }
+    .runs-table th:last-child, .runs-table td:last-child { width: 1%; }
     .runs-table td { padding: 13px 16px; border-top: 1px solid var(--line); vertical-align: middle; }
     .runs-table tr[data-selected="true"] { background: var(--blue-soft); }
     .run-unit { display: block; font-weight: 650; overflow-wrap: anywhere; }
@@ -150,9 +156,11 @@
     .run-current { min-width: 110px; max-width: 260px; font-size: 13px; overflow-wrap: anywhere; }
     .run-current progress { display: block; width: 100%; max-width: 190px; height: 5px; margin-top: 8px; accent-color: var(--blue); }
     .run-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .run-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 180px; }
-    .run-actions .button { min-height: 32px; height: auto; padding: 5px 10px; font-size: 12px; }
-    .run-actions .run-text-action { border-color: transparent; background: transparent; color: var(--blue); }
+    .run-actions { display: grid; grid-template-columns: repeat(3, 84px); gap: 6px; width: 264px; }
+    .run-actions .button { width: 100%; min-width: 0; min-height: 32px; height: 32px; padding: 5px 6px; font-size: 12px; }
+    .run-actions [data-action="open-runprogress"] { grid-column: 1; }
+    .run-actions [data-action="open-runeditor"] { grid-column: 2; }
+    .run-actions .run-text-action { grid-column: 3; border-color: transparent; background: transparent; color: var(--blue); }
     .runs-empty { padding: 24px; color: var(--muted); text-align: center; }
     .runs-footer { justify-content: space-between; flex-wrap: wrap; margin: 12px 0; font-size: 12px; }
     .workspace-tabs .run-summary { margin-left: auto; font-size: 12px; padding-inline: 0; white-space: nowrap; }
@@ -173,9 +181,27 @@
       .runs-table, .runs-table tbody { display: block; } .runs-table thead { display: none; }
       .runs-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 12px; gap: 8px; border-bottom: 1px solid var(--line); }
       .runs-table td { display: block; padding: 0; border: 0; min-width: 0; } .runs-table td:first-child { grid-column: 1; }
-      .run-current { max-width: none; } .runs-table td:last-child { grid-column: 1 / -1; } .run-actions { min-width: 0; }
+      .run-current { max-width: none; } .runs-table td:last-child { grid-column: 1 / -1; width: auto; }
+      .run-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 264px); }
+      .runs-table-wrap { scroll-padding-block: 8px; }
       .run-id { font-size: 10px; } .run-time { text-align: right; font-size: 12px; } .run-context { gap: 6px; }
       #workspace-editor:not([hidden]) { display: block; }
+    }
+    @media (max-height: 680px) {
+      .runs-heading { margin: 0 0 8px; }
+      .runs-heading h1 { margin: 0; font-size: 20px; }
+      .runs-heading p, .runs-hint, .runs-footer { display: none; }
+      .runs-new { padding: 10px; }
+      .runs-new h2 { margin-bottom: 6px; font-size: 14px; }
+      .runs-toolbar { gap: 8px; margin: 10px 0 8px; }
+      .run-filters { min-width: 0; flex-wrap: nowrap; overflow-x: auto; padding: 3px; }
+      .run-filters button { flex: none; }
+      .unit-options { max-height: min(280px, 40dvh); }
+    }
+    @media (min-width: 681px) and (max-height: 480px) {
+      .runs-new { display: flex; align-items: center; gap: 12px; }
+      .runs-new h2 { margin: 0; white-space: nowrap; }
+      .runs-new-controls { flex: 1; min-width: 0; }
     }
     .editor-layout:not([hidden]) {
       --editor-min-width: 220px;
@@ -387,15 +413,6 @@
     .run-name { min-width: 0; margin: 0; overflow: hidden; font-size: 13px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
     .run-titleline .demo-badge { flex: 0 0 auto; padding: 3px 8px; font-size: 10px; }
     .run-detail { margin-top: 2px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-    .work-status { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); overflow-wrap: anywhere; }
-    .work-status[hidden] { display: none; }
-    .work-status-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; }
-    .work-status h2 { margin: 3px 0; font-size: 14px; line-height: 1.6; }
-    .work-status p { margin: 4px 0 0; font-size: 12px; line-height: 1.7; }
-    .work-status-caption, .work-status-meta { color: var(--muted); font-size: 11px; }
-    .work-status-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-variant-numeric: tabular-nums; }
-    .work-status a { display: inline-flex; align-items: center; min-height: 28px; color: var(--blue); text-underline-offset: 3px; }
-    .work-status a:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 3px; }
     .elapsed { display: flex; width: 108px; height: 38px; flex: 0 0 108px; flex-direction: column; justify-content: center; gap: 1px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; }
     .elapsed span { color: var(--muted); font-size: 10px; line-height: 1; }
     .elapsed strong { color: var(--ink); font: 650 12px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
@@ -425,16 +442,16 @@
     .button:disabled { cursor: default; opacity: .55; }
     #toggle[aria-haspopup="dialog"] { border-color: var(--amber); background: var(--amber); color: var(--amber-soft); font-weight: 700; }
     #toggle[aria-haspopup="dialog"]:hover { background: color-mix(in srgb, var(--amber) 88%, var(--ink)); }
-    .layout { display: grid; min-height: 30rem; grid-template-columns: minmax(0, 1.14fr) minmax(340px, .86fr); gap: var(--workspace-gap); align-items: stretch; }
-    .layout > .panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
+    .layout { display: grid; min-height: min-content; grid-template-columns: minmax(0, 1.14fr) minmax(340px, .86fr); gap: var(--workspace-gap); align-items: stretch; }
+    .layout > .panel { display: flex; min-height: min-content; flex-direction: column; overflow: hidden; }
     .panel { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
     .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 18px 13px; border-bottom: 1px solid var(--line); }
     .panel-head h2 { margin: 0; font-size: 14px; }
     .panel-head small { color: var(--muted); font-size: 11px; }
     #step-count { width: 6.5em; text-align: right; }
-    .flow { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; justify-content: space-between; overflow-y: auto; padding: 9px 18px 15px; }
+    .flow { position: relative; display: flex; flex: 1 0 auto; flex-direction: column; justify-content: space-between; padding: 9px 18px 15px; }
     .flow::before { position: absolute; top: 23px; bottom: 29px; left: 32px; width: 1px; background: var(--line); content: ""; }
-    .step { position: relative; display: grid; flex: 0 0 59px; grid-template-columns: 30px minmax(0, 1fr) 7.5em; align-items: center; gap: 12px; opacity: .62; transition: opacity 220ms ease; }
+    .step { position: relative; display: grid; flex: none; min-height: 48px; grid-template-columns: 30px minmax(0, 1fr) 7.5em; align-items: center; gap: 12px; opacity: .62; transition: opacity 220ms ease; }
     .step.is-done, .step.is-active { opacity: 1; }
     .node { position: relative; z-index: 1; display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--paper); color: var(--muted); font: 700 11px var(--mono); }
     .is-done .node { border-color: var(--green); background: var(--green); color: var(--green-ink); }
@@ -784,15 +801,6 @@
     </div>
   </div>
 
-  <section class="work-status" id="work-status" aria-labelledby="work-status-title" hidden>
-    <div class="work-status-head">
-      <div role="status"><span class="work-status-caption">現在の処理</span><h2 id="work-status-title"></h2><p id="work-status-detail"></p></div>
-      <span class="work-status-meta" id="work-status-elapsed" aria-live="off"></span>
-    </div>
-    <p id="work-status-activity"></p>
-    <p class="work-status-meta" id="work-status-note"></p>
-    <div class="work-status-meta"><span id="work-status-build"></span><a href="#activity-title">実行ログを見る</a></div>
-  </section>
   </div>
   <div class="layout">
     <section class="panel" aria-labelledby="flow-title">
@@ -932,7 +940,7 @@
     <section class="runs-list" aria-labelledby="runs-title">
       <div class="runs-toolbar"><h2 id="runs-title">実行一覧 <span id="run-count"></span></h2><div class="run-filters" id="run-filters" role="group" aria-label="実行状態で絞り込み"></div><input id="run-search" type="search" aria-label="移行単位・Run IDで検索" placeholder="移行単位・Run IDで検索"></div>
       <p class="workspace-feedback" id="workspace-run-feedback" role="status"></p>
-      <div class="panel runs-table-wrap"><table class="runs-table"><thead><tr><th scope="col">移行単位 / Run ID</th><th scope="col">状態</th><th scope="col">現在の処理</th><th scope="col">経過時間</th><th scope="col">操作</th></tr></thead><tbody id="run-rows"></tbody></table><p id="runs-empty" class="runs-empty" role="status">実行一覧を読み込んでいます。</p></div>
+      <div class="panel runs-table-wrap" role="region" aria-labelledby="runs-title" tabindex="0"><table class="runs-table"><thead><tr><th scope="col">移行単位 / Run ID</th><th scope="col">状態</th><th scope="col">現在の処理</th><th scope="col">経過時間</th><th scope="col">操作</th></tr></thead><tbody id="run-rows"></tbody></table><p id="runs-empty" class="runs-empty" role="status">実行一覧を読み込んでいます。</p></div>
       <div class="runs-footer"><span>実行枠が空くと、待機中のRunを順に開始します。</span><span>詳細は「進捗」、編集は「エディタ」で行えます。</span></div>
     </section>
   </section>
@@ -2363,59 +2371,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
     return {button, dialog, input, render, showError};
   }
 </script>
-<script>
-  // 実処理の報告と稼働確認を分け、デモ・本番で同じ表示を使う。
-  function renderWorkStatus(data, label, connected = true) {
-    const panel = document.querySelector("#work-status");
-    panel.hidden = !data.status || data.status === "idle"
-      || (data.ready && ["prepared", "build_succeeded", "checker_succeeded", "checker_accepted"].includes(data.status));
-    if (panel.hidden) return;
-    const put = (id, text) => {
-      const node = document.querySelector(`#work-status-${id}`);
-      if (node.textContent !== text) node.textContent = text;
-      node.hidden = !text;
-    };
-    const running = !data.ready;
-    const phase = running ? data.phase_activity : null;
-    let title = phase?.message || label;
-    let detail = phase?.detail || (running ? "工程の状況は実行ログにも記録しています。" : "実行ログで結果を確認できます。");
-    if (data.stop_requested) {
-      title = "処理の停止を待っています";
-      detail = "保存済みの編集を残して終了します。完了するまでお待ちください。";
-    } else if (data.junie_request) {
-      title = "操作の確認を待っています";
-      detail = "「Junie の確認を開く」から内容を確認して応答してください。";
-    } else if (data.ready && data.status === "build_failed") {
-      title = "ビルド失敗の確認が必要です";
-      detail = "「ビルド失敗を確認」からエラーを確認し、追加指示・手修正・再ビルドを選べます。";
-    } else if (data.ready && data.status === "checker_needs_review") {
-      title = "チェッカーの指摘の確認を待っています";
-      detail = "「チェッカー出力を確認」から元の出力と停止理由を確認し、必要に応じて追加指示を送れます。";
-    }
-    put("title", title);
-    put("detail", detail);
-    const now = connected && running ? Date.now() / 1000 : data.observed_at;
-    const age = entry => Number.isFinite(entry?.at) && Number.isFinite(now) ? Math.max(0, now - entry.at) : null;
-    const elapsed = age(phase);
-    put("elapsed", elapsed === null ? "" : `この処理の経過 ${formatDuration(elapsed * 1000)}`);
-    const latest = data.latest_activity;
-    const sinceReport = age(latest);
-    put("activity", latest ? `直近の作業報告: ${latest.message}` : "");
-    const heartbeatAge = age(data.heartbeat);
-    let note = !connected ? "接続を再試行しています。最後に受信した処理状況を表示しています。" : "";
-    if (connected && running && !data.junie_request && !data.stop_requested) {
-      const parts = [];
-      if (sinceReport !== null) parts.push(`作業報告から ${Math.floor(sinceReport)}秒`);
-      if (heartbeatAge !== null) parts.push(`稼働確認から ${Math.floor(heartbeatAge)}秒`);
-      if ((sinceReport ?? elapsed ?? 0) >= 30) parts.push("新しい作業報告を待っています。必要に応じて停止・追加指示ができます。");
-      note = parts.join(" · ");
-    }
-    put("note", note);
-    const attempts = data.build_attempt_seconds || [];
-    const lastBuild = attempts[attempts.length - 1];
-    put("build", Number.isFinite(lastBuild) ? `直前のビルド ${lastBuild.toFixed(1)}秒` : "");
-  }
-</script>
 <script src="./src/migration_harness/dashboard_runs.js"></script>
 <!-- dashboard-script -->
 <script src="./src/migration_harness/dashboard_runs_demo.js"></script>
@@ -2470,7 +2425,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
   let humanReviewHandled = false;
   let correctionRequested = false;
   let capsuleInterrupted = false;
-  let demoPhase;
   let demoRepairIndex = -1;
   const demoRepairPhases = [
     ["ビルドエラーを確認しています", "型名の誤りを検出しました。修正対象と残りの回数を確認しています。", 1800],
@@ -2479,21 +2433,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
     ["Junieの修正結果を確認しています", "対象外の変更や手修正との競合がないかを確認しています。", 1800],
     ["再ビルドを実行しています", "修正したソースをビルドしています。成功後に独自チェッカーへ進みます。", 2400],
   ];
-  function setDemoPhase(message, detail) {
-    demoPhase = {message, detail: `模擬データ · ${detail}`, at: Date.now() / 1000};
-    renderDemoWorkStatus();
-  }
-  function renderDemoWorkStatus() {
-    const status = current >= steps.length ? "checker_succeeded"
-      : state.dataset.state === "waiting" ? "checker_needs_review" : !playing ? "interrupted"
-      : ["preparing", "preparing", "prepared", "junie_running", "building", "checking", "checker_needs_review"][current];
-    const report = current === 4 && demoRepairIndex === 2
-      ? {message: "Junieからファイルの編集の報告が届きました。", at: demoPhase.at} : null;
-    renderWorkStatus({status, ready: !playing, phase_activity: demoPhase, latest_activity: report,
-      heartbeat: report && playing ? {at: Date.now() / 1000} : null,
-      observed_at: Date.now() / 1000, build_attempt_seconds: current === 4 && demoRepairIndex >= 0 ? [3.2] : []},
-    playing ? "工程を進めています" : "デモを一時停止しています");
-  }
   const demoMappings = new Map();
   const demoMigrationTargets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"];
   const demoRunID = "run-2026-11-14-001";
@@ -2718,7 +2657,6 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
     stopButton.textContent = "停止";
     toggle.hidden = !run.resumable;
     toggle.textContent = run.status === "checker_succeeded" ? "ビルド・チェックを再実行" : "同じ実行を再開";
-    renderWorkStatus({...run, phase_activity: {message: names[run.status] || "準備中", detail: `模擬データ · ${run.unit_id}`, at: Date.now() / 1000}, observed_at: Date.now() / 1000}, "実行一覧から別のRunも確認できます");
     if (changed) activity.replaceChildren();
     if (changed || shownDemoStatus !== run.status) addEvent(new Date().toLocaleTimeString("ja-JP"), names[run.status] || "実行", `${run.unit_id} · 模擬データ`);
     shownDemoStatus = run.status;
@@ -2851,9 +2789,6 @@ targets = ["Pages/Orders/Index.cshtml.cs", "Pages/Orders/Index.cshtml"]
     }
     if (index === 6 && !humanReviewHandled) requestHumanReview();
     if (migrationLedgerDialog.open) showDemoMigrationLedger();
-    if (index === 4) setDemoPhase("ビルドを実行しています", "構文・型の整合を確認しています。");
-    else if (index === 5) setDemoPhase("独自チェッカーで確認しています", "再ビルドは成功しました。チェッカーの結果を待っています。");
-    else setDemoPhase(stateLabel.textContent, "作業の区切りで進捗を更新します。");
   }
 
   // 指摘の見出しにフォーカスして確認を始める。
@@ -3224,7 +3159,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     state.classList.remove("is-running");
     stateLabel.textContent = interruptCapsule ? "中断" : "一時停止中";
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
-    renderDemoWorkStatus();
   }
 
   // 保留した工程から再生を続け、完了後は先頭の状態に戻す。
@@ -3242,8 +3176,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     stateLabel.textContent = steps[current].querySelector(".step-title").textContent + "中";
     state.dataset.state = "running";
     state.classList.add("is-running");
-    if (demoPhase) demoPhase.at = Date.now() / 1000;
-    renderDemoWorkStatus();
     scheduleNext();
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
@@ -3254,7 +3186,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     timer = setTimeout(() => {
       if (current === 4 && demoRepairIndex + 1 < demoRepairPhases.length) {
         const [title, detail] = demoRepairPhases[++demoRepairIndex];
-        setDemoPhase(title, detail);
         stateLabel.textContent = demoRepairIndex === 4 ? "再ビルド中" : "ビルドエラーを修正中";
         logHumanAction(title, detail);
         scheduleNext();
@@ -3298,7 +3229,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
 
   // 全体と各工程の経過時間を同じ更新周期で表示する。
   function updateElapsed() {
-    renderDemoWorkStatus();
     const seconds = Math.floor((elapsedTotal + (elapsedStarted ? performance.now() - elapsedStarted : 0)) / 1000);
     elapsedValue.textContent = formatDuration(seconds * 1000);
     elapsed.dateTime = `PT${seconds}S`;

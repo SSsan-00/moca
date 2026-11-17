@@ -818,7 +818,6 @@ function render() {
 
 // 記録済みの時間に実行中の区間だけ加算し、再開までの待ち時間は含めない。
 function renderElapsed() {
-  renderWorkStatus(snapshot, describe(snapshot), connected);
   let total = 0;
   let measured = false;
   const hasTimings = Object.keys(snapshot.stage_timings || {}).length > 0;
@@ -881,7 +880,7 @@ function addActivity(data) {
   if (seenActivities.has(key)) return;
   seenActivities.add(key);
   if (seenActivities.size > 100) seenActivities.delete(seenActivities.values().next().value);
-  // 稼働確認は現在の処理欄に表示し、作業ログを同じ通知で埋めない。
+  // 定期的な稼働確認の通知で作業ログを埋めない。
   if (event.kind === "heartbeat") return;
   appendEvent(event.at, "実行状況", [event.message, event.detail].filter(Boolean), "activity");
 }
