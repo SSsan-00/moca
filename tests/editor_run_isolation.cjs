@@ -98,7 +98,10 @@ function take(endpoint = "editor") {
 
 async function checkProgressSelection() {
   const streams = [];
-  const source = fs.readFileSync(process.argv[3], "utf8");
+  const source = fs.readFileSync(process.argv[3], "utf8").replace(/\r\n/g, "\n");
+  const start = source.indexOf("let stream;\n");
+  const end = source.indexOf("function receiveProgress(event)");
+  assert.ok(start >= 0 && end > start, "missing dashboard progress connection code");
   const runtime = vm.createContext({
     window: {}, document: {dispatchEvent() {}}, Event, URL,
     location: {href: "http://localhost/dashboard/"}, history: {replaceState() {}},
@@ -109,7 +112,7 @@ async function checkProgressSelection() {
       close() {}
     },
   });
-  vm.runInContext(source.slice(source.indexOf("let stream;\n"), source.indexOf("function receiveProgress(event)")), runtime);
+  vm.runInContext(source.slice(start, end), runtime);
   const a = runtime.connectRun("A");
   streams[0].onopen();
   streams[0].onmessage({data: JSON.stringify({run_id: "A"})});

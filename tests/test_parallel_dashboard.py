@@ -249,7 +249,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_same_target_runs_keep_editor_files_php_and_prompts_separate(self):
         ids = []
         for number in (1, 2):
-            (self.project / "source.php").write_text(f"<?php echo {number};\n")
+            (self.project / "source.php").write_bytes(f"<?php echo {number};\n".encode())
             run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
             self.wait_until(lambda: not self.manager.busy)
             ids.append(run_id)
