@@ -30,12 +30,17 @@ from .execution import (
     junie_dashboard_control, report_activity,
 )
 from .files import has_symlink_component, safe_target
+from .junie_thoughts import JunieThoughts
 
 if TYPE_CHECKING:
     from .editor_queue import LivePrompts
 
 
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
+DASHBOARD_PROGRESS_INSTRUCTION = (
+    "進捗と最終回答は日本語で書いてください。重要な確認や変更に進むときは、"
+    "確認できた事実、判断の理由、次に行うことを日本語で1〜2文にまとめて利用者に伝えてください。"
+)
 
 
 class JunieEditHandoff(KeyboardInterrupt):
@@ -643,6 +648,8 @@ def run_interactive(
     prompts: LivePrompts | None = None,
 ) -> int:
     """Junieを選択したモードで起動し、通信障害時は同じ作業場所で再試行する。"""
+    if junie_dashboard_control() is not None:
+        command = [*command[:-1], f"{command[-1]}\n\n{DASHBOARD_PROGRESS_INSTRUCTION}"]
     # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
     task_supported = None
     if prompts is not None:
@@ -947,6 +954,7 @@ def _run_session(
     restore_terminal = _save_terminal_mode() if dashboard is None and not headless else None
     process = None
     acp = None
+    thoughts = None
     completed = False
 
     def completion_ready() -> bool:
@@ -960,6 +968,8 @@ def _run_session(
         )
 
     def poll(*, cancellable: bool = True) -> bool:
+        if thoughts is not None:
+            collect_thoughts(thoughts.poll)
         failed = events.read_new_events(cancellable=cancellable)
         if report_usage is not None and any(events.usage):
             # 読み取った差分を渡したら集計を空にし、次回や終了時に二重加算しない。
@@ -971,6 +981,14 @@ def _run_session(
             result, events.result = events.result, None
             accept_result(result)
         return failed
+
+    def collect_thoughts(read: Callable[[], None]) -> None:
+        nonlocal thoughts
+        try:
+            read()
+        except (OSError, ValueError):
+            thoughts = None
+            report_activity("Junie の詳細ログを保存できませんでした。")
 
     try:
         if dashboard is not None:
@@ -986,18 +1004,22 @@ def _run_session(
                 dashboard.trusted_junie_workspaces.add(project)
         events = _JunieSessionEvents(token, headless_project=root.resolve() if headless else None)
         next_poll = time.monotonic()
+        thought_path = dashboard.junie_thoughts_path if dashboard is not None else None
+        streams = {"stderr": subprocess.PIPE} if thought_path is not None else {}
         if headless:
-            process = _launch_process(command, stdin=subprocess.DEVNULL)
+            process = _launch_process(command, stdin=subprocess.DEVNULL, **streams)
         elif dashboard is None:
             # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
             process = _launch_process(command)
         else:
             # ACPではプロンプトを起動引数から外し、初期化後のsession/prompt要求で送る。
             acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
-            process = _launch_process(acp_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            process = _launch_process(acp_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
             acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request,
                               completion_path, token, prompts)
             acp.request(1, "initialize", protocolVersion=1, clientCapabilities={})
+        if thought_path is not None:
+            thoughts = JunieThoughts(process.stderr, events.logs, events.existing_logs, thought_path, token)
         started = time.monotonic()
         report_activity("Junieのプロセスを起動しました。")
         next_heartbeat = started + HEARTBEAT_SECONDS
@@ -1081,6 +1103,8 @@ def _run_session(
         raise
     finally:
         try:
+            if thoughts is not None:
+                collect_thoughts(thoughts.finish)
             if dashboard is not None:
                 dashboard.junie_steering = False
                 dashboard.on_junie_request(None)

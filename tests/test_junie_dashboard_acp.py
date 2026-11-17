@@ -31,6 +31,9 @@ class JunieDashboardAcpTests(unittest.TestCase):
                         print(json.dumps(dict(jsonrpc="2.0", id=request_id, result=result)), flush=True)
                     request = json.loads(sys.stdin.readline())
                     assert request["method"] == "session/prompt"
+                    prompt = request["params"]["prompt"][0]["text"]
+                    assert prompt.startswith("repair prompt\\n\\n")
+                    assert "進捗と最終回答は日本語で書いてください。" in prompt
                     print(json.dumps(dict(jsonrpc="2.0", id=3, error={
                         "code": -32002, "data": {"reason": "model_not_available"},
                     })), flush=True)
@@ -76,7 +79,8 @@ class JunieDashboardAcpTests(unittest.TestCase):
                             self.assertEqual(completion.read_text(), "token")
                             self.assertEqual(commands[1], [
                                 "junie", "--project", str(root), "--ide-guidelines", str(root / "rules.md"),
-                                "--max-steps", "7", "--model", "sonnet", "--effort", "high", "--task", "repair prompt",
+                                "--max-steps", "7", "--model", "sonnet", "--effort", "high", "--task",
+                                "repair prompt\n\n" + junie_cli.DASHBOARD_PROGRESS_INSTRUCTION,
                             ])
                         else:
                             with self.assertRaises(junie_cli.JunieAcpModelUnavailable):
@@ -111,7 +115,9 @@ class JunieDashboardAcpTests(unittest.TestCase):
                     # Windows may spell the same directory with a short path or different casing.
                     assert Path(read()["params"]["cwd"]).samefile(Path.cwd())
                     send(id=2, result={"sessionId": "migration"})
-                    assert read()["params"]["prompt"][0]["text"] == "migration prompt"
+                    prompt = read()["params"]["prompt"][0]["text"]
+                    assert prompt.startswith("migration prompt\\n\\n")
+                    assert "判断の理由、次に行うことを日本語で" in prompt
                     send(method="session/update", params={"sessionId": "migration", "update": {
                         "sessionUpdate": "tool_call", "toolCallId": "tool", "title": "Inspect file",
                         "rawInput": {"command": "cat migration.txt"},

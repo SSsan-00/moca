@@ -62,6 +62,8 @@ const scriptStages = {
   before_build: 4, after_build: 4, before_checker: 5, after_checker: 5,
 };
 let snapshot = {status: "idle", ready: true};
+const junieLog = bindJunieLog(() => snapshot, tailJunieLog);
+junieLog.button.disabled = true;
 let selectedRunId = new URLSearchParams(location.search).get("run") || "";
 const runInputDrafts = new Map();
 let migrationCompletion;
@@ -183,6 +185,7 @@ function showNotice(message) {
 
 // 接続と実行状態に応じて、端末で受け付ける操作だけを有効にする。
 function syncActions() {
+  junieLog.button.disabled = !snapshot.run_id;
   const canAct = connected && snapshot.ready && !submitting;
   workspaceControls();
   const canReview = snapshot.status === "checker_needs_review";
@@ -548,6 +551,31 @@ function runFetch(path, options = {}) {
   const runId = selectedRunId;
   if (runId && !["workspace", "token-runs", "settings", "junie-models"].includes(path)) headers.set("X-Run-ID", runId);
   return fetch(path, {...options, headers});
+}
+
+function tailJunieLog(view) {
+  const url = new URL("junie-thoughts", location.href);
+  url.searchParams.set("run_id", view.run.run_id);
+  let cursor = 0;
+  async function poll() {
+    if (view.popup.closed) return;
+    let delay = 750;
+    try {
+      url.searchParams.set("cursor", cursor);
+      const response = await fetch(url, {cache: "no-store"});
+      if (!response.ok) throw new Error("Junie thought log is unavailable");
+      const batch = await response.json();
+      if (view.popup.closed) return;
+      const status = batch.live ? "追記を待機中" : "現在は追記なし";
+      renderJunieLog(view, {...batch, status: batch.live && (cursor || batch.entries.length) ? "追記を受信中" : status});
+      cursor = batch.cursor;
+      if (batch.more) delay = 0;
+    } catch {
+      renderJunieLog(view, {status: "ログを読み込めませんでした。接続を再試行しています。"});
+    }
+    if (!view.popup.closed) view.popup.setTimeout(poll, delay);
+  }
+  poll();
 }
 
 async function workspaceRequest(path, payload) {
