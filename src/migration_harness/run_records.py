@@ -152,14 +152,13 @@ def validate_run_id(run_id: str) -> None:
         raise ValueError("run ID must use its canonical UUID format")
 
 
-def load_saved_run(
+def _load_run_identity(
     config: dict[str, Any], run_id: str,
-) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
-    """保存済みのプロジェクト・移行先・作業場所を現在の設定と照合する。"""
+) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     validate_run_id(run_id)
     run_root = Path(config["run_root"]).resolve()
-    run_path = (run_root / run_id).resolve()
-    if run_path.parent != run_root or not run_path.is_dir():
+    run_path = run_root / run_id
+    if run_path.is_symlink() or not run_path.is_dir() or run_path.resolve() != run_path:
         raise ValueError(f"run directory not found under configured run_root: {run_id}")
     record_path = run_path / "run.json"
     if record_path.is_symlink() or not record_path.is_file():
@@ -178,10 +177,31 @@ def load_saved_run(
         tuple(Path(path) for path in saved_targets) != target_paths(unit)
     ):
         raise ValueError("configured targets differ from those recorded for this run")
+    return run_path, record, unit
+
+
+def _saved_worktree(config: dict[str, Any], run_id: str, record: dict[str, Any]) -> Path:
     worktree_root = Path(config["worktree_root"]).resolve()
     if not isinstance(record.get("worktree_path"), str):
         raise ValueError("run record is missing its worktree path")
     worktree_path = Path(record["worktree_path"]).resolve()
     if worktree_path.parent != worktree_root or worktree_path.name != run_id:
         raise ValueError("run worktree path does not match the configured worktree root and run ID")
+    return worktree_path
+
+
+def load_saved_run(
+    config: dict[str, Any], run_id: str,
+) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
+    """再開や編集に使用する、worktreeを持つRunを検証する。"""
+    run_path, record, unit = _load_run_identity(config, run_id)
+    worktree_path = _saved_worktree(config, run_id, record)
     return run_path, worktree_path, record, unit
+
+
+def load_dashboard_record(config: dict[str, Any], run_id: str) -> tuple[Path, dict[str, Any]]:
+    """一覧表示と非表示操作では、準備が終わらなかったRunも扱う。"""
+    run_path, record, _ = _load_run_identity(config, run_id)
+    if "worktree_path" in record or record["status"] not in {"preparation_failed", "preparation_interrupted"}:
+        _saved_worktree(config, run_id, record)
+    return run_path, record

@@ -2,6 +2,7 @@ import copy
 import io
 import json
 import subprocess
+import sys
 import time
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
@@ -180,6 +181,46 @@ class ParallelDashboardTests(HarnessCase):
         self.assertEqual([row["run_id"] for row in with_run.workspace()["runs"]], [retained])
         self.assertEqual(with_run.get(removed).state["status"], "prepared")
         self.assertEqual(target.read_text(encoding="utf-8"), "class Preserved {}\n")
+
+    def test_hide_preparation_failures_and_preserve_records(self):
+        (self.project / "source.php").unlink()
+        missing = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        self.settings["scripts"] = {"before_prepare": [[sys.executable, "-c", "raise SystemExit(3)"]]}
+        hook = self.manager.submit({"action": "prepare", "unit_id": "unit-1"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        with patch.object(workflow, "_validate_inputs", side_effect=KeyboardInterrupt):
+            self.settings.pop("scripts")
+            stopped = self.manager.submit({"action": "prepare", "unit_id": "unit-2"})["run_id"]
+            self.wait_until(lambda: not self.manager.busy)
+        self.assertEqual(self.manager.get(stopped).state["status"], "preparation_interrupted")
+        for run_id in (missing, hook, stopped):
+            with self.subTest(run_id=run_id):
+                path = Path(self.settings["run_root"]) / run_id
+                self.assertFalse((Path(self.settings["worktree_root"]) / run_id).exists())
+                self.manager.submit({"action": "hide-run", "run_id": run_id})
+                self.assertTrue(json.loads((path / "run.json").read_bytes())["hidden_from_dashboard"])
+        self.assertTrue((Path(self.settings["run_root"]) / hook / "before_prepare.log").is_file())
+        self.assertEqual(self.manager.workspace()["runs"], [])
+        self.manager.close()
+        restarted = RunManager(self.settings, dashboard.Dashboard())
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.workspace()["runs"], [])
+        self.assertEqual(restarted.get(stopped).state["status"], "preparation_interrupted")
+
+    def test_hide_does_not_write_a_foreign_preparation_record(self):
+        (self.project / "source.php").unlink()
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        path = Path(self.settings["run_root"]) / run_id / "run.json"
+        record = json.loads(path.read_bytes())
+        record["project_root"] = "other-project"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "configured project"):
+            self.manager.submit({"action": "hide-run", "run_id": run_id})
+        self.assertEqual(json.loads(path.read_bytes()), record)
+        with self.assertRaisesRegex(ValueError, "UUID"):
+            self.manager.hide_run("../another-run")
 
     def test_resume_cannot_duplicate_a_unit_already_running(self):
         old = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]

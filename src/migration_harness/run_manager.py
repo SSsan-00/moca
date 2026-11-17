@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import Thread
 
 from .config import find_unit
-from .run_records import edit_run_record, execution_lock, load_saved_run
+from .run_records import edit_run_record, execution_lock, load_dashboard_record, load_saved_run, validate_run_id
 
 
 class RunManager:
@@ -125,7 +125,7 @@ class RunManager:
             if not run_id:
                 return self.default
             if run_id not in self.views:
-                _, _, record, _ = load_saved_run(self.config, run_id)
+                _, record = load_dashboard_record(self.config, run_id)
                 view = type(self.default)()
                 view.condition = self.condition
                 view.observe(record)
@@ -162,10 +162,12 @@ class RunManager:
         return {"run_id": run_id}
 
     def hide_run(self, run_id):
-        record_path = Path(self.config["run_root"]) / run_id / "run.json"
+        validate_run_id(run_id)
+        candidate = Path(self.config["run_root"]).resolve() / run_id
+        record_path = candidate / "run.json"
         with execution_lock(self.config, run_id):
-            if record_path.exists():
-                run_path, _, _, _ = load_saved_run(self.config, run_id)
+            if candidate.is_symlink() or record_path.is_symlink() or record_path.exists():
+                run_path, _ = load_dashboard_record(self.config, run_id)
                 with edit_run_record(run_path / "run.json") as (_, changes):
                     changes["hidden_from_dashboard"] = True
             else:
@@ -260,7 +262,7 @@ class RunManager:
             hidden = set()
             for path in records:
                 try:
-                    _, _, record, _ = load_saved_run(self.config, path.parent.name)
+                    _, record = load_dashboard_record(self.config, path.parent.name)
                     if include_usage:
                         rows[path.parent.name] = {key: record[key] for key in ("run_id", "unit_id", "created_at", "token_usage") if key in record}
                     elif record.get("hidden_from_dashboard") is True:
