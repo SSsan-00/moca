@@ -360,3 +360,30 @@ class JunieConversationTests(SavedRunFixture):
             self.manager.start_pending()
             self.assertFalse(self.manager.busy)
             run.assert_not_called()
+
+    def test_saved_edits_and_junie_followup_request_the_existing_safe_handoff(self):
+        from migration_harness.editor_queue import LivePrompts
+
+        view = self.manager.get(self.run_id)
+        view.begin_operation()
+        self.save_record({**self.record(), "status": "repairing"})
+        view.observe(self.record())
+        self.save_edit("class Saved {}\n")
+        identifier, _ = self.send("保存した。これを踏まえて続けて")
+        self.assertIn("保存した編集と指示を合流", self.wait_for(identifier, "steering")["message"])
+        live = LivePrompts(self.run_path, interrupt_for_edits=True)
+        self.assertTrue(live.needs_handoff())
+        self.assertEqual(live.take(), ([], ""))
+        self.save_edit("class Revised {}\n")
+        self.assertIn("保存版が更新されました", self.wait_for(identifier, "failed")["message"])
+        self.assertFalse(live.needs_handoff())
+
+    def test_scope_change_only_reviews_the_edited_targets(self):
+        self.save_record({**self.record(), "verification": {
+            "target_hashes": {"Example.cs": hashlib.sha256(self.target.read_bytes()).hexdigest()},
+        }})
+        self.save_edit("class Draft {}\n")
+        with patch.object(workflow, "run_process") as run:
+            identifier, _ = self.send("残りは触らず、今の差分だけ確認して")
+            self.assertEqual(self.wait_for(identifier, "done")["review_targets"], ["Example.cs"])
+            run.assert_not_called()
