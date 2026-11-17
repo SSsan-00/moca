@@ -281,6 +281,7 @@ class JunieConversationTests(SavedRunFixture):
             verification = record["verification"]
             self.assertEqual(verification["configured_checker_command"], ["cli-checker"])
             self.assertIsNone(verification["checker_command"])
+            self.assertFalse(workflow.can_resume_run({**toml, "checker_command": None}, record))
             del verification["configured_checker_command"]
             self.save_record(record)
             self.assertFalse(workflow.migration_ledger(toml, self.run_id)["completion"]["verification_passed"])

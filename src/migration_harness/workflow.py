@@ -2333,9 +2333,10 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     if status in _CHECKER_RESUME_STATUSES:
         return command is not None and record.get("build_exit_code") == 0
     if status in VERIFIED_STATUSES or status in _BUILD_RESUME_STATUSES:
+        verification = record.get("verification") or {}
         checker_required = (
             status in {"checker_succeeded", "checker_accepted"}
-            or (record.get("verification") or {}).get("checker_command") is not None
+            or verification.get("configured_checker_command", verification.get("checker_command")) is not None
         )
         return not checker_required or command is not None
     return status in _JUNIE_RESUME_STATUSES
