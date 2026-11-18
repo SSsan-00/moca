@@ -272,8 +272,34 @@ def ci_ready(branch, head):
     return waiting
 
 
+def unique_json_object(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("Duplicate fields in Codex review state.")
+    return result
+
+
 def clean_review(comment, head):
     body = comment["body"]
+    marker = "<!-- codex-review-state:"
+    if marker in body:
+        if body.count(marker) != 1 or not body.startswith("<!-- codex-pull-request-review-summary -->\n"):
+            return False
+        match = re.search(r"^<!-- codex-review-state:v1 (.+) -->$", body, flags=re.MULTILINE)
+        if not match:
+            return False
+        try:
+            state = json.loads(match[1], object_pairs_hook=unique_json_object)
+        except ValueError:
+            return False
+        review = state.get("code_review") if isinstance(state, dict) else None
+        return (
+            isinstance(review, dict)
+            and review.get("commit_sha") == head
+            and review.get("status") == "completed"
+            and review.get("has_any_findings") is False
+            and review.get("has_unresolved_findings") is False
+        )
     matches = re.findall(r"(?:^Reviewed commit:|^\*\*Reviewed commit:\*\*) `([0-9a-f]{10,40})`$",
                          body, flags=re.MULTILINE)
     return body.startswith("Codex Review: Didn't find any major issues.") and bool(
