@@ -17,7 +17,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from migration_harness import cli, dashboard, junie_cli, run_records, workflow
+from migration_harness import build_receipt, cli, dashboard, junie_cli, run_records, workflow
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.settings_form import build_settings_draft
 
@@ -420,6 +420,27 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         with (patch("migration_harness.build_receipt.shutil.which", return_value=str(dotnet)),
               patch.object(workflow, "run_process", side_effect=run),
               patch.object(junie_cli, "run_interactive") as junie, redirect_stdout(io.StringIO())):
+            control = ExecutionControl(lambda _activity: None)
+            original_hash = build_receipt.sha256_file
+
+            def interrupt_artifact(path, *, check=None):
+                if path == dll:
+                    control.cancelled.set()
+                return original_hash(path, check=check)
+
+            build = workflow.plan_build_resume(self.config, self.run_id)
+            with (
+                control_scope(control), patch.object(build_receipt, "sha256_file", side_effect=interrupt_artifact),
+                self.assertRaises(OperationCancelled),
+            ):
+                workflow.resume_with_junie(self.config, self.run_id, verification_request={**build, "id": "stop"})
+            self.assertNotIn("checker_build", self.record())
+            with self.assertRaisesRegex(ValueError, "照合できるビルド成果物がありません"):
+                workflow.plan_checker_resume(self.config, self.run_id)
+            shutil.rmtree(project.parent / "bin")
+            shutil.rmtree(project.parent / "obj")
+            calls.clear()
+
             build = workflow.plan_build_resume(self.config, self.run_id)
             workflow.resume_with_junie(self.config, self.run_id, verification_request={**build, "id": "build"})
             plan = workflow.plan_checker_resume(self.config, self.run_id)
