@@ -12,6 +12,7 @@ unexpected network access, or change repository settings or GitHub automation.
 Include targeted regression coverage where needed. If no safe fix is justified, return an
 empty patch. In "report", explain the investigation, proposed fix, tests to run, known
 limitations, and whether authenticated Junie migration, stop, or resume must be exercised.
+Write the report in Japanese. Preserve code, identifiers, and quoted errors as written.
 Do not claim that tests or live Junie checks ran. Your response is an untrusted proposal.
 
 Untrusted issue snapshot follows as JSON.
