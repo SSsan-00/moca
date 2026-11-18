@@ -102,7 +102,7 @@ class JunieLaunchTests(unittest.TestCase):
         restored.assert_called_once_with()
 
     def test_launch_error_keeps_chain_and_redacts_prompts_and_authentication(self):
-        command = ["junie", "--auth", "secret-token", "--prompt", 'private "prompt"\nsecond line']
+        command = ["junie", "--auth", "secret-token", "--prompt", 'synthetic-confidential "prompt"\nsecond line']
         executable = os.path.abspath("Junie Tools/junie.exe")
 
         def fail(*args, **kwargs):
@@ -121,7 +121,7 @@ class JunieLaunchTests(unittest.TestCase):
         for report in (str(failed.exception), format_error(failed.exception)):
             for expected in ("PermissionError", "OSError", "Traceback", "direct cause", executable, "CWD:", "--auth", "--prompt"):
                 self.assertIn(expected, report)
-            for private in ("secret-token", "private", "second line", "unrelated-secret", "UNRELATED_PRIVATE_ENV"):
+            for private in ("secret-token", "synthetic-confidential", "second line", "unrelated-secret", "UNRELATED_PRIVATE_ENV"):
                 self.assertNotIn(private, report)
 
     def test_windows_batch_transports_prompt_project_and_guidelines_outside_cmd_text(self):

@@ -621,73 +621,84 @@ async function readReferencePreview(content, unit, request_id, onEvent) {
   }
 }
 
-const resumeDialog = document.querySelector("#resume-stage-dialog");
-const resumeStage = document.querySelector("#resume-stage");
-const resumeRewind = document.querySelector("#resume-rewind");
-const resumeThrough = document.querySelector("#resume-through");
-const resumeSummary = document.querySelector("#resume-stage-summary");
-const resumePreview = document.querySelector("#resume-stage-preview");
-const resumeStart = document.querySelector("#resume-stage-start");
-let resumeRunID, resumePlan, resumeGeneration = 0;
+let openResumeStage;
 
-function clearResumePlan() {
-  resumeGeneration++;
-  resumePlan = undefined;
-  resumeStart.disabled = true;
-  resumePreview.disabled = false;
-  resumeSummary.textContent = "";
-  document.querySelector("#resume-capsules").hidden = resumeStage.value !== "migration";
+function bindResumeStage() {
+  const resumeDialog = document.querySelector("#resume-stage-dialog");
+  const resumeStage = document.querySelector("#resume-stage");
+  const resumeRewind = document.querySelector("#resume-rewind");
+  const resumeThrough = document.querySelector("#resume-through");
+  const resumeSummary = document.querySelector("#resume-stage-summary");
+  const resumePreview = document.querySelector("#resume-stage-preview");
+  const resumeStart = document.querySelector("#resume-stage-start");
+  let resumeRunID, resumePlan, resumeGeneration = 0;
+
+  function clearResumePlan() {
+    resumeGeneration++;
+    resumePlan = undefined;
+    resumeStart.disabled = true;
+    resumePreview.disabled = false;
+    resumeSummary.textContent = "";
+    document.querySelector("#resume-capsules").hidden = resumeStage.value !== "migration";
+  }
+  for (const field of [resumeStage, resumeRewind, resumeThrough]) field.addEventListener("input", clearResumePlan);
+  resumeDialog.addEventListener("close", clearResumePlan);
+  resumePreview.addEventListener("click", async () => {
+    clearResumePlan();
+    const generation = resumeGeneration;
+    const payload = {run_id: resumeRunID, start_stage: resumeStage.value};
+    if (resumeStage.value === "migration") {
+      for (const [key, field] of [["rewind_to", resumeRewind], ["through_capsule", resumeThrough]]) {
+        if (!field.reportValidity()) return;
+        if (field.value) payload[key] = field.valueAsNumber;
+      }
+    }
+    resumePreview.disabled = true;
+    resumeSummary.textContent = "保存版を確認しています。";
+    try {
+      const plan = await workspaceRequest("resume-plan?" + new URLSearchParams(payload));
+      if (generation !== resumeGeneration) return;
+      const labels = {build: "ビルド", checker: "チェッカー", later_capsules: "後続区間", reviews: "レビュー"};
+      resumeSummary.textContent = [
+        `保存版 ${plan.version.slice(0, 12)}`,
+        plan.capsule_range ? `区間 ${plan.capsule_range.join("〜")}` : "",
+        plan.rewind_to ? "巻き戻し前の版を保存します。" : "",
+        plan.repair ? "検証時に自動修正あり" : "自動修正なし",
+        `無効になる記録  ${plan.invalidates.map(item => labels[item]).join("、")}`,
+        ...Object.entries(plan.targets || {}).map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}`),
+      ].filter(Boolean).join("\n");
+      resumePlan = {...payload, plan_version: plan.version};
+      resumeStart.disabled = false;
+    } catch (error) {
+      if (generation === resumeGeneration) resumeSummary.textContent = error.message;
+    } finally {
+      if (generation === resumeGeneration) resumePreview.disabled = false;
+    }
+  });
+  resumeStart.addEventListener("click", async () => {
+    if (!resumePlan) return;
+    const generation = resumeGeneration;
+    const payload = resumePlan;
+    resumeStart.disabled = true;
+    resumePlan = undefined;
+    try {
+      await workspaceRequest("control", {action: "resume-run", revision: dashboardRevision, ...payload});
+      if (generation === resumeGeneration) {
+        resumeDialog.close();
+        window.harnessRuns.sync();
+      }
+    } catch (error) {
+      if (generation === resumeGeneration) resumeSummary.textContent = error.message;
+    }
+  });
+  return runID => {
+    resumeRunID = runID;
+    resumeStage.value = "migration";
+    resumeRewind.value = resumeThrough.value = "";
+    clearResumePlan();
+    resumeDialog.showModal();
+  };
 }
-for (const field of [resumeStage, resumeRewind, resumeThrough]) field.addEventListener("input", clearResumePlan);
-resumeDialog.addEventListener("close", clearResumePlan);
-resumePreview.addEventListener("click", async () => {
-  clearResumePlan();
-  const generation = resumeGeneration;
-  const payload = {run_id: resumeRunID, start_stage: resumeStage.value};
-  if (resumeStage.value === "migration") {
-    for (const [key, field] of [["rewind_to", resumeRewind], ["through_capsule", resumeThrough]]) {
-      if (!field.reportValidity()) return;
-      if (field.value) payload[key] = field.valueAsNumber;
-    }
-  }
-  resumePreview.disabled = true;
-  resumeSummary.textContent = "保存版を確認しています。";
-  try {
-    const plan = await workspaceRequest("resume-plan?" + new URLSearchParams(payload));
-    if (generation !== resumeGeneration) return;
-    const labels = {build: "ビルド", checker: "チェッカー", later_capsules: "後続区間", reviews: "レビュー"};
-    resumeSummary.textContent = [
-      `保存版 ${plan.version.slice(0, 12)}`,
-      plan.capsule_range ? `区間 ${plan.capsule_range.join("〜")}` : "",
-      plan.rewind_to ? "巻き戻し前の版を保存します。" : "",
-      plan.repair ? "検証時に自動修正あり" : "自動修正なし",
-      `無効になる記録  ${plan.invalidates.map(item => labels[item]).join("、")}`,
-      ...Object.entries(plan.targets || {}).map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}`),
-    ].filter(Boolean).join("\n");
-    resumePlan = {...payload, plan_version: plan.version};
-    resumeStart.disabled = false;
-  } catch (error) {
-    if (generation === resumeGeneration) resumeSummary.textContent = error.message;
-  } finally {
-    if (generation === resumeGeneration) resumePreview.disabled = false;
-  }
-});
-resumeStart.addEventListener("click", async () => {
-  if (!resumePlan) return;
-  const generation = resumeGeneration;
-  const payload = resumePlan;
-  resumeStart.disabled = true;
-  resumePlan = undefined;
-  try {
-    await workspaceRequest("control", {action: "resume-run", revision: dashboardRevision, ...payload});
-    if (generation === resumeGeneration) {
-      resumeDialog.close();
-      window.harnessRuns.sync();
-    }
-  } catch (error) {
-    if (generation === resumeGeneration) resumeSummary.textContent = error.message;
-  }
-});
 
 bindHarnessWorkspace({
   preparationChat: true,
@@ -701,11 +712,8 @@ bindHarnessWorkspace({
   execute: async (action, payload) => {
     if (action === "open-run") return connectRun(payload.run_id);
     if (action === "resume-stage") {
-      resumeRunID = payload.run_id;
-      resumeStage.value = "migration";
-      resumeRewind.value = resumeThrough.value = "";
-      clearResumePlan();
-      resumeDialog.showModal();
+      openResumeStage ??= bindResumeStage();
+      openResumeStage(payload.run_id);
       return;
     }
     if (action === "resume-build") {
