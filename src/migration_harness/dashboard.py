@@ -613,126 +613,133 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         payload.update(run_id=run_id, can_prompt=True, status_only=True,
                                        conversation=manager.conversations.preparation_replies(run_id, state))
                 else:
-                    if action is not None and action.get("run_id") != run_id:
-                        raise ValueError("表示中の実行が変わりました。")
-                    run_path, worktree, record, unit = load_saved_run(config, run_id)
-                    versions = None
-                    if action is None:
-                        versions = self.editor_view_versions(query, state, run_id, run_path, worktree, record, unit)
-                        view_version, content_version, _, _ = versions
-                        if content_version and query.get("view_version") == [view_version]:
-                            self.send_body(200, "application/json", b'{"unchanged":true}')
-                            return
-                    with editor_queue(run_path) as queue:
-                        state = self.dashboard.state
-                        if state.get("run_id") != run_id:
-                            raise ValueError("表示中の実行が変わりました。")
-                        _, worktree, record, unit = load_saved_run(config, run_id)
-                        targets = tuple(path for path in target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
-                        names = [path.as_posix() for path in targets]
-                        name = query.get("target", names[:1] or [None])[0]
-                        if action is not None and action.get("kind") == "save":
-                            name = action.get("target")
-                            if name not in names:
-                                raise ValueError("設定された移行先ファイルを選んでください。")
-                        elif name is not None and name not in names:
-                            raise ValueError("設定された移行先ファイルを選んでください。")
-                        phase = record["status"]
-                        agent_root = run_path / "agent-workspace"
-                        if agent_root.is_symlink():
-                            raise ValueError("Junie の作業場所がシンボリックリンクです。")
-                        from_agent = phase in AGENT_PHASES and agent_root.is_dir()
-                        root = agent_root if from_agent else worktree
-                        busy_other = state.get("generating_anchors") or state.get("stop_requested")
-                        queued = bool(queue["edits"] or not state.get("ready") or busy_other or phase in AGENT_PHASES)
-                        prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
-                                                      live=bool(self.dashboard.control and self.dashboard.control.junie_steering
-                                                                and not queue["edits"]))
-                        read_error = None
-                        try:
-                            original, content = editor_target(root, Path(name)) if name else (None, "")
-                        except (OSError, ValueError) as exc:
-                            if action is not None and action.get("kind") == "save":
-                                raise
-                            original, content = None, ""
-                            read_error = format_error(exc)
-                        edit = queue["edits"].get(name)
-                        if action is not None:
-                            if action.get("kind") == "prompt" and prompt_timing:
-                                add_prompt(queue, action)
-                            elif action.get("kind") == "save" and name:
-                                base = editor_text(action.get("base"))
-                                draft = editor_text(action.get("content"))
-                                if action.get("edit_id") != (edit["id"] if edit else None):
-                                    raise ValueError("保存済みの編集が別の画面で変更されました。")
-                                # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
-                                with worktree_source_lock, self.dashboard.condition:
-                                    state = self.dashboard.state
-                                    if state.get("run_id") != run_id:
-                                        raise ValueError("表示中の実行が変わりました。")
-                                    # 保存直前に実行が始まった場合も、編集をRunへ退避する。
-                                    busy_other = state.get("generating_anchors") or state.get("stop_requested")
-                                    queued = bool(queued or not state.get("ready") or busy_other or content != base)
-                                    if queued:
-                                        if edit and edit["status"] == "conflict" and (
-                                            not action.get("resolve") or base != content
-                                        ):
-                                            raise ValueError("最新版との差分を確認し、競合を解消して保存してください。")
-                                        edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
-                                        queue["edits"][name] = edit
-                                        prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
-                                    else:
-                                        save_target_edit(worktree, targets, {
-                                            "target": name, "version": hashlib.sha256(original).hexdigest() if original is not None else None,
-                                            "content": draft,
-                                        })
-                                        record_operator_edit(queue, name, content, draft)
-                                        original, content = editor_target(worktree, Path(name))
-                                    queue["edit_revision"] = secrets.token_hex(12)
-                                    invalidate_queued_steering(queue)
-                            else:
-                                raise ValueError("現在の工程ではこの操作を受け付けられません。")
-                        payload = {
-                            "run_id": run_id, "targets": names, "target": name, "content": content, "edit": edit,
-                            "source": "agent-workspace" if from_agent else "worktree",
-                            "can_save": bool(name and read_error is None), "queued": queued,
-                            "save_timing": ("repair_restart" if phase == "repairing" and not state.get("ready") and not busy_other
-                                            else "checkpoint" if queued and not state.get("ready") and not busy_other
-                                            and phase in QUEUE_PHASES else "resume" if queued else "immediate"),
-                            "exists": original is not None, "read_error": read_error,
-                            "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,
-                            "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
-                            "status": phase, "operator_question": record.get("operator_question"),
-                        }
-                        if name and from_agent and (draft := record.get("stopped_migration_draft")):
-                            payload["stopped_draft"] = True
-                            with suppress(OSError, ValueError):
-                                adopted, text = editor_target(worktree, Path(name))
-                                digest = hashlib.sha256(adopted).hexdigest() if adopted is not None else None
-                                payload["comparison_content"] = text
-                                payload["comparison_label"] = ("採用済みとの差分" if digest == draft["base"].get(name)
-                                                               else "作業ツリーとの差分")
-                        if manager:
-                            conversation = manager.conversations.preparation_replies(run_id, state) + queue.get("conversation", [])
-                            payload.update(conversation=sorted(conversation, key=lambda entry: entry.get("received_at", "")),
-                                           can_prompt=True)
-                        if versions and versions[2:] == (root, name):
-                            view_version, content_version = versions[:2]
-                            if read_error is not None:
-                                content_version = None
-                            payload.update(view_version=view_version if content_version else None, content_version=content_version)
-                            edit_version = _editor_version(run_id, name, edit)
-                            payload["edit_version"] = edit_version
-                            if content_version and query.get("content_version") == [content_version]:
-                                del payload["content"]
-                            if query.get("edit_version") == [edit_version]:
-                                del payload["edit"]
-                            with self.dashboard.condition:
-                                _editor_history_delta(payload, query.get("history_version", [None])[0],
-                                                      self.dashboard.editor_history_versions)
+                    payload = self.editor_payload(query, state, run_id, action)
+                    if payload is None:
+                        self.send_body(200, "application/json", b'{"unchanged":true}')
+                        return
                 self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             except _ERRORS as exc:
                 self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
+
+        def editor_payload(self, query, state, run_id, action):
+            """取得または版を照合して保存し、キューの更新を完了してから内容を返す。"""
+            if action is not None and action.get("run_id") != run_id:
+                raise ValueError("表示中の実行が変わりました。")
+            run_path, worktree, record, unit = load_saved_run(config, run_id)
+            versions = None
+            if action is None:
+                versions = self.editor_view_versions(query, state, run_id, run_path, worktree, record, unit)
+                view_version, content_version, _, _ = versions
+                if content_version and query.get("view_version") == [view_version]:
+                    return None
+            with editor_queue(run_path) as queue:
+                state = self.dashboard.state
+                if state.get("run_id") != run_id:
+                    raise ValueError("表示中の実行が変わりました。")
+                _, worktree, record, unit = load_saved_run(config, run_id)
+                targets = tuple(path for path in target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
+                names = [path.as_posix() for path in targets]
+                name = query.get("target", names[:1] or [None])[0]
+                if action is not None and action.get("kind") == "save":
+                    name = action.get("target")
+                    if name not in names:
+                        raise ValueError("設定された移行先ファイルを選んでください。")
+                elif name is not None and name not in names:
+                    raise ValueError("設定された移行先ファイルを選んでください。")
+                phase = record["status"]
+                agent_root = run_path / "agent-workspace"
+                if agent_root.is_symlink():
+                    raise ValueError("Junie の作業場所がシンボリックリンクです。")
+                from_agent = phase in AGENT_PHASES and agent_root.is_dir()
+                root = agent_root if from_agent else worktree
+                busy_other = state.get("generating_anchors") or state.get("stop_requested")
+                queued = bool(queue["edits"] or not state.get("ready") or busy_other or phase in AGENT_PHASES)
+                prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
+                                              live=bool(self.dashboard.control and self.dashboard.control.junie_steering
+                                                        and not queue["edits"]))
+                read_error = None
+                try:
+                    original, content = editor_target(root, Path(name)) if name else (None, "")
+                except (OSError, ValueError) as exc:
+                    if action is not None and action.get("kind") == "save":
+                        raise
+                    original, content = None, ""
+                    read_error = format_error(exc)
+                edit = queue["edits"].get(name)
+                if action is not None:
+                    if action.get("kind") == "prompt" and prompt_timing:
+                        add_prompt(queue, action)
+                    elif action.get("kind") == "save" and name:
+                        base = editor_text(action.get("base"))
+                        draft = editor_text(action.get("content"))
+                        if action.get("edit_id") != (edit["id"] if edit else None):
+                            raise ValueError("保存済みの編集が別の画面で変更されました。")
+                        # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
+                        with worktree_source_lock, self.dashboard.condition:
+                            state = self.dashboard.state
+                            if state.get("run_id") != run_id:
+                                raise ValueError("表示中の実行が変わりました。")
+                            # 保存直前に実行が始まった場合も、編集をRunへ退避する。
+                            busy_other = state.get("generating_anchors") or state.get("stop_requested")
+                            queued = bool(queued or not state.get("ready") or busy_other or content != base)
+                            if queued:
+                                if edit and edit["status"] == "conflict" and (
+                                    not action.get("resolve") or base != content
+                                ):
+                                    raise ValueError("最新版との差分を確認し、競合を解消して保存してください。")
+                                edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
+                                queue["edits"][name] = edit
+                                prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
+                            else:
+                                save_target_edit(worktree, targets, {
+                                    "target": name, "version": hashlib.sha256(original).hexdigest() if original is not None else None,
+                                    "content": draft,
+                                })
+                                record_operator_edit(queue, name, content, draft)
+                                original, content = editor_target(worktree, Path(name))
+                            queue["edit_revision"] = secrets.token_hex(12)
+                            invalidate_queued_steering(queue)
+                    else:
+                        raise ValueError("現在の工程ではこの操作を受け付けられません。")
+                payload = {
+                    "run_id": run_id, "targets": names, "target": name, "content": content, "edit": edit,
+                    "source": "agent-workspace" if from_agent else "worktree",
+                    "can_save": bool(name and read_error is None), "queued": queued,
+                    "save_timing": ("repair_restart" if phase == "repairing" and not state.get("ready") and not busy_other
+                                    else "checkpoint" if queued and not state.get("ready") and not busy_other
+                                    and phase in QUEUE_PHASES else "resume" if queued else "immediate"),
+                    "exists": original is not None, "read_error": read_error,
+                    "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,
+                    "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
+                    "status": phase, "operator_question": record.get("operator_question"),
+                }
+                if name and from_agent and (draft := record.get("stopped_migration_draft")):
+                    payload["stopped_draft"] = True
+                    with suppress(OSError, ValueError):
+                        adopted, text = editor_target(worktree, Path(name))
+                        digest = hashlib.sha256(adopted).hexdigest() if adopted is not None else None
+                        payload["comparison_content"] = text
+                        payload["comparison_label"] = ("採用済みとの差分" if digest == draft["base"].get(name)
+                                                       else "作業ツリーとの差分")
+                if manager:
+                    conversation = manager.conversations.preparation_replies(run_id, state) + queue.get("conversation", [])
+                    payload.update(conversation=sorted(conversation, key=lambda entry: entry.get("received_at", "")),
+                                   can_prompt=True)
+                if versions and versions[2:] == (root, name):
+                    view_version, content_version = versions[:2]
+                    if read_error is not None:
+                        content_version = None
+                    payload.update(view_version=view_version if content_version else None, content_version=content_version)
+                    edit_version = _editor_version(run_id, name, edit)
+                    payload["edit_version"] = edit_version
+                    if content_version and query.get("content_version") == [content_version]:
+                        del payload["content"]
+                    if query.get("edit_version") == [edit_version]:
+                        del payload["edit"]
+                    with self.dashboard.condition:
+                        _editor_history_delta(payload, query.get("history_version", [None])[0],
+                                              self.dashboard.editor_history_versions)
+            return payload
 
         def send_checker_output(self) -> None:
             """最新チェッカー結果と対象版を返す。"""
