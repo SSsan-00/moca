@@ -120,6 +120,31 @@ class ParallelDashboardTests(HarnessCase):
         self.assertTrue(self.manager.get(run_id).state["ready"])
         self.assertFalse(self.manager.get(run_id).state["generating_anchors"])
 
+    def test_first_normal_run_queue_save_retries_without_starting_early(self):
+        write_failed, recovered = Event(), Event()
+        persist = self.manager.persist
+
+        def write():
+            if not recovered.is_set():
+                write_failed.set()
+                raise PermissionError("queue disk unavailable")
+            return persist()
+
+        post, _ = self.open_http_dashboard()
+        with patch.object(self.manager, "persist", side_effect=write):
+            status, response = post("control", {"action": "run", "unit_id": "unit-0", "revision": 0})
+            self.assertEqual(status, 202)
+            self.assertTrue(write_failed.is_set())
+            self.assertFalse(self.started[0].is_set())
+            self.assertTrue(self.manager.row(self.manager.get(response["run_id"]))["queue_saving"])
+            recovered.set()
+            try:
+                self.assertTrue(self.started[0].wait(6))
+            finally:
+                self.release[0].set()
+            self.wait_until(lambda: not self.manager.busy)
+        self.assertEqual(self.manager.results[response["run_id"]]["status"], "build_succeeded")
+
     def test_a_started_anchor_job_keeps_its_own_reply(self):
         self.settings["diff_viewer_html"] = "viewer.html"
         run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]

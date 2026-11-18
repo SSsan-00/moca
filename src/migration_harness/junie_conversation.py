@@ -50,6 +50,7 @@ FORBID_REPAIR = re.compile(
     r"|\b(?:do not|don't|without|never)\s+(?:fix|edit|modify|repair)\b",
 )
 REPAIR_REQUEST = re.compile(r"(?<!やり)直して|修正して|合わせて|同じ.*(?:にして|使って)|既定値にして|\bfix\b")
+CHECKER_FINDINGS = re.compile(r"指摘|チェッカーの(?:出力|結果|エラー)|checker (?:findings|output|results?)")
 BUILD_FAILURE_REPAIR = re.compile(
     r"(?:失敗|エラー|通らなかっ|失敗し|エラーがあ)(?:したら|たら|なら|れば|ったら|の場合|場合)"
     r"[^。.!！\n]*(?:直して|修正して)|\bif (?:it|the build) fails[,]?\s+(?:fix|repair)\b",
@@ -161,11 +162,15 @@ def _intent(text, phase):
             return ("stop_build_repair" if repair_on_failure else "clarify") if repair else "stop_build"
         return "clarify"
     if build or checker:
+        if re.search(r"\b(?:if|unless|when|after)\b", value) and not repair_on_failure:
+            return "clarify"
         requests = re.findall(VERIFICATION_REQUEST, value)
         if not requests:
             return "clarify"
         if any(re.search(CHECKER_TERM, request) for request in requests):
-            return "checker_repair" if repair else "checker"
+            if repair:
+                return "checker_repair" if CHECKER_FINDINGS.search(value) and not repair_on_failure else "clarify"
+            return "checker"
         if repair:
             return "build_repair" if repair_on_failure else "clarify"
         return "build"
@@ -536,8 +541,11 @@ class JunieConversations:
                     continue
                 if intent in {"clarify", "stop"}:
                     question = "ビルドだけですか？ チェッカーまで実行しますか？"
-                    if _conditional_verification(unicodedata.normalize("NFKC", entry["text"]).lower()):
-                        question = "実行条件を確定できません。条件を付けずに依頼する場合は、ビルドだけですか？ チェッカーまで実行しますか？"
+                    value = unicodedata.normalize("NFKC", entry["text"]).lower()
+                    if _conditional_verification(value) or re.search(r"\b(?:if|unless|when|after)\b", value):
+                        question = "実行条件を確定できません。条件を付けずに検証する場合は「ビルドだけ」か「チェッカーまで」、取り消す場合は「キャンセル」と答えてください。"
+                    elif REPAIR_REQUEST.search(value):
+                        question = "編集と検証の順序を確認できません。編集なしで検証する場合は「ビルドだけ」か「チェッカーまで」、指示を出し直す場合は「キャンセル」と答えてください。"
                     entry.update(status="clarification", message=question, question=question)
                 elif intent == "unsupported":
                     _finish(entry, "failed", "この欄では移行先の編集指示と設定済みのビルド・チェッカーを受け付けます。")
