@@ -1856,7 +1856,7 @@ def _recover_selected_repair(run_path, worktree, targets, record):
                     or not draft["targets"].keys() <= names or not draft["workspace_unchanged"]
                     or restoring and attempt["restore_from"].keys() != draft["targets"].keys()):
                 raise ValueError("停止時の下書きと設定の対象範囲が一致しません。")
-            if agent_root.is_symlink() or not agent_root.is_dir():
+            if agent_root.is_symlink() or not agent_root.is_dir() or not agent_root.resolve().is_relative_to(run_path):
                 raise ValueError("Junie 作業領域を確認してください。")
             snapshot = _verified_repair_snapshot(run_path, draft)
             agent_files = {name: safe_target(agent_root, Path(name)) for name in snapshot}
