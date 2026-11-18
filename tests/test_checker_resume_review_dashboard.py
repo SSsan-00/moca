@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from migration_harness import cli, dashboard, junie_cli, run_records, workflow
-from migration_harness.execution import ExecutionControl, control_scope
+from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.settings_form import build_settings_draft
 
 
@@ -488,6 +488,55 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                     self.assertEqual(repair.call_count, 2)
                     self.assertEqual(len(self.record()["repair_history"]), 1)
                     self.assertNotIn("repair_pending", self.record())
+
+    def test_stop_preserves_missing_and_partial_repair_targets_and_detects_manual_conflict(self):
+        names = ["Example.cs", "Second.cs"]
+        self.config["units"][0]["targets"] = names
+        self.config["max_repair_attempts"] = 1
+        (self.worktree / names[1]).write_text("class SecondOriginal {}\n", encoding="utf-8")
+        self.save_record({**self.record(), "targets": names})
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        partial = b"class Partial {\xff"
+        responses = (
+            ("dotnet", 0, b"build passed\n"),
+            ("fixture-checker", 1, b"A Example.cs:1 error: first\nB Second.cs:1 error: second\n"),
+        )
+
+        def interrupt(_command, _completion, _token, targets, **kwargs):
+            targets[0].write_bytes(partial)
+            targets[1].unlink()
+            raise OperationCancelled("test stop")
+
+        def verify_input(_command, _completion, _token, targets, **kwargs):
+            self.assertEqual(targets[0].read_bytes(), partial)
+            self.assertFalse(targets[1].exists())
+            raise OperationCancelled("test stop after inspecting")
+
+        with patch.object(junie_cli, "require_interactive_cli"):
+            with patch.object(junie_cli, "run_interactive", side_effect=interrupt):
+                with self.assertRaises(workflow.RunInterrupted):
+                    self.resume(*responses)
+            draft = self.record()["repair_pending"]["draft"]
+            snapshot = self.run_path / draft["snapshot"]
+            self.assertEqual((snapshot / "0.draft").read_bytes(), partial)
+            self.assertEqual(json.loads((snapshot / "draft.json").read_text())["targets"][names[1]], None)
+            self.assertFalse((snapshot / "1.draft").exists())
+            self.assertEqual(self.record()["repair_history"], [])
+            with patch.object(junie_cli, "run_interactive", side_effect=verify_input) as junie:
+                with self.assertRaises(workflow.RunInterrupted):
+                    self.resume(*responses)
+                junie.assert_called_once()
+            manual = b"class SavedByOperator {}\n"
+            self.target.write_bytes(manual)
+            with patch.object(junie_cli, "run_interactive") as junie:
+                self.resume(*responses)
+                junie.assert_not_called()
+        self.assertEqual(self.target.read_bytes(), manual)
+        self.assertEqual((agent / names[0]).read_bytes(), partial)
+        self.assertEqual((snapshot / "0.draft").read_bytes(), partial)
+        self.assertIn("停止時の下書き", self.record()["error"])
+        self.assertEqual(self.record()["repair_history"], [])
 
     def test_usage_save_failure_preserves_only_unconfirmed_repairs_for_explicit_resume(self):
         self.config["max_repair_attempts"] = 2

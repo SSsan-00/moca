@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 
 
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
+ACP_TIMEOUT = 30
 DASHBOARD_PROGRESS_INSTRUCTION = (
     "進捗と最終回答は日本語で書いてください。重要な確認や変更に進むときは、"
     "確認できた事実、判断の理由、次に行うことを日本語で1〜2文にまとめて利用者に伝えてください。"
@@ -424,6 +426,10 @@ class _JunieSessionEvents:
         self.path: Path | None = None
         self.task: str | None = None
         self.result: str | None = None
+        self.steering_tokens: set[str] = set()
+        self.finished_steering: set[str] = set()
+        self._prompt_steering: str | None = None
+        self._task_steering: str | None = None
         self.usage = [0] * len(USAGE_FIELDS)
         self.last_event_at: float | None = None
 
@@ -576,9 +582,16 @@ class _JunieSessionEvents:
                         self.path = path
                     if self.path != path:
                         continue
+                    if kind == "UserPromptEvent":
+                        prompt = entry.get("prompt")
+                        self._prompt_steering = next(
+                            (token for token in self.steering_tokens if token in prompt), None,
+                        ) if isinstance(prompt, str) else None
                     if kind == "TaskStartedEvent":
                         self.task = entry.get("taskId")
                         self.result = None
+                        self._task_steering = self._prompt_steering
+                        self._prompt_steering = None
                     # 同じセッション内でも、別タスクの結果や通信失敗を今回のものとして扱わない。
                     if entry.get("taskId") is not None and entry.get("taskId") != self.task:
                         continue
@@ -595,6 +608,8 @@ class _JunieSessionEvents:
                             and isinstance(agent.get("result"), str)
                         ):
                             self.result = agent["result"]
+                            if self._task_steering:
+                                self.finished_steering.add(self._task_steering)
                     self.last_event_at = time.monotonic()
                     message = _event_activity(entry)
                     # 1回の読取で同じ状況通知はまとめるが、使用量は応答ごとに集計する。
@@ -755,6 +770,7 @@ class _SteeringRequest:
     receipt: Path
     token: str
     accepted: bool = False
+    new_turn: bool = False
 
 
 class _AcpSession:
@@ -770,10 +786,13 @@ class _AcpSession:
         self.project = project
         self.show_request = show_request
         self.messages: Queue[bytes] = Queue()
+        self.outgoing: Queue[tuple[bytes, Future[None]] | None] = Queue()
+        self.writes: deque[tuple[float, Future[None]]] = deque()
         self.session_id = None
         self.tool_calls: dict[str, dict] = {}
         self.pending: tuple[int | str, Future[str]] | None = None
-        self.startup_deadline = time.monotonic() + 30
+        self.startup_deadline = time.monotonic() + ACP_TIMEOUT
+        self.permission_started = 0.0
         self.prompts = prompts
         self.completion_path = completion_path
         self.token = token
@@ -786,7 +805,9 @@ class _AcpSession:
         self.steering_new_turn = False
         # stdoutの行待ちを別スレッドに任せ、監視側は停止要求や許可への回答を確認し続ける。
         self.reader = Thread(target=self._read, daemon=True)
+        self.writer = Thread(target=self._write, daemon=True)
         self.reader.start()
+        self.writer.start()
 
     def _read(self) -> None:
         """標準出力から次のACPメッセージを読み取る。"""
@@ -798,9 +819,29 @@ class _AcpSession:
             self.messages.put(b"")
 
     def send(self, **message: Any) -> None:
-        """ACPメッセージをJunieへ送信する。"""
-        self.process.stdin.write((json.dumps({"jsonrpc": "2.0", **message}) + "\n").encode("utf-8"))
-        self.process.stdin.flush()
+        """監視を止めず、送信順にACPメッセージを登録する。"""
+        data = (json.dumps({"jsonrpc": "2.0", **message}) + "\n").encode("utf-8")
+        written: Future[None] = Future()
+        self.writes.append((time.monotonic() + ACP_TIMEOUT, written))
+        self.outgoing.put((data, written))
+
+    def _write(self) -> None:
+        """ブロックし得る書込みとパイプのクローズを送信側だけで行う。"""
+        try:
+            while (item := self.outgoing.get()) is not None:
+                data, written = item
+                try:
+                    self.process.stdin.write(data)
+                    self.process.stdin.flush()
+                except OSError as exc:
+                    written.set_exception(exc)
+                    return
+                written.set_result(None)
+        finally:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
 
     def request(self, request_id: int, method: str, **params: Any) -> None:
         """応答を待つACPリクエストを送信する。"""
@@ -822,7 +863,7 @@ class _AcpSession:
         self.next_request_id += 1
         self.steering_requests[request_id] = _SteeringRequest(identifiers, receipt, token)
         self.steering_waiting = request_id
-        self.steering_deadline = time.monotonic() + 30
+        self.steering_deadline = time.monotonic() + ACP_TIMEOUT
         # 元の完了記録との競合を避け、追加指示にも今回専用の完了記録を要求する。
         instruction = (
             "Operator follow-up for the current task. Apply this instruction now, within the original "
@@ -844,6 +885,16 @@ class _AcpSession:
             and has_completion_record(request.receipt, request.token)
             for request in self.steering_requests.values()
         )
+
+    def check_steering_turns(self, events: _JunieSessionEvents, *, exited: bool = False) -> None:
+        """終わった追加ターンに反映の証拠がなければ確認待ちに戻す。"""
+        for request in self.steering_requests.values():
+            if request.new_turn and (exited or request.token in events.finished_steering):
+                if (has_symlink_component(self.project, request.receipt.relative_to(self.project))
+                        or not has_completion_record(request.receipt, request.token)):
+                    raise JunieSessionError(
+                        self.command, 1, "追加ターンが完了記録を残さず終了しました。指示を送信待ちに戻します。",
+                    )
 
     def finish_prompts(self, success: bool) -> None:
         """配信済み追加指示の処理結果を確定する。"""
@@ -882,9 +933,16 @@ class _AcpSession:
             self.send(id=request_id, result={"outcome": {"outcome": "cancelled"}})
         else:
             self.pending = request_id, reply
+            self.permission_started = time.monotonic()
 
     def advance(self) -> bool:
         """受信済みのメッセージを処理し、プロンプトの終了時にTrueを返す。"""
+        while self.writes and self.writes[0][1].done():
+            _, written = self.writes.popleft()
+            if written.exception() is not None:
+                raise JunieSessionError(self.command, 1, "JunieへのACP送信に失敗しました。") from written.exception()
+        if self.writes and time.monotonic() >= self.writes[0][0]:
+            raise JunieSessionError(self.command, 1, "JunieへのACP送信がタイムアウトしました。")
         if self.pending:
             # 回答待ちではブロックせず監視側へ戻し、停止要求を受け付けられるようにする。
             request_id, reply = self.pending
@@ -893,6 +951,7 @@ class _AcpSession:
             check_cancelled()
             self.send(id=request_id, result={"outcome": {"outcome": "selected", "optionId": reply.result()}})
             self.pending = None
+            self.steering_deadline += time.monotonic() - self.permission_started
         # 更新が続いても、プロセス監視や完了記録の確認へ定期的に制御を戻す。
         for _ in range(128):
             check_cancelled()
@@ -920,7 +979,8 @@ class _AcpSession:
                 self.steering_waiting = None
                 if "error" not in message and outcome in ("injected", "startedNewTurn"):
                     request.accepted = True
-                    self.steering_new_turn |= outcome == "startedNewTurn"
+                    request.new_turn = outcome == "startedNewTurn"
+                    self.steering_new_turn |= request.new_turn
                     report_activity("Junieが追加指示を受け取りました。処理の完了を待っています。")
                 else:
                     self.steering_supported = False
@@ -980,7 +1040,8 @@ class _AcpSession:
 
     def close(self) -> None:
         """ACP標準入出力とセッション資源を閉じる。"""
-        self.process.stdin.close()
+        self.outgoing.put(None)
+        self.writer.join(timeout=1)
         self.reader.join(timeout=1)
         if not self.reader.is_alive():
             self.process.stdout.close()
@@ -1130,13 +1191,16 @@ def _run_session(
                             raise
                         raise JunieSessionError(command, 1, "JunieのACP応答に必要な項目がありません。") from None
                     if finished:
+                        acp.check_steering_turns(events, exited=True)
                         stop()
                         check_cancelled()
                         if poll() and not has_completion_record(completion_path, token):
                             raise JunieConnectionError("Junie model service connection failed")
                         completed = completion_ready()
                         return 0
+                    acp.check_steering_turns(events)
                     acp.steer()
+                    events.steering_tokens.update(request.token for request in acp.steering_requests.values())
                     dashboard.junie_steering = bool(prompts is not None and acp.steering_supported and acp.session_id
                                                    and not acp.pending and not acp.prompt_finished)
                 now = time.monotonic()
@@ -1156,6 +1220,8 @@ def _run_session(
                     acp.advance()
                 if poll() and not has_completion_record(completion_path, token):
                     raise JunieConnectionError("Junie model service connection failed")
+                if acp is not None:
+                    acp.check_steering_turns(events, exited=True)
                 # 終了コード0でも、対応するセッションも完了記録もなければ起動失敗として診断する。
                 if events.path is None and not has_completion_record(completion_path, token):
                     raise JunieSessionError(
@@ -1183,7 +1249,7 @@ def _run_session(
                 dashboard.on_junie_request(None)
             if acp is not None:
                 acp.finish_prompts(completed)
-            if acp is not None and process.poll() is not None:
+            if acp is not None:
                 acp.close()
             if process is not None and report_usage is not None:
                 # 停止要求が出ていても最後の使用量を回収する。最終回答の採用処理は行わない。

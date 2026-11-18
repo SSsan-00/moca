@@ -127,6 +127,91 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual([item["id"] for item in history], [identifier, reason])
             self.assertEqual(self.request("editor", run_id=self.run_id)[1]["conversation"], history)
 
+    def test_final_migration_checkpoint_admits_conversation_before_dispatch(self):
+        self.save_record({**self.record(), "status": "prepared", "completed_capsules": 0,
+                          "current_capsule": 1,
+                          "target_hashes": {"Example.cs": hashlib.sha256(self.target.read_bytes()).hexdigest()}})
+        interpreting, release = Event(), Event()
+        interpreter = self.manager.conversations.advance
+        instructions = ["Example.cs の既定値を 42 に変更してください", "変更した既定値を保存してください"]
+        identifiers = [uuid.uuid4().hex for _ in instructions]
+        launches = []
+
+        def delayed(*args):
+            interpreting.set()
+            self.assertTrue(release.wait(6))
+            return interpreter(*args)
+
+        def junie(command, completion, token, targets, **kwargs):
+            launches.append(self.record()["status"])
+            if len(launches) == 1:
+                self.assertEqual(self.send(instructions[0], identifiers[0])[1]["status"], "received")
+                self.assertTrue(interpreting.wait(5))
+                self.send(instructions[1], identifiers[1])
+                self.send(instructions[0], identifiers[0])
+            else:
+                with editor_queue(self.run_path) as queue:
+                    self.assertEqual([(p["id"], p["status"]) for p in queue["prompts"]],
+                                     [(identifier, "sending") for identifier in identifiers])
+                targets[0].write_text("class Example { const int Value = 42; }\n", encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        def external(command, **kwargs):
+            self.assertIn("Value = 42", self.target.read_text(encoding="utf-8-sig"))
+            with editor_queue(self.run_path) as queue:
+                self.assertEqual([p["status"] for p in queue["prompts"]], ["sent", "sent"])
+            return subprocess.CompletedProcess(command, 0)
+
+        with (
+            patch.object(self.manager.conversations, "advance", side_effect=delayed),
+            patch.object(workflow.junie_cli, "require_interactive_cli"),
+            patch.object(workflow.junie_cli, "run_interactive", side_effect=junie),
+            patch.object(workflow, "run_process", side_effect=external) as verify,
+        ):
+            try:
+                self.start_build()
+                self.wait_until_idle()
+            finally:
+                release.set()
+            for identifier in identifiers:
+                self.wait_for(identifier, "done")
+        self.assertEqual(launches, ["junie_running", "editor_followup"])
+        self.assertEqual(verify.call_count, 2)
+
+    def test_stop_only_and_nonstopping_diff_during_build_or_migration(self):
+        for phase in ("building", "junie_running"):
+            with self.subTest(phase=phase):
+                view = self.manager.get(self.run_id)
+                view.begin_operation()
+                self.save_record({**self.record(), "status": phase})
+                view.observe(self.record())
+                for text in ("止めずに差分だけ確認して", "処理は続けたまま差分だけ確認して"):
+                    identifier, _ = self.send(text)
+                    self.wait_for(identifier, "done")
+                    self.assertFalse(view.control.cancelled.is_set())
+                identifier, receipt = self.send("今すぐ止めて")
+                self.assertIn("停止を要求", self.wait_for(identifier, "done")["message"])
+                self.assertTrue(view.control.cancelled.is_set())
+                self.assertNotIn("結果", receipt["message"])
+
+    def test_compound_verification_keeps_prohibitions_and_unknown_conditions(self):
+        mocked, calls = self.mock_commands(("dotnet", 0, b"new build result"), ("dotnet", 1, b"new build failure"))
+        with mocked, patch.object(workflow, "_repair_build_failure") as repair:
+            report, _ = self.send("ビルドして、結果を教えて")
+            self.assertIn("new build result", self.wait_for(report, "done")["logs"][0]["text"])
+            self.wait_until_idle()
+            prohibited, _ = self.send("コードは修正してはいけません。ビルドだけ実行してください")
+            self.assertEqual(self.wait_for(prohibited, "done")["result_status"], "build_failed")
+            self.wait_until_idle()
+            for text in ("チェッカーでエラーがなければ、ビルドして", "Example.cs の既定値を 0 に直して、ビルドして"):
+                ambiguous, _ = self.send(text)
+                self.wait_for(ambiguous, "clarification")
+                self.send("キャンセル")
+                self.wait_for(ambiguous, "cancelled")
+            repair.assert_not_called()
+        self.assertEqual(len(calls), 2)
+
     def test_clarification_waits_then_runs_build_and_checker(self):
         mocked, calls = self.mock_commands(("dotnet", 0, b"build ok\n"), ("checker", 0, b"check ok\n"))
         with mocked:
@@ -1466,6 +1551,53 @@ class JunieConversationTests(SavedRunFixture):
             self.manager.limit = 5
             self.manager.start_pending()
             self.assertFalse(self.manager.busy)
+            run.assert_not_called()
+
+    def test_first_conversation_queue_write_recovers_after_failure(self):
+        failed = Event()
+        save = self.manager.persist
+        recovered = Event()
+
+        def persist():
+            if not recovered.is_set():
+                failed.set()
+                raise PermissionError("fixture storage failure")
+            return save()
+
+        mocked, calls = self.mock_commands(("dotnet", 0, b"build ok"))
+        with mocked, patch.object(self.manager, "persist", side_effect=persist):
+            identifier, receipt = self.send("ビルドして")
+            self.assertEqual(receipt["status"], "received")
+            self.assertTrue(failed.wait(5))
+            self.wait_for(identifier, "waiting")
+            self.assertEqual(calls, [])
+            self.assertEqual(json.loads(self.manager.queue_path.read_text())["jobs"], [])
+            self.assertTrue(self.manager.row(self.manager.get(self.run_id))["queue_saving"])
+            recovered.set()
+            self.wait_for(identifier, "done")
+            self.wait_until_idle()
+        self.assertEqual(calls, [["dotnet", "build"]])
+
+    def test_failed_conversation_queue_cancellation_leaves_job_waiting(self):
+        self.manager.limit = 0
+        action = {"action": "cancel-queued", "revision": 0, "run_id": self.run_id}
+        with patch.object(workflow, "run_process") as run:
+            identifier, _ = self.send("ビルドして")
+            self.wait_for(identifier, "waiting")
+            saved = self.manager.queue_path.read_bytes()
+            with patch.object(self.manager, "persist", side_effect=PermissionError("fixture failure")):
+                with self.assertRaises(HTTPError) as error:
+                    self.request("control", action)
+                error.exception.close()
+                self.assertEqual(error.exception.code, 409)
+                self.assertTrue(self.manager.get(self.run_id).state["queued"])
+                self.assertIn(self.run_id, self.manager.pending)
+                self.assertEqual(saved, self.manager.queue_path.read_bytes())
+                self.assertNotIn(self.run_id, self.manager.conversations.cancelled)
+            self.assertEqual(self.request("control", action)[0], 202)
+            self.wait_for(identifier, "cancelled")
+            self.restart_server()
+            self.assertFalse(self.manager.jobs)
             run.assert_not_called()
 
     def test_saved_edits_and_junie_followup_request_the_existing_safe_handoff(self):

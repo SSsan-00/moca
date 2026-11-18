@@ -68,7 +68,7 @@ def _prompt_timing(config, state, run_path, record, *, live: bool = False, pendi
     phase = record["status"]
     if pending_edits and not state.get("ready") and phase == "repairing":
         return "repair_restart"
-    if live and not state.get("ready") and phase in {"junie_running", "editor_followup", "repairing"}:
+    if live and not pending_edits and not state.get("ready") and phase in {"junie_running", "editor_followup", "repairing"}:
         return "immediate"
     if phase == "prepared" or phase in QUEUE_PHASES or (
         phase in {"script_running", "script_failed"}

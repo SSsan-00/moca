@@ -34,12 +34,25 @@ VERIFICATION_REQUEST = (
     r"(?:\s+again)?\s*(?=[、,。.!！]|$)"
 )
 CONDITIONAL_VERIFICATION = re.compile(
-    r"(?:^|[。.!?！\n])\s*(?P<condition>[^。.!?、,\n]+?(?:たら|なら|場合(?:は|に)?|次第|てから|(?:た|の|終了|完了)後(?:に)?))"
+    r"(?:^|[。.!?！\n])\s*(?P<condition>[^。.!?、,\n]+?(?:たら|なら|れば|場合(?:は|に)?|次第|てから|(?:た|の|終了|完了)後(?:に)?))"
     r"[、,\s]*(?P<action>.+)", re.DOTALL,
 )
 BUILD_COMPLETION_CONDITION = re.compile(
     rf"(?:もし\s*)?(?:(?:今|現在)の|(?:現在)?実行中の)?\s*{BUILD_TERM}(?:が|の|は)?\s*"
     r"(?:終わったら|終わってから|(?:終了|完了)(?:したら|してから|(?:した)?後(?:に)?|次第)|終わった後(?:に)?)",
+)
+STOP_REQUEST = re.compile(
+    r"\s*(?:今すぐ\s*|すぐ\s*|現在の(?:処理|作業)を\s*|処理を\s*)?"
+    r"(?:止めて|停止して|中止して)(?:ください)?[。.!！\s]*|\s*(?:please\s+)?stop(?:\s+now)?[。.!！\s]*",
+)
+FORBID_REPAIR = re.compile(
+    r"(?:修正|変更|編集)(?:は|を)?\s*(?:してはいけ|してはなら|してほしく|しない|せず|するな|禁止)"
+    r"|\b(?:do not|don't|without|never)\s+(?:fix|edit|modify|repair)\b",
+)
+REPAIR_REQUEST = re.compile(r"(?<!やり)直して|修正して|合わせて|同じ.*(?:にして|使って)|既定値にして|\bfix\b")
+BUILD_FAILURE_REPAIR = re.compile(
+    r"(?:失敗|エラー|通らなかっ|失敗し|エラーがあ)(?:したら|たら|なら|れば|ったら|の場合|場合)"
+    r"[^。.!！\n]*(?:直して|修正して)|\bif (?:it|the build) fails[,]?\s+(?:fix|repair)\b",
 )
 PHASES = {
     "queued": "準備を開始しています", "preparing": "準備中", "cancelled": "待機取消済み",
@@ -86,7 +99,8 @@ def _conditional_verification(value):
 
 def _status_intent(value):
     """保存済み状態の照会依頼か判定する。"""
-    if _conditional_verification(value):
+    if (_conditional_verification(value) or STOP_REQUEST.fullmatch(value)
+            or re.search(VERIFICATION_REQUEST, value)):
         return None
     checker = re.search(CHECKER_TERM, value)
     if (checker or re.search(BUILD_TERM, value)) and (
@@ -109,22 +123,32 @@ def _intent(text, phase):
         return status
     if re.search(r"(?:シェル|ターミナル|shell|powershell|業務php|sql|データベース|\bdb\b).*(?:を実行|に接続|実行して|run |execute )", value):
         return "unsupported"
+    if STOP_REQUEST.fullmatch(value):
+        return "stop"
+    if not _conditional_verification(value) and re.search(
+        r"差分.*(?:だけ|のみ).*(?:確認|見る)|(?:残り|他).*(?:触らず|触らない).*差分", value,
+    ):
+        if not re.search(VERIFICATION_REQUEST, value) and not re.search(r"(?:止めて|停止して|中止して)", value):
+            return "diff"
     if re.search(r"(?:ビルド|チェッカー|停止|build|checker).*(?:しないで|しない|せず|しなくて|するな)|\b(?:don't|do not|without) (?:build|run|stop)\b", value):
         return "clarify"
-    if condition := _conditional_verification(value):
+    repair_on_failure = bool(BUILD_FAILURE_REPAIR.search(value))
+    if (condition := _conditional_verification(value)) and not repair_on_failure:
         action = condition["action"]
         if BUILD_COMPLETION_CONDITION.fullmatch(condition["condition"]) and not _conditional_verification(action):
             intent = _intent(action, phase)
             if intent in REBUILD:
                 return f"after_build_{intent}"
+        if (re.search(CHECKER_TERM, condition["condition"]) and re.search(REPAIR_REQUEST, condition["condition"])
+                and _intent(action, phase) == "checker" and not FORBID_REPAIR.search(value)):
+            return "checker_repair"
         return "clarify"
-    if re.search(r"差分.*(?:だけ|のみ).*(?:確認|見る)|(?:残り|他).*(?:触らず|触らない).*差分", value):
-        return "diff"
     stop = bool(re.search(r"止め|停止|中止|\bstop\b", value))
     retry = bool(re.search(r"やり直|再実行|(?:もう|再度|もう一度).*?(?:一回|一度|実行|お願い)|rebuild|rerun", value))
     build = bool(re.search(BUILD_TERM, value))
     checker = bool(re.search(CHECKER_TERM, value))
-    repair = bool(re.search(r"(?<!やり)直して|修正して|合わせて|同じ.*(?:にして|使って)|既定値にして|\bfix\b", value))
+    forbidden = bool(FORBID_REPAIR.search(value))
+    repair = not forbidden and bool(REPAIR_REQUEST.search(value))
     if (build or checker or stop or retry) and re.search(
         r"\?|(?:ですか|ますか|でしょうか|していい)[。\s]*$", re.sub(VERIFICATION_REQUEST, "", value),
     ):
@@ -134,7 +158,7 @@ def _intent(text, phase):
             re.search(r"(?:止めて|(?:停止|中止)して).*(?:やり直して|再ビルドして|再実行して)", value)
             or re.fullmatch(r"(?:please )?stop (?:the )?(?:current )?build and rebuild[.!]?", value)
         ):
-            return "stop_build_repair" if repair else "stop_build"
+            return ("stop_build_repair" if repair_on_failure else "clarify") if repair else "stop_build"
         return "clarify"
     if build or checker:
         requests = re.findall(VERIFICATION_REQUEST, value)
@@ -142,7 +166,9 @@ def _intent(text, phase):
             return "clarify"
         if any(re.search(CHECKER_TERM, request) for request in requests):
             return "checker_repair" if repair else "checker"
-        return "build_repair" if repair else "build"
+        if repair:
+            return "build_repair" if repair_on_failure else "clarify"
+        return "build"
     if retry or re.fullmatch(r"\s*(?:もう一回|もう一度|再度)(?:お願い|お願いします)?[。.!！\s]*", value):
         return "clarify"
     return "junie"
@@ -162,6 +188,18 @@ def _finish(entry, status, message):
     """会話依頼の結果を履歴へ確定する。"""
     entry.update(status=status, message=message)
     entry["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _queue_steering(queue, entry, timing):
+    """保存した会話を同じトランザクションでJunieへの配信待ちにする。"""
+    queue["prompts"].append({"id": entry["id"], "text": entry["text"], "status": "queued"})
+    message = {
+        "immediate": "実行中の Junie に追加指示を渡します。",
+        "repair_restart": "修正を区切り、保存した編集と指示を合流します。",
+        "checkpoint": "現在の作業区間の終了後に Junie に渡します。",
+        "resume": "同じ Run を再開したときに Junie に渡します。",
+    }[timing]
+    entry.update(status="steering", intent="junie", message=message, plan=message)
 
 
 def _phase_message(state, phase):
@@ -253,6 +291,8 @@ class JunieConversations:
 
     def submit(self, run_id, action):
         """会話本文を保存し、後続処理へ受付登録する。"""
+        from .dashboard import _prompt_timing
+
         identifier = action.get("id")
         if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier):
             raise ValueError("指示 ID が無効です。画面から送信し直してください。")
@@ -295,7 +335,23 @@ class JunieConversations:
             else:
                 if run_id in self.manager.blocked_conversations:
                     raise ValueError(self.manager.blocked_conversations[run_id])
-                state = self.manager.get(run_id).state
+                view = self.manager.get(run_id)
+                state = view.state
+                _, _, record, _ = load_saved_run(self.manager.config, run_id)
+                intent = _intent(text, record["status"])
+                if intent == "stop":
+                    if view.request_stop({"operation_id": state.get("operation_id")}):
+                        for pending in history:
+                            if pending["status"] not in {"received", "waiting"} or pending.get("query_intent"):
+                                continue
+                            prior = pending.get("intent") or _intent(pending["text"], record["status"])
+                            if prior.removeprefix("stop_").removeprefix("after_build_") in REBUILD:
+                                _finish(pending, "paused", "停止要求により検証を保留しました。実行する場合は改めて指示してください。")
+                        _finish(entry, "done", "停止を要求しました。処理の終了は進捗で確認できます。")
+                    else:
+                        _finish(entry, "failed", "停止できる実行中の処理がありません。")
+                    history.append(entry)
+                    return entry
                 if _conditional_verification(value):
                     entry["predecessor_operation_id"] = self.manager.jobs.get(run_id, {}).get("operation_id")
                 request = state.get("junie_request")
@@ -312,7 +368,18 @@ class JunieConversations:
                 entry.update(edit_revision=queue.get("edit_revision"), edits=saved_edits(queue),
                              targets=target_versions(worktree, unit))
             history.append(entry)
-        return entry
+            receipt = entry.copy()
+            if ("query_intent" not in entry and not request and not _clarification(history)
+                    and intent == "junie" and record["status"] in {"junie_running", "editor_checkpoint", "editor_followup"}
+                    and not state.get("ready")):
+                timing = _prompt_timing(self.manager.config, state, run_path, record,
+                                        pending_edits=bool(queue["edits"]),
+                                        live=bool(view.control and view.control.junie_steering))
+                if timing in {"checkpoint", "immediate"}:
+                    if sum(prompt["status"] != "sent" for prompt in queue["prompts"]) >= 16:
+                        raise ValueError("送信待ちの指示は最大16件です。")
+                    _queue_steering(queue, entry, timing)
+        return receipt
 
     def notify(self, run_id):
         """Run更新を会話処理スレッドへ通知する。"""
@@ -467,7 +534,7 @@ class JunieConversations:
                 if question:
                     _finish(entry, "failed", "「ビルドだけ」「チェッカーまで」「キャンセル」のいずれかで回答してください。")
                     continue
-                if intent == "clarify":
+                if intent in {"clarify", "stop"}:
                     question = "ビルドだけですか？ チェッカーまで実行しますか？"
                     if _conditional_verification(unicodedata.normalize("NFKC", entry["text"]).lower()):
                         question = "実行条件を確定できません。条件を付けずに依頼する場合は、ビルドだけですか？ チェッカーまで実行しますか？"
@@ -504,16 +571,9 @@ class JunieConversations:
                     if state.get("ready") and not job:
                         _finish(entry, "failed", "この工程から Junie に指示を渡せません。進捗を確認してください。")
                 elif sum(prompt["status"] != "sent" for prompt in queue["prompts"]) < 16:
-                    queue["prompts"].append({"id": entry["id"], "text": entry["text"], "status": "queued"})
-                    message = {
-                        "immediate": "実行中の Junie に追加指示を渡します。",
-                        "repair_restart": "修正を区切り、保存した編集と指示を合流します。",
-                        "checkpoint": "現在の作業区間の終了後に Junie に渡します。",
-                        "resume": "同じ Run を再開したときに Junie に渡します。",
-                    }
-                    entry.update(status="steering", message=message[timing], plan=message[timing])
+                    _queue_steering(queue, entry, timing)
                 return True
-            if job:
+            if job and intent != "diff":
                 if job.get("conversation_id") == entry["id"]:
                     return True
                 if (intent.startswith("stop_build") and not entry.get("stop_checked")
@@ -522,8 +582,6 @@ class JunieConversations:
                     if phase == "building" and view.control and view.control.request_build_stop():
                         view.request_stop({"operation_id": state["operation_id"]})
                         entry["plan"] = entry["message"] = "現在のビルドの停止を待ち、保存した版で再ビルドします。"
-                if intent == "diff" and view.control and not state.get("generating_anchors"):
-                    view.request_stop({"operation_id": state["operation_id"]})
                 entry.setdefault("message", "現在の処理の終了を待ちます。")
                 return True
             if intent == "diff":
@@ -549,8 +607,7 @@ class JunieConversations:
                 entry["message"] = "同じ移行単位の別の Run が終わるまで待機します。"
                 return True
             self.manager.enqueue(view, {"action": "conversation", "conversation_id": entry["id"]})
-            self.manager.persist()
-            self.manager.start_pending()
+            self.manager.save_enqueued()
             operation = {"build": "保存版をビルドします。", "build_repair": "保存版をビルドし、失敗した場合は Junie に修正を依頼します。",
                          "checker": "保存版をビルドし、成功後にチェッカーを実行します。",
                          "checker_repair": "Junie に指摘の修正を依頼し、ビルドとチェッカーを実行します。"}[mode]

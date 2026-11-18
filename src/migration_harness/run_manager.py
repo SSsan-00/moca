@@ -188,27 +188,52 @@ class RunManager:
                       "generating_anchors": action["action"] == "anchors"})
         self.pending.append(run_id)
 
+    def save_enqueued(self):
+        """登録が保存されるまで待機位置を保ち、保存の復旧後に開始する。"""
+        try:
+            self.persist()
+        except OSError:
+            if self._queue_retry_at is None:
+                self._defer_queue_retry()
+        else:
+            self.start_pending()
+
     def cancel_queued(self, view):
         """まだ開始していないRunの操作を取り消す。"""
         run_id = view.state["run_id"]
         if run_id not in self.pending:
             raise ValueError("このRunはすでに実行されています。一覧を更新して停止してください。")
         job = self.jobs[run_id]
-        if job["action"] in {"run", "prepare"}:
+        new_run = job["action"] in {"run", "prepare"}
+        if not new_run:
+            _, _, record, _ = load_saved_run(self.config, run_id)
+        jobs, pending = self.jobs.copy(), self.pending.copy()
+        self.pending.remove(run_id)
+        del self.jobs[run_id]
+        identifier = job.get("conversation_id")
+        previous = self.conversations.cancelled.get(run_id)
+        if identifier:
+            self.conversations.cancelled[run_id] = identifier
+        try:
+            self.persist()
+        except OSError as exc:
+            self.jobs, self.pending = jobs, pending
+            if identifier:
+                if previous is None:
+                    del self.conversations.cancelled[run_id]
+                else:
+                    self.conversations.cancelled[run_id] = previous
+            raise ValueError("待機の取消を保存できませんでした。待機一覧を確認してもう一度お試しください。") from exc
+        if new_run:
             view.publish({**view.state, "status": "cancelled", "queued": False, "ready": True})
         else:
-            _, _, record, _ = load_saved_run(self.config, run_id)
             view.observe(record)
             view.ready(self.config, record)
             view.publish({**view.state, "queued": False})
-        self.pending.remove(run_id)
-        del self.jobs[run_id]
         if (reply := job.get("reply")) is not None:
             reply.set_exception(ValueError("待機中のアンカー生成を取り消しました。"))
-        if identifier := job.get("conversation_id"):
-            self.conversations.cancelled[run_id] = identifier
+        if identifier:
             self.conversations.wake.set()
-        self.persist()
         return {"run_id": run_id}
 
     def hide_run(self, run_id):
@@ -282,8 +307,7 @@ class RunManager:
                     raise ValueError("実行状況が更新されました。内容を確認してもう一度操作してください。")
                 self.enqueue(view, action)
                 ids = [run_id]
-            self.persist()
-            self.start_pending()
+            self.save_enqueued()
             return {"run_ids": ids, "run_id": ids[0]}
 
     def start_pending(self):
@@ -408,6 +432,7 @@ class RunManager:
         row["revision"] = view.revision
         if row.get("run_id") in self.pending:
             row["queue_position"] = list(self.pending).index(row["run_id"]) + 1
+            row["queue_saving"] = self._queue_retry_at is not None
         return row
 
     def close(self):

@@ -1114,6 +1114,7 @@ def _run_prepared_with_junie(
     # 最後のカプセル後にも編集を受け取り、保留中の追加指示を処理し終えてから検証に進む。
     while record["completed_capsules"] == result["capsule_count"] and record["status"] == "editor_checkpoint":
         with editor_queue(run_path) as queue:
+            check_cancelled()
             if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
                 break
             extra = dispatch_prompts(queue)
@@ -1342,6 +1343,9 @@ def _attempt_repair(
     previous = record.get("repair_pending", {})
     if previous.get("details") != details:
         record["repair_pending"] = {"details": details}
+        if previous.get("draft", {}).get("snapshot") or previous.get("stopped_draft_save_failed"):
+            record["repair_pending"].update({key: previous[key] for key in
+                                             ("draft", "stopped_draft_save_failed") if key in previous})
     record["status"] = "repairing"
     record_path = run_path / "run.json"
     write_run_record(record_path, record)
@@ -1383,7 +1387,9 @@ def _attempt_repair(
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
             # 使用量保存などが終了未確認を包んだ場合も、未確認の下書きは再利用しない。
             record["repair_pending"].pop("draft", None)
-        elif not isinstance(exc, CheckerRepairBlocked) or exc.reason not in {"operator_conflict", "handoff_unsafe"}:
+        elif not isinstance(exc, CheckerRepairBlocked) or exc.reason not in {
+            "operator_conflict", "handoff_unsafe", "stopped_draft",
+        }:
             _charge_repair(record)
         raise
     finally:
@@ -1391,6 +1397,28 @@ def _attempt_repair(
             finish_prompts(queue, repaired)
     _charge_repair(record)
     write_run_record(record_path, record)
+
+
+def _snapshot_stopped_repair(run_path, agent_root, repair_targets, before, *, workspace_unchanged):
+    """停止時の生バイトと欠損状態を、再同期の対象外に保存する。"""
+    name = f"stopped-repair-{uuid.uuid4().hex}"
+    root = run_path / name
+    root.mkdir(mode=0o700)
+    hashes = {}
+    for index, path in enumerate(repair_targets):
+        source = safe_target(agent_root, path)
+        if source.is_file():
+            copy = root / f"{index}.draft"
+            shutil.copyfile(source, copy)
+            hashes[path.as_posix()] = sha256_file(copy)
+        else:
+            hashes[path.as_posix()] = None
+    draft = {
+        "snapshot": name, "base": before, "targets": hashes,
+        "workspace_unchanged": workspace_unchanged,
+    }
+    (root / "draft.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
+    return draft
 
 
 def _repair_target(
@@ -1418,15 +1446,28 @@ def _repair_target(
     )
     material_instructions += stage_target_context(worktree, targets, capsule, agent_root)
     draft = attempt.get("draft", {})
+    if attempt.get("stopped_draft_save_failed"):
+        raise CheckerRepairBlocked(
+            "stopped_draft", "停止時の下書きの保存に失敗しました。Junie 作業領域の編集を確認してください。",
+        )
     with worktree_source_lock:
         source_files = {path: safe_target(worktree, path) for path in targets}
         agent_files = {path: safe_target(agent_root, path) for path in targets}
         before = {path.as_posix(): sha256_file(source) for path, source in source_files.items()}
-        # 中断時の原本と下書きが両方一致する場合だけ続きから修正し、それ以外は現行版に戻す。
+        # 新しい停止下書きは欠損も照合する。旧記録は従来どおりの再同期を許す。
+        draft_targets = draft.get("targets", {})
         resume_draft = draft.get("base") == before and all(
-            target_hash(agent_files[path]) == draft.get("targets", {}).get(path.as_posix())
+            path.as_posix() in draft_targets and target_hash(agent_files[path]) == draft_targets[path.as_posix()]
             for path in repair_targets
         )
+        if snapshot := draft.get("snapshot"):
+            expected = {path.as_posix() for path in repair_targets}
+            if not resume_draft or set(draft_targets) != expected or not draft.get("workspace_unchanged"):
+                raise CheckerRepairBlocked(
+                    "stopped_draft",
+                    f"停止時の下書きと現行版または修正対象が一致しません。"
+                    f"両方を保持しました。Run の {snapshot}/draft.json と作業ツリーを確認してください。",
+                )
         for path, source in source_files.items():
             if resume_draft and path in repair_targets:
                 continue
@@ -1446,6 +1487,7 @@ def _repair_target(
     names = ", ".join(f"`{path.as_posix()}`" for path in repair_targets)
     continuation = (
         "The target may contain partial edits from an interrupted repair. Review those edits and continue the repair. "
+        "A target missing from this draft must be recreated as part of the repair before recording completion. "
         if resume_draft else ""
     )
     instruction = "\n".join(filter(None, (attempt["details"].get("instruction"), attempt.get("operator_instruction"))))
@@ -1513,9 +1555,23 @@ def _repair_target(
             prompts=LivePrompts(run_path, interrupt_for_edits=True),
         )
     except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError) as exc:
-        attempt.pop("draft", None)
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
+            attempt.pop("draft", None)
             raise
+        if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, junie_cli.JunieEditHandoff):
+            try:
+                attempt["draft"] = _snapshot_stopped_repair(
+                    run_path, agent_root, repair_targets, before,
+                    workspace_unchanged=_unlisted_workspace_files(agent_root, allowed) == other_files,
+                )
+            except (OSError, ValueError) as error:
+                attempt["stopped_draft_save_failed"] = True
+                raise CheckerRepairBlocked(
+                    "stopped_draft",
+                    "停止時の下書きを保存できませんでした。再開前に Junie 作業領域を確認してください。",
+                ) from error
+            raise
+        attempt.pop("draft", None)
         try:
             if _unlisted_workspace_files(agent_root, allowed) == other_files:
                 hashes = {

@@ -82,7 +82,10 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     return parts.map(value => String(value).padStart(2, "0")).join(":");
   }
   function describe(run) {
-    if (run.queued) return `待機順 ${run.queue_position || "—"}`;
+    if (run.queued) {
+      const position = `待機順 ${run.queue_position || "—"}`;
+      return run.queue_saving ? `${position} · 待機一覧の保存を再試行中` : position;
+    }
     if (run.awaiting_answer) return "Junieからの質問を確認してください";
     if (run.phase_activity && !run.ready) return run.phase_activity.message;
     if (run.context_capsules && run.status === "junie_running") return `カプセル ${run.current_capsule || 1} / ${run.context_capsules}`;
@@ -135,7 +138,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     const query = search.value.trim().toLocaleLowerCase("ja");
     const visible = data.runs.filter(run => (filter === "all" || category(run) === filter)
       && `${run.unit_id} ${run.run_id}`.toLocaleLowerCase("ja").includes(query));
-    const nextRows = JSON.stringify(visible.map(run => [run.run_id, run.unit_id, run.status, run.ready, run.queued, run.queue_position,
+    const nextRows = JSON.stringify(visible.map(run => [run.run_id, run.unit_id, run.status, run.ready, run.queued, run.queue_position, run.queue_saving,
       run.resumable, run.stop_requested, run.cancellable, run.awaiting_answer, run.worktree_path, describe(run), run.current_capsule, run.context_capsules, selectedRun === run.run_id]));
     if (nextRows !== rowKey) {
       rowKey = nextRows;
