@@ -455,3 +455,5 @@ CI では Windows・Ubuntu の Python 3.11／3.13 で、Node.js 22 とランナ�
 Windows の回帰テストは `conversation-editor`（会話と HTTP エディタ）および `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。Ubuntu は全件実行します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python・OS ごとの ID 集合、skip 理由、最長ジョブの実測を比較し、workflow の集約条件と `.github/codex/issue.py` のジョブ名も更新します。
 
 ダッシュボードの `Dashboard.server()` はループバックに接続し、`_dashboard_handler()` が GET の配信と POST の共通検証を担当します。POST は本文の形式と操作ごとのサイズを確認し、対象 Run を確定した後に設定、編集・会話、追加指示、比較、実行制御へ振り分けます。
+
+設定フォームの表示、入力差分、モデル候補、プレビューと保存は `dashboard_settings.js` が担当します。デモはデモ用のアダプターを、本番は `dashboard.js` の HTTP アダプターを設定フォームへ渡します。ブラウザで表示するのはプロジェクトの概要、移行単位、参照の起点と追加フォルダー、ルール／参考実装などです。呼び出し容量や参照の除外・再帰・容量制限は TOML で編集します。

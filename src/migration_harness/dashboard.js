@@ -594,33 +594,6 @@ async function workspaceRequest(path, payload) {
   return response.json();
 }
 
-async function readReferencePreview(content, unit, request_id, onEvent) {
-  const response = await runFetch("settings", {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({mode: "reference-preview", content, unit, request_id}),
-  });
-  if (!response.ok) throw await responseError(response);
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buffer = "";
-  let complete = false;
-  try {
-    while (!complete) {
-      const {value, done} = await reader.read();
-      if (done) throw new Error("プレビューへの接続が切れました。");
-      buffer += value;
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        const event = JSON.parse(line);
-        onEvent(event);
-        complete ||= !!event.result || !!event.cancelled;
-      }
-    }
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-}
-
 let openResumeStage;
 
 function bindResumeStage() {
@@ -706,8 +679,6 @@ bindHarnessWorkspace({
   readSettings: () => workspaceRequest("settings"),
   readModels: () => workspaceRequest("junie-models"),
   previewSettings: (content, changes) => workspaceRequest("settings", {mode: "preview", content, changes}),
-  previewReferences: readReferencePreview,
-  cancelReferences: request_id => workspaceRequest("settings", {mode: "reference-cancel", request_id}),
   saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: dashboardRevision}),
   execute: async (action, payload) => {
     if (action === "open-run") return connectRun(payload.run_id);
