@@ -103,6 +103,7 @@ try {
   const folders = "settings-context-folders";
   const save = 'document.querySelector("#workspace-config-form button[type=submit]")';
   const toml = field("workspace-config");
+  console.log("Browser:", (await cdp("Browser.getVersion")).product);
   await cdp("Runtime.enable");
   await cdp("Page.navigate", {url});
   await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true" && typeof window.harnessEditorCanSwitch === "function" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);

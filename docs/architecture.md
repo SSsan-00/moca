@@ -449,3 +449,5 @@ Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合�
 `PYTHONPATH=tests python -m unittest test_editor_run_isolation test_settings_browser` でダッシュボードの検証を実行します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
 
 保存済み Run が必要なテストでは `tests/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。
+
+CI では Windows・Ubuntu の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモの3件が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
