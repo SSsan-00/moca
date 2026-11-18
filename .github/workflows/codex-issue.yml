@@ -44,6 +44,8 @@ jobs:
           allow-users: ${{ github.actor }} # Explicitly checked by intake above.
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: "0.170.0"
+          model: "gpt-6.2-sol"
+          effort: "high"
           safety-strategy: drop-sudo
           permission-profile: ":read-only"
           prompt-file: ${{ runner.temp }}/issue-prompt.txt
