@@ -21,7 +21,7 @@ async function startBrowser() {
     const directory = `${profile}-${attempt}`;
     const chrome = spawn(executable, [
       "--headless", "--remote-debugging-port=0", "--no-first-run", "--disable-background-networking",
-      "--disable-extensions", "--user-data-dir=" + directory, "about:blank",
+      "--disable-extensions", "--enable-logging=stderr", "--user-data-dir=" + directory, "about:blank",
     ], {stdio: ["ignore", "ignore", "pipe"]});
     let spawnError, stderr = "";
     chrome.once("error", error => { spawnError = error; });
@@ -29,14 +29,15 @@ async function startBrowser() {
     chrome.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-8192); });
     let ready = false;
     try {
-      const deadline = performance.now() + 15_000;
+      const deadline = performance.now() + 25_000;
       while (performance.now() < deadline) {
         if (spawnError) throw spawnError;
         if (chrome.exitCode !== null || chrome.signalCode !== null) {
           throw new Error(`Chromium exited during startup (code=${chrome.exitCode}, signal=${chrome.signalCode})`);
         }
         const portFile = await fs.readFile(path.join(directory, "DevToolsActivePort"), "utf8").catch(error => {
-          if (error.code === "ENOENT") return "";
+          // Windows may briefly lock the file while Chromium publishes the port.
+          if (error.code === "ENOENT" || error.code === "EBUSY") return "";
           throw error;
         });
         const port = portFile.split("\n")[0].trim();

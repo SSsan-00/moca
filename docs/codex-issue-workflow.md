@@ -18,7 +18,7 @@
 4. Actionsのリポジトリvariable `CODEX_ISSUE_DISPATCHERS` に手動起動を許可する担当者、`CODEX_ISSUE_REVIEWERS` にPR承認を許可する担当者のGitHubログインを、それぞれカンマ区切りで設定します。リポジトリの書き込み権限と手動起動できる利用者を絞り、GitHub Appの設定とrulesetを管理できる人も限定します。
 5. Codex設定でこのリポジトリを接続し、**Review code → Automatic review** を有効にします。有効になるレビューの種類と、担当者が手動でレビューを依頼できることを確認します。
 
-標準の `GITHUB_TOKEN` で作成したPRでは、PR起点のActionsが承認待ちになることがあります。専用Appの短命なインストールトークンでブランチをpushし、Draft PRを作成します。最初の許可済み試行では、候補のpushとPRの両方から既存の `Harness tests` が実際に起動し、同じ候補SHAに全5ジョブが成功として記録されることを確認してください。設定前に本番の生成やマージを試す必要はありません。 [GitHubのトークンと起動イベント](https://docs.github.com/en/actions/concepts/security/github_token) · [GitHub Appのトークン発行](https://github.com/actions/create-github-app-token) · [GitHub ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
+標準の `GITHUB_TOKEN` で作成したPRでは、PR起点のActionsが承認待ちになることがあります。専用Appの短命なインストールトークンでブランチをpushし、Draft PRを作成します。最初の許可済み試行では、候補のpushとPRの両方から既存の `Harness tests` が実際に起動し、同じ候補SHAで必須5チェックとWindowsの分割ジョブ4件がすべて成功することを確認してください。設定前に本番の生成やマージを試す必要はありません。 [GitHubのトークンと起動イベント](https://docs.github.com/en/actions/concepts/security/github_token) · [GitHub Appのトークン発行](https://github.com/actions/create-github-app-token) · [GitHub ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 
 ## 手動実行と承認
 

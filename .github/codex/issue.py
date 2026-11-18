@@ -15,6 +15,11 @@ CHECKS = {
     for os in ("ubuntu", "windows")
     for version in ("3.11", "3.13")
 } | {"windows-junie"}
+CI_JOBS = CHECKS | {
+    f"windows tests ({version}, {suite})"
+    for version in ("3.11", "3.13")
+    for suite in ("conversation", "remaining")
+}
 CI = ".github/workflows/tests.yml"
 ACTIONS_APP = 15368
 CODEX_BOT = "chatgpt-codex-connector[bot]"
@@ -265,10 +270,10 @@ def ci_ready(branch, head):
             continue
         require(latest["conclusion"] == "success", f"{event} CI {latest['conclusion']}. See run {latest['id']}.")
         jobs = paginated(f"actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs?per_page=100", "jobs")
-        require(len(jobs) == len(CHECKS) and {job["name"] for job in jobs} == CHECKS
+        require(len(jobs) == len(CI_JOBS) and {job["name"] for job in jobs} == CI_JOBS
                 and all(job["head_sha"] == head and job["status"] == "completed"
                         and job["conclusion"] == "success" for job in jobs),
-                f"{event} CI lacks the full successful matrix and smoke at the expected SHA.")
+                f"{event} CI lacks the full successful matrix, shards, and smoke at the expected SHA.")
     return waiting
 
 
