@@ -531,6 +531,116 @@ class FollowupDraftRecoveryTests(SavedRunFixture):
                         self.resume()
                     junie.assert_not_called()
 
+    def test_invalid_followup_review_preserves_the_latest_draft_for_normal_resume(self):
+        baseline = self.stop_followup()
+        first = baseline["stopped_migration_draft"]
+        with editor_queue(self.run_path) as queue:
+            record_operator_edit(queue, self.target.name, "class Previous {}\n", self.original.decode())
+
+        cases = {
+            "json": (b'{"question": ', json.JSONDecodeError),
+            "type": (b'{"question": false}', ValueError),
+            "size": (json.dumps({"question": "x" * 8200}).encode(), ValueError),
+            "utf8": (b'{"question": "\xff"}', UnicodeDecodeError),
+            "read": (b'{"question": "valid"}', PermissionError),
+        }
+        open_path = Path.open
+        for outcome, (contents, error) in cases.items():
+            with self.subTest(outcome=outcome):
+                self.save_record(baseline)
+                (self.agent / self.target.name).write_bytes(self.first_edit)
+
+                def invalid(_command, completion, token, targets, **kwargs):
+                    self.assertEqual(targets[0].read_bytes(), self.first_edit)
+                    targets[0].write_bytes(self.latest_edit)
+                    report = completion.parent / ".migration-scratch" / f"operator-review-{token}.json"
+                    report.write_bytes(contents)
+                    if outcome == "type":
+                        completion.write_text(token, encoding="ascii")
+                    junie_cli.session_closed_observer.get()()
+                    return 0
+
+                def open_report(path, mode="r", *args, **kwargs):
+                    if outcome == "read" and mode == "rb" and path.name.startswith("operator-review-"):
+                        raise PermissionError("fixture report read failed")
+                    return open_path(path, mode, *args, **kwargs)
+
+                with patch.object(Path, "open", open_report):
+                    with self.assertRaises(error) as raised:
+                        self.resume_with(invalid)
+                self.assertIs(type(raised.exception), error)
+                self.assert_pending()
+                saved = self.record()
+                self.assertNotIn("operator_question", saved)
+                draft = saved["stopped_migration_draft"]
+                self.assertEqual(saved["stopped_migration_history"], [first])
+                self.assertEqual((self.run_path / first["snapshot"] / "0.draft").read_bytes(), self.first_edit)
+                self.assertEqual((self.run_path / draft["snapshot"] / "0.draft").read_bytes(), self.latest_edit)
+
+                def next_junie(_command, _completion, token, targets, **kwargs):
+                    instructions = self.agent / f"checker-findings-{token}-operator.txt"
+                    self.assertIn(self.instruction, instructions.read_text(encoding="utf-8"))
+                    self.assertEqual(targets[0].read_bytes(), self.latest_edit)
+                    junie_cli.session_closed_observer.get()()
+                    return 0
+
+                with patch.object(junie_cli, "run_interactive", side_effect=next_junie) as junie:
+                    self.resume()
+                    junie.assert_called_once()
+                self.assert_pending()
+                self.assertEqual(self.record()["stopped_migration_draft"], draft)
+                self.assertEqual(self.record()["stopped_migration_history"], [first])
+
+    def test_invalid_followup_review_retains_both_errors_and_prior_snapshot_on_save_failure(self):
+        baseline = self.stop_followup()
+        first = baseline["stopped_migration_draft"]
+        with editor_queue(self.run_path) as queue:
+            record_operator_edit(queue, self.target.name, "class Previous {}\n", self.original.decode())
+
+        def invalid(_command, completion, token, targets, **kwargs):
+            targets[0].write_bytes(self.latest_edit)
+            report = completion.parent / ".migration-scratch" / f"operator-review-{token}.json"
+            report.write_bytes(b'{"question": ')
+            junie_cli.session_closed_observer.get()()
+            return 0
+
+        write_record = workflow.write_run_record
+        for outcome in ("snapshot", "record"):
+            with self.subTest(outcome=outcome):
+                self.save_record(baseline)
+                (self.agent / self.target.name).write_bytes(self.first_edit)
+                failure = OSError(f"fixture {outcome} save failed")
+
+                def save_record(path, record, **kwargs):
+                    if record.get("stopped_migration_draft") != first:
+                        raise failure
+                    return write_record(path, record, **kwargs)
+
+                failed_write = (
+                    patch.object(workflow, "_snapshot_stopped_repair", side_effect=failure)
+                    if outcome == "snapshot" else patch.object(workflow, "write_run_record", side_effect=save_record)
+                )
+                with failed_write:
+                    with self.assertRaises(OSError) as raised:
+                        self.resume_with(invalid)
+                self.assertIs(raised.exception, failure)
+                self.assertIsInstance(raised.exception.__context__, json.JSONDecodeError)
+                details = workflow.format_error(raised.exception)
+                self.assertIn("JSONDecodeError", details)
+                self.assertIn(str(failure), details)
+                self.assert_pending()
+                saved = self.record()
+                self.assertTrue(saved["stopped_migration_save_error"])
+                self.assertEqual(saved["stopped_migration_draft"], first)
+                self.assertNotIn("stopped_migration_history", saved)
+                self.assertNotIn("operator_question", saved)
+                self.assertEqual((self.run_path / first["snapshot"] / "0.draft").read_bytes(), self.first_edit)
+                self.assertEqual((self.agent / self.target.name).read_bytes(), self.latest_edit)
+                with patch.object(junie_cli, "run_interactive") as junie:
+                    with self.assertRaisesRegex(ValueError, "保存できません"):
+                        self.resume()
+                    junie.assert_not_called()
+
     def test_followup_question_retains_the_question_and_saves_one_snapshot(self):
         baseline = self.stop_followup()
         first = baseline["stopped_migration_draft"]
@@ -564,8 +674,14 @@ class FollowupDraftRecoveryTests(SavedRunFixture):
         self.assertEqual(saved["stopped_migration_history"], [first])
         self.assertEqual((self.run_path / saved["stopped_migration_draft"]["snapshot"] / "0.draft").read_bytes(), self.latest_edit)
 
+        response = "Example.cs は現在の編集を採用してください。"
+        with editor_queue(self.run_path) as queue:
+            add_prompt(queue, {"text": response})
+
         def answer(command, completion, token, targets, **kwargs):
             self.assertIn(question, command[-1])
+            instructions = self.agent / f"checker-findings-{token}-operator.txt"
+            self.assertIn(response, instructions.read_text(encoding="utf-8"))
             self.assertEqual(targets[0].read_bytes(), self.latest_edit)
             completion.write_text(token, encoding="ascii")
             junie_cli.session_closed_observer.get()()
@@ -573,7 +689,9 @@ class FollowupDraftRecoveryTests(SavedRunFixture):
 
         with patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result):
             self.assertEqual(self.resume_with(answer)["status"], "junie_finished")
-        self.assert_prompt("sent")
+        with editor_queue(self.run_path) as queue:
+            self.assertEqual([(item["text"], item["status"]) for item in queue["prompts"]],
+                             [(self.instruction, "sent"), (response, "sent")])
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.latest_edit.decode())
         self.assertNotIn("operator_question", self.record())
         self.assertEqual(self.record()["stopped_migration_history"], [first, saved["stopped_migration_draft"]])

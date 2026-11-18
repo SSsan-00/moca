@@ -1018,9 +1018,17 @@ def _run_editor_followup(
         safe_target(agent_root, target).is_file() for target in targets
     )
     # 質問も未完了として扱い、同じ照合で下書きを一度だけ保存する。
-    question = _read_operator_review(
-        report, agent_root, worktree, targets, record, completed=complete, save_stopped_draft=False,
-    )
+    try:
+        question = _read_operator_review(
+            report, agent_root, worktree, targets, record, completed=complete, save_stopped_draft=False,
+        )
+    except (OSError, ValueError, RecursionError):
+        if prior:
+            # 保存も失敗した場合は、確認レポートの例外をコンテキストに残す。
+            _checkpoint_migration_draft(
+                record_path, record, worktree, agent_root, targets, allowed, other_files, prior["targets"],
+            )
+        raise
     if question or not complete:
         if prior:
             _checkpoint_migration_draft(
