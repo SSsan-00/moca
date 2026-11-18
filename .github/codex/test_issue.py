@@ -10,6 +10,9 @@ import issue
 
 REPO = "SSsan-00/php-to-csharp-migration-harness"
 SHA = "a" * 40
+# GitHub PR #60, comment 6982495964. Keep the review markers from the actual comment.
+REVIEW_SHA = "951a9dd08ee09c65520a0ac99567f399b38d2029"
+SUMMARY = (Path(__file__).parent / "fixtures" / "codex-review-summary-v1.txt").read_text(encoding="utf-8")
 
 
 class IssueTests(unittest.TestCase):
@@ -122,6 +125,51 @@ class IssueTests(unittest.TestCase):
         self.assertIn("maintainer approval", issue.review_ready(42, SHA))
         paginated.side_effect = ([bot], [approval])
         self.assertIsNone(issue.review_ready(42, SHA))
+
+    def test_actual_review_summary_requires_a_clean_completed_exact_head(self):
+        self.assertTrue(issue.clean_review({"body": SUMMARY}, REVIEW_SHA))
+        self.assertFalse(issue.clean_review({"body": SUMMARY}, REVIEW_SHA[:10]))
+        self.assertFalse(issue.clean_review({"body": SUMMARY}, SHA))
+        replacements = (
+            ("v1", "v2"),
+            ('{"code_review":{', '{not-json'),
+            ('"code_review":', '"other_review":'),
+            ('"status":"completed"', '"status":"in_progress"'),
+            ('"status":"completed"', '"status":"failed"'),
+            ('"status":"completed"', '"status":null'),
+            ('"has_any_findings":false', '"has_any_findings":true'),
+            ('"has_unresolved_findings":false', '"has_unresolved_findings":true'),
+            ('"has_any_findings":false', '"has_any_findings":"false"'),
+            ('"has_unresolved_findings":false', '"has_unresolved_findings":null'),
+            ('"has_any_findings":false,', ''),
+            ('"has_any_findings":false', '"has_any_findings":true,"has_any_findings":false'),
+        )
+        for original, replacement in replacements:
+            with self.subTest(replacement=replacement):
+                self.assertIn(original, SUMMARY)
+                self.assertFalse(issue.clean_review({"body": SUMMARY.replace(original, replacement)}, REVIEW_SHA))
+        self.assertFalse(issue.clean_review({"body": SUMMARY + SUMMARY}, REVIEW_SHA))
+
+    @patch.dict(os.environ, {"REVIEWERS": "maintainer"})
+    @patch.object(issue, "paginated")
+    def test_summary_still_requires_expected_bot_and_maintainer_approval(self, paginated):
+        bot = {"user": {"login": issue.CODEX_BOT, "type": "Bot", "id": issue.CODEX_BOT_ID},
+               "body": SUMMARY, "updated_at": "2026-11-18T15:08:42Z"}
+        authorized = {"user": {"login": "maintainer", "type": "User", "id": 7},
+                      "commit_id": REVIEW_SHA, "author_association": "OWNER", "state": "APPROVED",
+                      "submitted_at": "2026-11-18T15:09:00Z",
+                      "body": "Codex-Issue: verified\nJunie: not-required"}
+        for field, value in (("login", "other[bot]"), ("id", 123), ("type", "User")):
+            with self.subTest(field=field):
+                paginated.side_effect = ([bot | {"user": bot["user"] | {field: value}}],)
+                self.assertIn("clean Codex", issue.review_ready(60, REVIEW_SHA))
+        paginated.side_effect = ([bot], [])
+        self.assertIn("maintainer approval", issue.review_ready(60, REVIEW_SHA))
+        paginated.side_effect = ([bot], [authorized])
+        self.assertIsNone(issue.review_ready(60, REVIEW_SHA))
+        later = {"user": bot["user"], "submitted_at": authorized["submitted_at"]}
+        paginated.side_effect = ([bot], [authorized, later])
+        self.assertIn("another review", issue.review_ready(60, REVIEW_SHA))
 
     @patch.object(issue, "paginated", return_value=[])
     def test_unprotected_main_blocks_merge(self, paginated):

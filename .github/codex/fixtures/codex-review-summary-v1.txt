@@ -1,0 +1,5 @@
+<!-- codex-pull-request-review-summary -->
+<!-- codex-review-state:v1 {"code_review":{"commit_sha":"951a9dd08ee09c65520a0ac99567f399b38d2029","has_any_findings":false,"has_unresolved_findings":false,"status":"completed"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}} -->
+
+<details>
+<summary><strong>Codex Review Summary</strong>: ✅ Completed</summary>
