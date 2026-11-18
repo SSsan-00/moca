@@ -552,14 +552,36 @@
     const query = new URLSearchParams();
     if (runId) query.set("run_id", runId);
     if (target) query.set("target", target);
+    const previous = state?.run_id === runId && state?.target === target ? state : undefined;
+    if (!demo && previous) for (const key of ["view_version", "content_version", "edit_version", "history_version"]) {
+      if (previous[key]) query.set(key, previous[key]);
+    }
     try {
       const data = await request("editor" + (query.size ? "?" + query : ""));
+      if (data.unchanged) {
+        if (version === revision && previous?.can_save && !layout.hidden) report("#editor-error");
+        return;
+      }
+      if (previous && previous.run_id === data.run_id && previous.target === data.target) {
+        for (const key of ["content", "edit", "conversation", "prompts"]) {
+          if (!Object.hasOwn(data, key) && Object.hasOwn(previous, key)) data[key] = previous[key];
+        }
+        for (const [key, delta] of Object.entries(data.history_delta || {})) {
+          const entries = new Map((data[key] || []).map(entry => [entry.id, entry]));
+          for (const id of delta.removed) entries.delete(id);
+          for (const entry of delta.changed) entries.set(entry.id, entry);
+          data[key] = [...entries.values()];
+          if (key === "conversation") data[key].sort((a, b) => (a.received_at || "").localeCompare(b.received_at || ""));
+        }
+        delete data.history_delta;
+      }
       await display(data, version);
     } catch (error) {
       if (version === revision) {
         const empty = find("#editor-empty");
         if (layout.hidden) empty.textContent = error.message;
         else {
+          state.view_version = undefined;
           state.can_save = state.can_prompt = false;
           showEditor(diffOpen);
           showSaveState();

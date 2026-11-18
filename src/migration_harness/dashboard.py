@@ -60,6 +60,43 @@ PROGRESS_FIELDS = (
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
+def _editor_stamp(path: Path) -> tuple | None:
+    """ポーリング時に本文を読まず、差し替えや外部編集を検知する。"""
+    try:
+        value = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return value.st_dev, value.st_ino, value.st_mode, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def _editor_version(*fields) -> str:
+    """個別の取得版を、Runや対象をまたいで再利用できない短い値にする。"""
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _editor_history_delta(payload, previous_version, versions):
+    """最近の版を基準に、指示と会話の変更だけを返す。古い版には全件を返す。"""
+    fields = ("prompts", "conversation")
+    current = {key: {entry["id"]: _editor_version(entry) for entry in payload.get(key, [])} for key in fields}
+    version = _editor_version(payload["run_id"], current)
+    payload["history_version"] = version
+    previous = versions.get((payload["run_id"], previous_version))
+    if previous is not None:
+        delta = {}
+        for key in fields:
+            if key not in payload:
+                continue
+            rows = payload.pop(key)
+            changed = [row for row in rows if previous[key].get(row["id"]) != current[key][row["id"]]]
+            removed = list(previous[key].keys() - current[key].keys())
+            if changed or removed:
+                delta[key] = {"changed": changed, "removed": removed}
+        if delta:
+            payload["history_delta"] = delta
+    versions.setdefault((payload["run_id"], version), current)
+    if len(versions) > 8:
+        del versions[next(iter(versions))]
+
 
 def _prompt_timing(config, state, run_path, record, *, live: bool = False, pending_edits: bool = False) -> str | None:
     """保留中の指示に適用する送信タイミングを選ぶ。"""
@@ -115,6 +152,7 @@ class Dashboard:
     def __init__(self) -> None:
         """接続し直すブラウザー向けに直近のイベントを保持できる状態を作る。"""
         self.condition = Condition()
+        self.editor_history_versions = {}
         self.events: deque[tuple[int, bytes]] = deque(maxlen=100)
         self.revision = 0
         self.state: dict[str, Any] = {}
@@ -509,7 +547,33 @@ class Dashboard:
                     else:
                         if action is not None and action.get("run_id") != run_id:
                             raise ValueError("表示中の実行が変わりました。")
-                        run_path, _, _, _ = load_saved_run(config, run_id)
+                        run_path, worktree, record, unit = load_saved_run(config, run_id)
+                        versions = None
+                        if action is None:
+                            names = [path.as_posix() for path in target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES]
+                            name = query.get("target", names[:1] or [None])[0]
+                            if name is not None and name not in names:
+                                raise ValueError("設定された移行先ファイルを選んでください。")
+                            agent = run_path / "agent-workspace"
+                            phase = record["status"]
+                            root = agent if phase in AGENT_PHASES and agent.is_dir() and not agent.is_symlink() else worktree
+                            try:
+                                target_stamp = _editor_stamp(safe_target(root, Path(name))) if name else None
+                                content_version = _editor_version(run_id, str(root), name, target_stamp)
+                            except (OSError, ValueError):
+                                content_version = None
+                            live = bool(self.dashboard.control and self.dashboard.control.junie_steering)
+                            view_version = _editor_version(
+                                content_version, names, phase, record.get("current_capsule"), record.get("operator_question"),
+                                record.get("completed_capsules"), record.get("context_capsules"), record.get("script_phase"),
+                                _editor_stamp(run_path / "editor.json"),
+                                _editor_stamp(run_path.parent / ".preparation-conversations" / (run_id + ".json")), live,
+                                *(state.get(key) for key in ("ready", "generating_anchors", "stop_requested")),
+                            )
+                            if content_version and query.get("view_version") == [view_version]:
+                                self.send_body(200, "application/json", b'{"unchanged":true}')
+                                return
+                            versions = view_version, content_version, root, name
                         with editor_queue(run_path) as queue:
                             state = self.dashboard.state
                             if state.get("run_id") != run_id:
@@ -594,6 +658,20 @@ class Dashboard:
                                 conversation = manager.conversations.preparation_replies(run_id, state) + queue.get("conversation", [])
                                 payload.update(conversation=sorted(conversation, key=lambda entry: entry.get("received_at", "")),
                                                can_prompt=True)
+                            if versions and versions[2:] == (root, name):
+                                view_version, content_version = versions[:2]
+                                if read_error is not None:
+                                    content_version = None
+                                payload.update(view_version=view_version if content_version else None, content_version=content_version)
+                                edit_version = _editor_version(run_id, name, edit)
+                                payload["edit_version"] = edit_version
+                                if content_version and query.get("content_version") == [content_version]:
+                                    del payload["content"]
+                                if query.get("edit_version") == [edit_version]:
+                                    del payload["edit"]
+                                with self.dashboard.condition:
+                                    _editor_history_delta(payload, query.get("history_version", [None])[0],
+                                                          self.dashboard.editor_history_versions)
                     self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 except _ERRORS as exc:
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))

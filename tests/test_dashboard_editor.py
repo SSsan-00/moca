@@ -518,6 +518,42 @@ class DashboardEditorTests(HarnessCase):
             editor_queue.editor_target(self.project, Path("Page.cs"))
         self.assertEqual(path.stat().st_size, 8 * 1024 * 1024 + 1)
 
+    def test_editor_poll_does_not_read_or_resend_seven_mib_unchanged_payloads(self):
+        result = self.finished_run()
+        run_path = Path(result["run_path"])
+        target = Path(result["worktree_path"]) / "Page.cs"
+        original = "a" * (7 * 1024 * 1024)
+        target.write_text(original, encoding="utf-8")
+        with editor_queue.editor_queue(run_path) as queue:
+            queue["edits"]["Page.cs"] = {"id": "draft", "status": "queued", "base": original,
+                                         "content": "b" + original[1:]}
+        first = self.request()
+        self.assertEqual(len(first["edit"]["base"]), len(original))
+        versions = {name: first[name] for name in ("view_version", "content_version", "edit_version", "history_version")}
+        route = "editor?" + urlencode({"run_id": result["run_id"], "target": "Page.cs", **versions})
+        with patch.object(dashboard, "editor_target") as read, patch.object(dashboard, "editor_queue") as queue:
+            for _ in range(3):
+                self.assertEqual(self.request(route), {"unchanged": True})
+            read.assert_not_called()
+            queue.assert_not_called()
+        with editor_queue.editor_queue(run_path) as queue:
+            editor_queue.add_prompt(queue, {"text": "途中の編集を確認してください。"})
+        update = self.request(route)
+        self.assertNotIn("content", update)
+        self.assertNotIn("edit", update)
+        self.assertNotIn("prompts", update)
+        self.assertEqual(len(update["history_delta"]["prompts"]["changed"]), 1)
+        version_after_prompt = update["history_version"]
+        with editor_queue.editor_queue(run_path) as queue:
+            editor_queue.add_prompt(queue, {"text": "追記だけ表示してください。"})
+        later = self.request("editor?" + urlencode({**versions, "history_version": version_after_prompt}))
+        self.assertEqual([item["text"] for item in later["history_delta"]["prompts"]["changed"]],
+                         ["追記だけ表示してください。"])
+        target.write_text("c" + original[1:], encoding="utf-8")
+        external = self.request(route)
+        self.assertTrue(external["content"].startswith("c"))
+        self.assertNotIn("edit", external)
+
     def test_php_view_reads_the_run_snapshot_and_accepts_only_get(self):
         other = self.project / "other.php"
         other.write_bytes("<?php echo '注文';".encode("cp932"))
