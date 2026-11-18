@@ -152,7 +152,9 @@ def stage_target_context(
                              "max_files": len(manifest["files"]) + 1}
                     for key, actual in usage.items():
                         if key in settings and actual > settings[key]:
-                            raise ValueError(f"参照資料 {relative} で {key} の上限を超えました（{actual:,} / {settings[key]:,}）。")
+                            raise ValueError(
+                                f"参照資料 {relative.as_posix()} で {key} の上限を超えました（{actual:,} / {settings[key]:,}）。",
+                            )
                     digest = _copy(source, staging / "files" / relative)
                     manifest["files"].append({"path": relative.as_posix(), "source": str(source), "sha256": digest, "bytes": size})
                     manifest["bytes"] += size
