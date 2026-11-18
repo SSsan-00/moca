@@ -916,6 +916,51 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
         junie_cli.launch_input_observer.reset(token)
 
 
+def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targets, allowed, other_files, before):
+    with worktree_source_lock:
+        try:
+            safe = (
+                _unlisted_workspace_files(agent_root, allowed) == other_files
+                and all(target_hash(safe_target(worktree, path)) == record["target_hashes"][path.as_posix()]
+                        for path in targets)
+            )
+            hashes = {path.as_posix(): target_hash(safe_target(agent_root, path)) for path in targets}
+        except (OSError, ValueError):
+            record["stopped_migration_save_error"] = True
+            write_run_record(record_path, record)
+            raise
+        if not safe or hashes != before:
+            _save_stopped_migration(record_path, record, agent_root, targets, workspace_unchanged=safe)
+
+
+def _run_migration_junie(
+    config, record_path, record, phase, guidelines, agent_root, inputs, command, completion, token,
+    agent_targets, *, worktree, targets, allowed, other_files, **kwargs,
+):
+    before = {name.as_posix(): target_hash(file) for name, file in zip(targets, agent_targets, strict=True)}
+    closed = False
+
+    def confirm_closed():
+        nonlocal closed
+        closed = True
+
+    observer = junie_cli.session_closed_observer.set(confirm_closed)
+    try:
+        return _run_budgeted_junie(config, record_path, record, phase, guidelines, agent_root, inputs,
+                                   command, completion, token, agent_targets, **kwargs)
+    except (KeyboardInterrupt, OSError, RuntimeError, ValueError) as exc:
+        if junie_cli.unconfirmed_junie_stop(exc) is not None:
+            record["migration_stop_unconfirmed"] = True
+            write_run_record(record_path, record)
+        elif closed:
+            _checkpoint_migration_draft(
+                record_path, record, worktree, agent_root, targets, allowed, other_files, before,
+            )
+        raise
+    finally:
+        junie_cli.session_closed_observer.reset(observer)
+
+
 def _run_editor_followup(
     agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any],
     record_path: Path, config: dict[str, Any], instruction: str,
@@ -945,15 +990,16 @@ def _run_editor_followup(
     allowed = {*targets, completion.relative_to(agent_root)}
     before = _unlisted_workspace_files(agent_root, allowed)
     try:
-        _run_budgeted_junie(
+        _run_migration_junie(
             config, record_path, record, "editor_followup", guidelines, agent_root, inputs,
             command, completion, token, tuple(safe_target(agent_root, target) for target in targets),
+            worktree=worktree, targets=targets, allowed=allowed, other_files=before,
             report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
             prompts=LivePrompts(record_path.parent),
         )
-    except KeyboardInterrupt:
-        _save_stopped_migration(record_path, record, agent_root, targets,
-                                workspace_unchanged=_unlisted_workspace_files(agent_root, allowed) == before)
+    except KeyboardInterrupt as exc:
+        if junie_cli.unconfirmed_junie_stop(exc) is not None:
+            raise
         raise RunInterrupted(record["run_id"]) from None
     if _unlisted_workspace_files(agent_root, allowed) != before:
         raise ValueError("追加指示の実行中に移行対象外のファイルが変更されました。")
@@ -1027,7 +1073,8 @@ def _run_prepared_with_junie(
         _verified_repair_snapshot(run_path, stopped_draft)
         draft_hashes = {path.as_posix(): target_hash(file) for path, file in zip(relative_targets, agent_targets, strict=True)}
         if not stopped_draft["workspace_unchanged"] or stopped_draft["base"] != hashes or stopped_draft["targets"] != draft_hashes:
-            raise ValueError("停止時の下書きと現行版が一致しません。両方を保持したので、保存版と変更を確認してください。")
+            raise ValueError("停止時の下書きと現行版が一致しません。"
+                             "採用済みの作業ツリーと Junie 作業領域を比較し、対象外の変更や外部編集を確認してください。")
     rewind = record.get("migration_rewind")
     if rewind and "restore_from" in rewind:
         with editor_queue(run_path) as queue, worktree_source_lock:
@@ -1223,38 +1270,43 @@ def _run_prepared_with_junie(
                                           effort=record.get("junie_effort"))
         try:
             try:
-                exit_code = _run_budgeted_junie(
+                exit_code = _run_migration_junie(
                     config, record_path, record, "migration", guidelines, agent_root, inputs,
                     command, completion_path, completion_token, agent_targets,
+                    worktree=worktree_root, targets=relative_targets, allowed=allowed, other_files=other_files,
                     report_usage=junie_usage_recorder(run_path, "migration", index),
                     prompts=LivePrompts(run_path),
                 )
-            except KeyboardInterrupt:
-                _save_stopped_migration(record_path, record, agent_root, relative_targets,
-                                        workspace_unchanged=_unlisted_workspace_files(agent_root, allowed) == other_files)
+            except KeyboardInterrupt as exc:
+                if junie_cli.unconfirmed_junie_stop(exc) is not None:
+                    raise
                 record.update(status="interrupted", error="interrupted by user; current capsule can be resumed")
                 write_run_record(record_path, record)
                 raise RunInterrupted(record["run_id"]) from None
             if _unlisted_workspace_files(agent_root, allowed) != other_files:
                 raise ValueError("Junie changed files outside the configured targets; inspect the agent workspace")
             completed = junie_cli.has_completion_record(completion_path, completion_token)
+            missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
+            complete = completed and not missing
+            if not complete and (prior := record.get("stopped_migration_draft")):
+                _checkpoint_migration_draft(
+                    record_path, record, worktree_root, agent_root, relative_targets, allowed, other_files,
+                    prior["targets"],
+                )
             question = _read_operator_review(
                 report, agent_root, worktree_root, relative_targets, record, completed=completed,
             )
             if question:
+                complete = False
                 record.update(status="editor_checkpoint", error=question, junie_exit_code=exit_code)
                 write_run_record(record_path, record, timing_stage=None)
                 break
             if completed:
                 record.pop("operator_question", None)
-            # 完了前の編集も再開用に反映するが、完了トークンと全対象がそろうまで進捗は進めない。
-            missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
-            complete = completed and not missing
+            # 旧経路の途中編集は保持するが、完了トークンと全対象がそろうまで進捗は進めない。
             if complete or not record.get("stopped_migration_draft"):
                 apply_agent_targets(agent_root, worktree_root, relative_targets, record["target_hashes"], record, record_path)
                 _archive_stopped_migration(record)
-            else:
-                _save_stopped_migration(record_path, record, agent_root, relative_targets, workspace_unchanged=True)
         except (OSError, ValueError) as exc:
             record.update(status="junie_failed", error=format_error(exc, command=command))
             write_run_record(record_path, record)
@@ -1611,17 +1663,21 @@ def _archive_stopped_migration(record):
 
 
 def _save_stopped_migration(record_path, record, agent_root, targets, *, workspace_unchanged):
-    # 旧下書きの参照は、新しい保存版の作成が終わるまで取り除かない。
+    # Run 記録の書き込みまで成功してから旧下書きの参照を更新する。
+    updated = {**record}
+    if "stopped_migration_history" in record:
+        updated["stopped_migration_history"] = record["stopped_migration_history"].copy()
     try:
         draft = _snapshot_stopped_repair(record_path.parent, agent_root, targets, record["target_hashes"],
                                         workspace_unchanged=workspace_unchanged)
+        _archive_stopped_migration(updated)
+        updated["stopped_migration_draft"] = draft
+        write_run_record(record_path, updated)
     except (OSError, ValueError):
         record["stopped_migration_save_error"] = True
         write_run_record(record_path, record)
         raise
-    _archive_stopped_migration(record)
-    record["stopped_migration_draft"] = draft
-    write_run_record(record_path, record)
+    record.update(updated)
 
 
 def _save_repair_snapshot(run_path, sources, before, *, workspace_unchanged):
@@ -2957,7 +3013,9 @@ def _require_saved_checker(config: dict[str, Any], unit: dict[str, Any], record:
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
-    if status not in _SCRIPT_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES:
+    if record.get("migration_stop_unconfirmed") or status not in (
+        _SCRIPT_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES
+    ):
         return False
     unit = find_unit(config, record["unit_id"]) if "unit_id" in record else {}
     if _missing_required_checker(config, unit, record):
@@ -3197,6 +3255,9 @@ def _resume_with_junie(
 ) -> dict[str, Any]:
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = load_saved_run(config, run_id)
+    if record.get("migration_stop_unconfirmed"):
+        raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
+                         "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
     if "stage_timings" in record:
         record["stage_timings"] = freeze_timings(record)
         record["active_stage"] = None

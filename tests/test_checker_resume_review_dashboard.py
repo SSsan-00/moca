@@ -249,6 +249,134 @@ class SavedRunFixture(unittest.TestCase):
         return workflow.review_checker(self.config, self.run_id, finding_id, reason)
 
 
+class MigrationFailureRecoveryTests(SavedRunFixture):
+    def test_resumed_migration_snapshots_only_edits_from_a_confirmed_session(self):
+        second = self.worktree / "Second.cs"
+        second.write_bytes(b"class SecondOriginal {}")
+        names = (self.target.name, second.name)
+        self.config["units"][0]["targets"] = list(names)
+        self.save_record({**self.record(), "targets": list(names), "status": "prepared",
+                          "completed_capsules": 0, "current_capsule": 1})
+        original = self.target.read_bytes()
+        agent = self.run_path / "agent-workspace"
+
+        def first_stop(_command, _completion, _token, targets, **kwargs):
+            targets[0].write_bytes(b"class FirstPartial {}")
+            junie_cli.session_closed_observer.get()()
+            raise OperationCancelled("stopped after saving")
+
+        with (
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=first_stop),
+            self.assertRaises(workflow.RunInterrupted),
+        ):
+            workflow.resume_with_junie(self.config, self.run_id)
+        baseline = self.record()
+        first = baseline["stopped_migration_draft"]
+
+        for outcome in ("connection", "session", "incomplete", "missing", "prelaunch", "unchanged",
+                        "outside", "external", "unconfirmed", "wrapped_stop", "snapshot_failure", "record_failure"):
+            with self.subTest(outcome=outcome):
+                self.save_record(baseline)
+                self.target.write_bytes(original)
+                second.write_bytes(b"class SecondOriginal {}")
+                (agent / names[0]).write_bytes(b"class FirstPartial {}")
+                (agent / names[1]).write_bytes(second.read_bytes())
+                outside = agent / "outside.txt"
+                outside.unlink(missing_ok=True)
+
+                def failed(command, _completion, _token, targets, **kwargs):
+                    if outcome == "prelaunch":
+                        raise junie_cli.JunieLaunchError(command, None, None, OSError("fixture launch"))
+                    if outcome != "unchanged":
+                        targets[0].write_bytes(b"class SecondPartial {}")
+                    if outcome == "missing":
+                        targets[1].unlink()
+                    if outcome == "outside":
+                        outside.write_text("fixture", encoding="utf-8")
+                    if outcome == "external":
+                        self.target.write_bytes(b"class OperatorEdit {}")
+                    if outcome == "unconfirmed":
+                        raise junie_cli.JunieStopError("fixture unconfirmed")
+                    if outcome == "wrapped_stop":
+                        junie_cli.session_closed_observer.get()()  # The earlier retry ended safely.
+                        try:
+                            raise junie_cli.JunieStopError("fixture unconfirmed")
+                        except OSError as exc:
+                            raise junie_cli.JunieSessionError(command, 1, "fixture wrapped stop") from exc
+                    junie_cli.session_closed_observer.get()()
+                    if outcome == "session":
+                        raise junie_cli.JunieSessionError(command, 1, "fixture session")
+                    if outcome == "incomplete":
+                        return 1
+                    raise junie_cli.JunieConnectionError("fixture connection")
+
+                def save_record(path, record, **kwargs):
+                    if record.get("stopped_migration_draft") != first and outcome == "record_failure":
+                        raise OSError("fixture record save failed")
+                    return write_record(path, record, **kwargs)
+
+                write_record = workflow.write_run_record
+                save_snapshot = workflow._snapshot_stopped_repair
+                with (
+                    patch.object(junie_cli, "require_interactive_cli"),
+                    patch.object(junie_cli, "run_interactive", side_effect=failed),
+                    patch.object(workflow, "write_run_record", side_effect=save_record),
+                    patch.object(workflow, "_snapshot_stopped_repair",
+                                 side_effect=OSError("fixture snapshot failed") if outcome == "snapshot_failure" else save_snapshot),
+                ):
+                    if outcome == "incomplete":
+                        self.assertEqual(workflow.resume_with_junie(self.config, self.run_id)["status"], "interrupted")
+                    else:
+                        with self.assertRaises(OSError):
+                            workflow.resume_with_junie(self.config, self.run_id)
+                saved = self.record()
+                self.assertEqual(saved["completed_capsules"], 0)
+                self.assertEqual(self.target.read_bytes(), b"class OperatorEdit {}" if outcome == "external" else original)
+                self.assertEqual(second.read_bytes(), b"class SecondOriginal {}")
+                draft = saved["stopped_migration_draft"]
+                if outcome in {"prelaunch", "unchanged", "unconfirmed", "wrapped_stop", "snapshot_failure", "record_failure"}:
+                    self.assertEqual(draft, first)
+                    self.assertEqual(saved.get("stopped_migration_history", []), [])
+                else:
+                    self.assertEqual(saved["stopped_migration_history"], [first])
+                    self.assertEqual((self.run_path / draft["snapshot"] / "0.draft").read_bytes(), b"class SecondPartial {}")
+                    self.assertEqual(draft["workspace_unchanged"], outcome not in {"outside", "external"})
+                    if outcome == "missing":
+                        self.assertIsNone(draft["targets"][names[1]])
+                        self.assertFalse((self.run_path / draft["snapshot"] / "1.draft").exists())
+
+                def next_junie(_command, completion, token, targets, **kwargs):
+                    expected = b"class FirstPartial {}" if outcome in {"prelaunch", "unchanged"} else b"class SecondPartial {}"
+                    self.assertEqual(targets[0].read_bytes(), expected)
+                    self.assertEqual(targets[1].exists(), outcome != "missing")
+                    targets[1].write_bytes(b"class Recreated {}")
+                    completion.write_text(token, encoding="ascii")
+                    return 0
+
+                with (
+                    patch.object(junie_cli, "require_interactive_cli"),
+                    patch.object(junie_cli, "run_interactive", side_effect=next_junie) as junie,
+                    patch.object(workflow, "_verify_worktree", return_value={}),
+                ):
+                    blocked = {
+                        "unconfirmed": "終了を確認できません",
+                        "wrapped_stop": "終了を確認できません",
+                        "outside": "一致しません",
+                        "external": "worktree targets changed",
+                        "snapshot_failure": "保存できません",
+                        "record_failure": "保存できません",
+                    }.get(outcome)
+                    if blocked:
+                        with self.assertRaisesRegex(ValueError, blocked):
+                            workflow.resume_with_junie(self.config, self.run_id)
+                        junie.assert_not_called()
+                    else:
+                        workflow.resume_with_junie(self.config, self.run_id)
+                        junie.assert_called_once()
+                        self.assertEqual(self.record()["completed_capsules"], 1)
+
+
 class CheckerResumeAndReviewTests(SavedRunFixture):
     def test_junie_input_cli_preserves_unmeasured_and_measured_states(self):
         args = ["php-to-csharp-harness", "junie-input", "--config", "fixture.toml", "--run-id", self.run_id]
