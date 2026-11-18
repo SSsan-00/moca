@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from migration_harness import build_receipt, cli, dashboard, junie_cli, run_records, workflow
+from migration_harness.editor_queue import add_prompt, editor_queue, record_operator_edit
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.settings_form import build_settings_draft
 
@@ -375,6 +376,217 @@ class MigrationFailureRecoveryTests(SavedRunFixture):
                         workflow.resume_with_junie(self.config, self.run_id)
                         junie.assert_called_once()
                         self.assertEqual(self.record()["completed_capsules"], 1)
+
+
+class FollowupDraftRecoveryTests(SavedRunFixture):
+    instruction = "移行済みの C# を更新してください"
+    first_edit = b"class FirstPartial {}\n"
+    latest_edit = b"class SecondPartial {}\n"
+
+    def setUp(self):
+        super().setUp()
+        self.second = self.worktree / "Second.cs"
+        self.second.write_bytes(b"class SecondOriginal {}\n")
+        names = [self.target.name, self.second.name]
+        self.config["units"][0]["targets"] = names
+        self.save_record({**self.record(), "targets": names})
+        self.original = self.target.read_bytes()
+        self.second_original = self.second.read_bytes()
+        self.agent = self.run_path / "agent-workspace"
+        self.agent.mkdir()
+        with editor_queue(self.run_path) as queue:
+            add_prompt(queue, {"text": self.instruction})
+            self.prompt_id = queue["prompts"][0]["id"]
+        cli_check = patch.object(junie_cli, "require_interactive_cli")
+        cli_check.start()
+        self.addCleanup(cli_check.stop)
+
+    def assert_prompt(self, status):
+        with editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["prompts"], [{"id": self.prompt_id, "text": self.instruction, "status": status}])
+
+    def resume_with(self, junie):
+        with patch.object(junie_cli, "run_interactive", side_effect=junie):
+            return self.resume()
+
+    def stop_followup(self):
+        def stop(_command, _completion, _token, targets, **kwargs):
+            targets[0].write_bytes(self.first_edit)
+            junie_cli.session_closed_observer.get()()
+            raise OperationCancelled("stopped after saving")
+
+        with self.assertRaises(workflow.RunInterrupted):
+            self.resume_with(stop)
+        self.assert_prompt("queued")
+        return self.record()
+
+    def assert_pending(self, expected_first=None):
+        self.assert_prompt("queued")
+        self.assertEqual(self.record()["status"], "editor_checkpoint")
+        self.assertEqual(self.record()["completed_capsules"], 1)
+        self.assertEqual(self.target.read_bytes(), expected_first or self.original)
+        self.assertEqual(self.second.read_bytes(), self.second_original)
+
+    def test_incomplete_followup_passes_latest_edit_and_missing_target_to_normal_resume(self):
+        baseline = self.stop_followup()
+        first = baseline["stopped_migration_draft"]
+        for outcome in ("zero", "one", "missing", "wrong_token", "unchanged"):
+            with self.subTest(outcome=outcome):
+                self.save_record(baseline)
+                (self.agent / self.target.name).write_bytes(self.first_edit)
+                (self.agent / self.second.name).write_bytes(self.second_original)
+
+                def incomplete(_command, completion, token, targets, **kwargs):
+                    self.assertEqual(targets[0].read_bytes(), self.first_edit)
+                    if outcome != "unchanged":
+                        targets[0].write_bytes(self.latest_edit)
+                    if outcome == "missing":
+                        targets[1].unlink()
+                        completion.write_text(token, encoding="ascii")
+                    if outcome == "wrong_token":
+                        completion.write_text("wrong token", encoding="ascii")
+                    junie_cli.session_closed_observer.get()()
+                    return 1 if outcome == "one" else 0
+
+                self.assertEqual(self.resume_with(incomplete)["status"], "editor_checkpoint")
+                self.assert_pending()
+                saved = self.record()
+                draft = saved["stopped_migration_draft"]
+                expected = self.first_edit if outcome == "unchanged" else self.latest_edit
+                self.assertEqual(saved.get("stopped_migration_history", []), [] if outcome == "unchanged" else [first])
+                self.assertEqual((self.run_path / first["snapshot"] / "0.draft").read_bytes(), self.first_edit)
+                self.assertEqual((self.run_path / draft["snapshot"] / "0.draft").read_bytes(), expected)
+                if outcome == "missing":
+                    self.assertIsNone(draft["targets"][self.second.name])
+                    self.assertFalse((self.run_path / draft["snapshot"] / "1.draft").exists())
+
+                def next_junie(_command, completion, token, targets, **kwargs):
+                    instructions = self.agent / f"checker-findings-{token}-operator.txt"
+                    self.assertIn(self.instruction, instructions.read_text(encoding="utf-8"))
+                    self.assertEqual(targets[0].read_bytes(), expected)
+                    self.assertEqual(targets[1].exists(), outcome != "missing")
+                    junie_cli.session_closed_observer.get()()
+                    return 0
+
+                with patch.object(junie_cli, "run_interactive", side_effect=next_junie) as junie:
+                    self.resume()
+                    junie.assert_called_once()
+                self.assert_pending()
+                self.assertEqual(self.record()["stopped_migration_draft"], draft)
+                self.assertEqual(self.record().get("stopped_migration_history", []), saved.get("stopped_migration_history", []))
+
+    def test_incomplete_followup_blocks_resume_after_unsafe_changes_or_save_failures(self):
+        baseline = self.stop_followup()
+        first = baseline["stopped_migration_draft"]
+        external = b"class External {}\n"
+        write_record = workflow.write_run_record
+        save_snapshot = workflow._snapshot_stopped_repair
+        cases = {"outside": "一致しません", "worktree": "worktree targets changed", "agent": "一致しません",
+                 "unconfirmed": "終了を確認できません", "snapshot": "保存できません", "record": "保存できません"}
+        for outcome, blocked in cases.items():
+            with self.subTest(outcome=outcome):
+                self.save_record(baseline)
+                self.target.write_bytes(self.original)
+                (self.agent / self.target.name).write_bytes(self.first_edit)
+                outside = self.agent / "outside.txt"
+                outside.unlink(missing_ok=True)
+
+                def incomplete(_command, _completion, _token, targets, **kwargs):
+                    if outcome == "outside":
+                        outside.write_bytes(b"outside")
+                    else:
+                        targets[0].write_bytes(self.latest_edit)
+                    if outcome == "worktree":
+                        self.target.write_bytes(external)
+                    if outcome != "unconfirmed":
+                        junie_cli.session_closed_observer.get()()
+                    return 0
+
+                def save_record(path, record, **kwargs):
+                    if outcome == "record" and record.get("stopped_migration_draft") != first:
+                        raise OSError("fixture record save failed")
+                    return write_record(path, record, **kwargs)
+
+                with (
+                    patch.object(workflow, "write_run_record", side_effect=save_record),
+                    patch.object(workflow, "_snapshot_stopped_repair",
+                                 side_effect=OSError("fixture snapshot failed") if outcome == "snapshot" else save_snapshot),
+                ):
+                    if outcome in {"worktree", "agent"}:
+                        self.resume_with(incomplete)
+                    else:
+                        error = ValueError if outcome == "outside" else OSError
+                        with self.assertRaises(error):
+                            self.resume_with(incomplete)
+                if outcome == "agent":
+                    (self.agent / self.target.name).write_bytes(external)
+                self.assert_pending(external if outcome == "worktree" else self.original)
+                saved = self.record()
+                if outcome in {"unconfirmed", "snapshot", "record"}:
+                    self.assertEqual(saved["stopped_migration_draft"], first)
+                    self.assertEqual(saved.get("stopped_migration_history", []), [])
+                self.assertEqual((self.run_path / first["snapshot"] / "0.draft").read_bytes(), self.first_edit)
+                with patch.object(junie_cli, "run_interactive") as junie:
+                    with self.assertRaisesRegex(ValueError, blocked):
+                        self.resume()
+                    junie.assert_not_called()
+
+    def test_followup_question_retains_the_question_and_saves_one_snapshot(self):
+        baseline = self.stop_followup()
+        first = baseline["stopped_migration_draft"]
+        question = "Example.cs の更新方針を選んでください。"
+        with editor_queue(self.run_path) as queue:
+            record_operator_edit(queue, self.target.name, "class Previous {}\n", self.original.decode())
+
+        def ask(_command, completion, token, targets, **kwargs):
+            targets[0].write_bytes(self.latest_edit)
+            report = completion.parent / ".migration-scratch" / f"operator-review-{token}.json"
+            report.write_text(json.dumps({"question": question}), encoding="utf-8")
+            junie_cli.session_closed_observer.get()()
+            return 0
+
+        with patch.object(workflow, "_snapshot_stopped_repair", side_effect=OSError("fixture snapshot failed")):
+            with self.assertRaises(OSError):
+                self.resume_with(ask)
+        self.assert_pending()
+        failed = self.record()
+        self.assertEqual(failed["operator_question"], question)
+        self.assertEqual(failed["stopped_migration_draft"], first)
+        self.assertNotIn("stopped_migration_history", failed)
+
+        self.save_record(baseline)
+        (self.agent / self.target.name).write_bytes(self.first_edit)
+        result = self.resume_with(ask)
+        self.assert_pending()
+        self.assertEqual(result["error"], question)
+        saved = self.record()
+        self.assertEqual(saved["operator_question"], question)
+        self.assertEqual(saved["stopped_migration_history"], [first])
+        self.assertEqual((self.run_path / saved["stopped_migration_draft"]["snapshot"] / "0.draft").read_bytes(), self.latest_edit)
+
+        def answer(command, completion, token, targets, **kwargs):
+            self.assertIn(question, command[-1])
+            self.assertEqual(targets[0].read_bytes(), self.latest_edit)
+            completion.write_text(token, encoding="ascii")
+            junie_cli.session_closed_observer.get()()
+            return 0
+
+        with patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result):
+            self.assertEqual(self.resume_with(answer)["status"], "junie_finished")
+        self.assert_prompt("sent")
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.latest_edit.decode())
+        self.assertNotIn("operator_question", self.record())
+        self.assertEqual(self.record()["stopped_migration_history"], [first, saved["stopped_migration_draft"]])
+
+    def test_incomplete_followup_without_a_prior_stop_does_not_create_a_draft(self):
+        def incomplete(_command, _completion, _token, targets, **kwargs):
+            targets[0].write_bytes(self.latest_edit)
+            junie_cli.session_closed_observer.get()()
+            return 0
+
+        self.assertEqual(self.resume_with(incomplete)["status"], "editor_checkpoint")
+        self.assert_pending()
+        self.assertNotIn("stopped_migration_draft", self.record())
 
 
 class CheckerResumeAndReviewTests(SavedRunFixture):
