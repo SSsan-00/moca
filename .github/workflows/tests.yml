@@ -10,12 +10,20 @@ permissions:
 
 jobs:
   regression:
+    name: ${{ matrix.os == 'windows-latest' && format('windows tests ({0}, {1})', matrix.python, matrix.suite) || format('regression ({0}, {1})', matrix.os, matrix.python) }}
     strategy:
       fail-fast: false
       matrix:
-        # Windows固有の改行と、最低対応版のPythonをCIで確認する。
-        os: [ubuntu-latest, windows-latest]
+        os: [windows-latest]
         python: ["3.11", "3.13"]
+        suite: [conversation, remaining]
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+            suite: full
+          - os: ubuntu-latest
+            python: "3.13"
+            suite: full
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +33,29 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e .
-      - run: python -m unittest discover -s tests -v
-      - run: python -m unittest discover -s .github/codex -v
+      - if: matrix.suite == 'full'
+        run: python -m unittest discover -s tests -v
+      - if: matrix.os == 'windows-latest'
+        env:
+          TEST_SHARD: ${{ matrix.suite }}
+        run: python tests/run_shard.py $env:TEST_SHARD
+      - if: matrix.suite != 'conversation'
+        run: python -m unittest discover -s .github/codex -v
+
+  windows-regression:
+    # Keep the required check names and report failure if any regression shard failed.
+    name: regression (windows-latest, ${{ matrix.python }})
+    needs: regression
+    if: always()
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful regression shards
+        env:
+          REGRESSION_RESULT: ${{ needs.regression.result }}
+        run: test "$REGRESSION_RESULT" = success
 
   windows-junie:
     runs-on: windows-latest

@@ -92,12 +92,18 @@ class IssueTests(unittest.TestCase):
         push = base | {"event": "push"}
         pr = base | {"id": 2, "event": "pull_request"}
         jobs = [{"name": name, "head_sha": SHA, "status": "completed", "conclusion": "success"}
-                for name in issue.CHECKS]
+                for name in sorted(issue.CI_JOBS)]
         paginated.side_effect = ([push], jobs)
         self.assertEqual(issue.ci_ready("codex/issue-7", SHA), ["missing pull_request CI"])
         paginated.side_effect = ([push, pr | {"status": "in_progress"}], jobs)
         self.assertEqual(issue.ci_ready("codex/issue-7", SHA), ["pull_request CI pending"])
-        paginated.side_effect = ([push, pr], jobs, jobs[:-1])
+        missing_shard = [job for job in jobs if job["name"] != "windows tests (3.13, conversation)"]
+        paginated.side_effect = ([push, pr], jobs, missing_shard)
+        with self.assertRaisesRegex(issue.Stop, "full successful matrix"):
+            issue.ci_ready("codex/issue-7", SHA)
+        failed_shard = [job | {"conclusion": "failure"} if job["name"] == "windows tests (3.13, conversation)"
+                        else job for job in jobs]
+        paginated.side_effect = ([push, pr], jobs, failed_shard)
         with self.assertRaisesRegex(issue.Stop, "full successful matrix"):
             issue.ci_ready("codex/issue-7", SHA)
         for outcome in ("failure", "cancelled", "skipped"):
