@@ -453,3 +453,5 @@ Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合�
 CI では Windows・Ubuntu の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモの3件が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
 
 Windows の回帰テストは `conversation-editor`（会話と HTTP エディタ）および `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。Ubuntu は全件実行します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python・OS ごとの ID 集合、skip 理由、最長ジョブの実測を比較し、workflow の集約条件と `.github/codex/issue.py` のジョブ名も更新します。
+
+ダッシュボードの `Dashboard.server()` はループバックに接続し、`_dashboard_handler()` が GET の配信と POST の共通検証を担当します。POST は本文の形式と操作ごとのサイズを確認し、対象 Run を確定した後に設定、編集・会話、追加指示、比較、実行制御へ振り分けます。
