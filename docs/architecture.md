@@ -159,7 +159,7 @@ before_build・対象 hash と設定を記録]
 flowchart TD
     User["利用者"]
     CLI["cli.py<br/>引数・設定"]
-    UI["ブラウザー<br/>dashboard.js / Monaco"]
+    UI["ブラウザー<br/>dashboard.js / 設定フォーム / Monaco"]
     HTTP["dashboard.py<br/>HTTP / SSE"]
     Manager["run_manager.py<br/>実行枠・ワーカー"]
     Flow["workflow.py<br/>準備・移行<br/>検証・再開"]
@@ -229,6 +229,11 @@ sequenceDiagram
 - Windows の `h.cmd` は隣接する仮想環境の `php-to-csharp-harness.exe` と `harness.local.toml` を使います。Python のエントリーポイントは `migration_harness.cli:main` です。初回の `dashboard` は指定 TOML がなくても設定画面を開けます。保存操作で内容を検証し、読み込み時の版と照合して置き換えます。 `view` と `resume --dashboard` は保存済み Run を開き、再開の実行は画面から指示します。 [h.cmd](../h.cmd) · [cli.py](../src/migration_harness/cli.py) · [dashboard.py](../src/migration_harness/dashboard.py)
 - サーバーは `127.0.0.1` の空きポートにバインドし、ランダムな URL 接頭辞を使います。GET は Host と接頭辞、POST は Host と Origin を照合します。`GET …/events` は Run 別の連番付き SSE を配信し、再接続時は `Last-Event-ID` より後の直近保持分（最大 100 件）を返します。 [dashboard.py](../src/migration_harness/dashboard.py)
 - `RunManager` が操作 ID を付けて FIFO キューに登録し、最大 5 件を別スレッドで実行します。同じ移行単位の実行中・待機中の重複を拒否します。`<run_root>/dashboard-queue.json` から未起動のジョブを復元し、起動済みの工程は繰り返さず保存状態を表示します。Junieの終了未確認が解消されるまでは同じRunの会話依頼を保留し、その理由を再起動後も復元します。ワーカーが使う設定は実行枠へ入る際にコピーします。 [run_manager.py](../src/migration_harness/run_manager.py) · [junie_conversation.py](../src/migration_harness/junie_conversation.py)
+
+ダッシュボードの `Dashboard.server()` はループバックに接続し、`_dashboard_handler()` が GET の配信と POST の共通検証を担当します。POST は本文の形式と操作ごとのサイズを確認し、対象 Run を確定した後に設定、編集・会話、追加指示、比較、実行制御へ振り分けます。
+
+設定フォームの表示、入力差分、モデル候補、プレビューと保存は `dashboard_settings.js` が担当します。デモはデモ用のアダプターを、本番は `dashboard.js` の HTTP アダプターを設定フォームへ渡します。ブラウザで表示するのはプロジェクトの概要、移行単位、参照の起点と追加フォルダー、ルール／参考実装などです。呼び出し容量や参照の除外・再帰・容量制限は TOML で編集します。
+
 
 ## 3. 準備とカプセルの固定
 
@@ -396,7 +401,7 @@ flowchart TD
 2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。Diff Viewer で内容を確認し、CLI の `ledger-review` で `confirmed`・`excluded`・`needs_review` と理由を記録します。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [cli.py](../src/migration_harness/cli.py) · [workflow.py](../src/migration_harness/workflow.py)
 3. `verification_passed` には、反映保留がないこと、全カプセル完了、ビルド成功、必要なチェッカーの成功または有効な承認、検証フックの成功、対象ハッシュと設定の一致が必要です。照合する設定はビルド先、チェッカーコマンド、検証フックです。`completion.complete` はこれに加えて、PHP 範囲が 1 件以上あり、全件に有効な確認または理由付き除外がある場合に成立します。 [workflow.py](../src/migration_harness/workflow.py)
 
-`run.json` の `build_succeeded`、`checker_succeeded`、`checker_accepted` は検証工程の状態です。移行の完了判定は台帳を参照してください。ハーネスが再照合する範囲は移行先と上記の設定です。依存ソースやコマンド実体を変更した場合は再検証が必要です。実行時の振る舞いを検証するテストは、プロジェクトのフックやチェッカーで指定できます。 [技術仕様](../SPEC.md)
+`run.json` の `build_succeeded`、`checker_succeeded`、`checker_accepted` は検証工程の状態です。移行の完了判定は台帳を参照してください。通常の台帳判定は移行先と検証設定を照合します。チェッカー単独再開に対応した構成では、`build_receipt.py` が作業ツリー、.NET 起動ファイルと SDK 参照パック、成果物を照合し、その再開結果を台帳に表示する際にも確認します。依存ソースやコマンド実体を変更した場合は再検証が必要です。実行時の振る舞いを検証するテストは、プロジェクトのフックやチェッカーで指定できます。 [技術仕様](../SPEC.md)
 
 ## 7. 停止・失敗後にどこから再開するか
 
@@ -422,7 +427,7 @@ flowchart TD
     Edit -->|処理済み| Build
 ```
 
-`load_saved_run` は Run の UUID、アプリルート、移行単位、移行先と worktree の位置を現行設定と照合します。 `_resume_with_junie` は保存されたカプセルパスと完了数を照合します。移行中の通常再開では worktree の移行先ハッシュを比較し、前回の Junie 下書きと固定資料を使って `completed_capsules + 1` から進めます。検証工程からの通常再開は、チェッカーだけが残っている場合もビルドから行います。 `after_prepare`、`before_migration`、`after_migration` は完了済みの工程を省略します。工程の途中から再開する場合は、保存済みのコマンド列と先頭から一致する成功分を省略します。 [run_records.py](../src/migration_harness/run_records.py) · [workflow.py](../src/migration_harness/workflow.py)
+`load_saved_run` は Run の UUID、アプリルート、移行単位、移行先と worktree の位置を現行設定と照合します。 `_resume_with_junie()` は明示計画の版と保存済みカプセルを照合し、移行・ビルド・チェッカーの開始工程を選びます。移行中の通常再開では worktree の移行先ハッシュを比較し、前回の Junie 下書きと固定資料を使って `completed_capsules + 1` から進めます。検証工程からの通常再開は、チェッカーだけが残っている場合もビルドから行います。 `after_prepare`、`before_migration`、`after_migration` は完了済みの工程を省略します。工程の途中から再開する場合は、保存済みのコマンド列と先頭から一致する成功分を省略します。 [run_records.py](../src/migration_harness/run_records.py) · [workflow.py](../src/migration_harness/workflow.py)
 
 | 状況 | 確認する記録と再開条件 |
 | --- | --- |
@@ -450,14 +455,10 @@ Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合�
 
 ## ダッシュボードの回帰テスト
 
-`PYTHONPATH=tests python -m unittest test_editor_run_isolation test_settings_browser` でダッシュボードの検証を実行します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
+`python -m unittest discover -s tests -p "test_editor_run_isolation.py"` と `python -m unittest discover -s tests -p "test_settings_browser.py"` でダッシュボードの検証を実行します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
 
 保存済み Run が必要なテストでは `tests/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。
 
 CI では Windows・Ubuntu の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモの3件が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
 
 Windows の回帰テストは `conversation-editor`（会話と HTTP エディタ）および `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。Ubuntu は全件実行します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python・OS ごとの ID 集合、skip 理由、最長ジョブの実測を比較し、workflow の集約条件と `.github/codex/issue.py` のジョブ名も更新します。
-
-ダッシュボードの `Dashboard.server()` はループバックに接続し、`_dashboard_handler()` が GET の配信と POST の共通検証を担当します。POST は本文の形式と操作ごとのサイズを確認し、対象 Run を確定した後に設定、編集・会話、追加指示、比較、実行制御へ振り分けます。
-
-設定フォームの表示、入力差分、モデル候補、プレビューと保存は `dashboard_settings.js` が担当します。デモはデモ用のアダプターを、本番は `dashboard.js` の HTTP アダプターを設定フォームへ渡します。ブラウザで表示するのはプロジェクトの概要、移行単位、参照の起点と追加フォルダー、ルール／参考実装などです。呼び出し容量や参照の除外・再帰・容量制限は TOML で編集します。
