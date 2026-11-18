@@ -42,7 +42,7 @@ Windowsの `windows-junie` はCLIの起動スモークです。移行や停止�
 
 - 同じIssueの同時実行は直列化されます。先行実行のPRやブランチが残っている場合は生成を止めます。pushだけ成功した場合もブランチが残ります。別の手動PRによる対応状況も起動前に確認してください。
 - CIが欠落・失敗・キャンセルした場合、またはマトリクスの一部だけが再実行された場合は停止します。必要に応じて対象SHAの **Re-run all jobs** を実行し、元のCodex実行で **Re-run failed jobs** を選びます。CI、レビューと承認の待機は最大55分です。前回の実行に必要な出力が残っている場合、失敗したジョブから再開できます。
-- Codexのネイティブレビューにはマージ判定用の構造化された成功チェックがないため、既知のBotと、最終SHAと一致する10桁以上のコミット識別子を示す既知形式のクリーン結果だけを受理します。成功メッセージの書式が変わったとき、SHAを特定できないとき、担当者が結果を確認できないときは停止します。エラーや指摘を隠すために承認を出さず、必要に応じて手動レビュー・手動マージの手順に戻してください。
+- CodexのGitHubレビューは、既知のBotが投稿した `codex-review-state:v1` サマリーで、コードレビューの完全なSHAが候補の最終SHAと一致し、完了かつ指摘なし・未解決なしの場合に受理します。従来の定型コメントも、最終SHAと一致する10桁以上の識別子があれば受理します。未知の形式、不正な状態、別SHA、レビュー未完了・指摘ありの場合は承認へ進みません。Actionsの `verify` ログとPR上のレビュー結果を確認してください。
 - `main`、Issue本文・コメント、候補SHA、PR本文が変わった場合や、マージ競合がある場合は自動処理を続けません。元のPRとブランチを確認し、再生成する場合は担当者が候補PRを閉じて、不要になった候補ブランチを削除します。最新 `main` から新規実行し、新しいSHAで全条件を満たしてください。
 - マージ直前に条件を再取得し、GitHubのマージAPIに期待するhead SHAを渡します。並行する `main` 更新はGitHubの厳格な必須チェックで止まります。Issueコメントや外部レビューはGitHubのマージトランザクションと一体で更新できないため、マージ後に担当者が改めて完了を確認します。ルールや担当者の設定を自動変更しないでください。 [チェックと最終コミット](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks) · [マージAPI](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)
 
