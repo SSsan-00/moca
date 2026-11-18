@@ -212,6 +212,48 @@ class JunieConversationTests(SavedRunFixture):
             repair.assert_not_called()
         self.assertEqual(len(calls), 2)
 
+    def test_migration_stage_plan_and_conversation_share_workflow_across_restart(self):
+        capsule = self.run_path / "capsule"
+        manifest_path = capsule / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for index in (2, 3):
+            part = capsule / f"context-{index}.txt"
+            part.write_text(f"capsule {index}", encoding="utf-8")
+            manifest["parts"].append({"index": index, "path": str(part), "chars": 9})
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        (agent / self.target.name).write_bytes(self.target.read_bytes())
+        self.save_record({**self.record(), "status": "interrupted", "current_capsule": 2, "context_capsules": 3,
+                          "target_hashes": {self.target.name: workflow.sha256_file(self.target)}})
+        route = "resume-plan?" + urlencode({"run_id": self.run_id, "start_stage": "migration", "through_capsule": 2})
+        _, plan = self.request(route)
+        self.assertEqual(plan["capsule_range"], [2, 2])
+        payload = {"action": "resume-run", "run_id": self.run_id, "revision": 0,
+                   "start_stage": "migration", "through_capsule": 2, "plan_version": plan["version"]}
+
+        def run_agent(_command, completion, token, targets, **_kwargs):
+            targets[0].write_bytes(b"class Updated {}")
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=run_agent) as junie,
+              patch.object(workflow, "run_process") as external):
+            self.assertEqual(self.request("control", payload)[0], 202)
+            self.wait_until_idle()
+            self.assertEqual(self.record()["completed_capsules"], 2)
+            self.restart_server()
+            run = self.manager.get(self.run_id).state
+            self.assertEqual(run["current_capsule"], 3)
+            identifier, accepted = self.send("移行の続きから区間３まで")
+            self.assertEqual(accepted["stage_request"]["capsule_range"], [3, 3])
+            self.assertEqual(accepted["stage_request"]["start_stage"], "migration")
+            self.wait_for(identifier, "done")
+            self.assertEqual(self.record()["completed_capsules"], 3)
+            self.assertEqual(junie.call_count, 2)
+            external.assert_not_called()
+
     def test_explicit_build_plan_rejects_a_changed_version_then_builds_only(self):
         self.config["checker_command"] = None
         self.assertFalse(self.manager.get(self.run_id).state["resumable"])
@@ -598,6 +640,9 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(self.request("prompts")[1]["prompts"][0]["status"], "queued")
 
         self.restart_server(checker_from_cli=False, checker_command=None)
+        stopped = self.manager.get(self.run_id).state
+        self.assertEqual(stopped["last_stop"]["phase"], "editor_followup")
+        self.assertIn("追加指示を停止しました", stopped["message"])
         if checker is not None:
             for legacy in (False, True):
                 with self.subTest(legacy=legacy):

@@ -117,6 +117,26 @@ def _status_intent(value):
     return None
 
 
+def _stage_resume_options(text):
+    value = unicodedata.normalize("NFKC", text).strip().rstrip("。.!！")
+    if re.fullmatch(r"チェッカー(?:のみ|だけ|から)(?:を)?(?:再開|再実行)(?:して|してください)?", value):
+        return {"stage": "checker"}
+    match = re.fullmatch(
+        r"(?:区間|カプセル)\s*([1-9][0-9]{0,5})\s*(だけ|のみ|から)"
+        r"(?:を)?(?:やり直|再移行)(?:す|して|してください)?", value,
+    )
+    if match:
+        index = int(match[1])
+        return {"stage": "migration", "rewind_to": index,
+                "through_capsule": None if match[2] == "から" else index}
+    match = re.fullmatch(r"移行の続きから(?:区間|カプセル)\s*([1-9][0-9]{0,5})\s*まで(?:再開)?", value)
+    if match:
+        return {"stage": "migration", "through_capsule": int(match[1])}
+    if re.fullmatch(r"移行の続きから(?:再開(?:して|してください)?)?", value):
+        return {"stage": "migration"}
+    return None
+
+
 def _intent(text, phase):
     """会話文を処理可能な操作意図へ分類する。"""
     value = unicodedata.normalize("NFKC", text).lower()
@@ -297,6 +317,7 @@ class JunieConversations:
     def submit(self, run_id, action):
         """会話本文を保存し、後続処理へ受付登録する。"""
         from .dashboard import _prompt_timing
+        from .workflow import plan_stage_resume
 
         identifier = action.get("id")
         if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier):
@@ -323,6 +344,14 @@ class JunieConversations:
                     history.append(entry)
                     return entry
         run_path, worktree, _, unit = load_saved_run(self.manager.config, run_id)
+        stage_plan, stage_error = None, None
+        if options := _stage_resume_options(text):
+            try:
+                if not self.manager.get(run_id).state.get("ready"):
+                    raise ValueError("処理が終わってから再開方法を指定してください。")
+                stage_plan = plan_stage_resume(self.manager.config, run_id, **options)
+            except (OSError, ValueError) as exc:
+                stage_error = str(exc)
         with editor_queue(run_path) as queue, self.manager.condition:
             history = queue.setdefault("conversation", [])
             for entry in history:
@@ -344,13 +373,29 @@ class JunieConversations:
                 state = view.state
                 _, _, record, _ = load_saved_run(self.manager.config, run_id)
                 intent = _intent(text, record["status"])
+                if options:
+                    if not stage_plan or not state.get("ready") or state.get("junie_request"):
+                        _finish(entry, "failed", stage_error or "処理が終わってから再開方法を指定してください。")
+                    else:
+                        labels = {"checker": "チェッカーのみ", "migration": "移行"}
+                        span = stage_plan.get("capsule_range")
+                        scope = f" 区間 {span[0]}〜{span[1]}" if span else ""
+                        repair = " 検証時に自動修正あり。" if stage_plan["repair"] else " 自動修正なし。"
+                        entry.update(status="waiting", intent="resume_stage", stage_request=stage_plan,
+                                     plan=f"{labels[stage_plan['start_stage']]}{scope} · 保存版 {stage_plan['version'][:12]}。{repair}")
+                    history.append(entry)
+                    return entry
+                if re.search(r"(?:区間|カプセル).*(?:再移行|やり直|再開)|チェッカーから.*再開", value):
+                    _finish(entry, "failed", "範囲や条件を特定できません。実行一覧の「再開方法…」で指定してください。")
+                    history.append(entry)
+                    return entry
                 if intent == "stop":
                     if view.request_stop({"operation_id": state.get("operation_id")}):
                         for pending in history:
                             if pending["status"] not in {"received", "waiting"} or pending.get("query_intent"):
                                 continue
                             prior = pending.get("intent") or _intent(pending["text"], record["status"])
-                            if prior.removeprefix("stop_").removeprefix("after_build_") in REBUILD:
+                            if prior.removeprefix("stop_").removeprefix("after_build_") in REBUILD or prior == "resume_stage":
                                 _finish(pending, "paused", "停止要求により検証を保留しました。実行する場合は改めて指示してください。")
                         _finish(entry, "done", "停止を要求しました。処理の終了は進捗で確認できます。")
                     else:
@@ -605,6 +650,13 @@ class JunieConversations:
                 _finish(entry, "done", message + ("エディタの「差分」で表示された対象を確認してください。" if changed
                                                   else "保存記録と照合できる差分はありませんでした。"))
                 return True
+            if intent == "resume_stage":
+                if state.get("ready") and not any(other["unit_id"] == record["unit_id"]
+                                                   for other in self.manager.jobs.values()):
+                    self.manager.enqueue(view, {"action": "conversation", "conversation_id": entry["id"]})
+                    self.manager.save_enqueued()
+                    entry["message"] = "保存した再開計画を実行待ちに登録しました。"
+                return True
             mode = intent.removeprefix("stop_").removeprefix("after_build_")
             if mode not in REBUILD or not state.get("ready"):
                 return True
@@ -637,8 +689,11 @@ def run_instruction(config, run_id, identifier):
         if entry["intent"].startswith("after_build_") and not entry.get("predecessor_build_finished"):
             raise ValueError(UNCONFIRMED_BUILD)
         entry.update(status="running", message="保存版を照合して検証を開始します。", started_at=datetime.now(timezone.utc).isoformat())
-        instruction = entry.copy()
-        instruction["intent"] = instruction["intent"].removeprefix("after_build_")
+        if stage_request := entry.get("stage_request"):
+            instruction = {**stage_request, "id": identifier}
+        else:
+            instruction = entry.copy()
+            instruction["intent"] = instruction["intent"].removeprefix("after_build_")
     return resume_with_junie(config, run_id, verification_request=instruction)
 
 
@@ -666,9 +721,10 @@ def finish_instruction(config, run_id, identifier, result, error=None):
             return
         if result and result.get("request_id") == identifier:
             entry["result_status"] = result["status"]
-            entry["built_targets"] = result["verification"]["target_hashes"]
+            if verification := result.get("verification"):
+                entry["built_targets"] = verification["target_hashes"]
             entry["logs"] = [log for kind in ("build", "checker")
-                             if kind == "build" or result.get("checker_log_path")
+                             if result.get(f"{kind}_log_path")
                              if (log := _diagnostic(run_path, kind))]
             detail = result.get("error") or record.get("error")
             message = f"結果は「{PHASES.get(result['status'], '確認待ち')}」です。"

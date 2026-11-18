@@ -12,6 +12,36 @@ from migration_harness.execution import OperationCancelled, control_scope
 
 
 class JunieDashboardAcpTests(unittest.TestCase):
+    def test_steering_budget_measures_final_text_and_requeues_blocked_input(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from migration_harness import workflow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompts = Mock()
+            prompts.take.return_value = (["id"], "日本語")
+            request = Mock()
+            session = SimpleNamespace(
+                project=root, completion_path=root / "done", token="initial", prompts=prompts,
+                steering_supported=True, session_id="session", pending={}, steering_waiting=None,
+                prompt_finished=False, next_request_id=4, steering_requests={}, request=request,
+            )
+            record_path = root / "run.json"
+            record = {}
+            with patch.object(junie_cli, "run_interactive", side_effect=lambda: junie_cli._AcpSession.steer(session)):
+                workflow._run_budgeted_junie({}, record_path, record, "migration", None, root, [])
+                sent = request.call_args.kwargs["prompt"][0]["text"]
+                self.assertEqual(record["last_junie_steering_input"]["bytes"], len(sent.encode("utf-8")))
+                self.assertFalse(record["last_junie_steering_input"]["blocked"])
+                session.steering_waiting = None
+                request.reset_mock()
+                workflow._run_budgeted_junie({"junie_input_limits": {"max_input_bytes": 1}},
+                                            record_path, record, "migration", None, root, [])
+                self.assertTrue(record["last_junie_steering_input"]["blocked"])
+                request.assert_not_called()
+                prompts.finish.assert_called_once_with(["id"], False)
+
     def test_missing_acp_model_retries_with_headless_junie_only_after_confirmation(self):
         for approve in (False, True):
             with self.subTest(approve=approve), tempfile.TemporaryDirectory() as temporary:

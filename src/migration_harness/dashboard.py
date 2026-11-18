@@ -41,13 +41,13 @@ from migration_harness.junie_conversation import (
 )
 from migration_harness.junie_thoughts import FILENAME as JUNIE_THOUGHTS_FILENAME, read_junie_thoughts
 from migration_harness.review_anchors import generate_anchors
-from migration_harness.run_records import load_saved_run, run_observer, validate_run_id
+from migration_harness.run_records import edit_run_record, load_saved_run, run_observer, validate_run_id
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.source_context import preview_target_context
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
     RunInterrupted, RunScriptError, _review_log,
-    build_failure_review, can_resume_build, can_resume_run, migration_ledger, plan_build_resume, prepare_run, resume_with_junie,
+    build_failure_review, can_resume_build, can_resume_run, migration_ledger, plan_stage_resume, prepare_run, resume_with_junie,
     review_checker, run_with_junie,
 )
 from migration_harness.worktree_targets import EDIT_BYTES, save_target_edit, worktree_source_lock
@@ -58,7 +58,7 @@ PROGRESS_FIELDS = (
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
     "build_exit_code", "build_log_path", "build_attempt_seconds",
     "checker_exit_code", "checker_log_path", "checker_review_reason", "error",
-    "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at",
+    "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at", "last_stop",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
@@ -168,6 +168,7 @@ class Dashboard:
     def begin_operation(self, operation_id: str | None = None) -> None:
         """停止要求は実行ごとのIDに結び付け、別のRunに持ち越さない。"""
         with self.condition:
+            self.stop_phase = None
             self.control = ExecutionControl(
                 self.activity, on_junie_request=self.show_junie_request,
                 operation_id=operation_id or secrets.token_hex(16),
@@ -228,6 +229,7 @@ class Dashboard:
                     or action.get("operation_id") != self.state.get("operation_id")):
                 return False
             self.control.cancelled.set()
+            self.stop_phase = self.state.get("status")
             self.show_junie_request(None)
             self.publish({**self.state, "stop_requested": True, "cancellable": False,
                           "message": "停止しています。保存済みの編集を残して処理を終了します。"})
@@ -267,6 +269,9 @@ class Dashboard:
 
     def ready(self, config: dict[str, Any], result: dict[str, Any], message: str = "") -> None:
         """処理が一区切りついた時点の操作可否とレビュー状態を公開する。"""
+        stopped = result.get("last_stop") or {}
+        if not message and stopped.get("saved_status") == result["status"]:
+            message = stopped["message"]
         state = {
             **self.state, "ready": True, "status": result["status"], "message": message,
             "error_details": "",
@@ -402,13 +407,15 @@ class Dashboard:
                     self.send_editor()
                 elif self.path.partition("?")[0] == prefix + "resume-plan":
                     try:
-                        run_id = parse_qs(urlsplit(self.path).query).get("run_id", [None])[0]
+                        query = parse_qs(urlsplit(self.path).query)
+                        run_id = query.get("run_id", [None])[0]
                         if run_id:
                             validate_run_id(run_id)
                         view = manager.get(run_id) if manager and run_id else self.dashboard
                         if not run_id or run_id != view.state.get("run_id") or not view.state.get("ready"):
                             raise ValueError("処理が終わってから再開方法を選んでください。")
-                        plan = plan_build_resume(config, run_id)
+                        options = {key: int(query[key][0]) for key in ("through_capsule", "rewind_to") if key in query}
+                        plan = plan_stage_resume(config, run_id, query.get("start_stage", ["build"])[0], **options)
                         self.send_body(200, "application/json", json.dumps(plan, ensure_ascii=False).encode())
                     except _ERRORS as exc:
                         self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
@@ -958,7 +965,12 @@ class Dashboard:
                     if "verification_request" in action:
                         raise ValueError
                     if "start_stage" in action and (not manager or action.get("action") != "resume-run"
-                                                    or action["start_stage"] != "build"):
+                                                    or action["start_stage"] not in {"build", "migration", "checker"}):
+                        raise ValueError
+                    if any(key in action for key in ("through_capsule", "rewind_to")) and (
+                        action.get("start_stage") != "migration"
+                        or any(type(action[key]) is not int for key in ("through_capsule", "rewind_to") if key in action)
+                    ):
                         raise ValueError
                     if action.get("action") not in (
                         "stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run",
@@ -993,10 +1005,12 @@ class Dashboard:
                     return
                 if manager and action["action"] not in {"stop", "junie-answer", "anchors"}:
                     try:
-                        if action.get("start_stage") == "build":
-                            plan = plan_build_resume(config, action["run_id"])
+                        if stage := action.get("start_stage"):
+                            plan = plan_stage_resume(config, action["run_id"], stage,
+                                                     through_capsule=action.get("through_capsule"),
+                                                     rewind_to=action.get("rewind_to"))
                             if action.get("plan_version") != plan["version"]:
-                                raise ValueError("保存版が更新されました。ビルドする版を確認し直してください。")
+                                raise ValueError("保存版が更新されました。再開計画を確認し直してください。")
                             action["verification_request"] = {**plan, "id": uuid.uuid4().hex}
                         result = manager.submit(action, self.dashboard)
                     except _ERRORS as exc:
@@ -1210,7 +1224,21 @@ def execute_dashboard_action(view, config, action):
             isinstance(exc, KeyboardInterrupt) or bool(view.control and view.control.cancelled.is_set())
         )
         try:
-            _, _, result, _ = load_saved_run(config, run_id)
+            run_path, _, result, _ = load_saved_run(config, run_id)
+            if stopped:
+                phase = getattr(view, "stop_phase", None) or result["status"]
+                phase_label = {
+                    "junie_running": "移行", "editor_followup": "追加指示", "repairing": "自動修正",
+                    "building": "ビルド", "checking": "チェッカー",
+                }.get(phase, "処理")
+                record_message = (f"{phase_label}を停止しました。保存版と保留中の編集を確認してから再開できます。")
+                stop = {"phase": phase, "saved_status": result["status"], "message": record_message}
+                try:
+                    with edit_run_record(run_path / "run.json") as (_, changes):
+                        changes["last_stop"] = stop
+                    result["last_stop"] = stop
+                except _ERRORS as save_error:
+                    pending_save_error = format_error(save_error)
             view.observe(result)
             view.ready(config, result)
         except _ERRORS as load_error:
@@ -1222,8 +1250,10 @@ def execute_dashboard_action(view, config, action):
             view.publish({**view.state, "ready": True, "cancellable": False, "stop_requested": False,
                           "operation_id": None, "generating_anchors": False,
                           "stage_timings": freeze_timings(view.state), "active_stage": None,
-                          "message": "停止しました。同じRunから再開できます。" if result else
-                          "準備を停止しました。移行単位を選んで新しく実行してください。"})
+                          "message": ((result.get("last_stop", {}).get("message") or
+                                       "停止しました。同じRunから再開できます。") if result else
+                                      "準備を停止しました。移行単位を選んで新しく実行してください。")
+                                     + (f" 停止記録を保存できませんでした。{pending_save_error}" if pending_save_error else "")})
         else:
             view.failed(exc)
             if pending_save_error:

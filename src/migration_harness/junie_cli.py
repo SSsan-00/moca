@@ -694,6 +694,7 @@ def _task_command(command: list[str]) -> list[str]:
 
 
 launch_input_observer: ContextVar[Callable[[str], None] | None] = ContextVar("launch_input_observer", default=None)
+steering_input_observer: ContextVar[Callable[[str], bool] | None] = ContextVar("steering_input_observer", default=None)
 
 
 def run_interactive(
@@ -873,11 +874,6 @@ class _AcpSession:
         identifiers, text = self.prompts.take()
         if not identifiers:
             return
-        request_id = self.next_request_id
-        self.next_request_id += 1
-        self.steering_requests[request_id] = _SteeringRequest(identifiers, receipt, token)
-        self.steering_waiting = request_id
-        self.steering_deadline = time.monotonic() + ACP_TIMEOUT
         # 元の完了記録との競合を避け、追加指示にも今回専用の完了記録を要求する。
         instruction = (
             "Operator follow-up for the current task. Apply this instruction now, within the original "
@@ -888,6 +884,21 @@ class _AcpSession:
             f"After all work is complete, write exactly {self.token} to `{self.completion_path.name}` "
             "as the final file action, even if that file already exists."
         )
+        try:
+            observer = steering_input_observer.get()
+            accepted = observer is None or observer(instruction)
+        except BaseException:
+            self.prompts.finish(identifiers, False)
+            raise
+        if not accepted:
+            self.prompts.finish(identifiers, False)
+            self.steering_supported = False
+            return
+        request_id = self.next_request_id
+        self.next_request_id += 1
+        self.steering_requests[request_id] = _SteeringRequest(identifiers, receipt, token)
+        self.steering_waiting = request_id
+        self.steering_deadline = time.monotonic() + ACP_TIMEOUT
         self.request(request_id, "_session/steering", sessionId=self.session_id,
                      prompt=[{"type": "text", "text": instruction}])
         report_activity("実行中のJunieへ追加指示を送っています。")

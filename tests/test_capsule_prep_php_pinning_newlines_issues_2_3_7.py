@@ -344,7 +344,8 @@ class CapsulePreparationTests(HarnessCase):
             verify.assert_not_called()
             result = workflow.resume_with_junie(config, run_id)
             saved = self.read_json(record_path)
-            saved.update(status="build_succeeded", build_exit_code=0, checker_reviews=[{"old": True}])
+            saved.update(status="build_succeeded", build_exit_code=0, checker_reviews=[{"old": True}],
+                         migration_reviews={"old": True}, migration_mappings={"old": True})
             record_path.write_text(json.dumps(saved), encoding="utf-8")
             worktree_target = Path(saved["worktree_path"]) / saved["target"]
             latest = worktree_target.read_bytes()
@@ -375,6 +376,8 @@ class CapsulePreparationTests(HarnessCase):
             after = self.read_json(record_path)
             self.assertNotIn("build_exit_code", after)
             self.assertNotIn("checker_reviews", after)
+            self.assertNotIn("migration_reviews", after)
+            self.assertNotIn("migration_mappings", after)
             backup = run_path / after["resume_operations"][-1]["rewind_backup"]["snapshot"] / "0.draft"
             self.assertEqual(backup.read_bytes(), latest)
 

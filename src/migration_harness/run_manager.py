@@ -297,8 +297,11 @@ class RunManager:
                     raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
                 if kind in {"resume", "resume-run", "build-response"}:
                     _, record = load_dashboard_record(self.config, run_id)
-                    explicit_build = action.get("verification_request", {}).get("start_stage") == "build"
-                    resumable = can_resume_build(record) if explicit_build else can_resume_run(self.config, record)
+                    stage = action.get("verification_request", {}).get("start_stage")
+                    # 明示指定は受付時に計画を照合済みで、実行直前にも再照合する。
+                    resumable = stage in {"migration", "checker"} or (
+                        can_resume_build(record) if stage == "build" else can_resume_run(self.config, record)
+                    )
                     if not resumable:
                         raise ValueError("このRunは再開できません。新しく実行してください。")
                 if kind == "build-response" and view.state.get("status") != "build_failed":

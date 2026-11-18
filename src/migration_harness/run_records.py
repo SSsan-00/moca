@@ -108,6 +108,7 @@ def _notify_run_observer(record: dict[str, Any]) -> None:
 
 def write_run_record(
     path: Path, record: dict[str, Any], *, timing_stage: int | None | Literal["status"] = "status",
+    invalidate_migration_reviews: bool = False,
 ) -> None:
     """工程の進捗を保存し、独立して更新された使用量・台帳・一覧表示設定を引き継ぐ。"""
     update_timings(record, stage=timing_stage)
@@ -115,7 +116,7 @@ def write_run_record(
         if path.is_file():
             saved = json.loads(path.read_text(encoding="utf-8"))
             for field in ("token_usage", "migration_reviews", "migration_mappings", "hidden_from_dashboard"):
-                if field in saved:
+                if field in saved and not (invalidate_migration_reviews and field in {"migration_reviews", "migration_mappings"}):
                     record[field] = saved[field]
         replace_run_record(path, record)
     _notify_run_observer(record)

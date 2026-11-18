@@ -184,6 +184,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
           if (!run.ready && run.cancellable) button(run.stop_requested ? "停止中" : "停止", "stop", null, true);
           if (run.ready && run.resumable) button(tone === "done" ? "再検証" : "再開", "resume-run", null, true);
           if (preparationChat && run.ready && run.build_resumable) button("ビルドのみ", "resume-build", null, true);
+          if (preparationChat && run.ready && run.worktree_path) button("再開方法…", "resume-stage", null, true);
           if (run.ready) button("削除", "hide-run");
         }
         actions.append(buttons);

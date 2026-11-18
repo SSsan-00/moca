@@ -258,7 +258,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             with (patch.object(sys, "argv", args), patch.object(cli, "load_config", return_value=self.config),
                   redirect_stdout(output)):
                 cli.main()
-            self.assertEqual(json.loads(output.getvalue()), {"run_id": self.run_id, "last_junie_input": report})
+            self.assertEqual(json.loads(output.getvalue()), {"run_id": self.run_id, "last_junie_input": report,
+                                                             "last_junie_steering_input": None})
 
     def test_checker_only_requires_intact_build_inputs_and_artifacts(self):
         project = self.worktree / "App.csproj"

@@ -841,10 +841,28 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
     def observe(prompt):
         _record_junie_input(config, record_path, record, phase, prompt, guidelines, root, inputs)
 
+    def observe_steering(instruction):
+        count = len(instruction.encode("utf-8"))
+        limits = config.get("junie_input_limits", {})
+        blocked = count > limits.get("max_input_bytes", count)
+        report = {"phase": phase, "capsule": record.get("current_capsule"),
+                  "bytes": count, "characters": len(instruction), "blocked": blocked}
+        record["last_junie_steering_input"] = report
+        write_run_record(record_path, record, timing_stage=record.get("active_stage"))
+        message = f"Junie への実行中の追加指示 {count:,} バイト。"
+        if blocked:
+            message += "上限を超えたため送信を保留しました。"
+        elif count > limits.get("warn_input_bytes", count):
+            message += "警告値を超えています。"
+        report_activity(message)
+        return not blocked
+
     token = junie_cli.launch_input_observer.set(observe)
+    steering_token = junie_cli.steering_input_observer.set(observe_steering)
     try:
         return junie_cli.run_interactive(*args, **kwargs)
     finally:
+        junie_cli.steering_input_observer.reset(steering_token)
         junie_cli.launch_input_observer.reset(token)
 
 
@@ -2865,13 +2883,26 @@ def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
             target_hashes=plan["targets"].copy(),
             migration_rewind={"draft": draft, "restore_from": plan["draft_targets"]},
         )
-        for key in ("checker_reviews", "migration_reviews", "review_file_hashes", "checker_success_message",
+        for key in ("checker_reviews", "migration_reviews", "migration_mappings", "review_file_hashes", "checker_success_message",
                     "checker_review_reason", "repair_history"):
             if key in record:
                 operation.setdefault("superseded_reviews", {})[key] = record.pop(key)
         if "after_migration" in record.get("completed_script_phases", []):
             record["completed_script_phases"].remove("after_migration")
         record.get("script_command_progress", {}).pop("after_migration", None)
+
+
+def plan_stage_resume(config, run_id, stage, *, through_capsule=None, rewind_to=None):
+    """工程の指定をどの操作入口からでも同じ計画に変換する。"""
+    if stage == "migration":
+        return plan_migration_resume(config, run_id, through_capsule, rewind_to=rewind_to)
+    if through_capsule is not None or rewind_to is not None:
+        raise ValueError("区間は移行工程を選んだ場合に指定してください。")
+    if stage == "build":
+        return plan_build_resume(config, run_id)
+    if stage == "checker":
+        return plan_checker_resume(config, run_id)
+    raise ValueError("再開する工程を選び直してください。")
 
 
 def _check_build_receipt(config, worktree, record):
@@ -3061,7 +3092,9 @@ def _resume_with_junie(
         "source_boundary_review_required": record["source_boundary_review_required"],
         "max_context_chars": record["max_context_chars"],
     }
+    record.pop("last_stop", None)
     if explicit_migration:
+        result["request_id"] = verification_request["id"]
         junie_cli.require_interactive_cli()
         if _previously_required_checker(record):
             record["checker_required"] = True
@@ -3081,7 +3114,7 @@ def _resume_with_junie(
         record.setdefault("resume_operations", []).append(operation)
         for key in ("verification", "build_exit_code", "checker_exit_code", "build_operation_id", "checker_build", "error"):
             record.pop(key, None)
-        write_run_record(run_path / "run.json", record)
+        write_run_record(run_path / "run.json", record, invalidate_migration_reviews="rewind_to" in plan)
         return _run_prepared_with_junie(
             config, unit, run_path, result, record, resuming=True, through_capsule=plan["through_capsule"],
             expected_capsule_hashes=plan["capsule_hashes"],

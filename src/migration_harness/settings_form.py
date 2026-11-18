@@ -276,10 +276,10 @@ def _remove_empty_units(units: list, indices: Any) -> None:
     for index in sorted(set(indices), reverse=True):
         unit = units[index]
         if (
-            unit.keys() - {"id", "source", "target", "targets"}
+            unit.keys() - {"id", "source", "target", "targets", "target_context"}
             or any(not isinstance(value, str) or value.strip()
-                   for key, value in unit.items() if key != "targets")
-            or unit.get("targets", []) != []
+                   for key, value in unit.items() if key not in {"targets", "target_context"})
+            or unit.get("targets", []) != [] or unit.get("target_context", {}) != {}
         ):
             raise ValueError("入力済みの移行単位は削除できません。")
         del units[index]

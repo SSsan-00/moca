@@ -1329,6 +1329,31 @@ RZ-017: a previous checker finding is still present</pre>
     </form>
   </dialog>
 </main>
+<dialog class="review-dialog" id="resume-stage-dialog" aria-labelledby="resume-stage-title">
+  <div class="review-dialog-inner">
+    <h2 id="resume-stage-title">再開方法</h2>
+    <fieldset class="settings-fields">
+      <label for="resume-stage">開始工程</label>
+      <select class="workspace-select" id="resume-stage">
+        <option value="migration">移行</option>
+        <option value="build">ビルドのみ</option>
+        <option value="checker">チェッカーのみ</option>
+      </select>
+      <div class="settings-pair" id="resume-capsules">
+        <div><label for="resume-rewind">やり直す区間（任意）</label>
+          <input id="resume-rewind" type="number" min="1" max="1000000" step="1" placeholder="空欄なら続きから"></div>
+        <div><label for="resume-through">終了区間（任意）</label>
+          <input id="resume-through" type="number" min="1" max="1000000" step="1" placeholder="空欄なら最後まで"></div>
+      </div>
+    </fieldset>
+    <pre id="resume-stage-summary" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+    <div class="workspace-actions">
+      <button class="button" id="resume-stage-preview" type="button">計画を確認</button>
+      <button class="button primary" id="resume-stage-start" type="button" disabled>再開する</button>
+      <form method="dialog"><button class="button" type="submit">閉じる</button></form>
+    </div>
+  </div>
+</dialog>
 <dialog class="viewer-preview" id="viewer-preview" aria-labelledby="viewer-preview-title">
   <header class="viewer-preview-header">
     <h2 id="viewer-preview-title">注文履歴の差分比較</h2>
@@ -1760,7 +1785,8 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       }
       if (!added.has(entry)) continue;
       const {id, source, targets, draft_imports} = entry;
-      if (!id.trim() && !source.trim() && !targets.length && !checker?.length && !draft_imports.length) removeEmptyUnits.push(index);
+      const hasContext = Object.values(entry.target_context ?? {}).some(value => value !== "");
+      if (!id.trim() && !source.trim() && !targets.length && !checker?.length && !draft_imports.length && !hasContext) removeEmptyUnits.push(index);
       else if (!id.trim() || !source.trim() || !targets.length) {
         throw new Error(`移行単位 ${index + 1} の機能名、移行元PHP、移行先を指定してください。`);
       }
@@ -3151,9 +3177,10 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
       }
       return -1;
     }
+    const editedUnits = Object.entries(changes.units || {});
+    for (const [index] of editedUnits) units[index] ??= blocks.push("\n[[units]]\n") - 1;
     // 後ろの単位から編集し、テーブル追加による添字の変化を避ける。
-    for (const [index, fields] of Object.entries(changes.units || {}).reverse()) {
-      units[index] ??= blocks.push("\n[[units]]\n") - 1;
+    for (const [index, fields] of editedUnits.reverse()) {
       if ("targets" in fields) blocks[units[index]] = blocks[units[index]].replace(/^\s*target\s*=.*$/m, "");
       const {target_context, ...edited} = fields;
       if (target_context) {
@@ -3175,7 +3202,10 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
       blocks[units[index]] = patchBlock(blocks[units[index]], edited);
     }
     for (const index of [...(changes.removeEmptyUnits || [])].sort((a, b) => b - a)) {
-      blocks.splice(units[index], 1);
+      const position = unitBlocks()[index];
+      const context = unitContext(position);
+      if (context >= 0) blocks.splice(context, 1);
+      blocks.splice(position, 1);
     }
     for (const [field, table] of [["migrationRules", "migration_rules"], ["references", "references"]]) {
       if (!changes[field]) continue;
