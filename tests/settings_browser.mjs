@@ -100,8 +100,7 @@ try {
     (element => { element.value = ${JSON.stringify(value)}; element.dispatchEvent(new Event(${JSON.stringify(event)}, {bubbles: true})); })(${field(id)})
   `);
   const value = id => evaluate(`${field(id)}.value`);
-  const contextScope = "settings-context-scope", size = "settings-context-max-total";
-  const folders = "settings-context-folders", limit = "settings-context-max-files";
+  const folders = "settings-context-folders";
   const save = 'document.querySelector("#workspace-config-form button[type=submit]")';
   const toml = field("workspace-config");
   await cdp("Runtime.enable");
@@ -114,24 +113,14 @@ try {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height: 900, deviceScaleFactor: 1, mobile: false});
     assert(await evaluate(`document.documentElement.lang === "ja" && document.documentElement.scrollWidth <= ${width}`));
   }
-  await evaluate(`${field(contextScope)}.focus()`);
-  assert.equal(await evaluate("document.activeElement.id"), contextScope);
-  await change(contextScope, "0");
-  assert.equal(await value("settings-context-roots"), "default");
-  assert(await evaluate(`${field(folders)}.disabled`));
-  assert.equal(await value(size), "9007199254740993");
-  await evaluate(`const bytes = ${field(size)}.nextElementSibling; bytes.value = "1048576"; bytes.dispatchEvent(new Event("change"))`);
-  assert.equal(await value(size), "9007199254740993");
-  await change("settings-context-roots", "none");
-  await change(limit, "0", "input");
-  await evaluate(`${field(folders)}.previousElementSibling.querySelector("input").click()`);
-  await wait(`${toml}.value.includes("folders = []") && !${save}.disabled`);
-  await click("settings-context-preview");
-  await wait(`${field("settings-context-result")}.textContent.includes("0件")`);
-  await evaluate(`${field(folders)}.previousElementSibling.querySelector("input").click()`);
-  await wait(`!${toml}.value.includes("folders = []") && !${save}.disabled`);
-  await click("settings-context-preview");
-  await wait(`${field("settings-context-result")}.textContent.includes("上限超過")`);
+  for (const id of ["settings-context-scope", "settings-context-exclude", "settings-context-recursive",
+    "settings-context-max-files", "settings-context-max-total", "settings-context-max-file",
+    "settings-context-preview-actions", "settings-input-warning", "settings-input-limit"]) {
+    assert.equal(await evaluate(`${field(id)} === null`), true, `${id} should not be shown`);
+  }
+  await change("settings-context-roots", "default");
+  await change(folders, "Shared\nExtra", "input");
+  await wait(`${toml}.value.includes('"Extra"') && !${save}.disabled`);
   await change("settings-viewer-enabled", "false", "input");
   assert(await evaluate(`${field("settings-viewer-html")}.disabled`));
   await wait(`!${save}.disabled`);
@@ -139,16 +128,13 @@ try {
   await wait(`${field("workspace-config-feedback")}.textContent.includes("設定を保存しました")`);
   await click("workspace-config-reload");
   await wait(`!${field("workspace-config-reload")}.disabled`);
-  await change(contextScope, "0");
-  assert.equal(await value(limit), "0");
-  assert.equal(await value(size), "9007199254740993");
-  assert.equal(await value("settings-context-roots"), "none");
-  assert(await evaluate(`${field(folders)}.disabled`));
+  assert.equal(await value(folders), "Shared\nExtra");
+  assert.equal(await value("settings-context-roots"), "default");
   await change("settings-viewer-enabled", "", "input");
   assert.equal(await value("settings-viewer-html"), "viewer.html");
   assert.equal(await value("settings-anchor-reference"), "anchors.json");
   assert(!(await evaluate(`${field("settings-viewer-html")}.disabled`)));
-  console.log("Browser settings: inheritance, empty list, zero, exact bytes, preview and viewer path retention");
+  console.log("Browser settings: simplified controls, saved values and viewer path retention");
   await cdp("Browser.close").catch(() => {});
 } finally {
   socket?.close();

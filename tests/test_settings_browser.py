@@ -49,9 +49,15 @@ class SettingsBrowserTests(unittest.TestCase):
 root = "app"
 worktree_root = "trees"
 run_root = "runs"
+[junie]
+warn_input_bytes = 1000
+max_input_bytes = 2000
 [target_context]
 roots = []
 folders = ["Shared"]
+exclude = ["bin"]
+recursive = false
+max_files = 42
 [diff_viewer]
 html = "viewer.html"
 anchor_reference = ["anchors.json"]
@@ -86,8 +92,13 @@ max_bytes = 9007199254740993 # preserve this value
                 server.server_close()
             saved = tomllib.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["units"][0]["target_context"], {
-                "max_bytes": 9007199254740993, "max_files": 0, "roots": [],
+                "max_bytes": 9007199254740993,
             })
-            self.assertEqual(saved["target_context"]["folders"], ["Shared"])
+            self.assertEqual(saved["target_context"]["folders"], ["Shared", "Extra"])
+            self.assertEqual(saved["target_context"]["exclude"], ["bin"])
+            self.assertFalse(saved["target_context"]["recursive"])
+            self.assertEqual(saved["target_context"]["max_files"], 42)
+            self.assertEqual(saved["junie"]["warn_input_bytes"], 1000)
+            self.assertEqual(saved["junie"]["max_input_bytes"], 2000)
             self.assertEqual(saved["diff_viewer"]["html"], "viewer.html")
             self.assertIn("# preserve this value", path.read_text(encoding="utf-8"))

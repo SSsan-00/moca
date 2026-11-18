@@ -351,6 +351,9 @@
     .settings-fields { min-inline-size: 0; margin: 0 0 14px; padding: 0; border: 0; }
     .settings-fields legend { margin-bottom: 8px; padding: 0; font-weight: 700; }
     .settings-fields label { font-size: 12px; }
+    .workspace-tools .settings-fields label[hidden] { display: none; }
+    .workspace-tools .settings-fields label:has(input[type="checkbox"]):not([hidden]) { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+    .workspace-tools .settings-fields input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; }
     .settings-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .settings-unit-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
     .settings-unit-picker .button { margin-bottom: 10px; }
@@ -1014,17 +1017,6 @@
                     <input id="settings-junie-steps" data-section="junie" data-setting="max_steps" inputmode="numeric" placeholder="空欄ならJunieの既定値">
                   </div>
                 </div>
-                <div class="settings-pair">
-                  <div>
-                    <label for="settings-input-warning">Junie 起動入力の警告値（バイト）</label>
-                    <input id="settings-input-warning" data-section="junie" data-setting="warn_input_bytes" inputmode="numeric" placeholder="空欄なら無効">
-                  </div>
-                  <div>
-                    <label for="settings-input-limit">Junie 起動入力の停止値（バイト）</label>
-                    <input id="settings-input-limit" data-section="junie" data-setting="max_input_bytes" inputmode="numeric" placeholder="空欄なら上限なし">
-                  </div>
-                </div>
-                <p class="settings-material-range">指示と同梱ガイドラインの合計です。参照用ファイルを後から読む量は含みません。</p>
                 <label for="settings-viewer-enabled">差分ビューアー</label>
                 <select id="settings-viewer-enabled" class="workspace-select" data-section="diff_viewer" data-setting="enabled">
                   <option value="">使用する</option>
@@ -1038,8 +1030,6 @@
               </fieldset>
               <fieldset class="settings-fields" id="settings-target-context-fields">
                 <legend>移行先周辺の参照資料</legend>
-                <label for="settings-context-scope">編集範囲</label>
-                <select id="settings-context-scope" class="workspace-select"></select>
                 <label for="settings-context-roots">参照起点</label>
                 <select id="settings-context-roots" class="workspace-select">
                   <option value="default">既定の4箇所を使う</option>
@@ -1055,33 +1045,6 @@
                 <label for="settings-context-folders">追加するフォルダー（作業ツリーからの相対パス）</label>
                 <textarea id="settings-context-folders" class="settings-command" data-section="target_context" data-setting="folders"
                   spellcheck="false" placeholder="例：src/Shared"></textarea>
-                <label for="settings-context-exclude">除外するパス・パターン（1行に1件）</label>
-                <textarea id="settings-context-exclude" class="settings-command" data-section="target_context" data-setting="exclude"
-                  spellcheck="false" placeholder="bin&#10;obj&#10;*.zip"></textarea>
-                <label for="settings-context-recursive">下位フォルダーの収集</label>
-                <select id="settings-context-recursive" class="workspace-select" data-section="target_context" data-setting="recursive">
-                  <option value="">下位フォルダーも収集する（既定）</option>
-                  <option value="true">下位フォルダーも収集する</option>
-                  <option value="false">起点の直下だけ収集する</option>
-                </select>
-                <label for="settings-context-max-files">ファイル数の上限</label>
-                <input id="settings-context-max-files" data-section="target_context" data-setting="max_files" inputmode="numeric" placeholder="空欄なら上限なし">
-                <div class="settings-pair">
-                  <div>
-                    <label for="settings-context-max-total">合計容量の上限（バイト）</label>
-                    <input id="settings-context-max-total" data-section="target_context" data-setting="max_bytes" inputmode="numeric" placeholder="空欄なら上限なし">
-                  </div>
-                  <div>
-                    <label for="settings-context-max-file">1ファイルの容量の上限（バイト）</label>
-                    <input id="settings-context-max-file" data-section="target_context" data-setting="max_file_bytes" inputmode="numeric" placeholder="空欄なら上限なし">
-                  </div>
-                </div>
-                <div class="workspace-actions" id="settings-context-preview-actions" hidden>
-                  <button type="button" class="button" id="settings-context-preview">参照資料をプレビュー</button>
-                  <button type="button" class="button" id="settings-context-cancel" hidden>取消</button>
-                </div>
-                <p class="settings-material-range" id="settings-context-status" role="status"></p>
-                <pre id="settings-context-result" class="settings-command" style="white-space:pre-wrap;overflow-wrap:anywhere" hidden></pre>
               </fieldset>
               <fieldset class="settings-fields" id="settings-verification-fields">
                 <legend>ビルド・独自チェッカー</legend>
@@ -1662,7 +1625,7 @@ function validateRuleUsage(item) {
   }
 }
 
-function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettings, previewReferences, cancelReferences, saveSettings, execute, canAct, canConfigure = canAct, preparationChat = false}) {
+function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettings, saveSettings, execute, canAct, canConfigure = canAct, preparationChat = false}) {
   const runsUI = bindRunManager({readRuns, execute, canAct, preparationChat});
   window.harnessRuns = runsUI;
   const settings = document.querySelector("#workspace-config-form");
@@ -1745,7 +1708,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   }
   workspaceControls = () => {
     const available = canConfigure() && !busy;
-    referenceControls();
     runsUI.sync();
     settings.querySelector('button[type="submit"]').disabled = !available || previewPending || !settingsVersion
       || !workspaceConfig.value.trim() || !settingsForm;
@@ -2053,10 +2015,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     unit.replaceChildren(...settingsForm.units.map(({id}, i) => new Option(id || `移行単位 ${i + 1}`, i)));
     if (settingsForm.units.length) unit.value = String(Math.min(index, settingsForm.units.length - 1));
     showUnit();
-    const scope = contextScope.value;
-    contextScope.replaceChildren(new Option("共通設定", ""),
-      ...settingsForm.units.map(({id}, i) => new Option(id || `移行単位 ${i + 1}`, i)));
-    contextScope.value = [...contextScope.options].some(option => option.value === scope) ? scope : "";
     showContext();
   }
 
@@ -2072,105 +2030,12 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     if (!workspaceConfig.hidden) workspaceConfig.focus();
   });
 
-  const capacityUnits = new Map();
-  for (const field of tableFields.filter(field => field.dataset.setting.endsWith("_bytes"))) {
-    const units = document.createElement("select");
-    units.className = "workspace-select";
-    units.setAttribute("aria-label", field.labels[0].textContent + "の単位");
-    units.replaceChildren(new Option(field.dataset.setting === "warn_input_bytes" ? "警告しない" : "上限なし", ""),
-      new Option("B", "1"), new Option("KiB", "1024"), new Option("MiB", "1048576"));
-    field.after(units);
-    capacityUnits.set(field, units);
-    units.addEventListener("change", () => {
-      const current = (field.dataset.section === "target_context" ? contextValues() : settingsForm[field.dataset.section])?.[field.dataset.setting];
-      if (!units.value) field.value = "";
-      else if (/^[0-9]+$/.test(current)) {
-        const bytes = BigInt(current);
-        const divisor = BigInt(units.value);
-        if (bytes % divisor === 0n) field.value = String(bytes / divisor);
-        else { units.value = "1"; field.value = current; }
-      }
-      field.dispatchEvent(new Event("input"));
-    });
-  }
-
   const rootMode = document.querySelector("#settings-context-roots");
   const rootChoices = document.querySelector("#settings-context-root-choices");
   const rootChecks = [...rootChoices.querySelectorAll("input")];
   const viewerMode = document.querySelector("#settings-viewer-enabled");
   const viewerHTML = document.querySelector("#settings-viewer-html");
   const viewerReference = document.querySelector("#settings-anchor-reference");
-
-  const referenceButton = document.querySelector("#settings-context-preview");
-  const referenceCancel = document.querySelector("#settings-context-cancel");
-  const referenceStatus = document.querySelector("#settings-context-status");
-  const referenceResult = document.querySelector("#settings-context-result");
-  document.querySelector("#settings-context-preview-actions").hidden = !previewReferences;
-  let referenceID;
-  function previewUnit() {
-    return settingsForm?.units[Number(contextScope.value || unit.value)]?.id;
-  }
-  function referenceControls() {
-    const id = previewUnit();
-    referenceButton.disabled = !id || previewPending || !!referenceID || busy;
-    referenceButton.textContent = id ? `${id}の参照資料をプレビュー` : "参照資料をプレビュー";
-    referenceCancel.hidden = !referenceID;
-  }
-  referenceButton.addEventListener("click", async () => {
-    const id = previewUnit();
-    const request = crypto.randomUUID();
-    const revision = draftRevision;
-    referenceID = request;
-    referenceCancel.disabled = true;
-    referenceResult.hidden = true;
-    referenceStatus.textContent = "参照資料を確認しています。";
-    referenceControls();
-    try {
-      await previewReferences(workspaceConfig.value, id, request, event => {
-        if (event.progress) {
-          referenceCancel.disabled = false;
-          referenceStatus.textContent = event.progress;
-        }
-        if (event.error) throw new Error(event.error);
-        if (event.cancelled) referenceStatus.textContent = "プレビューを取り消しました。";
-        if (event.result) {
-          if (revision !== draftRevision || id !== previewUnit()) {
-            referenceStatus.textContent = "設定が変わりました。もう一度プレビューしてください。";
-            return;
-          }
-          const {roots, files, bytes, largest, exceeded} = event.result;
-          const number = value => value.toLocaleString("ja-JP");
-          const limits = {max_files: "件数", max_bytes: "合計容量", max_file_bytes: "1ファイルの容量"};
-          referenceStatus.textContent = `${id}の参照資料を確認しました。`;
-          referenceResult.textContent = [
-            `${number(files)}件 · ${number(bytes)} B`,
-            `参照起点  ${roots.map(path => path === "." ? "作業ツリー直下" : path).join("、") || "なし"}`,
-            ...Object.entries(exceeded).map(([key, item]) => `上限超過  ${limits[key]} ${number(item.actual)} / ${BigInt(item.limit).toLocaleString("ja-JP")}`),
-            ...largest.map(item => `${number(item.bytes)} B  ${item.path}`),
-          ].join("\n");
-          referenceResult.hidden = false;
-        }
-      });
-    } catch (error) {
-      referenceStatus.textContent = `プレビューを完了できませんでした。設定と参照先を確認してください。\n${error.message}`;
-    } finally {
-      referenceID = undefined;
-      referenceCancel.disabled = false;
-      const restoreFocus = document.activeElement === referenceCancel;
-      referenceControls();
-      if (restoreFocus) referenceButton.focus();
-    }
-  });
-  referenceCancel.addEventListener("click", async () => {
-    referenceCancel.disabled = true;
-    try {
-      await cancelReferences(referenceID);
-    } catch (error) {
-      referenceCancel.disabled = false;
-      referenceStatus.textContent = error.message;
-    }
-  });
-  unit.addEventListener("change", referenceControls);
 
   function showViewerState() {
     const disabled = viewerMode.value === "false";
@@ -2179,67 +2044,21 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       : viewerHTML.value.trim() ? "有効" : "無効（HTML 未設定）";
   }
 
-  const contextScope = document.querySelector("#settings-context-scope");
-  const contextFields = tableFields.filter(field => field.dataset.section === "target_context");
-  const listOverrides = new Map();
-  for (const field of contextFields.filter(field => ["exclude", "folders"].includes(field.dataset.setting))) {
-    const label = document.createElement("label");
-    const check = document.createElement("input");
-    check.type = "checkbox";
-    check.setAttribute("aria-label", field.labels[0].textContent + "を上書き");
-    label.append(check, " 共通設定を上書き");
-    field.before(label);
-    listOverrides.set(field, label);
-    check.addEventListener("change", () => {
-      field.disabled = !check.checked;
-      field.dispatchEvent(new Event("input"));
-      if (check.checked) field.focus();
-    });
-  }
-
-  function contextValues() {
-    return contextScope.value === "" ? settingsForm.target_context
-      : (settingsForm.units[Number(contextScope.value)].target_context ??= {});
-  }
-
   function editContext(key, value) {
-    let edits = changes;
-    if (contextScope.value !== "") edits = changes.units[contextScope.value] ??= {};
-    edits.target_context ??= {};
-    edits.target_context[key] = contextValues()[key] = value;
+    changes.target_context ??= {};
+    changes.target_context[key] = settingsForm.target_context[key] = value;
     schedulePreview();
   }
 
   function showContext() {
-    const inherited = contextScope.value !== "";
-    const context = contextValues();
-    rootMode.options[0].text = inherited ? "共通設定を継承" : "既定の4箇所を使う";
-    const roots = context.roots;
+    const roots = settingsForm.target_context.roots;
     rootMode.value = Array.isArray(roots) ? (roots.length ? "custom" : "none") : "default";
     rootChoices.hidden = rootMode.value !== "custom";
     rootChecks.forEach(input => { input.checked = Array.isArray(roots) && roots.includes(input.value); });
-    for (const field of contextFields) {
-      const value = context[field.dataset.setting];
-      field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
-      if (listOverrides.has(field)) {
-        const label = listOverrides.get(field);
-        label.hidden = !inherited;
-        label.firstChild.checked = Array.isArray(value);
-        field.disabled = inherited && !Array.isArray(value);
-      } else if (field.tagName === "SELECT") {
-        field.options[0].text = inherited ? "共通設定を継承" : "下位フォルダーも収集する（既定）";
-      } else {
-        field.placeholder = inherited ? "空欄なら共通設定を継承" : "空欄なら上限なし";
-      }
-      if (capacityUnits.has(field)) {
-        const options = capacityUnits.get(field);
-        options.options[0].text = inherited ? "共通設定を継承" : "上限なし";
-        options.value = field.value ? "1" : "";
-      }
-    }
+    const folders = settingsForm.target_context.folders;
+    document.querySelector("#settings-context-folders").value = Array.isArray(folders) ? folders.join("\n") : "";
     workspaceControls();
   }
-  contextScope.addEventListener("change", showContext);
 
   function saveRootChoices() {
     rootChoices.hidden = rootMode.value !== "custom";
@@ -2268,7 +2087,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
         const value = settingsForm[field.dataset.section]?.[field.dataset.setting];
         if (field === modelSelect) selectModel(value ?? "");
         else if (field !== effortSelect) field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
-        if (capacityUnits.has(field)) capacityUnits.get(field).value = field.value ? "1" : "";
       }
       settingsForm.target_context ??= {};
       showViewerState();
@@ -2371,19 +2189,10 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   for (const field of tableFields) field.addEventListener("input", () => {
     const {section, setting} = field.dataset;
     let value = field.value.trim();
-    const units = capacityUnits.get(field);
-    if (units && value && /^[0-9]+$/.test(value)) {
-      if (!units.value) units.value = "1";
-      value = String(BigInt(value) * BigInt(units.value));
-    }
     if (setting === "command") value = value ? commandLines(field.value) : [];
     if (setting === "anchor_reference") value = field.value.split("\n").map(path => path.trim()).filter(Boolean);
     if (section === "target_context") {
-      if (listOverrides.has(field)) {
-        if (field.disabled) value = "";
-        else if (value || contextScope.value !== "") value = value.split("\n").map(path => path.trim()).filter(Boolean);
-      }
-      editContext(setting, value);
+      editContext(setting, value ? value.split("\n").map(path => path.trim()).filter(Boolean) : "");
       return;
     }
     changes[section] ??= {};
@@ -2404,7 +2213,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     changes.units[index][key] = settingsForm.units[index][key] = value;
     if (key === "id") {
       unit.selectedOptions[0].text = value || `移行単位 ${index + 1}`;
-      contextScope.options[index + 1].text = unit.selectedOptions[0].text;
     }
     schedulePreview();
   });
