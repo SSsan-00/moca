@@ -9,6 +9,8 @@ class Element {
     this.children = [];
     this.attributes = new Map();
     this.dataset = {};
+    this.style = {};
+    this.options = [];
     this.value = this.textContent = "";
     this.hidden = false;
     this.classList = {toggle() {}, contains() { return false; }};
@@ -22,6 +24,15 @@ class Element {
       target: this, preventDefault() {}, ...fields,
     })));
   }
+  get parentElement() { return this; }
+  get childNodes() { return this.children.map(child => typeof child === "string" ? {cloneNode: () => child} : child); }
+  cloneNode() { return this; }
+  querySelectorAll() { return []; }
+  toggleAttribute() {}
+  hasAttribute(name) { return this.attributes.has(name); }
+  before() {}
+  after() {}
+  close() { this.open = false; }
   setAttribute(name, value) { this.attributes.set(name, value); }
   getAttribute(name) { return this.attributes.get(name); }
   removeAttribute(name) { this.attributes.delete(name); }
@@ -96,109 +107,124 @@ function take(endpoint = "editor") {
   return pending.splice(index, 1)[0];
 }
 
-async function checkProgressSelection() {
+async function checkDashboard() {
   const streams = [];
-  const source = fs.readFileSync(process.argv[3], "utf8").replace(/\r\n/g, "\n");
-  const start = source.indexOf("let stream;\n");
-  const end = source.indexOf("function receiveProgress(event)");
-  assert.ok(start >= 0 && end > start, "missing dashboard progress connection code");
-  const runtime = vm.createContext({
-    window: {}, document: {dispatchEvent() {}}, Event, URL,
-    location: {href: "http://localhost/dashboard/"}, history: {replaceState() {}},
-    connected: false, selectedRunId: "", snapshot: {}, connection: {},
-    syncActions() {}, receiveProgress(event) { runtime.snapshot = JSON.parse(event.data); },
-    EventSource: class {
-      constructor() { streams.push(this); }
-      close() {}
-    },
-  });
-  vm.runInContext(source.slice(start, end), runtime);
-  const a = runtime.connectRun("A");
-  streams[0].onopen();
-  streams[0].onmessage({data: JSON.stringify({run_id: "A"})});
-  await a;
-  const b = runtime.connectRun("B");
-  streams[1].onopen();
-  assert.equal(runtime.connected, false, "controls must stay disabled until the selected run's first event");
-  assert.equal(runtime.snapshot.run_id, "A");
-  streams[1].onmessage({data: JSON.stringify({run_id: "B"})});
-  await b;
-  assert.equal(runtime.connected, true);
-  streams[0].onmessage({data: JSON.stringify({run_id: "A"})});
-  assert.equal(runtime.snapshot.run_id, "B", "events from the old connection must be ignored");
-
-  const requests = [];
-  const bindStart = source.indexOf("function runFetch(");
-  const bindEnd = source.indexOf("const tokenRuns", bindStart);
-  assert.ok(bindStart >= 0 && bindEnd > bindStart, "missing dashboard workspace actions");
-  Object.assign(runtime, {
-    Headers, dashboardRevision: 0,
-    bindHarnessWorkspace(actions) { runtime.actions = actions; },
-    fetch(path, options) {
-      const body = options.body ? JSON.parse(options.body) : {};
-      requests.push({path, headers: options.headers, body});
-      return Promise.resolve({ok: true, json: async () => ({run_id: body.run_id})});
-    },
-  });
-  vm.runInContext(source.slice(bindStart, bindEnd), runtime);
-  await runtime.actions.execute("hide-run", {run_id: "A"});
-  assert.equal(runtime.selectedRunId, "B", "deleting a different run must preserve the selection");
-  assert.equal(streams.length, 2);
-  const deleting = runtime.actions.execute("hide-run", {run_id: "B"});
-  await flush();
-  assert.equal(runtime.selectedRunId, "");
-  assert.equal(runtime.snapshot.run_id, "B", "the previous snapshot may still be visible while reconnecting");
-  await runtime.runFetch("control");
-  assert.equal(requests.at(-1).headers.get("X-Run-ID"), null);
-  streams[2].onmessage({data: JSON.stringify({status: "idle"})});
-  await deleting;
-  await runtime.actions.execute("prepare", {unit_ids: ["new-unit"]});
-  assert.equal(requests.at(-1).headers.get("X-Run-ID"), null, "new runs must omit the deleted run's ID");
-}
-
-async function checkCancelledComparison() {
-  const source = fs.readFileSync(process.argv[3], "utf8");
-  const start = source.indexOf("async function openSnapshot(");
-  const end = source.indexOf("viewer.addEventListener", start);
-  assert.ok(start >= 0 && end > start, "missing dashboard comparison handler");
   const requests = [];
   const popups = [];
   const opened = [];
-  const runtime = vm.createContext({
-    snapshot: {run_id: "A"}, snapshotting: false, dashboardRevision: 0, document,
-    migrationLedgerDialog: {open: false},
-    syncActions() {}, showComparisonStatus() {},
-    comparisonPath(runId, id) { return runId + "/" + id; },
-    reserveComparisonTab() {
-      const popup = {closed: false, close() { this.closed = true; }};
-      popups.push(popup);
-      return popup;
-    },
-    runFetch(path) { return new Promise(resolve => requests.push({path, resolve})); },
-    displayComparison(url) { opened.push(url); },
+  const dashboardNodes = new Map();
+  function dashboardElement(selector) {
+    if (!dashboardNodes.has(selector)) dashboardNodes.set(selector, new Element());
+    return dashboardNodes.get(selector);
+  }
+  const page = new Element();
+  Object.assign(page, {
+    querySelector: dashboardElement,
+    createElement: () => new Element(), documentElement: new Element(), dispatchEvent() {},
   });
-  vm.runInContext(source.slice(start, end), runtime);
-  const cancelled = runtime.openSnapshot({withAnchors: true});
-  assert.equal(runtime.snapshotting, true);
-  requests[0].resolve({ok: false, text: async () => "取り消しました"});
+  let actions;
+  let proposeAnchors;
+  const anchor = dashboardElement("[data-propose-anchors]");
+  page.querySelectorAll = selector => selector === ".step" ? Array.from({length: 7}, () => new Element())
+    : selector === "[data-propose-anchors]" ? [anchor] : [];
+  const location = new URL("http://localhost/dashboard/?run=A");
+  const runtime = vm.createContext({
+    document: page, Event, URL, URLSearchParams, Headers, TextEncoder, location,
+    history: {replaceState(_, __, url) { location.href = url.href; }},
+    window: {
+      addEventListener() {},
+      open() {
+        const popup = {
+          closed: false, close() { this.closed = true; },
+          document: {body: {}}, location: {replace(url) { opened.push(url); }},
+        };
+        popups.push(popup);
+        return popup;
+      },
+    },
+    EventSource: class {
+      constructor(path) { this.path = path; streams.push(this); }
+      close() { this.closed = true; }
+    },
+    bindJunieLog: () => ({button: new Element()}),
+    bindComparisonOptions(button, callback) { proposeAnchors = callback; },
+    bindProgressPromptDialog: () => ({button: new Element(), dialog: new Element(), input: new Element(), render() {}}),
+    bindHarnessWorkspace(value) { actions = value; },
+    bindTokenRuns: () => ({}),
+    migrationLedgerButton: new Element(), migrationLedgerDialog: new Element(),
+    workspaceTabs: new Element(), workspaceControls() {}, setInterval() {},
+    renderRunTokenSummary() {}, updateMigrationLedgerStatuses() {},
+    fetch(path, options) {
+      const body = options.body ? JSON.parse(options.body) : {};
+      const request = {path, headers: options.headers, body};
+      requests.push(request);
+      if (path === "comparison" || body.action === "anchors") {
+        return new Promise(resolve => { request.resolve = resolve; });
+      }
+      return Promise.resolve({ok: true, json: async () => ({run_id: body.run_id})});
+    },
+  });
+  vm.runInContext(fs.readFileSync(process.argv[3], "utf8"), runtime);
+  const progress = (stream, runId) => stream.onmessage({data: JSON.stringify({run_id: runId, status: "idle", ready: false, diff_viewer_enabled: true, worktree_path: runId})});
+  progress(streams[0], "A");
+  const switching = actions.execute("open-run", {run_id: "B"});
+  streams[1].onopen();
+  assert.equal(actions.canAct(), false, "controls must stay disabled until the selected run's first event");
+  assert.match(dashboardElement(".run-detail").textContent, /Run ID A/);
+  progress(streams[1], "B");
+  await switching;
+  assert.equal(actions.canAct(), true);
+  progress(streams[0], "A");
+  assert.match(dashboardElement(".run-detail").textContent, /Run ID B/, "ignore events from the old connection");
+
+  await actions.execute("hide-run", {run_id: "A"});
+  assert.equal(location.searchParams.get("run"), "B", "deleting a different run must preserve the selection");
+  assert.equal(streams.length, 2);
+  const deleting = actions.execute("hide-run", {run_id: "B"});
+  await flush();
+  assert.equal(location.searchParams.get("run"), null);
+  assert.match(dashboardElement(".run-detail").textContent, /Run ID B/, "previous snapshot is visible while reconnecting");
+  await actions.execute("prepare", {unit_ids: ["new-unit"]});
+  assert.equal(requests.at(-1).headers.get("X-Run-ID"), null);
+  progress(streams[2]);
+  await deleting;
+  await actions.execute("prepare", {unit_ids: ["new-unit"]});
+  assert.equal(requests.at(-1).headers.get("X-Run-ID"), null, "new runs must omit the deleted run's ID");
+
+  const selectRun = async runId => {
+    const selecting = actions.execute("open-run", {run_id: runId});
+    progress(streams.at(-1), runId);
+    await selecting;
+  };
+  const comparisonButton = dashboardElement(".runbar [data-compare]");
+  await selectRun("A");
+  assert.equal(comparisonButton.disabled, false);
+  const cancelled = proposeAnchors();
+  assert.equal(comparisonButton.disabled, true);
+  requests.at(-1).resolve({ok: false, text: async () => "取り消しました"});
   await cancelled;
   assert.equal(popups[0].closed, true);
-  assert.equal(runtime.snapshotting, false);
-  const plain = runtime.openSnapshot();
-  assert.equal(requests[1].path, "comparison");
-  requests[1].resolve({ok: true, json: async () => ({run_id: "A", id: "plain"})});
+  assert.equal(comparisonButton.disabled, false);
+
+  const plain = comparisonButton.emit("click");
+  assert.equal(requests.at(-1).path, "comparison");
+  requests.at(-1).resolve({ok: true, json: async () => ({run_id: "A", id: "plain"})});
   await plain;
-  runtime.snapshot = {run_id: "B"};
-  const retry = runtime.openSnapshot({withAnchors: true});
-  assert.equal(requests[2].path, "control");
-  requests[2].resolve({ok: true, json: async () => ({run_id: "B", id: "anchors"})});
+  const stale = proposeAnchors();
+  const staleRequest = requests.at(-1);
+  await selectRun("B");
+  staleRequest.resolve({ok: true, json: async () => ({run_id: "A", id: "stale"})});
+  await stale;
+  assert.equal(popups[2].closed, true);
+  const retry = proposeAnchors();
+  assert.equal(requests.at(-1).path, "control");
+  requests.at(-1).resolve({ok: true, json: async () => ({run_id: "B", id: "anchors"})});
   await retry;
-  assert.deepEqual(opened, ["A/plain.html", "B/anchors.html"]);
+  assert.deepEqual(opened, ["review/A/plain.html", "review/B/anchors.html"]);
 }
 
 (async () => {
-  await checkProgressSelection();
-  await checkCancelledComparison();
+  await checkDashboard();
   const initial = tick();
   take().resolve(response("A"));
   await initial;

@@ -443,3 +443,9 @@ flowchart TD
 Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合を防ぎます。 `run.lock` と `editor.lock` は個々の JSON の更新を保護し、一時ファイルから置換します。工程の observer は `run.lock` 解放後にダッシュボードへ通知します。worktree の編集・反映を直列化するメモリロックは同一プロセスで有効で、別プロセスからの更新とは保存したハッシュで照合します。 [run_records.py](../src/migration_harness/run_records.py) · [editor_queue.py](../src/migration_harness/editor_queue.py) · [worktree_targets.py](../src/migration_harness/worktree_targets.py) · [Run の状態とロック契約](run-state-contracts.md)
 
 実行経路の回帰例は [移行サイクル](../tests/test_migration_cycle.py)、[移行台帳](../tests/test_migration_ledger.py)、[並列 Run](../tests/test_parallel_dashboard.py)、[Junie 会話](../tests/test_junie_conversation.py)、[プロセス停止](../tests/test_junie_process.py) にあります。評価用アプリと結果は [evaluations](../evaluations/) にあります。
+
+## ダッシュボードの回帰テスト
+
+`PYTHONPATH=tests python -m unittest test_editor_run_isolation test_settings_browser` でダッシュボードの検証を実行します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
+
+保存済み Run が必要なテストでは `tests/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。

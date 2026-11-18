@@ -105,7 +105,7 @@ try {
   const toml = field("workspace-config");
   await cdp("Runtime.enable");
   await cdp("Page.navigate", {url});
-  await wait(`document.readyState === "complete" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);
+  await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true" && typeof window.harnessEditorCanSwitch === "function" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);
   await click("tab-settings");
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
   await evaluate('document.querySelector("#settings-project-details > summary").click()');

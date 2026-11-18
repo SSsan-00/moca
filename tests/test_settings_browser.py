@@ -71,13 +71,10 @@ max_bytes = 9007199254740993 # preserve this value
             view = dashboard.Dashboard()
             view.publish({"status": "idle", "ready": True})
             package = Path(dashboard.__file__).parent
-            template = dashboard.harness_asset("progress-demo.html").read_text(encoding="utf-8").split("<!-- dashboard-script -->")[0]
-            html = (template.replace('<html lang="ja">', '<html lang="ja" data-live data-workspace>')
-                    .replace("./src/migration_harness/dashboard_runs.js", "dashboard_runs.js")
-                    + '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>')
             terminal = io.StringIO()
             with redirect_stdout(terminal):
-                server = view.server(dashboard.load_config(path), html.encode(), (package / "dashboard.js").read_bytes())
+                server = view.server(dashboard.load_config(path), dashboard.render_dashboard_html(" data-live data-workspace"),
+                                     (package / "dashboard.js").read_bytes())
             url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()

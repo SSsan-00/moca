@@ -2,9 +2,10 @@ import hashlib
 import io
 import json
 import subprocess
+import threading
 import time
 import uuid
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
@@ -17,13 +18,46 @@ from migration_harness.editor_queue import editor_queue
 from migration_harness.execution import check_cancelled, current_operation_id
 from migration_harness.junie_conversation import _intent
 from migration_harness.run_manager import RunManager
-from test_checker_resume_review_dashboard import SavedRunFixture
+from fixtures import SavedRunFixture
 
 
 class JunieConversationTests(SavedRunFixture):
     def setUp(self):
         super().setUp()
+        self.background_errors = []
+        self.addCleanup(self.raise_background_error)
+        self.enterContext(patch.object(threading, "excepthook", self.capture_background_error))
         self.start_server()
+
+    def capture_background_error(self, error):
+        """ワーカーの例外を記録し、Run状態を待つテストを起こす。"""
+        with self.manager.condition:
+            self.background_errors.append(error.exc_value)
+            self.manager.condition.notify_all()
+
+    def raise_background_error(self):
+        """ワーカーで発生した例外を元のトレースバック付きで報告する。"""
+        if self.background_errors:
+            raise self.background_errors.pop(0)
+
+    @contextmanager
+    def close_workers_before_unpatching(self, *gates):
+        """失敗時にもゲートを開き、差し替えを戻す前にRunと会話を終了する。"""
+        try:
+            yield
+        finally:
+            for gate in gates:
+                gate.set()
+            self.manager.close()
+            self.raise_background_error()
+
+    def diagnostics(self, run_id):
+        """待機失敗時の保存状態、操作、および会話スレッドの状態を取得する。"""
+        view = self.manager.views.get(run_id)
+        state = view.state if view else {}
+        thread = self.manager.conversations.thread
+        return (f"Run {run_id}, status={state.get('status')}, operation={state.get('operation_id')}, "
+                f"conversation_worker_alive={bool(thread and thread.is_alive())}")
 
     def start_server(self):
         view = dashboard.Dashboard()
@@ -52,8 +86,17 @@ class JunieConversationTests(SavedRunFixture):
 
     def request(self, endpoint, body=None, run_id=None):
         headers = {**self.headers, "X-Run-ID": run_id or self.run_id}
-        with urlopen(Request(self.url + endpoint, None if body is None else json.dumps(body).encode(), headers), timeout=3) as response:
-            return response.status, json.load(response)
+        started = time.monotonic()
+        request = Request(self.url + endpoint, None if body is None else json.dumps(body).encode(), headers)
+        try:
+            with urlopen(request, timeout=3) as response:
+                return response.status, json.load(response)
+        except TimeoutError as error:
+            self.raise_background_error()
+            raise AssertionError(
+                f"{request.get_method()} {endpoint} timed out after {time.monotonic() - started:.3f}s; "
+                + self.diagnostics(headers["X-Run-ID"])
+            ) from error
 
     def send(self, text, identifier=None, *, run_id=None):
         run_id = run_id or self.run_id
@@ -68,12 +111,14 @@ class JunieConversationTests(SavedRunFixture):
     def wait_for(self, identifier, status, *, run_path=None):
         end = time.monotonic() + 6
         while time.monotonic() < end:
+            self.raise_background_error()
             with editor_queue(run_path or self.run_path) as queue:
                 entry = next((row for row in queue.get("conversation", []) if row["id"] == identifier), {})
             if entry.get("status") == status:
                 return entry
             time.sleep(.02)
-        self.fail(f"expected {status}, last entry: {entry}")
+        self.raise_background_error()
+        self.fail(f"expected {status}, last entry: {entry}; {self.diagnostics((run_path or self.run_path).name)}")
 
     def start_build(self):
         self.request("control", {"action": "resume-run", "revision": 0, "run_id": self.run_id})
@@ -139,7 +184,7 @@ class JunieConversationTests(SavedRunFixture):
 
         def delayed(*args):
             interpreting.set()
-            self.assertTrue(release.wait(6))
+            release.wait()  # The main thread owns the deadline and always releases this gate.
             return interpreter(*args)
 
         def junie(command, completion, token, targets, **kwargs):
@@ -168,10 +213,13 @@ class JunieConversationTests(SavedRunFixture):
             patch.object(workflow.junie_cli, "require_interactive_cli"),
             patch.object(workflow.junie_cli, "run_interactive", side_effect=junie),
             patch.object(workflow, "run_process", side_effect=external) as verify,
+            self.close_workers_before_unpatching(release),
         ):
             try:
                 self.start_build()
                 self.wait_until_idle()
+                with editor_queue(self.run_path) as queue:
+                    self.assertEqual([item["status"] for item in queue["conversation"]], ["steering", "steering"])
             finally:
                 release.set()
             for identifier in identifiers:
@@ -449,7 +497,7 @@ class JunieConversationTests(SavedRunFixture):
 
         self.manager.limit = 0
         mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"))
-        with mocked:
+        with mocked, self.close_workers_before_unpatching():
             answer, _ = self.send("ビルドだけ")
             self.wait_for(answer, "done")
             self.wait_for(identifier, "waiting")
@@ -643,7 +691,7 @@ class JunieConversationTests(SavedRunFixture):
             kwargs["stdout"].write(b"new successful build\n")
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work):
+        with patch.object(workflow, "run_process", side_effect=work), self.close_workers_before_unpatching():
             self.start_build()
             self.assertTrue(running.wait(5))
             edited = "class Saved {}\n"
@@ -763,7 +811,11 @@ class JunieConversationTests(SavedRunFixture):
 
     def wait_until_idle(self):
         with self.manager.condition:
-            self.assertTrue(self.manager.condition.wait_for(lambda: self.run_id not in self.manager.jobs, timeout=6))
+            idle = self.manager.condition.wait_for(
+                lambda: self.background_errors or self.run_id not in self.manager.jobs, timeout=6,
+            )
+        self.raise_background_error()
+        self.assertTrue(idle, self.diagnostics(self.run_id))
 
     def stop_operation(self):
         operation = self.manager.get(self.run_id).state["operation_id"]
