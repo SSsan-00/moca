@@ -963,14 +963,85 @@ class _AcpSession:
             self.pending = request_id, reply
             self.permission_started = time.monotonic()
 
-    def advance(self) -> bool:
-        """受信済みのメッセージを処理し、プロンプトの終了時にTrueを返す。"""
+    def _check_writes(self) -> None:
+        """送信済み応答とパイプが詰まった場合の期限を確認する。"""
         while self.writes and self.writes[0][1].done():
             _, written = self.writes.popleft()
             if written.exception() is not None:
                 raise JunieSessionError(self.command, 1, "JunieへのACP送信に失敗しました。") from written.exception()
         if self.writes and time.monotonic() >= self.writes[0][0]:
             raise JunieSessionError(self.command, 1, "JunieへのACP送信がタイムアウトしました。")
+
+    def _accept_steering_response(self, request_id, message) -> None:
+        """追加指示の受理を記録し、未受理ならキューに戻す。"""
+        request = self.steering_requests[request_id]
+        result = message.get("result")
+        outcome = result.get("outcome") if isinstance(result, dict) else None
+        self.steering_waiting = None
+        if "error" not in message and outcome in ("injected", "startedNewTurn"):
+            request.accepted = True
+            request.new_turn = outcome == "startedNewTurn"
+            self.steering_new_turn |= request.new_turn
+            report_activity("Junieが追加指示を受け取りました。処理の完了を待っています。")
+        else:
+            self.steering_supported = False
+            self.prompts.finish(request.identifiers, False)
+            del self.steering_requests[request_id]
+            report_activity("追加指示を送信待ちに戻しました。画面に表示されたタイミングで渡します。")
+
+    def _advance_prompt(self, request_id, message) -> bool:
+        """初期化、セッション作成、実行の応答を順に処理する。"""
+        # 要求IDは1=初期化、2=セッション作成、3=プロンプト実行。応答を待って次へ進む。
+        if "error" in message:
+            error = message["error"]
+            code = error.get("code")
+            if request_id == 3 and code == -32002 and (error.get("data") or {}).get("reason") == "model_not_available":
+                raise JunieAcpModelUnavailable(self.command, 1, "Junie の ACP で利用できるモデルがありません。")
+            detail = ("Junie CLIでログインしてから再開してください。" if code == -32000 else
+                      f"JunieのACP要求に失敗しました（要求 {request_id}、コード {code}）。")
+            raise JunieSessionError(self.command, 1, detail)
+        result = message.get("result", {})
+        if request_id == 1 and result.get("protocolVersion") == 1:
+            # バージョン番号では推測せず、接続先が宣言する対応能力で切り替える。
+            metadata = result.get("_meta")
+            steering = metadata.get("steering") if isinstance(metadata, dict) else None
+            self.steering_supported = isinstance(steering, dict) and steering.get("supported") is True
+            self.request(2, "session/new", cwd=str(self.project), mcpServers=[])
+        elif request_id == 2 and result.get("sessionId"):
+            self.session_id = result["sessionId"]
+            self.request(3, "session/prompt", sessionId=self.session_id,
+                         prompt=[{"type": "text", "text": self.command[-1]}])
+        elif request_id == 3:
+            self.prompt_finished = True
+            if self.steering_waiting is None and not self.steering_new_turn:
+                return True
+        else:
+            raise JunieSessionError(self.command, 1, "JunieのACP初期化応答が無効です。")
+        return False
+
+    def _receive_message(self, message) -> bool:
+        """ACP応答を振り分け、プロンプトの終了を返す。"""
+        request_id = message.get("id")
+        method = message.get("method")
+        params = message.get("params", {})
+        if not method and request_id == self.steering_waiting and request_id is not None:
+            self._accept_steering_response(request_id, message)
+        elif method and request_id is not None:
+            if method == "session/request_permission" and params.get("sessionId") == self.session_id:
+                self.permission(request_id, params)
+            else:
+                self.send(id=request_id, error={"code": -32601, "message": "Method not supported"})
+        elif method == "session/update" and params.get("sessionId") == self.session_id:
+            update = params.get("update", {})
+            if update.get("sessionUpdate") in ("tool_call", "tool_call_update") and "toolCallId" in update:
+                self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
+        elif not method and request_id in (1, 2, 3):
+            return self._advance_prompt(request_id, message)
+        return False
+
+    def advance(self) -> bool:
+        """受信済みのメッセージを処理し、プロンプトの終了時にTrueを返す。"""
+        self._check_writes()
         if self.pending:
             # 回答待ちではブロックせず監視側へ戻し、停止要求を受け付けられるようにする。
             request_id, reply = self.pending
@@ -997,62 +1068,10 @@ class _AcpSession:
                     raise ValueError
             except (UnicodeError, ValueError):
                 raise JunieSessionError(self.command, 1, "JunieのACP応答を読み取れませんでした。") from None
-            request_id = message.get("id")
-            method = message.get("method")
-            params = message.get("params", {})
-            if not method and request_id == self.steering_waiting and request_id is not None:
-                request = self.steering_requests[request_id]
-                result = message.get("result")
-                outcome = result.get("outcome") if isinstance(result, dict) else None
-                self.steering_waiting = None
-                if "error" not in message and outcome in ("injected", "startedNewTurn"):
-                    request.accepted = True
-                    request.new_turn = outcome == "startedNewTurn"
-                    self.steering_new_turn |= request.new_turn
-                    report_activity("Junieが追加指示を受け取りました。処理の完了を待っています。")
-                else:
-                    self.steering_supported = False
-                    self.prompts.finish(request.identifiers, False)
-                    del self.steering_requests[request_id]
-                    report_activity("追加指示を送信待ちに戻しました。画面に表示されたタイミングで渡します。")
-            elif method and request_id is not None:
-                if method == "session/request_permission" and params.get("sessionId") == self.session_id:
-                    self.permission(request_id, params)
-                    if self.pending:
-                        return False
-                else:
-                    self.send(id=request_id, error={"code": -32601, "message": "Method not supported"})
-            elif method == "session/update" and params.get("sessionId") == self.session_id:
-                update = params.get("update", {})
-                if update.get("sessionUpdate") in ("tool_call", "tool_call_update") and "toolCallId" in update:
-                    self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
-            elif not method and request_id in (1, 2, 3):
-                # 要求IDは1=初期化、2=セッション作成、3=プロンプト実行。応答を待って次へ進む。
-                if "error" in message:
-                    error = message["error"]
-                    code = error.get("code")
-                    if request_id == 3 and code == -32002 and (error.get("data") or {}).get("reason") == "model_not_available":
-                        raise JunieAcpModelUnavailable(self.command, 1, "Junie の ACP で利用できるモデルがありません。")
-                    detail = ("Junie CLIでログインしてから再開してください。" if code == -32000 else
-                              f"JunieのACP要求に失敗しました（要求 {request_id}、コード {code}）。")
-                    raise JunieSessionError(self.command, 1, detail)
-                result = message.get("result", {})
-                if request_id == 1 and result.get("protocolVersion") == 1:
-                    # バージョン番号では推測せず、接続先が宣言する対応能力で切り替える。
-                    metadata = result.get("_meta")
-                    steering = metadata.get("steering") if isinstance(metadata, dict) else None
-                    self.steering_supported = isinstance(steering, dict) and steering.get("supported") is True
-                    self.request(2, "session/new", cwd=str(self.project), mcpServers=[])
-                elif request_id == 2 and result.get("sessionId"):
-                    self.session_id = result["sessionId"]
-                    self.request(3, "session/prompt", sessionId=self.session_id,
-                                 prompt=[{"type": "text", "text": self.command[-1]}])
-                elif request_id == 3:
-                    self.prompt_finished = True
-                    if self.steering_waiting is None and not self.steering_new_turn:
-                        return True
-                else:
-                    raise JunieSessionError(self.command, 1, "JunieのACP初期化応答が無効です。")
+            if self._receive_message(message):
+                return True
+            if self.pending:
+                return False
         if self.session_id is None and time.monotonic() >= self.startup_deadline:
             raise JunieSessionError(self.command, 1, "JunieのACP接続がタイムアウトしました。Junie CLIのバージョンとログを確認してください。")
         if self.steering_waiting is not None and time.monotonic() >= self.steering_deadline:
@@ -1076,13 +1095,30 @@ class _AcpSession:
             self.process.stdout.close()
 
 
+def _launch_session_process(command, *, headless, dashboard, thought_path):
+    """モードに応じて標準入出力を構成し、監視対象のプロセスを返す。"""
+    streams = {"stderr": subprocess.PIPE} if thought_path is not None else {}
+    if headless:
+        return _launch_process(command, owned=True, stdin=subprocess.DEVNULL, **streams)
+    if dashboard is None:
+        # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
+        return _launch_process(command, owned=True, terminal=True)
+    # ACPの指示は初期化後に送るため、起動時の引数から外す。
+    acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
+    return _launch_process(acp_command, owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
+
+
 def _run_session(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
     accept_result: Callable[[str], None] | None = None,
     prompts: LivePrompts | None = None,
 ) -> int:
-    """成果物と完了記録がそろえばJunieのセッションを閉じる。"""
+    """起動から子プロセスの終了確認、使用量回収、端末の復元までを担当する。
+
+    対話・ACPは完了記録と対象を確認して早期終了できる。非対話は自然終了を待つ。
+    子プロセス群の終了後に終了observerへ通知し、終了時に残った使用量を回収する。
+    """
     check_cancelled()
     root = completion_path.parent
     dashboard = junie_dashboard_control()
@@ -1091,7 +1127,7 @@ def _run_session(
     process = None
     acp = None
     thoughts = None
-    completed = False
+    result_ready = False
     stopped = False
 
     def stop() -> int:
@@ -1110,7 +1146,7 @@ def _run_session(
             return code
         return process.returncode
 
-    def completion_ready() -> bool:
+    def result_files_ready() -> bool:
         """セッション完了を確定できる状態か判定する。"""
         return (
             has_completion_record(completion_path, token)
@@ -1121,7 +1157,7 @@ def _run_session(
             )
         )
 
-    def poll(*, cancellable: bool = True) -> bool:
+    def collect_session_events(*, cancellable: bool = True) -> bool:
         """セッション終了とイベント更新を監視する。"""
         if thoughts is not None:
             collect_thoughts(thoughts.poll)
@@ -1163,16 +1199,8 @@ def _run_session(
         events = _JunieSessionEvents(token, headless_project=root.resolve() if headless else None)
         next_poll = time.monotonic()
         thought_path = dashboard.junie_thoughts_path if dashboard is not None else None
-        streams = {"stderr": subprocess.PIPE} if thought_path is not None else {}
-        if headless:
-            process = _launch_process(command, owned=True, stdin=subprocess.DEVNULL, **streams)
-        elif dashboard is None:
-            # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
-            process = _launch_process(command, owned=True, terminal=True)
-        else:
-            # ACPではプロンプトを起動引数から外し、初期化後のsession/prompt要求で送る。
-            acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
-            process = _launch_process(acp_command, owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
+        process = _launch_session_process(command, headless=headless, dashboard=dashboard, thought_path=thought_path)
+        if dashboard is not None and not headless:
             acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request,
                               completion_path, token, prompts)
             acp.request(1, "initialize", protocolVersion=1, clientCapabilities={})
@@ -1199,35 +1227,35 @@ def _run_session(
             except subprocess.TimeoutExpired:
                 check_cancelled()
                 # 完了記録での早期終了は対話・ACPだけ。非対話モードはプロセスの自然終了を待つ。
-                if not headless and completion_ready():
+                if not headless and result_files_ready():
                     exit_code = stop()
                     check_cancelled()
-                    completed = completion_ready()
+                    result_ready = result_files_ready()
                     return exit_code
                 if time.monotonic() >= next_poll:
                     next_poll = time.monotonic() + 0.5
-                    if poll():
+                    if collect_session_events():
                         stop()
                         raise JunieConnectionError("Junie model service connection failed")
                     if stopped:
-                        completed = completion_ready()
+                        result_ready = result_files_ready()
                         return 0 if acp is not None else process.returncode
                 if acp is not None:
                     try:
-                        finished = acp.advance()
+                        prompt_finished = acp.advance()
                     except (JunieSessionError, KeyError, TypeError, AttributeError) as exc:
-                        if poll() and not has_completion_record(completion_path, token):
+                        if collect_session_events() and not has_completion_record(completion_path, token):
                             raise JunieConnectionError("Junie model service connection failed") from exc
                         if isinstance(exc, JunieSessionError):
                             raise
                         raise JunieSessionError(command, 1, "JunieのACP応答に必要な項目がありません。") from None
-                    if finished:
+                    if prompt_finished:
                         acp.check_steering_turns(events, exited=True)
                         stop()
                         check_cancelled()
-                        if poll() and not has_completion_record(completion_path, token):
+                        if collect_session_events() and not has_completion_record(completion_path, token):
                             raise JunieConnectionError("Junie model service connection failed")
-                        completed = completion_ready()
+                        result_ready = result_files_ready()
                         return 0
                     acp.check_steering_turns(events)
                     acp.steer()
@@ -1249,7 +1277,7 @@ def _run_session(
                     # プロセスが先に終了しても、直前に届いた受信確認を取りこぼさない。
                     acp.reader.join(timeout=1)
                     acp.advance()
-                if poll() and not has_completion_record(completion_path, token):
+                if collect_session_events() and not has_completion_record(completion_path, token):
                     raise JunieConnectionError("Junie model service connection failed")
                 if acp is not None:
                     acp.check_steering_turns(events, exited=True)
@@ -1258,7 +1286,7 @@ def _run_session(
                     raise JunieSessionError(
                         command, exit_code, events.startup_diagnostics(process.pid, command),
                     )
-                completed = completion_ready()
+                result_ready = result_files_ready()
                 return exit_code
     except JunieStopError:
         raise
@@ -1280,12 +1308,12 @@ def _run_session(
                 dashboard.on_junie_request(None)
             if acp is not None:
                 try:
-                    acp.finish_prompts(completed)
+                    acp.finish_prompts(result_ready)
                 finally:
                     acp.close()
             if process is not None and report_usage is not None:
                 # 停止要求が出ていても最後の使用量を回収する。最終回答の採用処理は行わない。
-                poll(cancellable=False)
+                collect_session_events(cancellable=False)
         finally:
             if restore_terminal is not None and (process is None or process.poll() is not None):
                 restore_terminal()
