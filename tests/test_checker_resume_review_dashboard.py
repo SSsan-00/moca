@@ -537,6 +537,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 with self.assertRaises(workflow.RunInterrupted):
                     self.resume(*responses)
                 junie.assert_called_once()
+            self.assertIn(draft, self.record()["stopped_repair_recovery"])
             manual = b"class SavedByOperator {}\n"
             self.target.write_bytes(manual)
             with patch.object(junie_cli, "run_interactive") as junie:

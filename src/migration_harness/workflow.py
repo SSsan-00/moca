@@ -1406,9 +1406,7 @@ def _finish_repair_attempt(record):
     """指摘が解消された後も、明示停止で保全した下書きを参照可能にする。"""
     attempt = record.pop("repair_pending", None)
     if attempt:
-        draft = attempt.get("draft", {})
-        if draft.get("snapshot"):
-            record.setdefault("stopped_repair_recovery", []).append(draft)
+        _remember_repair_draft(record, attempt.get("draft"))
     return attempt
 
 
@@ -1491,7 +1489,10 @@ def _attempt_repair(
 
 def _discard_unconfirmed_draft(record):
     """未確認の作業版を再利用せず、停止時に保全済みの参照は復旧用に残す。"""
-    draft = record["repair_pending"].pop("draft", None)
+    _remember_repair_draft(record, record["repair_pending"].pop("draft", None))
+
+
+def _remember_repair_draft(record, draft):
     if draft and draft.get("snapshot"):
         record.setdefault("stopped_repair_recovery", []).append(draft)
 
@@ -1801,7 +1802,7 @@ def _repair_target(
             raise
         if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, junie_cli.JunieEditHandoff):
             try:
-                attempt["draft"] = _snapshot_stopped_repair(
+                saved = _snapshot_stopped_repair(
                     run_path, agent_root, repair_targets, before,
                     workspace_unchanged=_unlisted_workspace_files(agent_root, allowed) == other_files,
                 )
@@ -1811,10 +1812,12 @@ def _repair_target(
                     "stopped_draft",
                     "停止時の下書きを保存できませんでした。再開前に Junie 作業領域を確認してください。",
                 ) from error
+            _remember_repair_draft(record, attempt.get("draft"))
+            attempt["draft"] = saved
             raise
         if draft.get("snapshot") and not isinstance(exc, junie_cli.JunieEditHandoff):
             raise
-        attempt.pop("draft", None)
+        _remember_repair_draft(record, attempt.pop("draft", None))
         try:
             if _unlisted_workspace_files(agent_root, allowed) == other_files:
                 hashes = {
@@ -1841,12 +1844,13 @@ def _repair_target(
     completed = junie_cli.has_completion_record(completion_path, token)
     question = _read_operator_review(report, agent_root, worktree, repair_targets, record, completed=completed)
     if question:
-        attempt.pop("draft", None)
+        _remember_repair_draft(record, attempt.pop("draft", None))
         raise CheckerRepairBlocked("operator_confirmation", question)
     if not completed or not all(path.is_file() for path in agent_targets):
         raise CheckerRepairBlocked("repair_incomplete", "Junie did not record a completed repair; inspect its workspace for partial edits")
     # 完了通知と指示の登録が重なった場合も、次のビルドより先に編集を引き継ぐ。
     if LivePrompts(run_path, interrupt_for_edits=True).needs_handoff():
+        _remember_repair_draft(record, attempt.get("draft"))
         attempt["draft"] = {"base": before, "targets": {
             path.as_posix(): target_hash(safe_target(agent_root, path)) for path in repair_targets
         }}
