@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import cli, junie_cli, review_anchors, workflow
+from migration_harness import capsules, cli, junie_cli, review_anchors, workflow
 from migration_harness.config import load_config
 from migration_harness.diff_viewer import capture_workspace
 
@@ -392,6 +392,51 @@ class CapsulePreparationTests(HarnessCase):
         final_capsule = Path(result["context_paths"][-1]).read_bytes()
         self.assertIn(line[last["context_start_column"] - 1:] + b"\r", final_capsule)
         self.assertNotIn(line[last["context_start_column"] - 1:] + b"\r\n", final_capsule)
+
+    def test_long_physical_lines_bound_candidate_scans_by_capsule_size(self):
+        budget = 10_000
+        for size in (256 * 1024, 2 * 1024 * 1024):
+            with self.subTest(size=size):
+                body = "<?php /*" + ("abc``日本語" * (size // 8)) + "*/"
+                self.php.write_bytes((body + "\r\n").encode())
+                config = load_config(self.config_path({**PHP, "end_line": 1, "encoding": "utf-8"}))
+                config["max_context_chars"] = budget
+                scanned = 0
+                find_backticks = capsules._max_backtick_run
+
+                def observe(text):
+                    nonlocal scanned
+                    self.assertLessEqual(len(text), budget)
+                    scanned += len(text)
+                    return find_backticks(text)
+
+                with patch.object(capsules, "_max_backtick_run", side_effect=observe):
+                    result = workflow.prepare_run(config, "example")
+                _, manifest = capsules.load_capsule_manifest(Path(result["run_path"]))
+                self.assertLess(scanned, len(body) * 17)
+                slices = [item for part in manifest["parts"] for source in part["sources"]
+                          for item in source["character_slices"]]
+                self.assertEqual(slices[0]["focus_start_column"], 1)
+                self.assertEqual(slices[-1]["focus_end_column"], len(body))
+                self.assertTrue(all(left["focus_end_column"] + 1 == right["focus_start_column"]
+                                    for left, right in zip(slices, slices[1:])))
+
+    def test_conflicting_php_encoding_for_path_aliases_is_rejected_before_worktree(self):
+        self.php.write_bytes(b'<?php\n$text = "\xc2\xa2";\n')
+        reference = {**PHP, "path": "./Source.php", "role": "reference_php", "shared": True, "encoding": "euc-jp"}
+        config = load_config(self.config_path(reference, {**PHP, "encoding": "utf8"}))
+        with self.assertRaisesRegex(ValueError, r"Source.php: inconsistent.*reference_php.*euc-jp.*php.*utf-8"):
+            workflow.prepare_run(config, "example")
+        self.assertFalse(Path(config["worktree_root"]).exists())
+
+    def test_shared_reference_and_migration_use_one_effective_php_encoding(self):
+        self.php.write_bytes(b"\xef\xbb\xbf<?php\necho 42;\n")
+        reference = {**PHP, "path": "./Source.php", "role": "reference_php", "shared": True, "encoding": "auto"}
+        config, result, manifest = self.prepare(reference, {**PHP, "encoding": "utf_8_sig"})
+        self.assertEqual([(pin["path"], pin["encoding"]) for pin in manifest["php_sources"]], [("Source.php", "utf-8-sig")])
+        self.assertEqual(manifest["parts"][0]["sources"][0]["encoding"], "utf-8-sig")
+        _, comparison = capture_workspace(config, result["run_id"])
+        self.assertEqual(comparison["workspace"]["leftText"], "<?php\necho 42;\n")
 
     # 移行対象がない設定を移行カプセルとして数えないことを検証する。
     def test_shared_rules_alone_cannot_create_a_migration_capsule(self):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,20 @@ SCRIPT_PHASES = (
     "before_build", "after_build", "before_checker", "after_checker",
 )
 REFERENCE_ROLES = ("reference_php", "reference_csharp", "reference_razor")
+
+
+
+def _input_encoding(value: Any, scope: str) -> str:
+    """許可する入力文字コードの別名を標準名にそろえる。"""
+    if isinstance(value, str):
+        try:
+            encoding = "auto" if value == "auto" else codecs.lookup(value).name.replace("_", "-")
+        except (LookupError, ValueError):
+            pass
+        else:
+            if encoding in _INPUT_ENCODINGS:
+                return encoding
+    raise ValueError(f"{scope} must be auto, utf-8, utf-8-sig, or euc-jp")
 
 
 def _draft_extension(path: Path) -> str:
@@ -252,9 +267,7 @@ def load_config(path: Path) -> dict[str, Any]:
         normalized_inputs = []
         if "source" in unit:
             source = _file_path(unit["source"], root, f"unit {unit['id']} source")
-            encoding = unit.get("source_encoding", "auto")
-            if not isinstance(encoding, str) or encoding not in _INPUT_ENCODINGS:
-                raise ValueError(f"unit {unit['id']}: source_encoding must be auto, utf-8, utf-8-sig, or euc-jp")
+            encoding = _input_encoding(unit.get("source_encoding", "auto"), f"unit {unit['id']}: source_encoding")
             normalized_inputs.append({
                 "role": "php", "path": source, "encoding": encoding,
                 "shared": False, "start_line": 1, "end_line": None,
@@ -318,7 +331,7 @@ def _normalize_input(
         raise ValueError(f"{scope}: each [[units.inputs]] entry must be a table")
     item_path = _file_path(item.get("path"), root, scope)
     role = "migration_rules" if project_rule else item.get("role")
-    encoding = item.get("encoding", "auto")
+    encoding = _input_encoding(item.get("encoding", "auto"), f"{scope}: input encoding")
     symbol = item.get("symbol")
     shared = item.get("shared", False)
     start = item.get("start_line")
@@ -329,8 +342,6 @@ def _normalize_input(
         raise ValueError(f"{scope}: use reference_php, reference_csharp or reference_razor")
     if symbol is not None and (not isinstance(symbol, str) or not symbol.strip()):
         raise ValueError(f"{scope}: input symbol must be a non-empty string")
-    if not isinstance(encoding, str) or encoding not in _INPUT_ENCODINGS:
-        raise ValueError(f"{scope}: input encoding must be auto, utf-8, utf-8-sig, or euc-jp")
     if not isinstance(shared, bool):
         raise ValueError(f"{scope}: input shared must be a boolean")
     shared = shared or role == "migration_rules" or project_reference

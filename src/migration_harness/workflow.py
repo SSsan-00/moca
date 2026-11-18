@@ -288,15 +288,27 @@ def _stage_source_excerpts(
             safe_target(agent_root, path.relative_to(agent_root)).unlink()
     for part in parts:
         check_cancelled()
-        source = Path(part["path"]).resolve()
-        if not source.is_relative_to(capsule) or not source.is_file():
+        source = Path(part["path"])
+        if not source.is_absolute() or not source.is_relative_to(capsule):
             raise ValueError("saved verification source is missing or outside the capsule directory")
-        if part.get("sha256") and sha256_file(source) != part["sha256"]:
-            raise ValueError(f"capsule {part['index']}: saved verification source changed")
+        source = safe_target(capsule, source.relative_to(capsule))
+        if not source.is_file():
+            raise ValueError("saved verification source is missing or outside the capsule directory")
         destination = safe_target(agent_root, Path(".migration-materials") / f"source-{part['index']:04d}.md")
-        with source.open(encoding="utf-8", newline="") as stream:
-            original = stream.read()[manifest.get("segment_offset", 0):]
-        destination.write_text(original, encoding="utf-8", newline="")
+        existing = target_hash(destination)
+        if part.get("segment_sha256") and part.get("sha256") and existing == part["segment_sha256"]:
+            if sha256_file(source) != part["sha256"]:
+                raise ValueError(f"capsule {part['index']}: saved verification source changed")
+            continue
+        data = source.read_bytes()
+        if part.get("sha256") and hashlib.sha256(data).hexdigest() != part["sha256"]:
+            raise ValueError(f"capsule {part['index']}: saved verification source changed")
+        original = data.decode("utf-8")[manifest.get("segment_offset", 0):].encode("utf-8")
+        digest = hashlib.sha256(original).hexdigest()
+        if part.get("segment_sha256", digest) != digest:
+            raise ValueError(f"capsule {part['index']}: saved verification excerpt changed")
+        if existing != digest:
+            destination.write_bytes(original)
 
 
 def _stage_migration_materials(

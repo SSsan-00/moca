@@ -50,7 +50,7 @@ def _text_fingerprint(path: Path, encoding: str) -> bytes | None:
 def input_encoding(path: Path, requested: str) -> str:
     """BOMを優先し、UTF-8とEUC-JPの判定が曖昧な場合は明示指定を求める。"""
     if requested != "auto":
-        return requested
+        return codecs.lookup(requested).name.replace("_", "-")
     with path.open("rb") as stream:
         has_utf8_bom = stream.read(3) == b"\xef\xbb\xbf"
     if has_utf8_bom:
@@ -149,6 +149,8 @@ def _append_context_record(
     max_chars: int,
 ) -> bool:
     """上限内に収まる場合だけ抜粋を追加し、入らない場合は編集中のグループを保つ。"""
+    if base_chars + len(record) > max_chars:
+        return False
     last = groups[-1] if groups else None
     if last and last["input_index"] == input_index and line_number <= last["end_line"] + 1:
         candidate = {
@@ -211,9 +213,10 @@ def _prepare_inputs(
     """PHPをRunに固定し、入力ごとの文字コードを確定する。"""
     prepared = []
     php_sources: dict[str, dict[str, str]] = {}
+    encoding_roles: dict[str, str] = {}
     for item in inputs:
         check_cancelled()
-        name = item["path"]
+        name = Path(item["path"]).as_posix()
         source_path = (root / name).resolve()
         pin = None
         if is_php_input(item):
@@ -231,10 +234,21 @@ def _prepare_inputs(
                 php_sources[name] = pin
             # カプセルと比較に同じPHPバイト列を使う。
             source_path = capsule / pin["snapshot"]
-        encoding = input_encoding(source_path, item["encoding"])
+        requested = item["encoding"]
+        encoding = input_encoding(source_path, requested)
         if pin is not None:
-            pin.setdefault("encoding", encoding)
-        prepared.append(({**item, "resolved_encoding": encoding}, source_path))
+            if "encoding" not in pin:
+                pin["encoding"] = encoding
+                encoding_roles[name] = f"{item['role']} ({requested})"
+            elif encoding != pin["encoding"]:
+                original = _text_fingerprint(source_path, pin["encoding"])
+                if original is None or _text_fingerprint(source_path, encoding) != original:
+                    raise ValueError(
+                        f"{name}: inconsistent PHP input encoding between {encoding_roles[name]} "
+                        f"and {item['role']} ({requested})",
+                    )
+                encoding = pin["encoding"]
+        prepared.append(({**item, "path": name, "resolved_encoding": encoding}, source_path))
     return prepared, list(php_sources.values())
 
 
@@ -382,6 +396,7 @@ def _write_segments(
             "path": str(context_path),
             "chars": len(context),
             "sha256": sha256_file(context_path),
+            "segment_sha256": hashlib.sha256(context[base_chars:].encode("utf-8")).hexdigest(),
             "sources": [_manifest_source(group) for group in groups],
         })
         check_cancelled()
@@ -425,7 +440,7 @@ def _write_segments(
             focus_ranges: list[tuple[int, int]] = []
             while offset < len(line_body):
                 low = 1
-                high = len(line_body) - offset
+                high = min(len(line_body) - offset, max_chars - base_chars)
                 best_length = 0
                 best_record = ""
                 # 行番号・範囲ラベル・Markdownのフェンスも含めて収まる幅を探す。

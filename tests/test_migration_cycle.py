@@ -37,6 +37,9 @@ class TaskGuidelinesTests(unittest.TestCase):
             self.assertEqual(b"".join(p.read_bytes() for p in sorted(saved.iterdir())), "".join(contents[:2]).encode())
             workflow._stage_source_excerpts(capsule, manifest, agent)
             self.assertEqual(len(list(saved.iterdir())), 3)
+            with patch.object(Path, "write_bytes", autospec=True) as write:
+                workflow._stage_source_excerpts(capsule, manifest, agent)
+                write.assert_not_called()
             (capsule / "1.md").write_text("corrupted original")
             with self.assertRaisesRegex(ValueError, "saved verification source changed"):
                 workflow._stage_source_excerpts(capsule, manifest, agent, through_capsule=2)
