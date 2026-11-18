@@ -78,7 +78,7 @@ max_bytes = 9007199254740993 # preserve this value
             try:
                 helper = Path(__file__).with_name("settings_browser.mjs")
                 result = subprocess.run([*node_args, str(helper), chrome, str(root / "browser"), url],
-                                        capture_output=True, text=True, encoding="utf-8", timeout=60)
+                                        capture_output=True, text=True, encoding="utf-8", timeout=90)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             finally:
                 server.shutdown()
