@@ -314,6 +314,7 @@ def _stage_source_excerpts(
 def _stage_migration_materials(
     capsule: Path, manifest: dict[str, Any], agent_root: Path, *,
     targets: tuple[Path, ...] = (), selected: frozenset[str] | None = None, repair: bool = False,
+    supplied_rules: list[dict] | None = None,
 ) -> str:
     """準備時の資料を照合して、今回のJunieに読む順番を伝える。"""
     materials = manifest.get("materials", {})
@@ -337,7 +338,7 @@ def _stage_migration_materials(
             shutil.copyfile(source, destination)
     instructions = ""
     guidelines = safe_target(agent_root, Path(".migration-materials/guidelines.md"))
-    text = render_guidelines(capsule / "materials", manifest, targets=targets, selected=selected)
+    text = render_guidelines(capsule / "materials", manifest, targets=targets, selected=selected, supplied_rules=supplied_rules)
     if text:
         guidelines.parent.mkdir(exist_ok=True)
         guidelines.write_text(text, encoding="utf-8", newline="")
@@ -793,6 +794,44 @@ def _task_guidelines(agent_root: Path, inputs: list[Path]) -> tuple[Path | None,
     )
 
 
+def _record_junie_input(config, record_path, record, phase, prompt, guidelines, root, inputs):
+    """Junieの起動入力を測り、参照可能な資料と同梱済みの資料を区別する。"""
+    prompt_bytes = len(prompt.encode("utf-8"))
+    guideline_bytes = guidelines.stat().st_size if guidelines else 0
+    guideline_chars = 0
+    if guidelines:
+        with guidelines.open(encoding="utf-8", newline="") as stream:
+            while chunk := stream.read(64 * 1024):
+                check_cancelled()
+                guideline_chars += len(chunk)
+    rules = record.get("supplied_rules", [])
+    files = [{"file": path.as_posix(), "bytes": safe_target(root, path).stat().st_size}
+             for path in inputs]
+    total = guideline_bytes + prompt_bytes
+    limits = config.get("junie_input_limits", {})
+    over = total > limits.get("max_input_bytes", total)
+    report = {
+        "phase": phase, "capsule": record.get("current_capsule"),
+        "prompt": {"bytes": prompt_bytes, "characters": len(prompt)},
+        "guidelines": {"bytes": guideline_bytes, "characters": guideline_chars},
+        "rules": rules, "task_files": files, "task_files_in_guidelines": bool(guidelines and guidelines.name == "task-context.md"),
+        "bytes": total, "blocked": over,
+    }
+    record["last_junie_input"] = report
+    write_run_record(record_path, record, timing_stage=record.get("active_stage"))
+    largest = sorted([*rules, *files], key=lambda item: item["bytes"], reverse=True)[:3]
+    material_names = "、".join(f"{item.get('path', item['file'])}（{item['bytes']:,}バイト）" for item in largest)
+    summary = (f"Junie の起動入力 {total:,}バイト（指示 {prompt_bytes:,}、ガイドライン {guideline_bytes:,}）。"
+               f" 必須ルール {sum(item['usage'] == 'required' for item in rules)}件、適用する詳細 {sum(item['usage'] == 'reference' for item in rules)}件。")
+    if over:
+        raise CheckerRepairBlocked(
+            "input_budget", f"{summary} 起動を止めました。設定で停止値を確認してください。主な資料 {material_names}",
+        )
+    if total > limits.get("warn_input_bytes", total):
+        summary += f" 警告値を超えています。主な資料 {material_names}"
+    report_activity(summary)
+
+
 def _run_editor_followup(
     agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any],
     record_path: Path, config: dict[str, Any], instruction: str,
@@ -816,6 +855,7 @@ def _run_editor_followup(
     context, report = _operator_edit_context(record_path.parent, agent_root, token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
     prompt = context + prompt
+    _record_junie_input(config, record_path, record, "editor_followup", prompt + supplied, guidelines, agent_root, inputs)
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
                                       guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -932,10 +972,15 @@ def _run_prepared_with_junie(
         record.update(status="junie_failed", error=format_error(exc))
         write_run_record(record_path, record)
         raise
+    supplied_rules = []
     material_instructions = _stage_migration_materials(
         capsule, manifest, agent_root, targets=relative_targets, selected=selected,
+        supplied_rules=supplied_rules,
     )
-    material_instructions += stage_target_context(worktree_root, relative_targets, capsule, agent_root)
+    record["supplied_rules"] = supplied_rules
+    material_instructions += stage_target_context(
+        worktree_root, relative_targets, capsule, agent_root, policy=unit.get("target_context"),
+    )
 
     agent_context = agent_root / ".migration-context.md"
     exit_code = record.get("junie_exit_code")
@@ -1068,6 +1113,7 @@ def _run_prepared_with_junie(
                                           effort=record.get("junie_effort"))
         try:
             try:
+                _record_junie_input(config, record_path, record, "migration", prompt + supplied, guidelines, agent_root, inputs)
                 exit_code = junie_cli.run_interactive(
                     command, completion_path, completion_token, agent_targets,
                     report_usage=junie_usage_recorder(run_path, "migration", index),
@@ -1400,7 +1446,7 @@ def _attempt_repair(
             # 使用量保存などが終了未確認を包んだ場合も、未確認の下書きは再利用しない。
             record["repair_pending"].pop("draft", None)
         elif not isinstance(exc, CheckerRepairBlocked) or exc.reason not in {
-            "operator_conflict", "handoff_unsafe", "stopped_draft",
+            "operator_conflict", "handoff_unsafe", "stopped_draft", "input_budget",
         }:
             _charge_repair(record)
         raise
@@ -1453,10 +1499,15 @@ def _repair_target(
     capsule, manifest = load_capsule_manifest(run_path)
     selected = (selected_details(detail_index(manifest), record["detail_applicability"])
                 if "detail_applicability" in record else None)
+    supplied_rules = []
     material_instructions = _stage_migration_materials(
         capsule, manifest, agent_root, targets=repair_targets, selected=selected, repair=True,
+        supplied_rules=supplied_rules,
     )
-    material_instructions += stage_target_context(worktree, targets, capsule, agent_root)
+    record["supplied_rules"] = supplied_rules
+    material_instructions += stage_target_context(
+        worktree, targets, capsule, agent_root, policy=find_unit(config, record["unit_id"]).get("target_context"),
+    )
     draft = attempt.get("draft", {})
     if attempt.get("stopped_draft_save_failed"):
         raise CheckerRepairBlocked(
@@ -1557,10 +1608,11 @@ def _repair_target(
                                       effort=record.get("junie_effort"))
     allowed = {*repair_targets, completion_path.relative_to(agent_root)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
-    report_activity(f"Junieが{reason}を修正しています", kind="phase",
-                    detail=progress_context + " 修正が終わったら、変更内容を照合して再ビルドします。")
     try:
         phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
+        _record_junie_input(config, run_path / "run.json", record, phase, prompt + supplied, guidelines, agent_root, inputs)
+        report_activity(f"Junieが{reason}を修正しています", kind="phase",
+                        detail=progress_context + " 修正が終わったら、変更内容を照合して再ビルドします。")
         exit_code = junie_cli.run_interactive(
             command, completion_path, token, agent_targets,
             report_usage=junie_usage_recorder(run_path, phase),

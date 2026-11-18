@@ -8,9 +8,10 @@ import shutil
 import stat
 import time
 from itertools import chain
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 
+from .config import TARGET_CONTEXT_ROOTS, target_context_policy
 from .execution import check_cancelled, report_activity
 from .files import has_symlink_component, sha256_file
 
@@ -68,7 +69,7 @@ def _copy(source: Path, destination: Path, expected: str | None = None) -> str:
 
 
 def stage_target_context(
-    worktree: Path, targets: tuple[Path, ...], capsule: Path, agent_root: Path,
+    worktree: Path, targets: tuple[Path, ...], capsule: Path, agent_root: Path, *, policy: dict | None = None,
 ) -> str:
     """Call after preparation scripts, before Junie; restore only pinned non-target files.
 
@@ -88,8 +89,20 @@ def stage_target_context(
     for target in targets:
         if not target.parts or target.anchor or ".." in target.parts or _reserved(target):
             raise ValueError(f"target conflicts with a reserved or invalid context path: {target}")
-    roots = {path.parent for path in targets} | {path.parent.parent / "inc" for path in targets}
-    roots.update(path.parent.parent.parent / name for path in targets for name in ("Libs", "Extensions"))
+    def context_roots(settings):
+        """移行先別の起点と任意のフォルダーを作業ツリー内で解決する。"""
+        choices = set(settings.get("roots", TARGET_CONTEXT_ROOTS))
+        roots = set(map(Path, settings.get("folders", [])))
+        for path in targets:
+            origin = {"target_parent": path.parent, "inc": path.parent.parent / "inc",
+                      "Libs": path.parent.parent.parent / "Libs", "Extensions": path.parent.parent.parent / "Extensions"}
+            roots.update(origin[key] for key in choices)
+        return roots
+
+    def excluded(relative, settings):
+        """除外したディレクトリの配下も参照から外す。"""
+        return any(PurePosixPath(path.as_posix()).match(pattern)
+                   for path in (relative, *relative.parents) for pattern in settings.get("exclude", []))
     target_names = sorted(path.as_posix() for path in targets)
     snapshot = _safe(capsule, Path("target-context"))
     manifest_path = _safe(snapshot, Path("manifest.json"))
@@ -109,38 +122,52 @@ def stage_target_context(
 
     check_cancelled()
     if not snapshot.exists():
+        settings = target_context_policy(policy if policy is not None else {})
+        roots = context_roots(settings)
         capsule.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix=".target-context-", dir=capsule) as temporary:
             staging = Path(temporary)
-            manifest = {"targets": target_names, "directories": [], "files": []}
+            manifest = {"targets": target_names, "directories": [], "files": [], "policy": settings,
+                        "roots": sorted(path.as_posix() for path in roots), "bytes": 0}
             visited = set()
 
-            def visit(relative: Path) -> None:
+            def visit(relative: Path, *, root=False) -> None:
                 """ディレクトリを走査して参照対象を固定する。"""
                 progress(relative)
-                if relative in visited or relative in targets or _reserved(relative):
+                if relative in visited or relative in targets or _reserved(relative) or excluded(relative, settings):
                     return
                 source = _safe(worktree, relative)
                 before = _stamp(source)
                 if stat.S_ISDIR(before[2]):
-                    visited.add(relative)
-                    manifest["directories"].append(relative.as_posix())
-                    with os.scandir(source) as children:
-                        for child in children:
-                            visit(relative / child.name)
+                    if root or settings.get("recursive", True):
+                        visited.add(relative)
+                        manifest["directories"].append(relative.as_posix())
+                        with os.scandir(source) as children:
+                            for child in children:
+                                visit(relative / child.name)
                 else:
+                    visited.add(relative)
+                    size = before[3]
+                    usage = {"max_file_bytes": size, "max_bytes": manifest["bytes"] + size,
+                             "max_files": len(manifest["files"]) + 1}
+                    for key, actual in usage.items():
+                        if key in settings and actual > settings[key]:
+                            raise ValueError(f"参照資料 {relative} で {key} の上限を超えました（{actual:,} / {settings[key]:,}）。")
                     digest = _copy(source, staging / "files" / relative)
-                    manifest["files"].append({"path": relative.as_posix(), "source": str(source), "sha256": digest})
+                    manifest["files"].append({"path": relative.as_posix(), "source": str(source), "sha256": digest, "bytes": size})
+                    manifest["bytes"] += size
                 _safe(worktree, relative)
                 if before != _stamp(source):
                     raise ValueError(f"target context changed while copying: {source}; retry when files are stable")
 
             for relative in sorted(roots):
+                if _reserved(relative) or excluded(relative, settings):
+                    continue
                 source = _safe(worktree, relative)
                 if source.exists():
                     if not source.is_dir():
                         raise ValueError(f"target context directory is not a directory: {source}")
-                    visit(relative)
+                    visit(relative, root=True)
             with (staging / "manifest.json").open("w", encoding="utf-8") as stream:
                 json.dump(manifest, stream, ensure_ascii=False, indent=2)
                 stream.write("\n")
@@ -153,6 +180,10 @@ def stage_target_context(
         not isinstance(manifest.get(key), list) for key in ("directories", "files")
     ):
         raise ValueError("invalid saved target context manifest or changed targets; prepare a new run")
+    settings = target_context_policy(manifest.get("policy", {}))
+    roots = context_roots(settings)
+    if "roots" in manifest and manifest["roots"] != sorted(path.as_posix() for path in roots):
+        raise ValueError("保存済み参照資料の起点が設定と一致しません。")
     for directory, entry in chain(((True, value) for value in manifest["directories"]),
                                   ((False, value) for value in manifest["files"])):
         check_cancelled()
@@ -160,8 +191,10 @@ def stage_target_context(
         if not isinstance(name, str):
             raise ValueError("invalid saved target context entry")
         relative = Path(name)
-        if any(relative.is_relative_to(target) for target in targets) or _reserved(relative) or not any(
-            relative.is_relative_to(root) for root in roots
+        if any(relative.is_relative_to(target) for target in targets) or _reserved(relative) or excluded(relative, settings) or not any(
+            relative.is_relative_to(root) and (settings.get("recursive", True)
+                                               or relative == root or relative.parent == root and not directory)
+            for root in roots
         ):
             raise ValueError(f"saved target context path is outside reference directories or is a target: {name}")
         destination = _safe(agent_root, relative)
@@ -176,11 +209,15 @@ def stage_target_context(
             if not source.is_file():
                 raise ValueError(f"saved target context file is missing: {name}; prepare a new run")
             _copy(source, destination, digest)
-    report_activity(f"固定した移行先の参照資料を復元しました（{len(manifest['files'])}ファイル）。")
+    summary = f"{len(manifest['files']):,}ファイル"
+    if type(manifest.get("bytes")) is int:
+        summary += f"、{manifest['bytes']:,}バイト"
+    report_activity(f"固定した移行先の参照資料を復元しました（{summary}）。")
     check_cancelled()
+    location = ("in the target parent directories, their sibling inc directories, and Libs and Extensions one level above inc"
+                if "roots" not in settings and not settings.get("folders") else "in the configured context folders")
     return (
-        "Pinned, read-only reference files are available at their original relative paths in the target parent "
-        "directories, their sibling inc directories, and Libs and Extensions one level above inc. "
+        f"Pinned, read-only reference files are available at their original relative paths {location}. "
         "Read relevant files to understand imports and surrounding behavior. "
         "Do not edit these reference files or expand the assigned migration targets. "
     ) if manifest["files"] else ""

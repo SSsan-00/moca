@@ -75,6 +75,27 @@ class RuleMaterialsTests(HarnessCase):
         workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
         self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
 
+    def test_input_budget_blocks_launch_and_keeps_complete_rules_for_resume(self):
+        capsule, manifest, agent = self.prepare()
+        config = self.config()
+        config["junie_input_limits"] = {"warn_input_bytes": 50, "max_input_bytes": 1_000}
+        run_id = capsule.parent.name
+        config["units"][0]["inputs"].insert(0, {
+            "path": "rules.md", "role": "migration_rules", "encoding": "utf-8",
+            "start_line": 1, "end_line": None, "shared": True,
+        })
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive") as junie:
+            with self.assertRaisesRegex(ValueError, "起動を止めました.*rules.md"):
+                workflow.resume_with_junie(config, run_id)
+            junie.assert_not_called()
+        record = json.loads((capsule.parent / "run.json").read_text(encoding="utf-8"))
+        usage = record["last_junie_input"]
+        self.assertTrue(usage["blocked"])
+        self.assertEqual(usage["bytes"], usage["prompt"]["bytes"] + usage["guidelines"]["bytes"])
+        content = (capsule / "materials" / manifest["rule_files"][0]["file"]).read_bytes()
+        self.assertEqual(usage["rules"][0]["bytes"], len(content))
+        self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
+
     def test_details_are_pinned_but_only_index_is_in_guidelines(self):
         material = self.root / "materials"
         mandatory = "禁止事項\r\n" + "😀" * 7000 + "\r\n例外は維持"

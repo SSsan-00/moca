@@ -16,8 +16,9 @@ _TABLE_FIELDS = {
     "project": ("root", "worktree_root", "run_root", "base_ref", "max_context_chars"),
     "build": ("project",),
     "checker": ("command", "max_repair_attempts"),
-    "junie": ("max_steps", "model", "effort"),
+    "junie": ("max_steps", "model", "effort", "warn_input_bytes", "max_input_bytes"),
     "diff_viewer": ("html", "enabled", "anchor_reference"),
+    "target_context": ("roots", "folders", "exclude", "recursive", "max_files", "max_bytes", "max_file_bytes"),
 }
 _NUMERIC_FIELDS = {
     "max_repair_attempts": (0, "自動修正回数"),
@@ -25,6 +26,11 @@ _NUMERIC_FIELDS = {
     "max_steps": (1, "Junieのステップ数上限"),
     "start_line": (1, "開始行"),
     "end_line": (1, "終了行"),
+    "max_files": (0, "参照ファイル数の上限"),
+    "max_bytes": (0, "参照資料の合計容量の上限"),
+    "max_file_bytes": (0, "参照ファイル1件の容量の上限"),
+    "warn_input_bytes": (1, "Junie の入力容量の警告値"),
+    "max_input_bytes": (1, "Junie の入力容量の停止値"),
 }
 _INPUT_FIELDS = ("path", "start_line", "end_line", "encoding", "symbol")
 _RULE_FIELDS = ("usage", "description")
@@ -184,9 +190,9 @@ def _apply_table_edits(document: Any, changes: dict[str, Any]) -> None:
             if key == "command":
                 if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
                     raise ValueError("チェッカーのコマンドと引数を確認してください。")
-            elif key == "anchor_reference":
+            elif key in {"anchor_reference", "roots", "folders", "exclude"} and value != "":
                 if not isinstance(value, list) or any(not isinstance(path, str) or not path.strip() for path in value):
-                    raise ValueError("アンカーの参照JSONは1行に1つのファイルパスを入力してください。")
+                    raise ValueError("パスやパターンは1行に1つ入力してください。")
             elif not isinstance(value, str):
                 raise ValueError("設定フォームの入力内容を確認してください。")
             if key in _NUMERIC_FIELDS and value:
@@ -195,7 +201,11 @@ def _apply_table_edits(document: Any, changes: dict[str, Any]) -> None:
                 if value != "false":
                     raise ValueError("差分ビューアーの使用設定を確認してください。")
                 value = False
-            if value in ("", []) and key not in {"root", "worktree_root", "run_root"}:
+            if key == "recursive" and value:
+                if value not in {"true", "false"}:
+                    raise ValueError("参照資料の再帰収集の設定を確認してください。")
+                value = value == "true"
+            if (value == "" or value == [] and key != "roots") and key not in {"root", "worktree_root", "run_root"}:
                 if section in document:
                     document[section].pop(key, None)
             else:
@@ -304,7 +314,8 @@ def _settings_form(document: Any) -> dict[str, Any]:
             section: {
                 key: (
                     str(value) if key in _NUMERIC_FIELDS else
-                    ("false" if value is False else "") if key == "enabled" else value
+                    ("false" if value is False else "") if key == "enabled" else
+                    ("true" if value is True else "false" if value is False else "") if key == "recursive" else value
                 )
                 for key in keys
                 if (value := document.get(section, {}).get(key, [] if key == "command" else "")) is not None

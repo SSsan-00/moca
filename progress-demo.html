@@ -1014,6 +1014,17 @@
                     <input id="settings-junie-steps" data-section="junie" data-setting="max_steps" inputmode="numeric" placeholder="空欄ならJunieの既定値">
                   </div>
                 </div>
+                <div class="settings-pair">
+                  <div>
+                    <label for="settings-input-warning">Junie 起動入力の警告値（バイト）</label>
+                    <input id="settings-input-warning" data-section="junie" data-setting="warn_input_bytes" inputmode="numeric" placeholder="空欄なら無効">
+                  </div>
+                  <div>
+                    <label for="settings-input-limit">Junie 起動入力の停止値（バイト）</label>
+                    <input id="settings-input-limit" data-section="junie" data-setting="max_input_bytes" inputmode="numeric" placeholder="空欄なら上限なし">
+                  </div>
+                </div>
+                <p class="settings-material-range">指示と同梱ガイドラインの合計です。参照用ファイルを後から読む量は含みません。</p>
                 <label for="settings-viewer-enabled">差分ビューアー</label>
                 <select id="settings-viewer-enabled" class="workspace-select" data-section="diff_viewer" data-setting="enabled">
                   <option value="">使用する</option>
@@ -1023,6 +1034,37 @@
                 <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off">
                 <label for="settings-anchor-reference">アンカーの参照JSON（任意）</label>
                 <textarea id="settings-anchor-reference" class="settings-command" data-section="diff_viewer" data-setting="anchor_reference" placeholder="references/orders.workspace.json&#10;references/products.workspace.json" spellcheck="false"></textarea>
+              </fieldset>
+              <fieldset class="settings-fields" id="settings-target-context-fields">
+                <legend>移行先周辺の参照資料</legend>
+                <label for="settings-context-roots">既定の参照起点</label>
+                <textarea id="settings-context-roots" class="settings-command" data-section="target_context" data-setting="roots"
+                  aria-describedby="settings-context-roots-help" spellcheck="false" placeholder="空欄なら既定の4箇所"></textarea>
+                <p class="settings-material-range" id="settings-context-roots-help">移行先の親フォルダーは target_parent を指定します。inc、Libs、Extensions と合わせて1行に1箇所入力できます。すべて外す場合は「なし」と入力します。</p>
+                <label for="settings-context-folders">追加するフォルダー（作業ツリーからの相対パス）</label>
+                <textarea id="settings-context-folders" class="settings-command" data-section="target_context" data-setting="folders"
+                  spellcheck="false" placeholder="例：src/Shared"></textarea>
+                <label for="settings-context-exclude">除外するパス・パターン（1行に1件）</label>
+                <textarea id="settings-context-exclude" class="settings-command" data-section="target_context" data-setting="exclude"
+                  spellcheck="false" placeholder="bin&#10;obj&#10;*.zip"></textarea>
+                <label for="settings-context-recursive">下位フォルダーの収集</label>
+                <select id="settings-context-recursive" class="workspace-select" data-section="target_context" data-setting="recursive">
+                  <option value="">下位フォルダーも収集する（既定）</option>
+                  <option value="false">起点の直下だけ収集する</option>
+                </select>
+                <label for="settings-context-max-files">ファイル数の上限</label>
+                <input id="settings-context-max-files" data-section="target_context" data-setting="max_files" inputmode="numeric" placeholder="空欄なら上限なし">
+                <div class="settings-pair">
+                  <div>
+                    <label for="settings-context-max-total">合計容量の上限（バイト）</label>
+                    <input id="settings-context-max-total" data-section="target_context" data-setting="max_bytes" inputmode="numeric" placeholder="空欄なら上限なし">
+                  </div>
+                  <div>
+                    <label for="settings-context-max-file">1ファイルの容量の上限（バイト）</label>
+                    <input id="settings-context-max-file" data-section="target_context" data-setting="max_file_bytes" inputmode="numeric" placeholder="空欄なら上限なし">
+                  </div>
+                </div>
+                <p class="settings-material-range">ここで指定した値は移行単位の既定値になります。固定済みの参照資料は、同じ実行を再開しても入れ替わりません。</p>
               </fieldset>
               <fieldset class="settings-fields" id="settings-verification-fields">
                 <legend>ビルド・独自チェッカー</legend>
@@ -1989,9 +2031,10 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     if (settingsForm) {
       for (const field of projectFields) field.value = settingsForm.project[field.dataset.setting] ?? "";
       for (const field of tableFields) {
-        const value = settingsForm[field.dataset.section][field.dataset.setting];
+        const value = settingsForm[field.dataset.section]?.[field.dataset.setting];
         if (field === modelSelect) selectModel(value ?? "");
-        else if (field !== effortSelect) field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+        else if (field !== effortSelect) field.value = Array.isArray(value)
+          ? (field.dataset.setting === "roots" && !value.length ? "なし" : value.join("\n")) : value ?? "";
       }
       showEfforts(settingsForm.junie.effort ?? "");
       showMaterials(settingsForm.migrationRules, "migrationRules");
@@ -2094,7 +2137,11 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     let value = field.value.trim();
     if (setting === "command") value = value ? commandLines(field.value) : [];
     if (setting === "anchor_reference") value = field.value.split("\n").map(path => path.trim()).filter(Boolean);
+    if (section === "target_context" && ["roots", "folders", "exclude"].includes(setting) && value) {
+      value = setting === "roots" && value === "なし" ? [] : value.split("\n").map(path => path.trim()).filter(Boolean);
+    }
     changes[section] ??= {};
+    settingsForm[section] ??= {};
     changes[section][setting] = settingsForm[section][setting] = value;
     if (field === modelSelect) {
       showEfforts(effortSelect.value, false);

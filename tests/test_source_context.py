@@ -35,11 +35,38 @@ class TargetContextTests(unittest.TestCase):
         path.write_bytes(content)
         return path
 
-    def stage(self):
-        return source_context.stage_target_context(self.worktree, self.targets, self.capsule, self.agent)
+    def stage(self, **kwargs):
+        return source_context.stage_target_context(self.worktree, self.targets, self.capsule, self.agent, **kwargs)
 
     def manifest(self):
         return json.loads((self.capsule / "target-context/manifest.json").read_text(encoding="utf-8"))
+
+    def test_policy_pins_explicit_roots_and_budget_across_resume(self):
+        self.put("Pages/Orders/helper.cs", b"legacy")
+        included = self.put("Shared/visible.cs", b"custom")
+        self.put("Shared/large.bin", b"x" * (1024 * 1024))
+        self.put("Shared/Nested/hidden.cs", b"nested")
+        policy = {"roots": [], "folders": ["Shared"], "exclude": ["*.bin"], "recursive": False,
+                  "max_files": 1, "max_bytes": 6, "max_file_bytes": 6}
+        self.stage(policy=policy)
+        saved = self.manifest()
+        self.assertEqual(saved["roots"], ["Shared"])
+        self.assertEqual(saved["policy"], policy)
+        self.assertEqual(saved["bytes"], 6)
+        self.assertEqual([item["path"] for item in saved["files"]], ["Shared/visible.cs"])
+        included.write_bytes(b"new content")
+        self.stage(policy={"roots": ["target_parent"]})
+        self.assertEqual((self.agent / "Shared/visible.cs").read_bytes(), b"custom")
+        self.assertFalse((self.agent / "Pages/Orders/helper.cs").exists())
+        self.assertEqual(self.manifest(), saved)
+
+    def test_policy_budget_failure_does_not_publish_partial_references(self):
+        self.put("Shared/first.cs", b"first")
+        self.put("Shared/second.cs", b"second")
+        with self.assertRaisesRegex(ValueError, "Shared/.+max_files"):
+            self.stage(policy={"roots": [], "folders": ["Shared"], "max_files": 1})
+        self.assertFalse((self.capsule / "target-context").exists())
+        self.assertFalse((self.agent / "Shared").exists())
 
     def symlink(self, path, destination, *, directory=False):
         path.parent.mkdir(parents=True, exist_ok=True)

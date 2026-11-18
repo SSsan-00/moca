@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import codecs
 import tomllib
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 _INPUT_ENCODINGS = {"auto", "utf-8", "utf-8-sig", "euc-jp"}
@@ -11,7 +11,31 @@ SCRIPT_PHASES = (
     "before_build", "after_build", "before_checker", "after_checker",
 )
 REFERENCE_ROLES = ("reference_php", "reference_csharp", "reference_razor")
+TARGET_CONTEXT_ROOTS = ("target_parent", "inc", "Libs", "Extensions")
+TARGET_CONTEXT_FIELDS = {"roots", "folders", "exclude", "recursive", "max_files", "max_bytes", "max_file_bytes"}
 
+
+def target_context_policy(settings: Any) -> dict[str, Any]:
+    """周辺参照の範囲と上限を検証する。設定の省略と空の起点を区別する。"""
+    if not isinstance(settings, dict) or settings.keys() - TARGET_CONTEXT_FIELDS:
+        raise ValueError("移行先周辺の参照資料の設定項目を確認してください。")
+    for key in ("roots", "folders", "exclude"):
+        value = settings.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() or "\0" in item for item in value):
+            raise ValueError(f"移行先周辺の参照資料の {key} には空欄のない文字列の一覧を指定してください。")
+    if set(settings.get("roots", [])) - set(TARGET_CONTEXT_ROOTS):
+        raise ValueError("参照起点は target_parent、inc、Libs、Extensions から指定してください。")
+    for folder in settings.get("folders", []):
+        path = Path(folder)
+        windows = PureWindowsPath(folder)
+        if path.anchor or windows.anchor or ".." in path.parts or ".." in windows.parts:
+            raise ValueError(f"参照フォルダーは作業ツリー内の相対パスで指定してください。対象 {folder}")
+    if type(settings.get("recursive", True)) is not bool:
+        raise ValueError("参照資料の再帰収集は true または false を指定してください。")
+    for key in ("max_files", "max_bytes", "max_file_bytes"):
+        if key in settings and (type(settings[key]) is not int or settings[key] < 0):
+            raise ValueError(f"参照資料の {key} は0以上の整数を指定してください。")
+    return settings.copy()
 
 
 def _input_encoding(value: Any, scope: str) -> str:
@@ -207,6 +231,11 @@ def load_config(path: Path) -> dict[str, Any]:
         if junie_effort and not junie_model:
             raise ValueError("推論の強さを指定する場合は、Junieで使うモデルも選択してください。")
     junie_max_steps = junie.get("max_steps")
+    input_limits = {key: junie[key] for key in ("warn_input_bytes", "max_input_bytes") if key in junie}
+    if any(type(value) is not int or value < 1 for value in input_limits.values()):
+        raise ValueError("Junie の入力容量上限は1以上の整数を指定してください。")
+    if input_limits.get("warn_input_bytes", 0) > input_limits.get("max_input_bytes", float("inf")):
+        raise ValueError("Junie の入力容量の警告値は停止値以下にしてください。")
     if junie_max_steps is not None and (
         isinstance(junie_max_steps, bool) or not isinstance(junie_max_steps, int) or junie_max_steps < 1
     ):
@@ -238,6 +267,7 @@ def load_config(path: Path) -> dict[str, Any]:
         common_references.append(reference)
 
     normalized_units = []
+    project_context = target_context_policy(raw.get("target_context", {}))
     for unit in units:
         targets = unit.get("targets", [unit.get("target")])
         if "targets" in unit and "target" in unit:
@@ -287,6 +317,8 @@ def load_config(path: Path) -> dict[str, Any]:
                 normalized_inputs.append(normalized_input)
 
         normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
+        if project_context or "target_context" in unit:
+            normalized["target_context"] = {**project_context, **target_context_policy(unit.get("target_context", {}))}
         if "draft_imports" in unit:
             normalized["draft_import_commands"] = _draft_import_commands(unit, target_paths, root)
         if "checker_command" in unit:
@@ -317,6 +349,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "diff_viewer_anchor_reference": [resolve_output(path) for path in anchor_references],
         "max_repair_attempts": max_repair_attempts,
         "junie_max_steps": junie_max_steps,
+        "junie_input_limits": input_limits,
         "junie_model": junie_model,
         "junie_effort": junie_effort,
         "units": normalized_units,

@@ -71,6 +71,7 @@ def selected_details(index: list[dict], decisions: object) -> frozenset[str]:
 
 def render_guidelines(
     directory: Path, manifest: dict, *, targets: tuple[Path, ...] = (), selected: frozenset[str] | None = None,
+    supplied_rules: list[dict] | None = None,
 ) -> str:
     """照合済みの保存資料だけを使う。旧Runの断片も順に結合し省略しない。"""
     required, matched, details = [], [], []
@@ -90,26 +91,34 @@ def render_guidelines(
             raise ValueError(f"saved rule changed: {name}")
         usage = entry.get("usage", "required")
         if usage == "required":
-            required.append(content.decode("utf-8"))
+            body = content.decode("utf-8")
+            required.append(body)
         elif usage == "reference" and isinstance(entry.get("description"), str) and entry["description"].strip():
             body = content.decode("utf-8")
             if (selected is not None and name in selected) or (
                 mentions and (mentions.search(entry["description"]) or mentions.search(body))
             ):
                 matched.append(body)
+            else:
+                if selected is None:
+                    details.append(json.dumps({
+                        "source": entry["path"], "when_to_read": entry["description"],
+                        "file": f".migration-materials/{name}",
+                    }, ensure_ascii=False))
                 continue
-            if selected is not None:
-                continue
-            details.append(json.dumps({
-                "source": entry["path"], "when_to_read": entry["description"],
-                "file": f".migration-materials/{name}",
-            }, ensure_ascii=False))
         else:
             raise ValueError(f"invalid saved rule usage or description: {name}")
+        if supplied_rules is not None:
+            supplied_rules.append({"file": name, "path": entry.get("path", name), "usage": usage,
+                                   "bytes": len(content), "characters": len(body)})
     # 断片方式より前のRunのshared.mdには必須ルールが混在するため全文を渡す。
     legacy_shared = "rule_files" not in manifest and "rule_chunks" not in manifest and "shared.md" in manifest.get("materials", {})
     if legacy_shared:
-        required.append((directory / "shared.md").read_bytes().decode("utf-8"))
+        shared = (directory / "shared.md").read_bytes()
+        required.append(shared.decode("utf-8"))
+        if supplied_rules is not None:
+            supplied_rules.append({"file": "shared.md", "path": "shared.md", "usage": "required",
+                                   "bytes": len(shared), "characters": len(required[-1])})
     if not required and not matched and not details:
         return ""
     return (
