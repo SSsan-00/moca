@@ -37,9 +37,11 @@ jobs:
         id: intake
         env:
           GH_TOKEN: ${{ github.token }}
+          DISPATCHERS: ${{ vars.CODEX_ISSUE_DISPATCHERS }}
         run: python3 .github/codex/issue.py intake
       - uses: openai/codex-action@306c6a196a99dcc6582530c396a19d2672d5e9ec # v1
         with:
+          allow-users: ${{ github.actor }} # Explicitly checked by intake above.
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: "0.170.0"
           safety-strategy: drop-sudo

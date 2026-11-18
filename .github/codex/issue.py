@@ -116,7 +116,14 @@ def no_duplicate(number):
             f"Candidate branch {branch} already exists. Check for a PR or a previous incomplete run.")
 
 
+def allowed_dispatcher(actor, allowlist):
+    logins = {login.strip().lower() for login in allowlist.split(",")}
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,38}", actor.lower())) and actor.lower() in logins
+
+
 def intake(number):
+    require(allowed_dispatcher(os.environ["GITHUB_ACTOR"], os.environ["DISPATCHERS"]),
+            "Only maintainers listed in CODEX_ISSUE_DISPATCHERS may run generation.")
     fresh_main()
     no_duplicate(number)
     data = snapshot(number)

@@ -19,6 +19,11 @@ class IssueTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(issue.Stop):
                 issue.issue_number(value)
 
+    def test_only_explicit_human_dispatchers_are_allowed(self):
+        self.assertTrue(issue.allowed_dispatcher("Maintainer", "another, maintainer"))
+        self.assertFalse(issue.allowed_dispatcher("outsider", "*"))
+        self.assertFalse(issue.allowed_dispatcher("robot[bot]", "robot[bot]"))
+
     @patch.object(issue, "api")
     def test_issue_must_be_open_and_not_a_pr(self, api):
         for payload in ({"state": "closed"}, {"state": "open", "pull_request": {}}):
