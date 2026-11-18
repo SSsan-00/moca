@@ -695,6 +695,7 @@ def _task_command(command: list[str]) -> list[str]:
 
 launch_input_observer: ContextVar[Callable[[str], None] | None] = ContextVar("launch_input_observer", default=None)
 steering_input_observer: ContextVar[Callable[[str], bool] | None] = ContextVar("steering_input_observer", default=None)
+session_closed_observer: ContextVar[Callable[[], None] | None] = ContextVar("session_closed_observer", default=None)
 
 
 def run_interactive(
@@ -1104,6 +1105,8 @@ def _run_session(
                     "Junieの終了を確認できませんでした。起動した端末で終了してから再開してください。"
                 ) from exc
             stopped = True
+            if observe := session_closed_observer.get():
+                observe()
             return code
         return process.returncode
 

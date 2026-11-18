@@ -223,6 +223,7 @@ class JunieConversationTests(SavedRunFixture):
         def interrupted(_command, _completion, _token, targets, **_kwargs):
             targets[0].write_bytes(b"partial\xff")
             targets[1].unlink()
+            workflow.junie_cli.session_closed_observer.get()()
             raise KeyboardInterrupt
 
         with (patch.object(workflow.junie_cli, "require_interactive_cli"),

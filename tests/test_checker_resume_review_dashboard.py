@@ -17,7 +17,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from migration_harness import cli, dashboard, junie_cli, run_records, workflow
+from migration_harness import build_receipt, cli, dashboard, junie_cli, run_records, workflow
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.settings_form import build_settings_draft
 
@@ -249,6 +249,134 @@ class SavedRunFixture(unittest.TestCase):
         return workflow.review_checker(self.config, self.run_id, finding_id, reason)
 
 
+class MigrationFailureRecoveryTests(SavedRunFixture):
+    def test_resumed_migration_snapshots_only_edits_from_a_confirmed_session(self):
+        second = self.worktree / "Second.cs"
+        second.write_bytes(b"class SecondOriginal {}")
+        names = (self.target.name, second.name)
+        self.config["units"][0]["targets"] = list(names)
+        self.save_record({**self.record(), "targets": list(names), "status": "prepared",
+                          "completed_capsules": 0, "current_capsule": 1})
+        original = self.target.read_bytes()
+        agent = self.run_path / "agent-workspace"
+
+        def first_stop(_command, _completion, _token, targets, **kwargs):
+            targets[0].write_bytes(b"class FirstPartial {}")
+            junie_cli.session_closed_observer.get()()
+            raise OperationCancelled("stopped after saving")
+
+        with (
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=first_stop),
+            self.assertRaises(workflow.RunInterrupted),
+        ):
+            workflow.resume_with_junie(self.config, self.run_id)
+        baseline = self.record()
+        first = baseline["stopped_migration_draft"]
+
+        for outcome in ("connection", "session", "incomplete", "missing", "prelaunch", "unchanged",
+                        "outside", "external", "unconfirmed", "wrapped_stop", "snapshot_failure", "record_failure"):
+            with self.subTest(outcome=outcome):
+                self.save_record(baseline)
+                self.target.write_bytes(original)
+                second.write_bytes(b"class SecondOriginal {}")
+                (agent / names[0]).write_bytes(b"class FirstPartial {}")
+                (agent / names[1]).write_bytes(second.read_bytes())
+                outside = agent / "outside.txt"
+                outside.unlink(missing_ok=True)
+
+                def failed(command, _completion, _token, targets, **kwargs):
+                    if outcome == "prelaunch":
+                        raise junie_cli.JunieLaunchError(command, None, None, OSError("fixture launch"))
+                    if outcome != "unchanged":
+                        targets[0].write_bytes(b"class SecondPartial {}")
+                    if outcome == "missing":
+                        targets[1].unlink()
+                    if outcome == "outside":
+                        outside.write_text("fixture", encoding="utf-8")
+                    if outcome == "external":
+                        self.target.write_bytes(b"class OperatorEdit {}")
+                    if outcome == "unconfirmed":
+                        raise junie_cli.JunieStopError("fixture unconfirmed")
+                    if outcome == "wrapped_stop":
+                        junie_cli.session_closed_observer.get()()  # The earlier retry ended safely.
+                        try:
+                            raise junie_cli.JunieStopError("fixture unconfirmed")
+                        except OSError as exc:
+                            raise junie_cli.JunieSessionError(command, 1, "fixture wrapped stop") from exc
+                    junie_cli.session_closed_observer.get()()
+                    if outcome == "session":
+                        raise junie_cli.JunieSessionError(command, 1, "fixture session")
+                    if outcome == "incomplete":
+                        return 1
+                    raise junie_cli.JunieConnectionError("fixture connection")
+
+                def save_record(path, record, **kwargs):
+                    if record.get("stopped_migration_draft") != first and outcome == "record_failure":
+                        raise OSError("fixture record save failed")
+                    return write_record(path, record, **kwargs)
+
+                write_record = workflow.write_run_record
+                save_snapshot = workflow._snapshot_stopped_repair
+                with (
+                    patch.object(junie_cli, "require_interactive_cli"),
+                    patch.object(junie_cli, "run_interactive", side_effect=failed),
+                    patch.object(workflow, "write_run_record", side_effect=save_record),
+                    patch.object(workflow, "_snapshot_stopped_repair",
+                                 side_effect=OSError("fixture snapshot failed") if outcome == "snapshot_failure" else save_snapshot),
+                ):
+                    if outcome == "incomplete":
+                        self.assertEqual(workflow.resume_with_junie(self.config, self.run_id)["status"], "interrupted")
+                    else:
+                        with self.assertRaises(OSError):
+                            workflow.resume_with_junie(self.config, self.run_id)
+                saved = self.record()
+                self.assertEqual(saved["completed_capsules"], 0)
+                self.assertEqual(self.target.read_bytes(), b"class OperatorEdit {}" if outcome == "external" else original)
+                self.assertEqual(second.read_bytes(), b"class SecondOriginal {}")
+                draft = saved["stopped_migration_draft"]
+                if outcome in {"prelaunch", "unchanged", "unconfirmed", "wrapped_stop", "snapshot_failure", "record_failure"}:
+                    self.assertEqual(draft, first)
+                    self.assertEqual(saved.get("stopped_migration_history", []), [])
+                else:
+                    self.assertEqual(saved["stopped_migration_history"], [first])
+                    self.assertEqual((self.run_path / draft["snapshot"] / "0.draft").read_bytes(), b"class SecondPartial {}")
+                    self.assertEqual(draft["workspace_unchanged"], outcome not in {"outside", "external"})
+                    if outcome == "missing":
+                        self.assertIsNone(draft["targets"][names[1]])
+                        self.assertFalse((self.run_path / draft["snapshot"] / "1.draft").exists())
+
+                def next_junie(_command, completion, token, targets, **kwargs):
+                    expected = b"class FirstPartial {}" if outcome in {"prelaunch", "unchanged"} else b"class SecondPartial {}"
+                    self.assertEqual(targets[0].read_bytes(), expected)
+                    self.assertEqual(targets[1].exists(), outcome != "missing")
+                    targets[1].write_bytes(b"class Recreated {}")
+                    completion.write_text(token, encoding="ascii")
+                    return 0
+
+                with (
+                    patch.object(junie_cli, "require_interactive_cli"),
+                    patch.object(junie_cli, "run_interactive", side_effect=next_junie) as junie,
+                    patch.object(workflow, "_verify_worktree", return_value={}),
+                ):
+                    blocked = {
+                        "unconfirmed": "終了を確認できません",
+                        "wrapped_stop": "終了を確認できません",
+                        "outside": "一致しません",
+                        "external": "worktree targets changed",
+                        "snapshot_failure": "保存できません",
+                        "record_failure": "保存できません",
+                    }.get(outcome)
+                    if blocked:
+                        with self.assertRaisesRegex(ValueError, blocked):
+                            workflow.resume_with_junie(self.config, self.run_id)
+                        junie.assert_not_called()
+                    else:
+                        workflow.resume_with_junie(self.config, self.run_id)
+                        junie.assert_called_once()
+                        self.assertEqual(self.record()["completed_capsules"], 1)
+
+
 class CheckerResumeAndReviewTests(SavedRunFixture):
     def test_junie_input_cli_preserves_unmeasured_and_measured_states(self):
         args = ["php-to-csharp-harness", "junie-input", "--config", "fixture.toml", "--run-id", self.run_id]
@@ -292,6 +420,27 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         with (patch("migration_harness.build_receipt.shutil.which", return_value=str(dotnet)),
               patch.object(workflow, "run_process", side_effect=run),
               patch.object(junie_cli, "run_interactive") as junie, redirect_stdout(io.StringIO())):
+            control = ExecutionControl(lambda _activity: None)
+            original_hash = build_receipt.sha256_file
+
+            def interrupt_artifact(path, *, check=None):
+                if path == dll:
+                    control.cancelled.set()
+                return original_hash(path, check=check)
+
+            build = workflow.plan_build_resume(self.config, self.run_id)
+            with (
+                control_scope(control), patch.object(build_receipt, "sha256_file", side_effect=interrupt_artifact),
+                self.assertRaises(OperationCancelled),
+            ):
+                workflow.resume_with_junie(self.config, self.run_id, verification_request={**build, "id": "stop"})
+            self.assertNotIn("checker_build", self.record())
+            with self.assertRaisesRegex(ValueError, "照合できるビルド成果物がありません"):
+                workflow.plan_checker_resume(self.config, self.run_id)
+            shutil.rmtree(project.parent / "bin")
+            shutil.rmtree(project.parent / "obj")
+            calls.clear()
+
             build = workflow.plan_build_resume(self.config, self.run_id)
             workflow.resume_with_junie(self.config, self.run_id, verification_request={**build, "id": "build"})
             plan = workflow.plan_checker_resume(self.config, self.run_id)
@@ -656,7 +805,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 patch.object(shutil, "copyfile", side_effect=fail_second_restore),
                 patch.object(junie_cli, "run_interactive") as junie,
             ):
-                self.resume(*responses)
+                self.resume()
                 junie.assert_not_called()
             self.assertEqual((agent / names[0]).read_bytes(), partial)
             self.assertFalse((agent / names[1]).exists())
@@ -671,6 +820,135 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         saved_bytes = [(self.run_path / item["snapshot"] / "0.draft").read_bytes() for item in backups]
         self.assertIn(b"class AgentManual {}", saved_bytes)
         self.assertIn(manual, saved_bytes)
+
+    def test_selected_repair_recovers_before_verifying_changed_diagnostics(self):
+        names = ("Example.cs", "Second.cs", "Third.cs")
+        self.config["units"][0]["targets"] = list(names)
+        self.config["max_repair_attempts"] = 1
+        for name in names[1:]:
+            (self.worktree / name).write_bytes(b"class Original {}\n")
+        self.save_record({**self.record(), "targets": list(names)})
+        original_record = self.record()
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+
+        def findings(indexes):
+            return ("fixture-checker", 1, "".join(
+                f"F{index} {names[index]}:1 error: correction needed\n" for index in indexes
+            ).encode())
+
+        def interrupt(_command, _completion, _token, targets, **kwargs):
+            targets[0].write_bytes(b"class FirstDraft {}\n")
+            targets[1].write_bytes(b"class SecondDraft {}\n")
+            raise OperationCancelled("stop after saving both targets")
+
+        for affected in ((1,), (0, 1, 2), (1, 2), (2,), ()):
+            with self.subTest(affected=affected):
+                self.save_record(original_record)
+                for name in names:
+                    (self.worktree / name).write_bytes(b"class Original {}\n")
+                with (
+                    patch.object(junie_cli, "require_interactive_cli"),
+                    patch.object(junie_cli, "run_interactive", side_effect=interrupt),
+                    self.assertRaises(workflow.RunInterrupted),
+                ):
+                    self.resume(self.build, findings((0, 1)))
+                stopped = self.record()["repair_pending"]["draft"]
+                self.target.write_bytes(b"class Manual {}\n")
+                plan = workflow.plan_stopped_repair(self.config, self.run_id)
+                workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], {
+                    names[0]: "worktree", names[1]: "draft",
+                })
+
+                selected = self.record()["repair_pending"]["draft"]
+                saved_file = self.run_path / selected["snapshot"] / "1.draft"
+                partial = saved_file.read_bytes()
+                saved_file.write_bytes(b"tampered")
+                self.assertIn("snapshot", self.resume()["error"])
+                self.assertIn("restore_from", self.record()["repair_pending"])
+                saved_file.write_bytes(partial)
+                if affected == (1,):
+                    replace = Path.replace
+
+                    def fail_adoption(source, destination):
+                        if destination == self.worktree / names[1]:
+                            raise OSError("injected worktree write failure")
+                        return replace(source, destination)
+
+                    with patch.object(Path, "replace", fail_adoption):
+                        self.assertIn("worktree write failure", self.resume()["error"])
+                    self.assertIn("restore_from", self.record()["repair_pending"])
+                    self.assertEqual((agent / names[0]).read_bytes(), b"class Manual {}\n")
+
+                def repair(_command, completion, token, targets, **kwargs):
+                    self.assertEqual(tuple(path.name for path in targets), tuple(names[index] for index in affected))
+                    self.assertEqual((agent / names[0]).read_bytes(), b"class Manual {}\n")
+                    self.assertEqual((agent / names[1]).read_bytes(), partial)
+                    for target in targets:
+                        target.write_text(f"// fixed {target.name}\n", encoding="utf-8")
+                    completion.write_text(token, encoding="utf-8")
+                    return 0
+
+                commands = [self.build, findings(affected)] if affected else []
+                commands += [self.build, ("fixture-checker", 0, b"")]
+                run_patch, calls = self.mock_commands(*commands)
+                run = run_patch.kwargs["side_effect"]
+
+                def verify_restored(command, **kwargs):
+                    if not calls:
+                        self.assertEqual(self.target.read_bytes(), b"class Manual {}\n")
+                        self.assertEqual((self.worktree / names[1]).read_text(encoding="utf-8-sig"),
+                                         partial.decode())
+                    return run(command, **kwargs)
+
+                with (
+                    patch.object(junie_cli, "require_interactive_cli"),
+                    patch.object(junie_cli, "run_interactive", side_effect=repair) as junie,
+                    patch.object(workflow, "run_process", side_effect=verify_restored),
+                    redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(workflow.resume_with_junie(self.config, self.run_id)["status"],
+                                     "checker_succeeded")
+                self.assertEqual(len(calls), len(commands))
+                self.assertEqual(junie.call_count, bool(affected))
+                self.assertIn(stopped, self.record()["stopped_repair_recovery"])
+                self.assertIn(selected, self.record()["stopped_repair_recovery"])
+                if 1 not in affected:
+                    self.assertEqual((self.worktree / names[1]).read_text(encoding="utf-8-sig"), partial.decode())
+
+    def test_missing_selected_version_outside_diagnosis_requires_reselection(self):
+        second = self.worktree / "Second.cs"
+        second.write_bytes(b"class Original {}\n")
+        names = (self.target.name, second.name)
+        self.config["units"][0]["targets"] = list(names)
+        self.config["max_repair_attempts"] = 1
+        self.save_record({**self.record(), "targets": list(names)})
+        (self.run_path / "agent-workspace").mkdir()
+
+        def interrupt(_command, _completion, _token, targets, **kwargs):
+            targets[0].write_bytes(b"class FirstDraft {}\n")
+            targets[1].unlink()
+            raise OperationCancelled("stop with one missing target")
+
+        with (
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=interrupt),
+            self.assertRaises(workflow.RunInterrupted),
+        ):
+            self.resume(self.build, ("fixture-checker", 1, b"A Example.cs:1 error: A\nB Second.cs:1 error: B\n"))
+        plan = workflow.plan_stopped_repair(self.config, self.run_id)
+        workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], dict.fromkeys(names, "draft"))
+        with patch.object(junie_cli, "run_interactive") as junie:
+            result = self.resume(self.build, ("fixture-checker", 0, b""))
+            junie.assert_not_called()
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertIn("repair-draft", result["error"])
+        self.assertTrue(second.is_file())
+        self.assertFalse((self.run_path / "agent-workspace" / second.name).exists())
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class FirstDraft {}\n")
+        plan = workflow.plan_stopped_repair(self.config, self.run_id)
+        workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], dict.fromkeys(names, "worktree"))
+        self.assertEqual(self.resume(self.build, ("fixture-checker", 0, b""))["status"], "checker_succeeded")
 
     def test_usage_save_failure_preserves_only_unconfirmed_repairs_for_explicit_resume(self):
         self.config["max_repair_attempts"] = 2

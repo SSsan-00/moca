@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import sys
 from pathlib import Path
+from typing import Callable
 
 
 def harness_asset(name: str) -> Path:
@@ -23,11 +24,18 @@ def has_symlink_component(root: Path, relative_path: Path) -> bool:
     return False
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(path: Path, *, check: Callable[[], None] | None = None) -> str:
     """ファイル全体を一度に保持せず、保存バイト列を照合するハッシュを計算する。"""
     digest = hashlib.sha256()
+    if check is not None:
+        check()
     with path.open("rb") as stream:
-        while chunk := stream.read(64 * 1024):
+        while True:
+            chunk = stream.read(64 * 1024)
+            if check is not None:
+                check()
+            if not chunk:
+                break
             digest.update(chunk)
     return digest.hexdigest()
 

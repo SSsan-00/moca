@@ -305,6 +305,7 @@ class CapsulePreparationTests(HarnessCase):
             observed_contexts.append((target.parent / ".migration-context.md").read_bytes())
             if len(observed_contexts) == 2:
                 target.write_bytes(b"class Partial {}\n")
+                junie_cli.session_closed_observer.get()()
                 raise KeyboardInterrupt
             if len(observed_contexts) == 3:
                 self.assertEqual(target.read_bytes(), b"class Partial {}\n")

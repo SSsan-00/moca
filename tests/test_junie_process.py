@@ -234,6 +234,8 @@ finally:
                     raise
 
         accepted = Mock()
+        closed = Mock()
+        observer = junie_cli.session_closed_observer.set(closed)
         try:
             with (execution.control_scope(control), patch.object(junie_cli, "_launch_process", side_effect=start) as launches):
                 if fail:
@@ -245,6 +247,7 @@ finally:
                         junie_cli.run_interactive(command, completion, "token", (target,), accept_result=accepted)
                     launches.assert_called_once()
                     accepted.assert_not_called()
+                    closed.assert_not_called()
                     self.assertTrue(junie_cli.has_completion_record(completion, "token"))
                     # Simulate operator cleanup after the unconfirmed result.
                     connection.shutdown(socket.SHUT_WR)
@@ -267,9 +270,11 @@ finally:
                     except (BrokenPipeError, ConnectionResetError):
                         pass
                 wait_for_disconnect()
+                self.assertEqual(closed.call_count, 0 if fail else launches.call_count)
                 self.assertEqual(target.read_text(encoding="utf-8"), "before exit")
                 self.assertIsNone(sibling.poll())
         finally:
+            junie_cli.session_closed_observer.reset(observer)
             permit.touch()
             if connection is not None:
                 connection.close()
