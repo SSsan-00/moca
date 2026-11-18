@@ -1,0 +1,163 @@
+name: Codex issue
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "対応する未解決Issueの番号（1件）"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: codex-issue-${{ inputs.issue }}
+  cancel-in-progress: false
+
+env:
+  ISSUE: ${{ inputs.issue }}
+
+jobs:
+  generate:
+    if: github.repository == 'SSsan-00/php-to-csharp-migration-harness' && github.ref == 'refs/heads/main' && github.actor == github.triggering_actor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      snapshot: ${{ steps.intake.outputs.snapshot }}
+      artifact: ${{ steps.proposal.outputs.artifact-id }}
+      digest: ${{ steps.seal.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate issue and capture current discussion
+        id: intake
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/codex/issue.py intake
+      - uses: openai/codex-action@306c6a196a99dcc6582530c396a19d2672d5e9ec # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: "0.170.0"
+          safety-strategy: drop-sudo
+          permission-profile: ":read-only"
+          prompt-file: ${{ runner.temp }}/issue-prompt.txt
+          output-file: ${{ runner.temp }}/proposal.json
+          output-schema: |
+            {"type":"object","properties":{"patch":{"type":"string"},"report":{"type":"string"}},"required":["patch","report"],"additionalProperties":false}
+      - name: Record proposal digest
+        id: seal
+        run: python3 .github/codex/issue.py seal
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: proposal
+        with:
+          name: proposal-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/proposal.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: generate
+    if: github.actor == github.triggering_actor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: codex-issue-write
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.publish.outputs.pr }}
+      head: ${{ steps.patch.outputs.head }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.generate.outputs.artifact }}
+          path: ${{ runner.temp }}/proposal
+      - name: Validate proposal and commit without credentials
+        id: patch
+        env:
+          PROPOSAL_DIGEST: ${{ needs.generate.outputs.digest }}
+        run: python3 .github/codex/issue.py patch
+      - name: Recheck Issue, main, and duplicate PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT: ${{ needs.generate.outputs.snapshot }}
+        run: python3 .github/codex/issue.py prepublish
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        id: app
+        with:
+          client-id: ${{ vars.CODEX_ISSUE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CODEX_ISSUE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Push candidate and create draft PR
+        id: publish
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 .github/codex/issue.py publish
+
+  verify:
+    needs: [generate, publish]
+    if: github.actor == github.triggering_actor
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Wait for CI, Codex review and maintainer approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT: ${{ needs.generate.outputs.snapshot }}
+          PR: ${{ needs.publish.outputs.pr }}
+          HEAD: ${{ needs.publish.outputs.head }}
+          REVIEWERS: ${{ vars.CODEX_ISSUE_REVIEWERS }}
+        run: python3 .github/codex/issue.py verify
+
+  merge:
+    needs: [generate, publish, verify]
+    if: github.actor == github.triggering_actor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: codex-issue-write
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      SNAPSHOT: ${{ needs.generate.outputs.snapshot }}
+      PR: ${{ needs.publish.outputs.pr }}
+      HEAD: ${{ needs.publish.outputs.head }}
+      REVIEWERS: ${{ vars.CODEX_ISSUE_REVIEWERS }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        id: app
+        with:
+          client-id: ${{ vars.CODEX_ISSUE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CODEX_ISSUE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Recheck all merge conditions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/codex/issue.py gate
+      - name: Squash merge via GitHub with expected head SHA
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 .github/codex/issue.py merge
