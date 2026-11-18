@@ -5,10 +5,6 @@ import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
 
 const [executable, profile, url] = process.argv.slice(2);
-const chrome = spawn(executable, [
-  "--headless", "--remote-debugging-port=0", "--no-first-run", "--disable-background-networking",
-  "--disable-extensions", "--user-data-dir=" + profile, "about:blank",
-], {stdio: "ignore"});
 let socket, sequence = 0;
 const pending = new Map();
 async function eventually(read, label) {
@@ -19,13 +15,57 @@ async function eventually(read, label) {
   }
   throw new Error("Timed out: " + label);
 }
+async function startBrowser() {
+  const failures = [];
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const directory = `${profile}-${attempt}`;
+    const chrome = spawn(executable, [
+      "--headless", "--remote-debugging-port=0", "--no-first-run", "--disable-background-networking",
+      "--disable-extensions", "--user-data-dir=" + directory, "about:blank",
+    ], {stdio: ["ignore", "ignore", "pipe"]});
+    let spawnError, stderr = "";
+    chrome.once("error", error => { spawnError = error; });
+    chrome.stderr.setEncoding("utf8");
+    chrome.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-8192); });
+    let ready = false;
+    try {
+      const deadline = performance.now() + 15_000;
+      while (performance.now() < deadline) {
+        if (spawnError) throw spawnError;
+        if (chrome.exitCode !== null || chrome.signalCode !== null) {
+          throw new Error(`Chromium exited during startup (code=${chrome.exitCode}, signal=${chrome.signalCode})`);
+        }
+        const portFile = await fs.readFile(path.join(directory, "DevToolsActivePort"), "utf8").catch(error => {
+          if (error.code === "ENOENT") return "";
+          throw error;
+        });
+        const port = portFile.split("\n")[0].trim();
+        if (/^[0-9]+$/.test(port)) {
+          const endpoint = `http://127.0.0.1:${port}/json/list`;
+          const pages = await fetch(endpoint, {signal: AbortSignal.timeout(500)})
+            .then(response => response.ok ? response.json() : null)
+            .catch(() => null);
+          const page = pages?.find(item => item.type === "page" && item.webSocketDebuggerUrl);
+          if (page) {
+            ready = true;
+            return {chrome, debuggerUrl: page.webSocketDebuggerUrl};
+          }
+        }
+        await pause(100);
+      }
+      throw new Error("Timed out waiting for Chromium DevTools");
+    } catch (error) {
+      failures.push(`Attempt ${attempt}: ${error.message}\n${stderr.trim() || "(no browser stderr)"}`);
+    } finally {
+      if (!ready && chrome.exitCode === null && chrome.signalCode === null) chrome.kill();
+    }
+  }
+  throw new Error(`Chromium did not start:\n${failures.join("\n")}`);
+}
+
+const {chrome, debuggerUrl} = await startBrowser();
 try {
-  const port = await eventually(async () => {
-    try { return (await fs.readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]; }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-  }, "browser debugging port");
-  const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-  socket = new WebSocket(pages.find(page => page.type === "page").webSocketDebuggerUrl);
+  socket = new WebSocket(debuggerUrl);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, {once: true});
     socket.addEventListener("error", reject, {once: true});
