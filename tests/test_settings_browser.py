@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import Thread
 
 from migration_harness import dashboard
+from ui_dependencies import node_executable, require_ui_dependency
 
 
 class SettingsBrowserTests(unittest.TestCase):
@@ -24,15 +25,14 @@ class SettingsBrowserTests(unittest.TestCase):
         ]
         chrome = next((str(path) for path in applications if path.is_file()), None)
         chrome = chrome or shutil.which("google-chrome") or shutil.which("chromium")
-        node = shutil.which("node")
-        if not chrome or not node:
-            self.skipTest("Chromium と Node.js が必要です。")
+        node = node_executable(self)
+        require_ui_dependency(self, chrome, "Chromium, Chrome, or Edge is required for the browser test")
         node_args = [node]
         probe = "process.exit(typeof WebSocket === 'function' ? 0 : 1)"
         if subprocess.run([node, "-e", probe], timeout=10).returncode:
             node_args.append("--experimental-websocket")
-            if subprocess.run([*node_args, "-e", probe], capture_output=True, timeout=10).returncode:
-                self.skipTest("WebSocket 対応の Node.js が必要です。")
+            supported = subprocess.run([*node_args, "-e", probe], capture_output=True, timeout=10).returncode == 0
+            require_ui_dependency(self, supported, "WebSocket support in Node.js is required for the browser test")
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=os.name == "nt") as temporary:
             root = Path(temporary)
             project = root / "app"
@@ -83,6 +83,7 @@ max_bytes = 9007199254740993 # preserve this value
                 result = subprocess.run([*node_args, str(helper), chrome, str(root / "browser"), url],
                                         capture_output=True, text=True, encoding="utf-8", timeout=110)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                print(result.stdout, end="", flush=True)
             finally:
                 server.shutdown()
                 worker.join()
