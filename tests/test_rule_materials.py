@@ -84,7 +84,7 @@ class RuleMaterialsTests(HarnessCase):
             "path": "rules.md", "role": "migration_rules", "encoding": "utf-8",
             "start_line": 1, "end_line": None, "shared": True,
         })
-        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive") as junie:
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "_run_session") as junie:
             with self.assertRaisesRegex(ValueError, "起動を止めました.*rules.md"):
                 workflow.resume_with_junie(config, run_id)
             junie.assert_not_called()
@@ -95,6 +95,22 @@ class RuleMaterialsTests(HarnessCase):
         content = (capsule / "materials" / manifest["rule_files"][0]["file"]).read_bytes()
         self.assertEqual(usage["rules"][0]["bytes"], len(content))
         self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
+
+    def test_final_input_is_measured_again_before_communication_retry(self):
+        root = self.root
+        prompt = "Fixture prompt"
+        settings = {"junie_input_limits": {"max_input_bytes": len(prompt)}}
+        record = {}
+        command = junie_cli.build_command(root, prompt, None)
+        with (patch.object(junie_cli, "_run_session", side_effect=junie_cli.JunieConnectionError("fixture")) as run,
+              patch.object(junie_cli.time, "sleep")):
+            with self.assertRaisesRegex(ValueError, "起動を止めました"):
+                workflow._run_budgeted_junie(settings, root / "run.json", record, "migration", None, root, [],
+                                             command, root / "complete", "token", ())
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0][-1], prompt)
+        self.assertTrue(record["last_junie_input"]["blocked"])
+        self.assertGreater(record["last_junie_input"]["bytes"], len(prompt))
 
     def test_details_are_pinned_but_only_index_is_in_guidelines(self):
         material = self.root / "materials"

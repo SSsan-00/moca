@@ -46,7 +46,7 @@ from migration_harness.settings_form import build_settings_draft
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
     RunInterrupted, RunScriptError, _review_log,
-    build_failure_review, can_resume_run, migration_ledger, plan_build_resume, prepare_run, resume_with_junie,
+    build_failure_review, can_resume_build, can_resume_run, migration_ledger, plan_build_resume, prepare_run, resume_with_junie,
     review_checker, run_with_junie,
 )
 from migration_harness.worktree_targets import EDIT_BYTES, save_target_edit, worktree_source_lock
@@ -270,6 +270,7 @@ class Dashboard:
             **self.state, "ready": True, "status": result["status"], "message": message,
             "error_details": "",
             "resumable": can_resume_run(config, result),
+            "build_resumable": can_resume_build(result),
             "diff_viewer_enabled": bool(config.get("diff_viewer_html")),
             "cancellable": False, "stop_requested": False, "operation_id": None, "generating_anchors": False,
             "stage_timings": freeze_timings(self.state), "active_stage": None,

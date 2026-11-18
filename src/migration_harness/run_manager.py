@@ -257,7 +257,7 @@ class RunManager:
 
     def submit(self, action, selected=None):
         """HTTP操作を検証し、Runを実行待ちへ登録する。"""
-        from .workflow import can_resume_run
+        from .workflow import can_resume_build, can_resume_run
 
         with self.condition:
             if self.closing:
@@ -297,7 +297,9 @@ class RunManager:
                     raise ValueError("worktreeの準備が終わってから、もう一度お試しください。")
                 if kind in {"resume", "resume-run", "build-response"}:
                     _, record = load_dashboard_record(self.config, run_id)
-                    if not can_resume_run(self.config, record):
+                    explicit_build = action.get("verification_request", {}).get("start_stage") == "build"
+                    resumable = can_resume_build(record) if explicit_build else can_resume_run(self.config, record)
+                    if not resumable:
                         raise ValueError("このRunは再開できません。新しく実行してください。")
                 if kind == "build-response" and view.state.get("status") != "build_failed":
                     raise ValueError("ビルド結果が変わりました。進捗を確認してください。")
@@ -424,7 +426,7 @@ class RunManager:
 
     def row(self, view):
         """Run一覧に表示する要約を作成する。"""
-        keys = ("run_id", "unit_id", "created_at", "status", "ready", "resumable", "worktree_path", "queued",
+        keys = ("run_id", "unit_id", "created_at", "status", "ready", "resumable", "build_resumable", "worktree_path", "queued",
                 "operation_id", "cancellable", "stop_requested", "context_capsules", "current_capsule", "completed_capsules",
                 "active_stage", "stage_timings", "timing_updated_at", "phase_activity", "error", "message")
         row = {key: copy.deepcopy(view.state[key]) for key in keys if key in view.state}

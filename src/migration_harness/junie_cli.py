@@ -19,6 +19,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
@@ -692,6 +693,9 @@ def _task_command(command: list[str]) -> list[str]:
     return [part for part in command[:-2] if part != "--brave"] + ["--task", command[-1]]
 
 
+launch_input_observer: ContextVar[Callable[[str], None] | None] = ContextVar("launch_input_observer", default=None)
+
+
 def run_interactive(
     command: list[str], completion_path: Path, token: str, targets: tuple[Path, ...],
     *, report_usage: Callable[[list[int]], None] | None = None,
@@ -725,6 +729,8 @@ def run_interactive(
                     " A model service connection failed in the previous session. Review the edits already in the "
                     "workspace and continue the remaining work without duplicating completed changes."
                 )]
+            if observe := launch_input_observer.get():
+                observe(invocation[-1])
             try:
                 return _run_session(invocation, completion_path, token, targets,
                                     report_usage=report_usage, accept_result=accept_result, prompts=prompts)
@@ -747,6 +753,8 @@ def run_interactive(
                     raise
                 report_activity("Junie を非対話モードで再試行します。")
                 command = _task_command(command)
+            if observe is not None:
+                observe(invocation[-1])
             return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets,
                                 report_usage=report_usage, accept_result=accept_result, prompts=prompts)
         except JunieConnectionError as exc:

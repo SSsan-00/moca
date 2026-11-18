@@ -466,6 +466,7 @@ def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> s
 def _review_detail_applicability(
     run_path: Path, capsule: Path, manifest: dict[str, Any], targets: tuple[Path, ...],
     record: dict[str, Any], max_steps: int | None, *, model: str | None = None, effort: str | None = None,
+    config: dict[str, Any] | None = None,
 ) -> frozenset[str] | None:
     """詳細ルールの適用可否をJunieに判定させる。"""
     index = detail_index(manifest)
@@ -614,7 +615,9 @@ def _review_detail_applicability(
             + "Use only files in this workspace."
         )
         command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines, model=model, effort=effort)
-        junie_cli.run_interactive(
+        _run_budgeted_junie(
+            config or {}, run_path / "run.json", record, "rule_review", guidelines, review_root,
+            [path.relative_to(review_root) for path in review_root.rglob("*") if path.is_file() and path != guidelines and path != output],
             command, completion, token, (output,), report_usage=junie_usage_recorder(run_path, "rule_review"),
             accept_result=save_decisions if context is not None else None,
         )
@@ -804,7 +807,7 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
             while chunk := stream.read(64 * 1024):
                 check_cancelled()
                 guideline_chars += len(chunk)
-    rules = record.get("supplied_rules", [])
+    rules = [] if phase == "rule_review" else record.get("supplied_rules", [])
     files = [{"file": path.as_posix(), "bytes": safe_target(root, path).stat().st_size}
              for path in inputs]
     total = guideline_bytes + prompt_bytes
@@ -832,6 +835,18 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
     report_activity(summary)
 
 
+def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, inputs, *args, **kwargs):
+    """実行するたびに、確定した指示の容量を照合する。"""
+    def observe(prompt):
+        _record_junie_input(config, record_path, record, phase, prompt, guidelines, root, inputs)
+
+    token = junie_cli.launch_input_observer.set(observe)
+    try:
+        return junie_cli.run_interactive(*args, **kwargs)
+    finally:
+        junie_cli.launch_input_observer.reset(token)
+
+
 def _run_editor_followup(
     agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any],
     record_path: Path, config: dict[str, Any], instruction: str,
@@ -855,14 +870,14 @@ def _run_editor_followup(
     context, report = _operator_edit_context(record_path.parent, agent_root, token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
     prompt = context + prompt
-    _record_junie_input(config, record_path, record, "editor_followup", prompt + supplied, guidelines, agent_root, inputs)
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
                                       guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
     allowed = {*targets, completion.relative_to(agent_root)}
     before = _unlisted_workspace_files(agent_root, allowed)
     try:
-        junie_cli.run_interactive(
+        _run_budgeted_junie(
+            config, record_path, record, "editor_followup", guidelines, agent_root, inputs,
             command, completion, token, tuple(safe_target(agent_root, target) for target in targets),
             report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
             prompts=LivePrompts(record_path.parent),
@@ -962,7 +977,7 @@ def _run_prepared_with_junie(
                 run_path, capsule, manifest, relative_targets, record,
                 record.get("junie_max_steps", config["junie_max_steps"]),
                 model=record.get("junie_model", config.get("junie_model")),
-                effort=record.get("junie_effort"),
+                effort=record.get("junie_effort"), config=config,
             )
     except KeyboardInterrupt as exc:
         record.update(status="interrupted", error="detail applicability review was interrupted; resume this Run")
@@ -1113,8 +1128,8 @@ def _run_prepared_with_junie(
                                           effort=record.get("junie_effort"))
         try:
             try:
-                _record_junie_input(config, record_path, record, "migration", prompt + supplied, guidelines, agent_root, inputs)
-                exit_code = junie_cli.run_interactive(
+                exit_code = _run_budgeted_junie(
+                    config, record_path, record, "migration", guidelines, agent_root, inputs,
                     command, completion_path, completion_token, agent_targets,
                     report_usage=junie_usage_recorder(run_path, "migration", index),
                     prompts=LivePrompts(run_path),
@@ -1444,7 +1459,7 @@ def _attempt_repair(
     except (OSError, RuntimeError, ValueError) as exc:
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
             # 使用量保存などが終了未確認を包んだ場合も、未確認の下書きは再利用しない。
-            record["repair_pending"].pop("draft", None)
+            _discard_unconfirmed_draft(record)
         elif not isinstance(exc, CheckerRepairBlocked) or exc.reason not in {
             "operator_conflict", "handoff_unsafe", "stopped_draft", "input_budget",
         }:
@@ -1455,6 +1470,13 @@ def _attempt_repair(
             finish_prompts(queue, repaired)
     _charge_repair(record)
     write_run_record(record_path, record)
+
+
+def _discard_unconfirmed_draft(record):
+    """未確認の作業版を再利用せず、停止時に保全済みの参照は復旧用に残す。"""
+    draft = record["repair_pending"].pop("draft", None)
+    if draft and draft.get("snapshot"):
+        record.setdefault("stopped_repair_recovery", []).append(draft)
 
 
 def _snapshot_stopped_repair(run_path, agent_root, repair_targets, before, *, workspace_unchanged):
@@ -1613,17 +1635,17 @@ def _repair_target(
     other_files = _unlisted_workspace_files(agent_root, allowed)
     try:
         phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
-        _record_junie_input(config, run_path / "run.json", record, phase, prompt + supplied, guidelines, agent_root, inputs)
         report_activity(f"Junieが{reason}を修正しています", kind="phase",
                         detail=progress_context + " 修正が終わったら、変更内容を照合して再ビルドします。")
-        exit_code = junie_cli.run_interactive(
+        exit_code = _run_budgeted_junie(
+            config, run_path / "run.json", record, phase, guidelines, agent_root, inputs,
             command, completion_path, token, agent_targets,
             report_usage=junie_usage_recorder(run_path, phase),
             prompts=LivePrompts(run_path, interrupt_for_edits=True),
         )
     except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError) as exc:
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
-            attempt.pop("draft", None)
+            _discard_unconfirmed_draft(record)
             raise
         if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, junie_cli.JunieEditHandoff):
             try:
@@ -1637,6 +1659,8 @@ def _repair_target(
                     "stopped_draft",
                     "停止時の下書きを保存できませんでした。再開前に Junie 作業領域を確認してください。",
                 ) from error
+            raise
+        if draft.get("snapshot") and not isinstance(exc, junie_cli.JunieEditHandoff):
             raise
         attempt.pop("draft", None)
         try:
@@ -1994,7 +2018,9 @@ def _run_verification(
     *, request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """毎回ビルドを先に実行し、指摘の状態に応じて修正かレビューに進む。"""
-    _require_saved_checker(config, unit, record)
+    explicit_build = request and request.get("start_stage") == "build"
+    if not explicit_build:
+        _require_saved_checker(config, unit, record)
     run_path = Path(result["run_path"])
     worktree = Path(result["worktree_path"])
     targets = target_paths(unit)
@@ -2073,7 +2099,8 @@ def _run_verification(
         check_cancelled()
         _run_script_phase(config, "after_build", worktree, run_path, record)
         if command is None:
-            record.pop("repair_pending", None)
+            if not explicit_build:
+                record.pop("repair_pending", None)
             save_verification()
             return verified
         write_run_record(record_path, record, timing_stage=5)
@@ -2276,6 +2303,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         and verification.get("scripts", {}) == scripts
         and verification.get("scripts_passed") is True
         and not ambiguous_checker
+        and not (record.get("checker_required") and saved_checker is None)
         and saved_configuration == configured_checker == saved_checker
         and (status == "build_succeeded" if saved_checker is None else checker_passed)
     )
@@ -2481,16 +2509,21 @@ _JUNIE_RESUME_STATUSES = {"prepared", "junie_running", "junie_failed", "interrup
 _SCRIPT_RESUME_STATUSES = {"script_running", "script_failed"}
 
 
-def _missing_required_checker(config: dict[str, Any], unit: dict[str, Any], record: dict[str, Any]) -> bool:
+def _previously_required_checker(record: dict[str, Any]) -> bool:
     """再開に必要なチェッカー設定が不足しているか判定する。"""
     verification = record.get("verification") or {}
     # 旧形式でCLI由来のnullはコマンドを復元できないが、CLI指定があったことは分かる。
-    required = (
-        record.get("status") in _CHECKER_RESUME_STATUSES | {"checker_succeeded", "checker_accepted"}
+    return (
+        record.get("checker_required")
+        or record.get("status") in _CHECKER_RESUME_STATUSES | {"checker_succeeded", "checker_accepted"}
         or verification.get("checker_from_cli")
         or verification.get("configured_checker_command", verification.get("checker_command")) is not None
     )
-    return required and checker_command_for_unit(config, unit) is None
+
+
+def _missing_required_checker(config, unit, record):
+    """通常再開に必要なチェッカーが現設定にあるか照合する。"""
+    return _previously_required_checker(record) and checker_command_for_unit(config, unit) is None
 
 
 def _require_saved_checker(config: dict[str, Any], unit: dict[str, Any], record: dict[str, Any]) -> None:
@@ -2510,6 +2543,16 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     return status not in _CHECKER_RESUME_STATUSES or record.get("build_exit_code") == 0
 
 
+def can_resume_build(record):
+    """記録上、明示ビルドを選べる段階か判定する。"""
+    return (record.get("status") in (
+        _BUILD_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES
+        | _SCRIPT_RESUME_STATUSES | {"editor_checkpoint"}
+    ) and bool(record.get("completed_capsules"))
+        and record["completed_capsules"] == record.get("context_capsules")
+        and not record.get("target_apply_pending"))
+
+
 def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     """ビルドのみの明示再開を保存版と結び付ける。"""
     from .junie_conversation import saved_edits, target_versions
@@ -2517,8 +2560,7 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     run_path, worktree, _, unit = load_saved_run(config, run_id)
     with editor_queue(run_path) as queue, worktree_source_lock:
         _, _, record, _ = load_saved_run(config, run_id)
-        if (not record.get("completed_capsules") or record.get("completed_capsules") != record.get("context_capsules")
-                or record.get("status") in {"junie_running", "editor_followup"}):
+        if not can_resume_build(record):
             raise ValueError("移行が完了してから「ビルドのみ」を選んでください。")
         if record.get("target_apply_pending") or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
             raise ValueError("未反映の編集または Junie 指示があります。通常の再開で反映してください。")
@@ -2557,7 +2599,13 @@ def _resume_with_junie(
         raise ValueError("表示中の Run のビルド結果が変わりました。")
     if checker_instruction is not None and status not in {"checker_needs_review", "checker_failed"}:
         raise ValueError("表示中の Run のチェッカー結果が変わりました。")
-    _require_saved_checker(config, unit, record)
+    explicit_build = verification_request and verification_request.get("start_stage") == "build"
+    if explicit_build:
+        plan = plan_build_resume(config, run_id)
+        if any(verification_request.get(key) != value for key, value in plan.items()):
+            raise ValueError("確認後に保存版または実行条件が更新されました。再開する版を確認し直してください。")
+    else:
+        _require_saved_checker(config, unit, record)
     if not verification_request and not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
@@ -2630,9 +2678,6 @@ def _resume_with_junie(
             raise ValueError("移行が完了してから、ビルドまたはチェッカーを実行してください。")
         targets = target_paths(unit)
         record_path = run_path / "run.json"
-        if verification_request.get("start_stage") == "build":
-            if verification_request.get("version") != plan_build_resume(config, run_id)["version"]:
-                raise ValueError("確認後に保存版が更新されました。再開する版を確認し直してください。")
         finish_pending_targets(run_path / "agent-workspace", worktree_path, targets, record, record_path)
         result["request_id"] = verification_request["id"]
         if verification_request["intent"] == "checker_repair":
@@ -2641,7 +2686,9 @@ def _resume_with_junie(
             if len(history) >= config["max_repair_attempts"]:
                 raise ValueError("この Run の修正回数が上限に達しました。残った指摘はエディタで修正してください。")
         verification_request["build_targets"] = _apply_verification_edits(run_path, worktree_path, unit, verification_request)
-        if verification_request.get("start_stage") == "build":
+        if explicit_build:
+            if _previously_required_checker(record):
+                record["checker_required"] = True
             operation = {
                 **verification_request, "build_targets": verification_request["build_targets"].copy(),
                 "accepted_at": datetime.now(timezone.utc).isoformat(),

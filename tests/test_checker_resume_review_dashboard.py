@@ -523,6 +523,15 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             self.assertEqual(json.loads((snapshot / "draft.json").read_text())["targets"][names[1]], None)
             self.assertFalse((snapshot / "1.draft").exists())
             self.assertEqual(self.record()["repair_history"], [])
+            for error in (
+                junie_cli.JunieLaunchError(["junie"], None, None, OSError("fixture")),
+                junie_cli.JunieConnectionError("fixture"),
+                junie_cli.JunieSessionError(["junie"], 1, "fixture"),
+            ):
+                with patch.object(junie_cli, "run_interactive", side_effect=error) as failed:
+                    self.resume(*responses)
+                    failed.assert_called_once()
+                self.assertEqual(self.record()["repair_pending"]["draft"], draft)
             with patch.object(junie_cli, "run_interactive", side_effect=verify_input) as junie:
                 with self.assertRaises(workflow.RunInterrupted):
                     self.resume(*responses)
@@ -616,6 +625,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                             self.assertEqual(saved["repair_history"], [])
                             self.assertIn("repair_pending", saved)
                             self.assertNotIn("draft", saved["repair_pending"])
+                            archived, = saved["stopped_repair_recovery"]
+                            self.assertEqual((self.run_path / archived["snapshot"] / "0.draft").read_bytes(), saved_draft)
                             junie.side_effect = complete
                             result = self.resume(*responses, *success)
                             self.assertEqual(result["status"], "checker_succeeded")

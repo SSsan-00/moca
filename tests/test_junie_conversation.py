@@ -213,6 +213,8 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(len(calls), 2)
 
     def test_explicit_build_plan_rejects_a_changed_version_then_builds_only(self):
+        self.config["checker_command"] = None
+        self.assertFalse(self.manager.get(self.run_id).state["resumable"])
         action = {"action": "resume-run", "run_id": self.run_id, "revision": 0, "start_stage": "build"}
         _, old = self.request("resume-plan?" + urlencode({"run_id": self.run_id}))
         self.save_edit("class SavedVersion {}\n")
@@ -236,6 +238,12 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(record["status"], "build_succeeded")
         self.assertEqual(record["completed_capsules"], 1)
         self.assertNotIn("checker_exit_code", record)
+        self.assertFalse(workflow.can_resume_run(self.config, record))
+        self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+        with patch.object(workflow, "run_process") as external:
+            with self.assertRaisesRegex(ValueError, "チェッカーを設定"):
+                workflow.resume_with_junie(self.config, self.run_id)
+            external.assert_not_called()
 
     def test_clarification_waits_then_runs_build_and_checker(self):
         mocked, calls = self.mock_commands(("dotnet", 0, b"build ok\n"), ("checker", 0, b"check ok\n"))

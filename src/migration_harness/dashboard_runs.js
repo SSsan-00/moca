@@ -139,7 +139,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     const visible = data.runs.filter(run => (filter === "all" || category(run) === filter)
       && `${run.unit_id} ${run.run_id}`.toLocaleLowerCase("ja").includes(query));
     const nextRows = JSON.stringify(visible.map(run => [run.run_id, run.unit_id, run.status, run.ready, run.queued, run.queue_position, run.queue_saving,
-      run.resumable, run.stop_requested, run.cancellable, run.awaiting_answer, run.worktree_path, describe(run), run.current_capsule, run.context_capsules, selectedRun === run.run_id]));
+      run.resumable, run.build_resumable, run.stop_requested, run.cancellable, run.awaiting_answer, run.worktree_path, describe(run), run.current_capsule, run.context_capsules, selectedRun === run.run_id]));
     if (nextRows !== rowKey) {
       rowKey = nextRows;
       const focused = document.activeElement;
@@ -183,8 +183,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
           if (run.worktree_path || preparationChat) button(run.worktree_path ? "エディタ" : "Junie", "open-run", "editor");
           if (!run.ready && run.cancellable) button(run.stop_requested ? "停止中" : "停止", "stop", null, true);
           if (run.ready && run.resumable) button(tone === "done" ? "再検証" : "再開", "resume-run", null, true);
-          if (preparationChat && run.ready && run.resumable && run.context_capsules > 0
-              && run.completed_capsules === run.context_capsules) button("ビルドのみ", "resume-build", null, true);
+          if (preparationChat && run.ready && run.build_resumable) button("ビルドのみ", "resume-build", null, true);
           if (run.ready) button("削除", "hide-run");
         }
         actions.append(buttons);
