@@ -181,34 +181,42 @@ def _promote_legacy_materials(document: Any, units: list) -> bool:
 
 
 def _apply_table_edits(document: Any, changes: dict[str, Any]) -> None:
-    """設定フォームのルール・参考資料編集を適用する。"""
+    """設定フォームから変更された共通テーブル項目を反映する。"""
     for section, keys in _TABLE_FIELDS.items():
         _apply_table_fields(document, section, keys, changes.get(section, {}))
 
 
+def _table_field_value(section, key, value):
+    """フォームの値を検証し、TOMLに書く型へ変換する。"""
+    if key == "command":
+        if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
+            raise ValueError("チェッカーのコマンドと引数を確認してください。")
+    elif key in {"anchor_reference", "roots", "folders", "exclude"} and value != "":
+        if not isinstance(value, list) or any(not isinstance(path, str) or not path.strip() for path in value):
+            raise ValueError("パスやパターンは1行に1つ入力してください。")
+    elif not isinstance(value, str):
+        raise ValueError("設定フォームの入力内容を確認してください。")
+    if key in _NUMERIC_FIELDS and value:
+        value = _settings_integer(value, key)
+    if section == "diff_viewer" and key == "enabled" and value:
+        if value != "false":
+            raise ValueError("差分ビューアーの使用設定を確認してください。")
+        value = False
+    if key == "recursive" and value:
+        if value not in {"true", "false"}:
+            raise ValueError("参照資料の再帰収集の設定を確認してください。")
+        value = value == "true"
+    return value
+
+
 def _apply_table_fields(document, section, keys, edits, *, preserve_empty=False):
+    """空欄で継承に戻す。rootsや単位別の空配列は明示的な上書きとして残す。"""
     if not isinstance(edits, dict) or edits.keys() - set(keys):
         raise ValueError("設定フォームの入力内容を確認してください。")
-    for key, value in edits.items():
-        if key == "command":
-            if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
-                raise ValueError("チェッカーのコマンドと引数を確認してください。")
-        elif key in {"anchor_reference", "roots", "folders", "exclude"} and value != "":
-            if not isinstance(value, list) or any(not isinstance(path, str) or not path.strip() for path in value):
-                raise ValueError("パスやパターンは1行に1つ入力してください。")
-        elif not isinstance(value, str):
-            raise ValueError("設定フォームの入力内容を確認してください。")
-        if key in _NUMERIC_FIELDS and value:
-            value = _settings_integer(value, key)
-        if section == "diff_viewer" and key == "enabled" and value:
-            if value != "false":
-                raise ValueError("差分ビューアーの使用設定を確認してください。")
-            value = False
-        if key == "recursive" and value:
-            if value not in {"true", "false"}:
-                raise ValueError("参照資料の再帰収集の設定を確認してください。")
-            value = value == "true"
-        if (value == "" or value == [] and key != "roots" and not preserve_empty) and key not in {"root", "worktree_root", "run_root"}:
+    for key, raw_value in edits.items():
+        value = _table_field_value(section, key, raw_value)
+        clear_value = value == "" or (value == [] and key != "roots" and not preserve_empty)
+        if clear_value and key not in {"root", "worktree_root", "run_root"}:
             if section in document:
                 document[section].pop(key, None)
         else:

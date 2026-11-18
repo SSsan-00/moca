@@ -121,6 +121,23 @@ def load_config(path: Path) -> dict[str, Any]:
         raw = tomllib.load(stream)
 
     project = raw.get("project", {})
+    project_settings = _project_settings(project, config_path)
+    root = Path(project_settings["project_root"])
+    execution = _execution_settings(raw, root)
+    units = _normalize_units(raw, project, root)
+    execution["diff_viewer_anchor_reference"] = [
+        _config_relative_path(config_path, reference) for reference in execution["diff_viewer_anchor_reference"]
+    ]
+    return {"config_path": str(config_path), **project_settings, **execution, "units": units}
+
+
+def _config_relative_path(config_path: Path, value: str) -> Path:
+    """設定ファイルの場所を基準に、保存先やアンカー参照のパスを解決する。"""
+    return (config_path.parent / Path(value).expanduser()).resolve()
+
+
+def _project_settings(project: Any, config_path: Path) -> dict[str, Any]:
+    """Git作業領域、実行データの保存先とカプセル上限を検証する。"""
     if not isinstance(project, dict):
         raise ValueError("[project] must be a table")
     root_value = project.get("root")
@@ -144,20 +161,25 @@ def load_config(path: Path) -> dict[str, Any]:
     if not isinstance(worktree_value, str) or not isinstance(run_value, str):
         raise ValueError("[project].worktree_root and [project].run_root are required")
 
-    def resolve_output(value: str) -> Path:
-        """相対指定の保存先を、設定ファイルのあるディレクトリから解決する。"""
-        candidate = Path(value).expanduser()
-        return (config_path.parent / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-
-    worktree_root = _outside(root, resolve_output(worktree_value), "worktree_root")
-    run_root = _outside(root, resolve_output(run_value), "run_root")
+    worktree_root = _outside(root, _config_relative_path(config_path, worktree_value), "worktree_root")
+    run_root = _outside(root, _config_relative_path(config_path, run_value), "run_root")
     if worktree_root == run_root or worktree_root.is_relative_to(run_root) or run_root.is_relative_to(worktree_root):
         raise ValueError("worktree_root and run_root must be separate directories")
 
     max_context_chars = project.get("max_context_chars", 500000)
     if not isinstance(max_context_chars, int) or max_context_chars < 1000:
         raise ValueError("[project].max_context_chars must be an integer of at least 1000")
+    return {
+        "project_root": str(root),
+        "base_ref": base_ref,
+        "worktree_root": str(worktree_root),
+        "run_root": str(run_root),
+        "max_context_chars": max_context_chars,
+    }
 
+
+def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
+    """ビルド、チェッカー、スクリプト、ビューアー、Junieの設定を検証する。"""
     build = raw.get("build", {})
     if not isinstance(build, dict):
         raise ValueError("[build] must be a table")
@@ -240,6 +262,22 @@ def load_config(path: Path) -> dict[str, Any]:
         isinstance(junie_max_steps, bool) or not isinstance(junie_max_steps, int) or junie_max_steps < 1
     ):
         raise ValueError("[junie].max_steps must be a positive integer when specified")
+    return {
+        "build_project": build_project,
+        "checker_command": checker_command,
+        "scripts": scripts,
+        "diff_viewer_html": viewer_html if viewer_enabled else None,
+        "diff_viewer_anchor_reference": anchor_references,
+        "max_repair_attempts": max_repair_attempts,
+        "junie_max_steps": junie_max_steps,
+        "junie_input_limits": input_limits,
+        "junie_model": junie_model,
+        "junie_effort": junie_effort,
+    }
+
+
+def _normalize_units(raw: dict, project: dict, root: Path) -> list[dict[str, Any]]:
+    """移行単位を正規化し、新旧形式の共通資料を収集してから各単位に適用する。"""
     units = raw.get("units")
     if not isinstance(units, list) or not units:
         raise ValueError("at least one [[units]] entry is required")
@@ -266,94 +304,80 @@ def load_config(path: Path) -> dict[str, Any]:
         reference = _normalize_input(item, "project references", root=root, project_reference=True)
         common_references.append(reference)
 
-    normalized_units = []
     project_context = target_context_policy(raw.get("target_context", {}))
-    for unit in units:
-        targets = unit.get("targets", [unit.get("target")])
-        if "targets" in unit and "target" in unit:
-            raise ValueError(f"unit {unit['id']}: specify target or targets")
-        if not isinstance(targets, list) or not targets:
-            raise ValueError(f"unit {unit['id']}: targets must list file paths")
-        targets = [_file_path(target, root, f"unit {unit['id']} targets", inside=True) for target in targets]
-        target_paths = [Path(target) for target in targets]
-        if len(set(target_paths)) != len(target_paths) or any(
-            parent in target_paths for target in target_paths for parent in target.parents
-        ):
-            raise ValueError(f"unit {unit['id']}: target paths must be distinct files")
-        for target in target_paths:
-            name = target.name.lower()
-            if name.endswith(".cshtml"):
-                counterpart = target.with_name(f"{target.name}.cs")
-            elif name.endswith(".cshtml.cs"):
-                counterpart = target.with_suffix("")
-            else:
-                continue
-            if counterpart not in target_paths:
-                raise ValueError(
-                    f"unit {unit['id']}: {target.as_posix()} の対応ファイル "
-                    f"{counterpart.as_posix()} を targets に指定してください。"
-                )
-
-        normalized_inputs = []
-        if "source" in unit:
-            source = _file_path(unit["source"], root, f"unit {unit['id']} source")
-            encoding = _input_encoding(unit.get("source_encoding", "auto"), f"unit {unit['id']}: source_encoding")
-            normalized_inputs.append({
-                "role": "php", "path": source, "encoding": encoding,
-                "shared": False, "start_line": 1, "end_line": None,
-            })
-
-        inputs = unit.get("inputs", [])
-        if not isinstance(inputs, list) or not (normalized_inputs or inputs):
-            raise ValueError(f"unit {unit['id']}: specify source or at least one [[units.inputs]] entry")
-        for item in inputs:
-            normalized_input = _normalize_input(item, f"unit {unit['id']}", root=root)
-            if normalized_input["role"] == "migration_rules":
-                if normalized_input not in common_rules:
-                    common_rules.append(normalized_input)
-            elif normalized_input["role"] in REFERENCE_ROLES and normalized_input["shared"]:
-                common_references.append(normalized_input)
-            else:
-                normalized_inputs.append(normalized_input)
-
-        normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
-        if project_context or "target_context" in unit:
-            normalized["target_context"] = {**project_context, **target_context_policy(unit.get("target_context", {}))}
-        if "draft_imports" in unit:
-            normalized["draft_import_commands"] = _draft_import_commands(unit, target_paths, root)
-        if "checker_command" in unit:
-            try:
-                validate_checker_command(unit["checker_command"])
-            except ValueError as exc:
-                raise ValueError(f"unit {unit['id']}: {exc}") from exc
-            normalized["checker_command"] = unit["checker_command"]
-        if "targets" in unit:
-            normalized["targets"] = [target.as_posix() for target in target_paths]
-            normalized["target"] = normalized["targets"][0]
-        normalized_units.append(normalized)
-
+    normalized_units = [
+        _normalize_unit(unit, root, project_context, common_rules, common_references) for unit in units
+    ]
+    # 旧形式の共通資料は後の移行単位にも書けるため、全件を収集してから適用する。
     for unit in normalized_units:
         unit["inputs"] = common_rules + common_references + unit["inputs"]
+    return normalized_units
 
-    return {
-        "config_path": str(config_path),
-        "project_root": str(root),
-        "base_ref": base_ref,
-        "worktree_root": str(worktree_root),
-        "run_root": str(run_root),
-        "max_context_chars": max_context_chars,
-        "build_project": build_project,
-        "checker_command": checker_command,
-        "scripts": scripts,
-        "diff_viewer_html": viewer_html if viewer_enabled else None,
-        "diff_viewer_anchor_reference": [resolve_output(path) for path in anchor_references],
-        "max_repair_attempts": max_repair_attempts,
-        "junie_max_steps": junie_max_steps,
-        "junie_input_limits": input_limits,
-        "junie_model": junie_model,
-        "junie_effort": junie_effort,
-        "units": normalized_units,
-    }
+
+def _normalize_unit(unit, root, project_context, common_rules, common_references):
+    """移行先と入力を正規化し、旧形式の共通資料を全移行単位向けに収集する。"""
+    targets = unit.get("targets", [unit.get("target")])
+    if "targets" in unit and "target" in unit:
+        raise ValueError(f"unit {unit['id']}: specify target or targets")
+    if not isinstance(targets, list) or not targets:
+        raise ValueError(f"unit {unit['id']}: targets must list file paths")
+    targets = [_file_path(target, root, f"unit {unit['id']} targets", inside=True) for target in targets]
+    target_files = [Path(target) for target in targets]
+    if len(set(target_files)) != len(target_files) or any(
+        parent in target_files for target in target_files for parent in target.parents
+    ):
+        raise ValueError(f"unit {unit['id']}: target paths must be distinct files")
+    for target in target_files:
+        name = target.name.lower()
+        if name.endswith(".cshtml"):
+            counterpart = target.with_name(f"{target.name}.cs")
+        elif name.endswith(".cshtml.cs"):
+            counterpart = target.with_suffix("")
+        else:
+            continue
+        if counterpart not in target_files:
+            raise ValueError(
+                f"unit {unit['id']}: {target.as_posix()} の対応ファイル "
+                f"{counterpart.as_posix()} を targets に指定してください。"
+            )
+
+    normalized_inputs = []
+    if "source" in unit:
+        source = _file_path(unit["source"], root, f"unit {unit['id']} source")
+        encoding = _input_encoding(unit.get("source_encoding", "auto"), f"unit {unit['id']}: source_encoding")
+        normalized_inputs.append({
+            "role": "php", "path": source, "encoding": encoding,
+            "shared": False, "start_line": 1, "end_line": None,
+        })
+
+    inputs = unit.get("inputs", [])
+    if not isinstance(inputs, list) or not (normalized_inputs or inputs):
+        raise ValueError(f"unit {unit['id']}: specify source or at least one [[units.inputs]] entry")
+    for item in inputs:
+        normalized_input = _normalize_input(item, f"unit {unit['id']}", root=root)
+        if normalized_input["role"] == "migration_rules":
+            if normalized_input not in common_rules:
+                common_rules.append(normalized_input)
+        elif normalized_input["role"] in REFERENCE_ROLES and normalized_input["shared"]:
+            common_references.append(normalized_input)
+        else:
+            normalized_inputs.append(normalized_input)
+
+    normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
+    if project_context or "target_context" in unit:
+        normalized["target_context"] = {**project_context, **target_context_policy(unit.get("target_context", {}))}
+    if "draft_imports" in unit:
+        normalized["draft_import_commands"] = _draft_import_commands(unit, target_files, root)
+    if "checker_command" in unit:
+        try:
+            validate_checker_command(unit["checker_command"])
+        except ValueError as exc:
+            raise ValueError(f"unit {unit['id']}: {exc}") from exc
+        normalized["checker_command"] = unit["checker_command"]
+    if "targets" in unit:
+        normalized["targets"] = [target.as_posix() for target in target_files]
+        normalized["target"] = normalized["targets"][0]
+    return normalized
 
 
 def _normalize_input(
