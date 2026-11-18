@@ -119,7 +119,9 @@ def _status_intent(value):
 
 def _stage_resume_options(text):
     value = unicodedata.normalize("NFKC", text).strip().rstrip("。.!！")
-    if re.fullmatch(r"チェッカー(?:のみ|だけ|から)(?:を)?(?:再開|再実行)(?:して|してください)?", value):
+    if re.fullmatch(r"手修正したので[、 ]*ビルド(?:だけ|のみ)(?:を)?(?:再実行|実行|再開)?(?:して|してください)?", value):
+        return {"stage": "build"}
+    if re.fullmatch(r"チェッカー(?:のみ|だけ|から)(?:を)?(?:再開|再実行|再確認)(?:して|してください)?", value):
         return {"stage": "checker"}
     match = re.fullmatch(
         r"(?:区間|カプセル)\s*([1-9][0-9]{0,5})\s*(だけ|のみ|から)"
@@ -377,7 +379,7 @@ class JunieConversations:
                     if not stage_plan or not state.get("ready") or state.get("junie_request"):
                         _finish(entry, "failed", stage_error or "処理が終わってから再開方法を指定してください。")
                     else:
-                        labels = {"checker": "チェッカーのみ", "migration": "移行"}
+                        labels = {"build": "ビルドのみ", "checker": "チェッカーのみ", "migration": "移行"}
                         span = stage_plan.get("capsule_range")
                         scope = f" 区間 {span[0]}〜{span[1]}" if span else ""
                         repair = " 検証時に自動修正あり。" if stage_plan["repair"] else " 自動修正なし。"
@@ -386,7 +388,7 @@ class JunieConversations:
                     history.append(entry)
                     return entry
                 if re.search(r"(?:区間|カプセル).*(?:再移行|やり直|再開)|チェッカーから.*再開", value):
-                    _finish(entry, "failed", "範囲や条件を特定できません。実行一覧の「再開方法…」で指定してください。")
+                    _finish(entry, "failed", "開始区間と終了区間はどこですか？ 区間番号を添えて送るか、実行一覧の「再開方法…」で指定してください。")
                     history.append(entry)
                     return entry
                 if intent == "stop":

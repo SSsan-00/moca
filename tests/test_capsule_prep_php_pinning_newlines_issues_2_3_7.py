@@ -307,7 +307,7 @@ class CapsulePreparationTests(HarnessCase):
                 target.write_bytes(b"class Partial {}\n")
                 raise KeyboardInterrupt
             if len(observed_contexts) == 3:
-                self.assertEqual(target.read_bytes(), "class Partial {}\n".encode("utf-8-sig"))
+                self.assertEqual(target.read_bytes(), b"class Partial {}\n")
                 self.assertIn("This capsule was interrupted", command[-1])
             completion.write_text(token, encoding="ascii")
             return 0
@@ -325,6 +325,10 @@ class CapsulePreparationTests(HarnessCase):
             interrupted_record = self.read_json(record_path)
             self.assertEqual(interrupted_record["completed_capsules"], 1)
             self.assertEqual(interrupted_record["current_capsule"], 2)
+            saved_draft = run_path / interrupted_record["stopped_migration_draft"]["snapshot"]
+            self.assertEqual((saved_draft / "0.draft").read_bytes(), b"class Partial {}\n")
+            previous = Path(interrupted_record["worktree_path"]) / interrupted_record["target"]
+            self.assertNotIn(b"Partial", previous.read_bytes())
             rules.write_bytes(b"CHANGED_RULE\n")
             constraint.unlink()
             plan = workflow.plan_migration_resume(config, run_id, 2)

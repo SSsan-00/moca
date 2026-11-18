@@ -587,8 +587,12 @@ class Dashboard:
                             except (OSError, ValueError):
                                 content_version = None
                             live = bool(self.dashboard.control and self.dashboard.control.junie_steering)
+                            adopted_stamp = None
+                            if name and record.get("stopped_migration_draft") and root == agent:
+                                adopted_stamp = _editor_stamp(safe_target(worktree, Path(name)))
                             view_version = _editor_version(
-                                content_version, names, phase, record.get("current_capsule"), record.get("operator_question"),
+                                content_version, adopted_stamp, record.get("stopped_migration_draft"),
+                                names, phase, record.get("current_capsule"), record.get("operator_question"),
                                 record.get("completed_capsules"), record.get("context_capsules"), record.get("script_phase"),
                                 _editor_stamp(run_path / "editor.json"),
                                 _editor_stamp(run_path.parent / ".preparation-conversations" / (run_id + ".json")), live,
@@ -678,6 +682,14 @@ class Dashboard:
                                 "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
                                 "status": phase, "operator_question": record.get("operator_question"),
                             }
+                            if name and from_agent and (draft := record.get("stopped_migration_draft")):
+                                payload["stopped_draft"] = True
+                                with suppress(OSError, ValueError):
+                                    adopted, text = editor_target(worktree, Path(name))
+                                    digest = hashlib.sha256(adopted).hexdigest() if adopted is not None else None
+                                    payload["comparison_content"] = text
+                                    payload["comparison_label"] = ("採用済みとの差分" if digest == draft["base"].get(name)
+                                                                   else "作業ツリーとの差分")
                             if manager:
                                 conversation = manager.conversations.preparation_replies(run_id, state) + queue.get("conversation", [])
                                 payload.update(conversation=sorted(conversation, key=lambda entry: entry.get("received_at", "")),

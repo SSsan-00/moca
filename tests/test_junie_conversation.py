@@ -212,6 +212,66 @@ class JunieConversationTests(SavedRunFixture):
             repair.assert_not_called()
         self.assertEqual(len(calls), 2)
 
+    def test_migration_stop_archives_raw_and_missing_drafts_before_adoption(self):
+        second = self.worktree / "Second.cs"
+        second.write_text("class Accepted {}", encoding="utf-8")
+        names = [self.target.name, second.name]
+        self.config["units"][0]["targets"] = names
+        self.save_record({**self.record(), "targets": names, "status": "prepared",
+                          "completed_capsules": 0, "current_capsule": 1})
+
+        def interrupted(_command, _completion, _token, targets, **_kwargs):
+            targets[0].write_bytes(b"partial\xff")
+            targets[1].unlink()
+            raise KeyboardInterrupt
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=interrupted)):
+            with self.assertRaises(workflow.RunInterrupted):
+                workflow.resume_with_junie(self.config, self.run_id)
+        saved = self.record()["stopped_migration_draft"]
+        self.assertEqual((self.run_path / saved["snapshot"] / "0.draft").read_bytes(), b"partial\xff")
+        self.assertIsNone(saved["targets"]["Second.cs"])
+        self.assertEqual(second.read_bytes(), b"class Accepted {}")
+        self.assertIn(b"Original", self.target.read_bytes())
+
+        def finish(_command, completion, token, targets, **_kwargs):
+            self.assertEqual(targets[0].read_bytes(), b"partial\xff")
+            self.assertFalse(targets[1].exists())
+            targets[0].write_bytes(b"class Revised {}")
+            targets[1].write_bytes(b"class Recreated {}")
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=finish),
+              patch.object(workflow, "_verify_worktree", return_value={})):
+            workflow.resume_with_junie(self.config, self.run_id)
+        self.assertNotIn("stopped_migration_draft", self.record())
+        self.assertEqual(self.record()["stopped_migration_history"], [saved])
+        self.assertIn(b"Recreated", second.read_bytes())
+
+    def test_stopped_migration_editor_compares_draft_to_adopted_version(self):
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        partial = b"class Unverified {}"
+        (agent / self.target.name).write_bytes(partial)
+        pending = {self.target.name: workflow.sha256_file(self.target)}
+        record = {**self.record(), "status": "interrupted", "completed_capsules": 0, "current_capsule": 1,
+                  "target_hashes": pending}
+        workflow._save_stopped_migration(self.record_path, record, agent, (Path(self.target.name),),
+                                        workspace_unchanged=True)
+        _, editor = self.request("editor")
+        self.assertEqual(editor["content"], partial.decode())
+        self.assertEqual(editor["comparison_content"], "class Original {}\n")
+        self.assertEqual(editor["comparison_label"], "採用済みとの差分")
+        self.assertTrue(editor["stopped_draft"])
+        self.target.write_bytes(b"class Manual {}")
+        _, new_view = self.request("editor?" + urlencode({"view_version": editor["view_version"],
+                                                       "content_version": editor["content_version"]}))
+        self.assertEqual(new_view["comparison_content"], "class Manual {}")
+        self.assertEqual(new_view["comparison_label"], "作業ツリーとの差分")
+
     def test_migration_stage_plan_and_conversation_share_workflow_across_restart(self):
         capsule = self.run_path / "capsule"
         manifest_path = capsule / "manifest.json"
@@ -253,6 +313,17 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual(self.record()["completed_capsules"], 3)
             self.assertEqual(junie.call_count, 2)
             external.assert_not_called()
+
+    def test_natural_rebuild_only_uses_explicit_plan_without_checker(self):
+        self.config["checker_command"] = None
+        mocked, calls = self.mock_commands(("dotnet", 0, b"build ok"))
+        with mocked, patch.object(workflow.junie_cli, "run_interactive") as junie:
+            identifier, entry = self.send("手修正したので、ビルドだけ")
+            self.assertEqual(entry["stage_request"]["start_stage"], "build")
+            self.wait_for(identifier, "done")
+            self.wait_until_idle()
+            junie.assert_not_called()
+        self.assertEqual(calls, [["dotnet", "build"]])
 
     def test_explicit_build_plan_rejects_a_changed_version_then_builds_only(self):
         self.config["checker_command"] = None

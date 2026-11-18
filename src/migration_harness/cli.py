@@ -48,6 +48,15 @@ def _parse_args() -> argparse.Namespace:
     draft.add_argument("--choose", action="append", metavar="PATH=SOURCE", help="Select draft or worktree for each path")
     junie_input = configured_command("junie-input", "Show the last measured Junie launch input for a saved run")
     junie_input.add_argument("--run-id", required=True)
+    rule_review = configured_command("rule-review", "Inspect saved migration rules and record independent review evidence")
+    rule_review.add_argument("--run-id", required=True)
+    rule_review.add_argument("--rule")
+    rule_review.add_argument("--record", choices=("include", "exclude", "read", "applied", "passed", "failed"))
+    rule_review.add_argument("--version")
+    rule_review.add_argument("--start-line", type=int)
+    rule_review.add_argument("--end-line", type=int)
+    rule_review.add_argument("--reason")
+    rule_review.add_argument("--reference", help="Identifier or path of the independent test or checker report")
     view = configured_command("view", "Open the dashboard for a saved run")
     view.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     review = configured_command("review", "List checker findings or accept one with a reason")
@@ -121,6 +130,13 @@ def main() -> None:
                 "last_junie_input": record.get("last_junie_input"),
                 "last_junie_steering_input": record.get("last_junie_steering_input"),
             }, ensure_ascii=False, indent=2))
+            return
+        if args.command == "rule-review":
+            from migration_harness.rule_review import review_rules
+
+            report = review_rules(config, args.run_id, rule=args.rule, kind=args.record, version=args.version,
+                                  start=args.start_line, end=args.end_line, reason=args.reason, reference=args.reference)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
             return
         if args.command == "repair-draft":
             if args.version is None and not args.choose:

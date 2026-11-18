@@ -8,6 +8,59 @@ from migration_harness import junie_cli, rule_materials, workflow
 
 
 class RuleMaterialsTests(HarnessCase):
+    def test_operator_rule_review_replaces_false_decision_and_checks_evidence_version(self):
+        from migration_harness.rule_review import review_rules
+
+        (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
+        (self.project / "details.md").write_text("Preface\n" + "x\n" * 1000 + "Keep the final exception.\n", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config["units"][0]["inputs"].append({
+            "path": "details.md", "role": "migration_rules", "usage": "reference", "description": "Exception",
+            "encoding": "utf-8", "start_line": 1, "end_line": None, "shared": True,
+        })
+        result = workflow.prepare_run(config, "sample")
+        run_id = result["run_id"]
+        run_path = Path(result["run_path"])
+        record_path = run_path / "run.json"
+        record = json.loads(record_path.read_bytes())
+        rule = "rule-0001.txt"
+        record["detail_applicability"] = {rule: {"applies": False, "reason": "Missed exception"}}
+        workflow.write_run_record(record_path, record)
+        report = review_rules(config, run_id)
+        self.assertIsNone(report["rules"][0]["independent_verification"])
+        self.assertFalse(report["rules"][0]["applicability"])
+        row = report["rules"][0]
+        args = {"rule": rule, "start": 1002, "end": 1002, "reason": "Exception at the end"}
+        with self.assertRaisesRegex(ValueError, "行範囲"):
+            review_rules(config, run_id, kind="include", version=report["version"], **{**args, "end": 99999})
+        changed = review_rules(config, run_id, kind="include", version=report["version"], **args)
+        self.assertTrue(changed["rules"][0]["applicability"])
+        self.assertEqual(changed["rules"][0]["operator_decision"]["end_line"], 1002)
+        with self.assertRaisesRegex(ValueError, "更新"):
+            review_rules(config, run_id, kind="include", version=report["version"], **args)
+        with self.assertRaisesRegex(ValueError, "参照先"):
+            review_rules(config, run_id, kind="passed", version=changed["version"], **args)
+        reviewed = review_rules(config, run_id, kind="passed", version=changed["version"],
+                                reference="tests/test_exception: pass", **args)
+        self.assertEqual(reviewed["rules"][0]["independent_verification"]["kind"], "passed")
+        self.assertIsNone(reviewed["rules"][0]["application"])
+        capsule, manifest = workflow.load_capsule_manifest(run_path)
+        agent = run_path / "agent-workspace"
+        agent.mkdir()
+        saved = json.loads(record_path.read_bytes())
+        selected = rule_materials.effective_details(manifest, saved)
+        workflow._stage_migration_materials(capsule, manifest, agent, selected=selected)
+        self.assertIn("Keep the final exception.",
+                      (agent / ".migration-materials/guidelines.md").read_text(encoding="utf-8"))
+        updated = Path(result["worktree_path"]) / next(iter(report["targets"]))
+        updated.write_text("class Changed {}", encoding="utf-8")
+        self.assertIsNone(review_rules(config, run_id)["rules"][0]["independent_verification"])
+        (run_path / row["snapshot"]).write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "saved rule changed"):
+            review_rules(config, run_id)
+
     def test_hundreds_of_rules_keep_every_line_and_manifest_range(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         config = self.config()

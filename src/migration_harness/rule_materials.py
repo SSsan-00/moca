@@ -51,7 +51,7 @@ def detail_index(manifest: dict) -> list[dict]:
     ]
 
 
-def selected_details(index: list[dict], decisions: object) -> frozenset[str]:
+def selected_details(index: list[dict], decisions: object, line_counts: dict[str, int] | None = None) -> frozenset[str]:
     """確認漏れや不明な資料のIDがあれば、移行に進めない。"""
     if not isinstance(decisions, dict) or decisions.keys() != {item["file"] for item in index}:
         raise ValueError("detail review must contain exactly one decision for every saved detail")
@@ -64,14 +64,34 @@ def selected_details(index: list[dict], decisions: object) -> frozenset[str]:
             or not decision["reason"].strip()
         ):
             raise ValueError(f"invalid applicability decision for saved detail: {name}")
+        evidence = decision.get("rule_lines")
+        if evidence is not None and (
+            not isinstance(evidence, list) or len(evidence) != 2 or any(type(line) is not int for line in evidence)
+            or not 1 <= evidence[0] <= evidence[1] <= (line_counts[name] if line_counts is not None else evidence[1])
+        ):
+            raise ValueError(f"invalid applicability evidence lines for saved detail: {name}")
         if decision["applies"]:
             selected.add(name)
     return frozenset(selected)
 
 
+def effective_details(manifest: dict, record: dict) -> frozenset[str]:
+    selected = set(selected_details(detail_index(manifest), record["detail_applicability"]))
+    reference_hashes = {item["file"]: item["sha256"] for item in manifest.get("rule_files", [])
+                        if item.get("usage") == "reference"}
+    for name, decision in record.get("detail_overrides", {}).items():
+        if name not in reference_hashes or decision.get("sha256") != reference_hashes[name] or type(decision.get("applies")) is not bool:
+            raise ValueError(f"operator decision differs from saved rule: {name}")
+        if decision["applies"]:
+            selected.add(name)
+        else:
+            selected.discard(name)
+    return frozenset(selected)
+
+
 def render_guidelines(
     directory: Path, manifest: dict, *, targets: tuple[Path, ...] = (), selected: frozenset[str] | None = None,
-    supplied_rules: list[dict] | None = None,
+    supplied_rules: list[dict] | None = None, excluded: frozenset[str] = frozenset(),
 ) -> str:
     """照合済みの保存資料だけを使う。旧Runの断片も順に結合し省略しない。"""
     required, matched, details = [], [], []
@@ -95,12 +115,13 @@ def render_guidelines(
             required.append(body)
         elif usage == "reference" and isinstance(entry.get("description"), str) and entry["description"].strip():
             body = content.decode("utf-8")
-            if (selected is not None and name in selected) or (
-                mentions and (mentions.search(entry["description"]) or mentions.search(body))
+            if name not in excluded and (
+                (selected is not None and name in selected)
+                or (mentions and (mentions.search(entry["description"]) or mentions.search(body)))
             ):
                 matched.append(body)
             else:
-                if selected is None:
+                if selected is None and name not in excluded:
                     details.append(json.dumps({
                         "source": entry["path"], "when_to_read": entry["description"],
                         "file": f".migration-materials/{name}",

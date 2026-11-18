@@ -262,10 +262,11 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                                                              "last_junie_steering_input": None})
 
     def test_checker_only_requires_intact_build_inputs_and_artifacts(self):
-        project = self.worktree / "App.csproj"
+        project = self.worktree / "src/App.csproj"
+        project.parent.mkdir()
         project.write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
-                           '<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>', encoding="utf-8")
-        self.config["build_project"] = project.name
+                           '<TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup></Project>', encoding="utf-8")
+        self.config["build_project"] = project.relative_to(self.worktree).as_posix()
         toolchain = self.worktree.parent / "sdk"
         dotnet = toolchain / "dotnet"
         packs = toolchain / "packs" / "Microsoft.NETCore.App.Ref"
@@ -273,8 +274,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         dotnet.write_bytes(b"fixture dotnet")
         reference = packs / "reference.dll"
         reference.write_bytes(b"fixture reference")
-        dll = self.worktree / "bin/Debug/net8.0/App.dll"
-        assets = self.worktree / "obj/project.assets.json"
+        dll = project.parent / "bin/Debug/net8.0/App.dll"
+        assets = project.parent / "obj/project.assets.json"
         helper = self.worktree / "Helper.cs"
         helper.write_bytes(b"class Dependency {}")
         calls = []

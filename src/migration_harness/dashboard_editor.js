@@ -236,7 +236,9 @@
   }, {capture: true});
 
   function showSaveState() {
-    const hasDiff = current && !state.read_error && readText(current.model) !== state.content;
+    const hasDiff = current && !state.read_error
+      && readText(current.model) !== (state.comparison_content ?? state.content);
+    diffButton.textContent = state.comparison_label ?? "差分";
     const restoreFocus = !hasDiff && (document.activeElement === diffButton || diffHost.contains(document.activeElement));
     diffButton.disabled = !hasDiff || language === "php";
     if (!hasDiff && diffOpen) showEditor(false);
@@ -263,6 +265,7 @@
       : dirty() ? "未保存の変更あり"
       : conflict ? "競合の解消待ち"
       : state.edit ? "保存済み・ファイルへ反映待ち"
+      : state.stopped_draft ? (state.exists ? "停止時の下書き" : "停止時に対象ファイルが欠損")
       : !state.exists ? "移行先ファイルは未作成です" : "ファイルに反映済み");
     setText("#editor-save-timing", !state.can_save ? "保存先を読み込めません。接続とエラー内容を確認してください。"
       : state.save_timing === "repair_restart" ? "編集を保存して追加指示を送ると、修正へ反映し、対応後に再ビルドします。"
@@ -531,7 +534,8 @@
     }
     selectedTarget = data.target;
     if (latest.getLanguageId() !== fileLanguage) monaco.editor.setModelLanguage(latest, fileLanguage);
-    if (readText(latest) !== data.content) latest.setValue(data.content);
+    const baseline = data.comparison_content ?? data.content;
+    if (readText(latest) !== baseline) latest.setValue(baseline);
     const different = current !== file;
     current = file;
     showEditor(!different && diffOpen);

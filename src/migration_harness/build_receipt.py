@@ -17,9 +17,9 @@ def _fingerprint(root: Path, excluded=()) -> str:
     digest = hashlib.sha256()
     for current, directories, filenames in os.walk(root, onerror=_raise_scan_error):
         parent = Path(current)
-        if parent == root:
-            directories[:] = [name for name in directories if name not in excluded]
-            filenames = [name for name in filenames if name not in excluded]
+        relative = parent.relative_to(root)
+        directories[:] = [name for name in directories if (relative / name).as_posix() not in excluded]
+        filenames = [name for name in filenames if (relative / name).as_posix() not in excluded]
         directories.sort()
         for name in directories:
             path = parent / name
@@ -41,30 +41,41 @@ def _raise_scan_error(error: OSError) -> None:
 
 def build_inputs(worktree: Path, project_name: str | None) -> dict | None:
     """依存範囲を限定できる単一の SDK スタイルプロジェクトを照合する。"""
-    if not project_name or Path(project_name).name != project_name or not project_name.endswith(".csproj"):
+    if not project_name or not project_name.lower().endswith(".csproj"):
         return None
-    project = worktree / project_name
-    if project.is_symlink():
+    relative = Path(project_name)
+    if relative.is_absolute() or ".." in relative.parts:
         return None
     try:
+        project = safe_target(worktree, relative)
         root = ElementTree.fromstring(project.read_bytes())
         if root.tag != "Project" or root.attrib != {"Sdk": "Microsoft.NET.Sdk"}:
             return None
-        children = list(root)
-        if len(children) != 1 or children[0].tag != "PropertyGroup" or children[0].attrib:
-            return None
-        properties = list(children[0])
-        if (len(properties) != 1 or properties[0].tag != "TargetFramework" or properties[0].attrib
-                or len(properties[0])):
-            return None
-        framework = (properties[0].text or "").strip()
+        settings = {}
+        allowed = {
+            "TargetFramework": r"net[5-9]\.[0-9]+|net[1-9][0-9]+\.[0-9]+",
+            "Nullable": r"enable|disable|annotations|warnings",
+            "ImplicitUsings": r"enable|disable|true|false",
+            "OutputType": r"Exe|Library|WinExe",
+            "LangVersion": r"(?:[1-9][0-9]*(?:\.[0-9]+)?|default|latest|latestMajor|preview)",
+            "TreatWarningsAsErrors": r"true|false",
+        }
+        for group in root:
+            if group.tag != "PropertyGroup" or group.attrib:
+                return None
+            for item in group:
+                value = (item.text or "").strip()
+                if item.attrib or len(item) or item.tag in settings or not re.fullmatch(allowed.get(item.tag, r"(?!)"), value):
+                    return None
+                settings[item.tag] = value
+        framework = settings.get("TargetFramework", "")
         if not re.fullmatch(r"net[5-9]\.[0-9]+|net[1-9][0-9]+\.[0-9]+", framework):
             return None
         overrides = {
             "directory.build.props", "directory.build.targets", "directory.build.rsp",
             "directory.packages.props", "global.json", "msbuild.rsp",
         }
-        if any(entry.name.casefold() in overrides for parent in (worktree, *worktree.parents)
+        if any(entry.name.casefold() in overrides for parent in project.parents
                for entry in parent.iterdir()):
             return None
         environment = {key: value for key, value in os.environ.items() if key not in {"_", "SHLVL"}}
@@ -81,7 +92,7 @@ def build_inputs(worktree: Path, project_name: str | None) -> dict | None:
             return None
         return {
             "project": project_name, "framework": framework,
-            "source": _fingerprint(worktree, (".git", "bin", "obj")),
+            "source": _fingerprint(worktree, (".git", *((relative.parent / path).as_posix() for path in ("bin", "obj")))),
             "environment": hashlib.sha256(json.dumps(environment, sort_keys=True).encode("utf-8")).hexdigest(),
             "dotnet": str(executable), "launcher": sha256_file(executable),
             "framework_packs": _fingerprint(packs.resolve()),
@@ -92,14 +103,16 @@ def build_inputs(worktree: Path, project_name: str | None) -> dict | None:
 
 def build_artifacts(worktree: Path, inputs: dict) -> dict | None:
     """生成物と復元メタデータを照合する。外部パッケージがある場合は再ビルドが必要。"""
-    assembly = Path(inputs["project"]).stem + ".dll"
-    bin_root, obj_root = worktree / "bin", worktree / "obj"
+    relative_project = Path(inputs["project"])
+    assembly = relative_project.stem + ".dll"
+    relative_dir = relative_project.parent
+    bin_root, obj_root = worktree / relative_dir / "bin", worktree / relative_dir / "obj"
     if any(root.is_symlink() or not root.is_dir() or not root.resolve().is_relative_to(worktree)
            for root in (bin_root, obj_root)):
         return None
     try:
-        dll = safe_target(worktree, Path("bin/Debug") / inputs["framework"] / assembly)
-        assets = safe_target(worktree, Path("obj/project.assets.json"))
+        dll = safe_target(worktree, relative_dir / "bin/Debug" / inputs["framework"] / assembly)
+        assets = safe_target(worktree, relative_dir / "obj/project.assets.json")
         if not dll.is_file() or json.loads(assets.read_bytes()).get("libraries") != {}:
             return None
         return {"bin": _fingerprint(bin_root), "obj": _fingerprint(obj_root)}
