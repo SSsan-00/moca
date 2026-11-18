@@ -68,7 +68,7 @@ def current_operation_id() -> str | None:
 
 
 def junie_dashboard_control() -> ExecutionControl | None:
-    """Junie呼び出し用にダッシュボードの制御状態を設定する。"""
+    """操作確認を受け付けられる現在のダッシュボード制御を返す。"""
     control = _control.get()
     return control if control is not None and control.on_junie_request is not None else None
 

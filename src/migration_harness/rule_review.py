@@ -15,6 +15,7 @@ from .worktree_targets import target_hash, worktree_source_lock
 
 
 def _review_state(config, run_id):
+    """固定資料と現在の移行先を照合し、判断を保存するための版を返す。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     capsule, manifest = load_capsule_manifest(run_path)
     rules = manifest.get("rule_files", manifest.get("rule_chunks", []))
@@ -54,6 +55,7 @@ def _review_state(config, run_id):
 
 
 def _latest_evidence(entries, targets, decision, kinds):
+    """現在の採否と対象に有効な直近の根拠を探す。読了は資料の版で決まる。"""
     for entry in reversed(entries):
         if entry["kind"] in kinds and (
             entry["kind"] == "read" or (entry.get("targets") == targets and entry.get("decision") == decision)

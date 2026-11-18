@@ -76,6 +76,7 @@ def selected_details(index: list[dict], decisions: object, line_counts: dict[str
 
 
 def effective_details(manifest: dict, record: dict) -> frozenset[str]:
+    """保存済みルールの版を照合し、利用者が上書きした採否を反映する。"""
     selected = set(selected_details(detail_index(manifest), record["detail_applicability"]))
     reference_hashes = {item["file"]: item["sha256"] for item in manifest.get("rule_files", [])
                         if item.get("usage") == "reference"}

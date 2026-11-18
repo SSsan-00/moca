@@ -18,6 +18,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def parameters(number):
+    """評価ケースの番号から繰り返し可能な入力値を作る。"""
     rng = random.Random(f"business-php-v1-{number}")
     return dict(
         ID=f"{number:03d}", NUMBER=number, MAX_QTY=rng.randrange(25, 61), PROGRAM=f"club-{number:03d}",
@@ -33,6 +34,7 @@ def parameters(number):
 
 
 def generate_php():
+    """固定ケースを展開し、評価用PHPと期待データを生成する。"""
     core = (HERE / "core.php").read_text(encoding="utf-8")
     template = (HERE / "policy.php.tpl").read_text(encoding="utf-8")
     policies = []
@@ -43,6 +45,7 @@ def generate_php():
         p = parameters(number)
         policies.append(p)
         def substitute(match):
+            """参照用のサンプルと資料にケース固有の値を埋め込む。"""
             return str(p[match[1]]).replace("\\", "\\\\").replace("'", "\\'")
         blocks.append(re.sub(r"@([A-Z_]+)@", substitute, template))
     dispatch = "function policy_functions(): array {\n    return [\n" + "".join(
@@ -86,12 +89,14 @@ DETAILS = {
 
 
 def create():
+    """合成PHP、資料、期待値を評価用アプリへ配置する。"""
     started = time.monotonic()
     root = Path(tempfile.mkdtemp(prefix="harness-business-")).resolve()
     app = root / "app"
     for directory in ("Pages/Business", "Pages/inc", "legacy", "rules", "verification"):
         (app / directory).mkdir(parents=True)
     def write(name, text):
+        """評価用アプリの相対パスへUTF-8の本文を書く。"""
         (app / name).write_text(text, encoding="utf-8", newline="")
     source, policies = generate_php()
     write("legacy/business.php", source)

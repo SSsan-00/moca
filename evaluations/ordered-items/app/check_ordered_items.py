@@ -12,25 +12,30 @@ TARGET = "Pages/OrderedItems.cshtml"
 
 class ListItems(HTMLParser):
     def __init__(self):
+        """HTMLから順序付きのリスト要素を集める状態を初期化する。"""
         super().__init__()
         self.values = []
         self.text = None
 
     def handle_starttag(self, tag, attrs):
+        """リスト項目の本文の収集を始める。"""
         if tag == "li":
             self.text = []
 
     def handle_data(self, data):
+        """収集中のリスト項目へデコード済みの本文を加える。"""
         if self.text is not None:
             self.text.append(data)
 
     def handle_endtag(self, tag):
+        """リスト項目を確定し、HTMLに出た順に結果を残す。"""
         if tag == "li" and self.text is not None:
             self.values.append("".join(self.text).strip())
             self.text = None
 
 
 def main():
+    """応答のリスト要素を期待した値と順序に照合する。"""
     parser = argparse.ArgumentParser(description="Compare rendered list items with the PHP fixture oracle.")
     parser.add_argument("--html-stdin", action="store_true", help="Check pre-rendered UTF-8 HTML from stdin")
     args = parser.parse_args()

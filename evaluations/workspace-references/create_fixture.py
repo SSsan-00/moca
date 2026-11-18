@@ -12,6 +12,7 @@ app = root / "app"
 
 
 def write(name: str, content: str) -> None:
+    """評価用の参照資料をUTF-8で保存する。"""
     destination = app / name
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(content, encoding="utf-8")

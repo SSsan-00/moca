@@ -48,6 +48,7 @@
   let sending = false;
   let revision = 0;
 
+  // エディタと会話の領域に必要な幅から切り替え位置を制限する。
   function splitBounds() {
     const style = getComputedStyle(layout);
     const width = layout.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
@@ -56,6 +57,7 @@
     return {width, min, max};
   }
 
+  // 利用できる幅へ分割位置を収め、操作後の表示を更新する。
   function resizeEditor(width) {
     const bounds = splitBounds();
     const clamped = Math.max(bounds.min, Math.min(bounds.max, width));
@@ -99,6 +101,7 @@
     resizeEditor(sizes[event.key]);
   });
 
+  // エディタを最初に開くときだけ、配布済みのMonacoを読み込む。
   function loadMonaco() {
     if (monacoLoading) return monacoLoading;
     const loadScript = src => new Promise((resolve, reject) => {
@@ -129,12 +132,14 @@
     return monacoLoading;
   }
 
+  // エラーを文字列として表示し、解消時には行を閉じる。
   function report(selector, error) {
     const target = find(selector);
     target.hidden = !error;
     target.textContent = error ? error.message || String(error) : "";
   }
 
+  // 同じ内容のDOM書き込みを省く。
   function setText(selector, text) {
     const target = find(selector);
     if (target.textContent !== text) target.textContent = text;
@@ -143,6 +148,7 @@
   const progressBadge = find("#run-state");
   const editorBadge = find("#editor-junie-status");
   const progressReview = find("#toggle");
+  // 進捗タブの工程と確認可能な操作をエディタへ同期する。
   function syncPhaseBadge() {
     setText("#editor-junie-phase", find("#state-label").textContent);
     editorBadge.dataset.state = progressBadge.dataset.state;
@@ -161,10 +167,12 @@
   editorBadge.addEventListener("click", () => progressReview.click());
   syncPhaseBadge();
 
+  // エディタ上の改行を保存要求用に統一する。
   function readText(model) {
     return model.getValue(window.monaco.editor.EndOfLinePreference.LF);
   }
 
+  // サーバーから取得した保存版との差分を判定する。
   function dirty() {
     return current && readText(current.model) !== current.saved;
   }
@@ -175,6 +183,7 @@
     }
   });
 
+  // 比較を開いたかどうかに応じて、編集・差分の表示とモデルを切り替える。
   function showEditor(open) {
     diffOpen = open;
     const showingPhp = language === "php";
@@ -201,6 +210,7 @@
     }
   }
 
+  // 対象が変わった場合にだけファイル選択肢を作り直す。
   function showTargets(targets) {
     const shown = [...targetButtons.children].map(button => button.dataset.target);
     if (shown.length === targets.length && targets.every((path, index) => path === shown[index])) return;
@@ -235,6 +245,7 @@
     else activeEditor.getAction("actions.find").run();
   }, {capture: true});
 
+  // 保留・競合・送信状態に応じて保存の可否と案内をそろえる。
   function showSaveState() {
     const hasDiff = current && !state.read_error
       && readText(current.model) !== (state.comparison_content ?? state.content);
@@ -273,6 +284,7 @@
       : state.save_timing === "resume" ? "編集は保存できます。同じ実行を再開するとファイルに反映します。" : "");
   }
 
+  // 保存済みPHPを取得し、Runまたは対象が切り替わった場合は結果を破棄する。
   async function loadPhp(source) {
     if (switching || !state?.run_id || state.run_id !== progress().run_id) return;
     const version = ++phpRequest;
@@ -304,6 +316,7 @@
     showSaveState();
   }
 
+  // 編集の基準版を添えて保存し、同じRunの応答だけを反映する。
   async function saveDraft() {
     if (save.disabled || !current) return;
     const resolving = state.edit?.status === "conflict";
@@ -332,10 +345,12 @@
     }
   }
 
+  // 現在のRunが指示を受理でき、本文がある場合に送信を許可する。
   function updateSendButton() {
     sendButton.disabled = switching || state?.run_id !== progress().run_id || !state?.can_prompt || sending || !prompt.value.trim();
   }
 
+  // 新規指示と送信待ちの指示編集を、ラベルと操作で区別する。
   function promptMode() {
     const active = Boolean(editPrompt);
     prompt.setAttribute("aria-label", active ? "送信待ちの指示を編集" : "Junie に指示");
@@ -347,6 +362,7 @@
     updateSendButton();
   }
 
+  // 保存または取消後に、編集中だった新規指示を入力欄へ戻す。
   function finishPromptEdit() {
     editPrompt = undefined;
     prompt.value = newPromptDraft;
@@ -354,6 +370,7 @@
     prompt.focus();
   }
 
+  // 送信した指示と、その応答を表示する行を作る。
   function chatTurn(text) {
     const item = document.createElement("li");
     const message = Object.assign(document.createElement("div"), {className: "editor-chat-bubble editor-chat-message"});
@@ -367,6 +384,7 @@
     return {item, message, reply};
   }
 
+  // 会話履歴を描画し、入力中の操作や表示位置を保つ。
   function renderPrompts() {
     const key = JSON.stringify([state.run_id, state.prompts, state.conversation, state.can_prompt,
       progress().status, Boolean(progress().junie_request)]);
@@ -431,6 +449,7 @@
     }));
   }
 
+  // 保存状態を会話履歴と送信欄に反映する。
   function updateChat() {
     renderPrompts();
     const liveQuestion = progress().junie_request;
@@ -457,6 +476,7 @@
     cancelEdit.disabled = !editPrompt || sending;
   }
 
+  // 保存版と未保存編集を照合して、表示中のRunの画面を更新する。
   async function display(data, expectedRevision = revision) {
     if (expectedRevision !== revision || switching || (data.run_id && data.run_id !== progress().run_id)) return;
     const previous = state;
@@ -547,6 +567,7 @@
     find("#editor-empty").hidden = true;
   }
 
+  // 表示中のRunだけを取得し、変更がない場合は描画を省く。
   async function refresh() {
     if (tab.getAttribute("aria-selected") !== "true" || refreshing === revision || saving || sending || switching) return;
     const version = revision;

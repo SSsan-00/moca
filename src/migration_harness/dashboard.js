@@ -219,12 +219,14 @@ function syncActions() {
   syncProgressPrompts();
 }
 
+// 進捗の状態に合わせ、追加指示を送れる時点とボタンの表示を更新する。
 function syncProgressPrompts() {
   progressPrompt.button.hidden = !snapshot.worktree_path;
   progressPrompt.button.disabled = !connected;
   progressPrompt.render(progressPrompts, {available: connected, loading: promptLoading, saving: promptSaving});
 }
 
+// Runと要求番号を照合し、現在表示中の追加指示だけを更新する。
 async function refreshProgressPrompts() {
   if (!progressPrompt.dialog.open || !connected || promptLoading || promptSaving) return;
   const request = ++promptRequest;
@@ -245,6 +247,7 @@ async function refreshProgressPrompts() {
   }
 }
 
+// 同じRunの受付結果で入力欄と送信状態を更新する。
 async function submitProgressPrompt(text) {
   const runId = snapshot.run_id;
   const request = ++promptRequest;
@@ -265,10 +268,12 @@ async function submitProgressPrompt(text) {
   }
 }
 
+// ビルド失敗時の保存版と入力中の本文を比較する。
 function buildEditIsDirty() {
   return !!buildFile && buildSource.value !== buildFile.content;
 }
 
+// 保存時の文字コード・改行を考慮し、編集と再ビルドを有効にする。
 function syncBuildReview(canAct) {
   const edited = buildEditIsDirty();
   const instructed = !!buildInstruction.value.trim();
@@ -292,6 +297,7 @@ function syncBuildReview(canAct) {
   }
 }
 
+// 指定Runと対象のビルド失敗時の保存版を取得する。
 async function fetchBuildReview(runId, target) {
   const query = new URLSearchParams({run_id: runId});
   if (target) query.set("target", target);
@@ -300,6 +306,7 @@ async function fetchBuildReview(runId, target) {
   return response.json();
 }
 
+// 選択中に開始した取得だけをビルド確認の入力に反映する。
 async function loadBuildSource() {
   const request = ++buildRequest;
   const target = buildTarget.value;
@@ -329,6 +336,7 @@ async function loadBuildSource() {
   }
 }
 
+// ビルドの対象・ログ・エディタを同じRunの結果で初期化する。
 async function openBuildReview() {
   const request = ++buildRequest;
   const runId = snapshot.run_id;
@@ -407,6 +415,7 @@ function openReview(index = findings.selectedIndex) {
   }
 }
 
+// 指摘の確認画面に、現在選んでいるRunの出力を表示する。
 async function loadCheckerOutput() {
   const request = ++checkerOutputRequest;
   const path = `checker-output?run_id=${encodeURIComponent(snapshot.run_id)}`;
@@ -426,11 +435,13 @@ async function loadCheckerOutput() {
   }
 }
 
+// 現在のJunie確認を共有モーダルに表示する。
 function openJunieReview() {
   if (!dialog.open) dialog.showModal();
   reviewTitle.focus();
 }
 
+// 確認IDが変わったときだけ選択肢を作り直す。
 function renderJunieReview(request) {
   if (request?.id === junieRequestId) return;
   junieRequestId = request?.id;
@@ -460,6 +471,7 @@ function renderJunieReview(request) {
   if (!progressPrompt.dialog.open) openJunieReview();
 }
 
+// 表示済みの確認IDと実行操作IDを使って回答し、古い応答を切り離す。
 async function answerJunie(requestId, optionId) {
   if (!connected || snapshot.junie_request?.id !== requestId || junieSubmitting === requestId) return;
   junieSubmitting = requestId;
@@ -541,11 +553,12 @@ window.addEventListener("focus", () => {
   if (snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
 });
 
+// サーバーの診断を捨てず、HTMLのエラー本文も文字列として表示する。
 async function responseError(response) {
-  // サーバーの診断を捨てず、HTMLのエラー本文も文字列として表示する。
   return new Error(`HTTP ${response.status} ${response.statusText}\n${await response.text()}`);
 }
 
+// 選択中のRunの要求に識別子を付け、ワークスペース共通の要求はそのまま送る。
 function runFetch(path, options = {}) {
   const headers = new Headers(options.headers);
   const runId = selectedRunId;
@@ -553,10 +566,12 @@ function runFetch(path, options = {}) {
   return fetch(path, {...options, headers});
 }
 
+// 別タブで思考ログを追記取得し、タブが閉じたときに終了する。
 function tailJunieLog(view) {
   const url = new URL("junie-thoughts", location.href);
   url.searchParams.set("run_id", view.run.run_id);
   let cursor = 0;
+  // 詳細ログの続きから取得し、受信量に応じて次回の間隔を調整する。
   async function poll() {
     if (view.popup.closed) return;
     let delay = 750;
@@ -578,6 +593,7 @@ function tailJunieLog(view) {
   poll();
 }
 
+// ダッシュボードのJSON APIを呼び、サーバーの診断を保持する。
 async function workspaceRequest(path, payload) {
   const message = "操作できませんでした。接続と入力内容を確認して、もう一度お試しください。";
   let response;
@@ -596,6 +612,7 @@ async function workspaceRequest(path, payload) {
 
 let openResumeStage;
 
+// 再開計画の照会と実行を同じRun・世代に結び付ける。
 function bindResumeStage() {
   const resumeDialog = document.querySelector("#resume-stage-dialog");
   const resumeStage = document.querySelector("#resume-stage");
@@ -606,6 +623,7 @@ function bindResumeStage() {
   const resumeStart = document.querySelector("#resume-stage-start");
   let resumeRunID, resumePlan, resumeGeneration = 0;
 
+  // 選択条件を変えたときに、確認済みの版と応答待ちの要求を無効にする。
   function clearResumePlan() {
     resumeGeneration++;
     resumePlan = undefined;
@@ -724,6 +742,7 @@ workspaceTabs.addEventListener("harnesstab", async () => {
   }
 });
 
+// 保存済みカプセル数と実行中の区間の容量を表示する。
 function renderCapsuleProgress(data, total, completed) {
   const capsuleIndex = Math.max(0, (data.current_capsule ?? 1) - 1);
   const chars = data.context_part_chars?.[capsuleIndex] ?? 0;
@@ -785,6 +804,7 @@ const checkerLegacyReasons = [
   [/checker did not complete normally/, "checker_incomplete"],
 ];
 
+// 現行の理由コードと旧Runの診断を、確認画面の案内へ変換する。
 function checkerReviewCopy(data) {
   const legacy = checkerLegacyReasons.find(([pattern]) => pattern.test(data.error || ""))?.[1];
   const fallback = data.status === "checker_failed" ? "checker_incomplete" : "review_required";
@@ -794,6 +814,7 @@ function checkerReviewCopy(data) {
   return {reason, action};
 }
 
+// 確認可能な段階で、次の操作と診断をレビュー欄に表示する。
 function renderCheckerStatus(data) {
   if (!data.ready) return;
   const {reason, action} = checkerReviewCopy(data);
@@ -804,6 +825,7 @@ function renderCheckerStatus(data) {
   element("#checker-review-technical").textContent = diagnostics.join("\n\n") || "詳細ログはありません。";
 }
 
+// チェッカー判断の要点と実行エラーを進捗欄に表示する。
 function progressFeedback(data) {
   if (data.ready && checkerReviewStatuses.has(data.status)) {
     return data.message?.split("\n", 1)[0] || checkerReviewCopy(data).reason;
@@ -811,6 +833,7 @@ function progressFeedback(data) {
   return data.message || (data.ready ? data.error || data.review_error : "") || "";
 }
 
+// 指摘の選択と入力を保ちながら、結果の更新時だけ一覧を作り直す。
 function renderCheckerReview(data, showReview) {
   const items = data.review?.findings || [];
   const reviewKey = JSON.stringify([data.run_id, data.review, data.review_error, data.checker_log_path]);
@@ -865,6 +888,7 @@ function renderCheckerReview(data, showReview) {
   }
 }
 
+// 使用量の集計を更新し、選択中はRun別一覧にも反映する。
 function renderTokens() {
   const data = snapshot;
   const usingJunie = !data.ready && (["junie_running", "editor_followup", "repairing"].includes(data.status) || data.generating_anchors);
@@ -968,6 +992,7 @@ function renderElapsed() {
   setElapsed(element("#elapsed"), measured ? total : null, "未計測", element("#elapsed-value"));
 }
 
+// 未計測と計測済みの表示および時刻要素をそろえる。
 function setElapsed(time, seconds, missing = "未計測", label = time) {
   const text = seconds === null ? missing : formatDuration(seconds * 1000);
   if (label.textContent !== text) label.textContent = text;
@@ -1000,6 +1025,7 @@ function addEvent(data) {
   appendEvent(data.observed_at, title, detail);
 }
 
+// 実行通知の重複を除き、保持する識別子数の上限を守る。
 function addActivity(data) {
   const event = data.activity;
   if (!event || !Number.isFinite(event.sequence) || typeof event.message !== "string") return;
@@ -1012,6 +1038,7 @@ function addActivity(data) {
   appendEvent(event.at, "実行状況", [event.message, event.detail].filter(Boolean), "activity");
 }
 
+// 読む位置を保ちながら、上限付きの進捗ログへ追加する。
 function appendEvent(at, title, detail, kind = "state") {
   const follow = activity.scrollHeight - activity.scrollTop - activity.clientHeight < 32;
   const row = document.createElement("div");
@@ -1093,6 +1120,7 @@ element("#checker-open-editor").addEventListener("click", () => {
 });
 stopButton.addEventListener("click", () => send("stop"));
 
+// 画面とダウンロードが共有する、Run内の比較結果の相対パスを作る。
 function comparisonPath(runId, snapshotId) {
   return `review/${runId}/${snapshotId}`;
 }
@@ -1229,6 +1257,7 @@ element("#build-review-form").addEventListener("submit", async event => {
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
 let stream;
 let streamGeneration = 0;
+// 古いSSEを閉じ、新しいRunの最初のイベントまで操作を保留する。
 function connectRun(runId = "", {removed = false} = {}) {
   if (!removed && window.harnessEditorCanSwitch && !window.harnessEditorCanSwitch()) {
     return Promise.reject(new Error("編集の保存または指示の送信が終わってから実行を切り替えてください。"));
@@ -1273,6 +1302,7 @@ function connectRun(runId = "", {removed = false} = {}) {
     };
   });
 }
+// 進捗を反映し、Runが切り替わるときは入力と履歴を切り離す。
 function receiveProgress(event) {
 
   const data = JSON.parse(event.data);

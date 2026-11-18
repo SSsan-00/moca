@@ -10,6 +10,7 @@ from migration_harness.capsules import input_encoding
 
 
 def inspect_rules(config_path: Path) -> dict:
+    """設定からルールの読み込み方と固定用のファイル情報を集める。"""
     config = load_config(config_path)
     rules = []
     # 共通ルールは全unitに展開済み。全unitを足すと同じ資料を重複計上する。
@@ -31,6 +32,7 @@ def inspect_rules(config_path: Path) -> dict:
 
 
 def main() -> None:
+    """指定された設定のルール一覧をJSONで出力する。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path)
     parser.add_argument("--output", type=Path, help="UTF-8で保存する新規ファイル。既存ファイルは上書きしない")

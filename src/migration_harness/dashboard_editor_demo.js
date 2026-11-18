@@ -1,6 +1,7 @@
 "use strict";
 
 window.harnessEditorDemo = (() => {
+  // 編集と会話の模擬ファイルをRunごとに作る。
   function createRun(runId) {
   const codeBehind = "Pages/Orders/Index.cshtml.cs";
   const razorPage = "Pages/Orders/Index.cshtml";
@@ -75,6 +76,7 @@ window.harnessEditorDemo = (() => {
   let boundary;
   let updated = false;
 
+  // 本番と同じ画面操作をデモRunのメモリ上の状態で再現する。
   async function request(path, action) {
     if (path.startsWith("editor-php?")) return {run_id: runId, sources: [phpPath], source: phpPath, content: php};
     const target = action?.target ?? new URLSearchParams(path.split("?")[1]).get("target") ?? codeBehind;
@@ -111,12 +113,14 @@ window.harnessEditorDemo = (() => {
       target, content: file.content, edit: file.edit});
   }
 
+  // デモ対象の初期本文を模擬移行後の内容へ進める。
   function update() {
     for (const file of files.values()) file.content = file.content.replace(file.before, file.after);
     updated = true;
     progress.activity.message = "Junie が注文一覧の取得処理と見出しを更新しました。";
   }
 
+  // 選択中のデモRunの状態に応じて、追加指示の進行を模擬する。
   function advance() {
     const merged = new Map();
     for (const file of files.values()) {
@@ -161,6 +165,7 @@ window.harnessEditorDemo = (() => {
   }
   const sessions = new Map();
   let active;
+  // Runごとのデモ編集と会話を再利用し、表示を切り替える。
   function select(run) {
     if (!sessions.has(run.run_id)) sessions.set(run.run_id, createRun(run.run_id));
     active = sessions.get(run.run_id);
@@ -168,6 +173,7 @@ window.harnessEditorDemo = (() => {
   }
   select(window.harnessDemoSelectedRun || {run_id: "run-2026-11-14-001", status: "junie_running", worktree_path: "demo", current_capsule: 3, context_capsules: 5});
   let promptTimer;
+  // 切り替え前のデモRunの取得結果を破棄する。
   async function renderPrompts() {
     const session = active;
     const data = await session.request("editor");

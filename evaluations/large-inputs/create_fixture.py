@@ -15,6 +15,7 @@ for directory in ("Pages/Catalog", "Pages/inc", "legacy", "rules"):
 
 
 def write(name, text):
+    """親ディレクトリを用意して長い評価用入力を保存する。"""
     (app / name).write_text(text, encoding="utf-8", newline="")
 
 

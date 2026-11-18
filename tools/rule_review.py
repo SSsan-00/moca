@@ -15,11 +15,13 @@ PAGE_CHARS = 2800
 
 
 def save_new(path: Path, data: bytes) -> None:
+    """既存の確認記録を上書きせずに原本を保存する。"""
     with path.open("xb") as stream:
         stream.write(data)
 
 
 def pages_for(report: dict) -> list:
+    """物理行番号を保ち、長い行も確認ページに収める。"""
     pages = []
     for item in report["rules"]:
         source = Path(item["path"])
@@ -43,6 +45,7 @@ def pages_for(report: dict) -> list:
 
 
 def inventory(pack: Path) -> tuple[Path, bytes, list]:
+    """設定と原文を確認開始時の版に照合する。"""
     report = json.loads((pack / "loading-before.json").read_text(encoding="utf-8"))
     config = Path(report["config_path"])
     original = (pack / "config.before.toml").read_bytes()
@@ -52,6 +55,7 @@ def inventory(pack: Path) -> tuple[Path, bytes, list]:
 
 
 def review_records(pack: Path) -> dict:
+    """ページ単位で途中保存された読了記録を読み出す。"""
     review_path = pack / "reading-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8")) if review_path.exists() else {}
     if not isinstance(review, dict):
@@ -61,6 +65,7 @@ def review_records(pack: Path) -> dict:
 
 def check_review(pack: Path, pages: list, *, records: dict | None = None,
                  numbers: set[int] | None = None) -> set[tuple[Path, int]]:
+    """指定ページの表示・読了と引用を照合し、必須行を返す。"""
     review = review_records(pack) if records is None else records
     if set(review) - {str(i) for i in range(1, len(pages) + 1)}:
         raise ValueError("確認記録に不明なページ番号があります。")
@@ -96,6 +101,7 @@ def check_review(pack: Path, pages: list, *, records: dict | None = None,
 
 def show_pages(pack: Path, pages: list, numbers: list[int]) -> None:
     # 全文を1回で出すとツール側で省略される。小さい束でも確認記録はページごとに残す。
+    """指定ページを表示し、確認画面に出した記録を残す。"""
     for index in numbers:
         source, page = pages[index - 1]
         print(f"ページ {index}/{len(pages)}: {source}")
@@ -106,6 +112,7 @@ def show_pages(pack: Path, pages: list, numbers: list[int]) -> None:
 
 
 def without_rules(data: bytes) -> dict:
+    """ルール以外の設定が維持されているか比較できる辞書を作る。"""
     doc = tomllib.loads(data.decode("utf-8"))
     doc["project"].pop("migration_rules", None)
     for unit in doc.get("units", []):
@@ -117,6 +124,7 @@ def without_rules(data: bytes) -> dict:
 
 
 def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: Path) -> None:
+    """採用候補のルールと設定を照合してから作業設定を更新する。"""
     pack = pack.resolve()
     data = candidate.read_bytes()
     if without_rules(data) != without_rules(original):
@@ -166,6 +174,7 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
 
 
 def main() -> None:
+    """ルールの確認開始、ページ表示、確認記録、反映を実行する。"""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
     for name in ("start", "read", "record", "check", "apply"):

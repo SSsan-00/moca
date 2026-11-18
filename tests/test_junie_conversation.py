@@ -9,7 +9,7 @@ from contextlib import ExitStack, contextmanager, redirect_stdout
 from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
@@ -56,10 +56,19 @@ class JunieConversationTests(SavedRunFixture):
         view = self.manager.views.get(run_id)
         state = view.state if view else {}
         thread = self.manager.conversations.thread
+        job = self.manager.jobs.get(run_id, {})
+        try:
+            # A timeout can occur while another thread owns editor.lock.
+            persisted = json.loads((Path(self.config["run_root"]) / run_id / "editor.json").read_bytes())
+            conversation = [(item.get("id"), item.get("status")) for item in persisted.get("conversation", [])[-4:]]
+        except (OSError, ValueError):
+            conversation = []
         return (f"Run {run_id}, status={state.get('status')}, operation={state.get('operation_id')}, "
-                f"conversation_worker_alive={bool(thread and thread.is_alive())}")
+                f"job_running={job.get('running')}, job_conversation={job.get('conversation_id')}, "
+                f"conversation_worker_alive={bool(thread and thread.is_alive())}, recent_conversation={conversation}")
 
     def start_server(self):
+        """受理後の永続化と再起動を確認できるRunManagerとHTTPサーバーを開く。"""
         view = dashboard.Dashboard()
         view.publish({"status": "idle", "ready": True})
         self.manager = RunManager(self.config, view)
@@ -80,18 +89,22 @@ class JunieConversationTests(SavedRunFixture):
         self.headers = {"Origin": f"{origin.scheme}://{origin.netloc}", "Content-Type": "application/json"}
 
     def restart_server(self, **settings):
+        """同じ保存領域からRunManagerと会話履歴を読み直す。"""
         self.server_cleanup.close()
         self.config = {**self.config, **settings}
         self.start_server()
 
     def request(self, endpoint, body=None, run_id=None):
+        """テスト用のRun IDとオリジンを付けてダッシュボードへ要求する。"""
         headers = {**self.headers, "X-Run-ID": run_id or self.run_id}
         started = time.monotonic()
         request = Request(self.url + endpoint, None if body is None else json.dumps(body).encode(), headers)
         try:
             with urlopen(request, timeout=3) as response:
                 return response.status, json.load(response)
-        except TimeoutError as error:
+        except (TimeoutError, URLError) as error:
+            if isinstance(error, URLError) and not isinstance(error.reason, TimeoutError):
+                raise
             self.raise_background_error()
             raise AssertionError(
                 f"{request.get_method()} {endpoint} timed out after {time.monotonic() - started:.3f}s; "
@@ -109,6 +122,7 @@ class JunieConversationTests(SavedRunFixture):
         return identifier, result
 
     def wait_for(self, identifier, status, *, run_path=None):
+        """保存済みの履歴を読み、対象指示が期待した状態になるまで待つ。"""
         end = time.monotonic() + 6
         while time.monotonic() < end:
             self.raise_background_error()
@@ -683,11 +697,9 @@ class JunieConversationTests(SavedRunFixture):
             builds.append(self.target.read_text(encoding="utf-8-sig"))
             if len(builds) == 1:
                 running.set()
-                end = time.monotonic() + 6
-                while time.monotonic() < end:
-                    check_cancelled()
-                    time.sleep(.01)
-                self.fail("the first build was not stopped")
+                cancelled = self.manager.get(self.run_id).control.cancelled
+                self.assertTrue(cancelled.wait(6), "the first build was not stopped")
+                check_cancelled()
             kwargs["stdout"].write(b"new successful build\n")
             return subprocess.CompletedProcess(command, 0)
 
@@ -810,6 +822,7 @@ class JunieConversationTests(SavedRunFixture):
         self.assertTrue(self.request("migration-ledger")[1]["completion"]["complete"])
 
     def wait_until_idle(self):
+        """ワーカージョブの解放または背景例外を待つ。"""
         with self.manager.condition:
             idle = self.manager.condition.wait_for(
                 lambda: self.background_errors or self.run_id not in self.manager.jobs, timeout=6,

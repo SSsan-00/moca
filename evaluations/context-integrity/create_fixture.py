@@ -6,7 +6,9 @@ root=Path(tempfile.mkdtemp(prefix='harness-rules-context-')).resolve()
 app=root/'app'
 for sub in ['Pages/Orders','Pages/inc','legacy','rules']:
     (app/sub).mkdir(parents=True,exist_ok=True)
-def write(name,text): (app/name).write_text(text,encoding='utf-8')
+def write(name,text):
+    """評価用作業コピーへUTF-8の入力を配置する。"""
+    (app/name).write_text(text,encoding='utf-8')
 write('.gitignore', 'bin/\nobj/\n')
 write('Case.csproj','<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>')
 write('Program.cs','Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(Migration.OrderPage.Values()));\n')

@@ -33,6 +33,7 @@ function* materialGroups(inputs) {
   }
 }
 
+// 削除対象をタイトルとアクセシブル名で示す。
 function removeButton(label, action) {
   const button = document.createElement("button");
   button.type = "button";
@@ -44,6 +45,7 @@ function removeButton(label, action) {
   return button;
 }
 
+// 入力欄と対応する削除ボタンを同じ行に置く。
 function fieldWithRemove(label, remove) {
   const row = document.createElement("div");
   row.className = "settings-field-row";
@@ -92,12 +94,14 @@ function bindSettingsMaterials(getForm, newDraft, changeMaterials) {
   const references = document.querySelector("#settings-references");
   const addRule = document.querySelector("#settings-rule-add");
   const addReference = document.querySelector("#settings-reference-add");
+  // 資料の並びと追加・削除を描画し、入力のフォーカス先を返す。
   function showMaterials(inputs, kind = "references") {
     const common = kind === "migrationRules";
     const list = common ? rules : references;
     list.replaceChildren();
     const change = () => changeMaterials(kind);
     const rendered = new Map();
+    // 資料の種類と順序が分かる見出しを持つ入力グループを作る。
     function addCard(list, title) {
       const card = document.createElement("fieldset");
       card.className = "settings-material";
@@ -107,6 +111,7 @@ function bindSettingsMaterials(getForm, newDraft, changeMaterials) {
       list.append(card);
       return card;
     }
+    // 参考実装を追加する操作を、フォーム送信と区別する。
     function button(label, action) {
       const control = document.createElement("button");
       control.type = "button";
@@ -115,6 +120,7 @@ function bindSettingsMaterials(getForm, newDraft, changeMaterials) {
       control.addEventListener("click", action);
       return control;
     }
+    // 参照先の拡張子に合わせて資料の役割を更新してから差分を通知する。
     function inputField(container, item, title, removal) {
       const label = document.createElement("label");
       label.textContent = title;
@@ -140,6 +146,7 @@ function bindSettingsMaterials(getForm, newDraft, changeMaterials) {
       else container.append(label);
       rendered.set(item, input);
     }
+    // 削除した資料をフォームに反映し、残った入力へフォーカスを移す。
     function remove(items, focusTarget) {
       for (const item of items) inputs.splice(inputs.indexOf(item), 1);
       const remaining = showMaterials(inputs, kind);
@@ -235,6 +242,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   let loadingOrSavingSettings = false;
   let modelRequest = 0;
 
+  // 一覧にない保存済みモデルIDも、選択できるよう保持する。
   function selectModel(value) {
     if (value && ![...modelSelect.options].some(option => option.value === value)) {
       modelSelect.add(new Option(`${value}（指定済み）`, value));
@@ -242,6 +250,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     modelSelect.value = value;
   }
 
+  // 設定読込時は保存値を保持し、モデル変更時は対応する強さに絞る。
   function showEfforts(value = effortSelect.value, preserve = true) {
     const model = modelSelect.value;
     const supported = modelCatalog.find(item => item.id === model)?.efforts
@@ -256,6 +265,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     effortSelect.disabled = !model;
   }
 
+  // 取得に失敗したときも、保存済みの選択値と代表候補を表示する。
   async function loadModels() {
     if (!readModels) return;
     const request = ++modelRequest;
@@ -291,11 +301,13 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     reload.disabled = loadingOrSavingSettings;
   };
 
+  // 保存前に空欄を掃除できるよう、新しく追加した行を識別する。
   function newDraft(entry) {
     added.add(entry);
     return entry;
   }
 
+  // 空の新規行を掃除し、不完全な入力は保存前に報告する。
   function planSave() {
     const command = settingsForm.checker.command;
     if (Array.isArray(command) && command.length && !command[0]?.trim()) {
@@ -352,22 +364,26 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     };
   }
 
+  // 資料の並びごと差分へ渡し、未知の設定をサーバー側に保持させる。
   function changeMaterials(field) {
     settingsChanges[field] = settingsForm[field];
     schedulePreview();
   }
 
+  // 工程が選択されたコマンドだけを設定の差分に含める。
   function changeScripts() {
     settingsChanges.scripts = settingsForm.scripts.filter(script => script.phase);
     schedulePreview();
   }
 
+  // 実行ファイル名の余白だけを除き、引数の空白を保持する。
   function commandLines(text) {
     const lines = text.split("\n");
     lines[0] = lines[0].trim();
     return lines;
   }
 
+  // 工程と引数を描画し、追加時のフォーカスに使う選択欄を返す。
   function showScripts() {
     scriptList.replaceChildren();
     return settingsForm.scripts.map((script, index) => {
@@ -424,6 +440,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     }
   }
 
+  // 再描画後も近くの移行単位を選び直せるようにする。
   function showUnitOptions(index = Number(unit.value)) {
     unit.replaceChildren(...settingsForm.units.map(({id}, i) => new Option(id || `移行単位 ${i + 1}`, i)));
     if (settingsForm.units.length) unit.value = String(Math.min(index, settingsForm.units.length - 1));
@@ -431,6 +448,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     showContext();
   }
 
+  // フォームと直接編集の表示を切り替え、操作名も変更する。
   function showTOMLEditor(editing) {
     fields.hidden = editing || !settingsForm;
     workspaceConfig.hidden = !editing;
@@ -450,6 +468,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   const viewerHTML = document.querySelector("#settings-viewer-html");
   const viewerReference = document.querySelector("#settings-anchor-reference");
 
+  // 無効時のパスを保持しながら、関連欄の編集可否を更新する。
   function showViewerState() {
     const disabled = viewerMode.value === "false";
     viewerHTML.disabled = viewerReference.disabled = disabled;
@@ -457,12 +476,14 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       : viewerHTML.value.trim() ? "有効" : "無効（HTML 未設定）";
   }
 
+  // 共通の参照資料設定の差分だけを更新する。
   function editContext(key, value) {
     settingsChanges.target_context ??= {};
     settingsChanges.target_context[key] = settingsForm.target_context[key] = value;
     schedulePreview();
   }
 
+  // 共通の参照起点を、既定・選択・空の表示に反映する。
   function showContext() {
     const roots = settingsForm.target_context.roots;
     rootMode.value = Array.isArray(roots) ? (roots.length ? "custom" : "none") : "default";
@@ -473,6 +494,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     workspaceControls();
   }
 
+  // 既定の起点と、起点なしを表す空配列を区別して保存する。
   function saveRootChoices() {
     rootChoices.hidden = rootMode.value !== "custom";
     const chosen = rootChecks.filter(input => input.checked).map(input => input.value);
@@ -489,6 +511,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   viewerMode.addEventListener("input", showViewerState);
   viewerHTML.addEventListener("input", showViewerState);
 
+  // プレビュー結果でTOMLを更新し、必要な場合だけフォームを描き直す。
   function showSettingsDraft(data, showFields, unitIndex) {
     workspaceConfig.value = data.content;
     if (!showFields) return;
@@ -513,6 +536,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     }
   }
 
+  // 入力が落ち着いてからプレビューを要求し、古い応答を破棄する。
   function schedulePreview(fromTOML = false) {
     clearTimeout(previewTimer);
     // 最新の入力に対する応答だけが下書きを更新し、差分を消去する。
@@ -548,6 +572,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     }, 160);
   }
 
+  // 未反映プレビューを無効にして、保存版とフォームを読み直す。
   async function loadSettings(force = false) {
     if (loadingOrSavingSettings || (settingsVersion && !force)) return;
     loadingOrSavingSettings = true;

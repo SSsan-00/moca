@@ -15,6 +15,7 @@ async function eventually(read, label) {
   }
   throw new Error("Timed out: " + label);
 }
+// Launch Chromium with a fresh profile and wait for the DevTools endpoint.
 async function startBrowser() {
   const failures = [];
   for (let attempt = 1; attempt <= 2; attempt++) {
