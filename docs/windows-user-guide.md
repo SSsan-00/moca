@@ -182,6 +182,8 @@ MIG101 src/Web/Pages/Menu.cshtml.cs:12 warning: 共通メソッドを使って�
 
 起動入力は、実際に渡す指示と同梱ガイドラインの合計です。例として1 MiBを警告、2 MiBを停止に設定するなら、単位を MiB にして `1` と `2` を入力します。TOML にはそれぞれ `1048576` と `2097152` が保存されます。値と同じ容量は許容し、超過時は警告または起動停止になります。これは入力例です。後から読む資料量、トークン数、実行時間、費用や規約の遵守状況は、この設定では測定・保証できません。
 
+`php-to-csharp-harness junie-input --config harness.toml --run-id RUN_ID` でその Run の直近の計測を JSON で確認できます。指示・ガイドライン別の容量、資料の内訳、起動を止めたかどうかを表示します。計測記録がまだないときは `last_junie_input` が `null` です。
+
 **参照起点** では **既定の4箇所を使う**、**個別に選ぶ**、**既定の起点を使わない** から選べます。例えば移行先が `src/Web/Pages/Orders/Index.cshtml.cs` なら、既定は `src/Web/Pages/Orders`、`src/Web/Pages/inc`、`src/Web/Libs`、`src/Web/Extensions` です。追加するフォルダーは作業ツリーからの相対パスで指定します。既定起点を外しても追加フォルダーは有効です。上限を超えると初回収集を中止します。`[units.target_context]` の指定項目は共通設定を上書きし、配列は置き換えます。
 
 `php-to-csharp-harness preview-context --config harness.local.toml --unit メニュー` は現在のアプリ作業コピーを読み取り、参照候補と容量を表示します。走査中は端末に進捗が出ます。`Ctrl+C` で取り消せます。実行用の基準リビジョンや準備スクリプトでファイルが変わると、初回収集時の結果も変わります。固定済み Run は以前の資料を使います。
@@ -310,11 +312,28 @@ php-to-csharp-harness resume --config harness.toml --run-id RUN_ID
 
 ### 移行を指定区間まで再開する
 
-中断した移行は、`resume --from migration` で保存版を照合して次の未完了区間から再開できます。たとえば次の区間が3なら、`--through-capsule 3` でその区間だけ処理し、ビルドとチェッカーの手前で停止します。終了番号を省略すると最後まで移行し、通常どおり検証します。処理済み区間をやり直す操作は未対応です。
+中断した移行は、`resume --from migration` で保存版を照合して次の未完了区間から再開できます。たとえば次の区間が3なら、`--through-capsule 3` でその区間だけ処理し、ビルドとチェッカーの手前で停止します。終了番号を省略すると最後まで移行し、通常どおり検証します。
 
 ```powershell
 php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from migration --through-capsule 3
 ```
+
+処理済みの区間をやり直す場合は、`--rewind-to` を指定します。開始前の保存版と現在の完了地点の保存版が必要です。まず `--plan` で計画を確認し、表示された `version` を指定して実行します。
+
+```powershell
+php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from migration --rewind-to 2 --through-capsule 2 --plan
+php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from migration --rewind-to 2 --through-capsule 2 --version VERSION
+```
+
+巻き戻しは移行単位の対象ファイル全体に対して行います。保存後の対象編集や保留中の操作があれば中止します。直前の版は `run.json` の `resume_operations` に記録する `rewind_backup` に退避されます。開始区間以降の完了記録とレビュー・検証結果は再確認が必要になります。対象外のファイルは巻き戻しの書き換え対象に含みません。旧 Run では、必要な区間の保存版がない場合があります。
+
+### チェッカーだけを再開する
+
+```powershell
+php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from checker
+```
+
+照合できるビルド記録がある場合、現在のコード・依存入力・成果物を照合してチェッカーだけを実行します。対象は、作業ツリー直下で `Microsoft.NET.Sdk` と単一の `TargetFramework` だけを宣言するパッケージ参照なしの C# プロジェクトです。移行後や検証前後にスクリプトを実行する構成は、通常の再開を使ってください。ビルド記録は生成物のない状態からの成功ビルドで作られます。既存の生成物があるときは、入力と以前の記録が一致する場合に限って記録を更新します。エラー時は表示された理由を確認してください。
 
 ダッシュボードを再起動すると、保存済みの実行待ちを継続します。起動済みのRunは自動で再実行せず、一覧から **再開** します。**検証済み** のRunも移行台帳の確認が必要です。別Runの生成結果は合流しないため、相互に依存しない単位を並列化してください。
 

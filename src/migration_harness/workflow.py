@@ -23,6 +23,7 @@ from time import monotonic
 from typing import Any
 
 from . import junie_cli
+from .build_receipt import build_artifacts, build_inputs
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
 from .checker_output import (
     CHECKER_SUCCESS_MESSAGE, CheckerFinding, accepted_findings, checker_findings, checker_response_status,
@@ -948,10 +949,19 @@ def _run_prepared_with_junie(
         prior_hashes = record.get("target_hashes", {relative_targets[0].as_posix(): record.get("target_sha256")})
         if hashes != prior_hashes:
             raise ValueError("worktree targets changed since the last recorded Junie result; inspect and reconcile before resuming")
+    rewind = record.get("migration_rewind")
+    if rewind and "restore_from" in rewind:
+        with editor_queue(run_path) as queue, worktree_source_lock:
+            if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+                raise ValueError("巻き戻しと未反映の操作が競合しています。")
+            _restore_repair_inputs(
+                run_path, rewind, dict(zip(hashes, agent_targets, strict=True)), hashes, record,
+            )
+    through_capsule = record.get("migration_range_stop", through_capsule)
     # 通常の再開ではJunieの下書きを残し、移行完了後の追加指示ではworktreeの現行版を渡す。
     for relative, worktree_target, agent_target in zip(relative_targets, worktree_targets, agent_targets, strict=True):
         agent_target.parent.mkdir(parents=True, exist_ok=True)
-        if (followup_only or not agent_target.exists()) and worktree_target.is_file():
+        if (followup_only or not rewind and not agent_target.exists()) and worktree_target.is_file():
             shutil.copyfile(worktree_target, agent_target)
         elif followup_only:
             agent_target.unlink(missing_ok=True)
@@ -970,6 +980,9 @@ def _run_prepared_with_junie(
     if not resuming:
         record["target_sha256"] = hashes[relative_targets[0].as_posix()]
         record["target_applied"] = False
+        record.setdefault("capsule_checkpoints", {})["0"] = _save_capsule_checkpoint(
+            run_path, worktree_root, relative_targets, hashes,
+        )
     write_run_record(record_path, record)
 
     try:
@@ -1183,7 +1196,13 @@ def _run_prepared_with_junie(
 
         record["completed_capsules"] = index
         record["current_capsule"] = min(index + 1, result["capsule_count"])
+        with worktree_source_lock:
+            record.setdefault("capsule_checkpoints", {})[str(index)] = _save_capsule_checkpoint(
+                run_path, worktree_root, relative_targets, record["target_hashes"],
+            )
+        record.pop("migration_rewind", None)
         if index == through_capsule:
+            record.pop("migration_range_stop", None)
             record["status"] = "editor_checkpoint" if index == result["capsule_count"] else "interrupted"
             record["error"] = "指定区間を完了しました。ビルドとチェッカーは通常の再開で実行できます。"
         else:
@@ -1235,6 +1254,8 @@ def _run_prepared_with_junie(
         "current_capsule": record["current_capsule"],
         "error": record.get("error"),
     }
+    if through_capsule is not None and record["completed_capsules"] == through_capsule:
+        result["requested_range_complete"] = True
     if record["status"] == "junie_finished":
         return _verify_worktree(config, unit, result, record)
     return result
@@ -1516,11 +1537,19 @@ def _save_repair_snapshot(run_path, sources, before, *, workspace_unchanged):
         else:
             hashes[name_in_run] = None
     draft = {
-        "snapshot": name, "base": before, "targets": hashes,
+        "snapshot": name, "base": before.copy(), "targets": hashes,
         "workspace_unchanged": workspace_unchanged,
     }
     (root / "draft.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
     return draft
+
+
+def _save_capsule_checkpoint(run_path, worktree, targets, hashes):
+    sources = {path.as_posix(): safe_target(worktree, path) for path in targets}
+    checkpoint = _save_repair_snapshot(run_path, sources, hashes, workspace_unchanged=True)
+    if checkpoint["targets"] != hashes:
+        raise ValueError("保存中に移行先が更新されました。")
+    return checkpoint
 
 
 def _verified_repair_snapshot(run_path, draft):
@@ -2198,6 +2227,7 @@ def _run_verification(
 
     # 修正に成功したらここへ戻り、変更後のファイルを必ずビルドから検証し直す。
     while True:
+        previous_receipt = record.get("checker_build")
         with editor_queue(run_path) as queue:
             pending_changes = not request and bool(queue["edits"] and any(prompt["status"] == "queued" for prompt in queue["prompts"]))
             if not pending_changes:
@@ -2206,6 +2236,7 @@ def _run_verification(
                     record["status"] = "building"
                 # フック中に中断しても、前回のビルドは今回の待機条件を満たさない。
                 record.pop("build_operation_id", None)
+                record.pop("checker_build", None)
                 write_run_record(record_path, record, timing_stage=4)
         if pending_changes:
             try:
@@ -2231,6 +2262,14 @@ def _run_verification(
             record["verification"]["toml_checker_command"] = unit.get(
                 "checker_command", config.get("toml_checker_command"),
             )
+        inputs = None if scripts or config.get("scripts", {}).get("after_migration") else build_inputs(
+            worktree, config["build_project"],
+        )
+        if inputs and any((worktree / name).exists() for name in ("bin", "obj")):
+            if (not previous_receipt or previous_receipt["inputs"] != inputs
+                    or previous_receipt["artifacts"] != build_artifacts(worktree, inputs)):
+                # 既存の生成物が古い場合、MSBuild の増分判定だけから対応する版を証明できない。
+                inputs = None
         verified = _build_worktree(config, result, record, continue_timing=True)
         if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
             raise ValueError("ビルド中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
@@ -2254,6 +2293,9 @@ def _run_verification(
             return verified
         check_cancelled()
         _run_script_phase(config, "after_build", worktree, run_path, record)
+        if inputs and inputs == build_inputs(worktree, config["build_project"]):
+            if artifacts := build_artifacts(worktree, inputs):
+                record["checker_build"] = {"inputs": inputs, "artifacts": artifacts}
         if command is None:
             if not explicit_build:
                 _finish_repair_attempt(record)
@@ -2466,6 +2508,11 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     if verification_passed:
         current_targets = {path: current_hash(path) for path in targets}
         verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
+    if verification_passed and verification.get("checker_only"):
+        try:
+            _check_build_receipt(config, worktree, record)
+        except ValueError:
+            verification_passed = False
 
     return {
         "run_id": run_id,
@@ -2730,7 +2777,9 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     return plan
 
 
-def plan_migration_resume(config: dict[str, Any], run_id: str, through_capsule: int | None) -> dict[str, Any]:
+def plan_migration_resume(
+    config: dict[str, Any], run_id: str, through_capsule: int | None, *, rewind_to: int | None = None,
+) -> dict[str, Any]:
     """保存地点の次から、指定した上限までの移行を計画する。"""
     from .junie_conversation import target_versions
 
@@ -2739,17 +2788,23 @@ def plan_migration_resume(config: dict[str, Any], run_id: str, through_capsule: 
         _, _, record, _ = load_saved_run(config, run_id)
         agent = run_path / "agent-workspace"
         capsule, manifest = load_capsule_manifest(run_path)
-        if (record["status"] not in {"junie_running", "junie_failed", "interrupted"}
+        statuses = {"junie_running", "junie_failed", "interrupted"}
+        if rewind_to is not None:
+            statuses |= VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | {"editor_checkpoint"}
+            statuses.discard("junie_running")
+        if (record["status"] not in statuses
                 or agent.is_symlink() or not agent.is_dir() or not agent.resolve().is_relative_to(run_path)
-                or record.get("target_apply_pending")
+                or record.get("target_apply_pending") or record.get("migration_rewind")
+                or rewind_to is not None and record.get("repair_pending")
                 or record.get("operator_question") or queue["edits"]
                 or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
             raise ValueError("未処理の操作がない中断済みの移行から、区間を指定して再開できます。")
-        start = record["completed_capsules"] + 1
+        completed = record["completed_capsules"]
+        start = completed + 1 if rewind_to is None else rewind_to
         end = len(manifest["parts"]) if through_capsule is None else through_capsule
-        if type(end) is not int or not 1 <= start <= end <= len(manifest["parts"]):
+        if type(start) is not int or type(end) is not int or not 1 <= start <= end <= len(manifest["parts"]):
             raise ValueError("終了区間は、次の未完了区間から最後の区間までの番号を指定してください。")
-        if start != record.get("current_capsule", start):
+        if rewind_to is None and start != record.get("current_capsule", start):
             raise ValueError("保存された移行進捗が一致しません。")
         hashes = []
         for part in manifest["parts"][:end]:
@@ -2769,8 +2824,128 @@ def plan_migration_resume(config: dict[str, Any], run_id: str, through_capsule: 
             "capsule_hashes": hashes,
             "repair": through_capsule is None, "invalidates": ["build", "checker"],
         }
+        if rewind_to is not None:
+            checkpoints = record.get("capsule_checkpoints", {})
+            origin = checkpoints.get(str(start - 1))
+            latest = checkpoints.get(str(completed))
+            if not origin or not latest or start > completed:
+                raise ValueError("処理済み区間の開始前と現在の完了地点に保存版が必要です。")
+            _verified_repair_snapshot(run_path, origin)
+            if plan["targets"] != latest["targets"] or plan["draft_targets"] != latest["targets"]:
+                raise ValueError("保存後の編集を検出しました。現行版を保持したまま巻き戻しを中止します。")
+            plan.update(rewind_to=start, rewind_checkpoint=origin, completed_capsules=completed)
+            plan["invalidates"].extend(("later_capsules", "reviews"))
     plan["version"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()
     return plan
+
+
+def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
+    with editor_queue(run_path) as queue, worktree_source_lock:
+        if (queue.get("edit_revision") != plan["edit_revision"] or queue["edits"]
+                or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
+            raise ValueError("巻き戻しと未反映の操作が競合しています。")
+        targets = target_paths(unit)
+        agent = run_path / "agent-workspace"
+        if any(target_hash(safe_target(agent, path)) != plan["draft_targets"][path.as_posix()] for path in targets):
+            raise ValueError("巻き戻し前に Junie 作業領域が更新されました。")
+        backup = _save_capsule_checkpoint(run_path, worktree, targets, plan["targets"])
+        checkpoint = plan["rewind_checkpoint"]
+        sources = _verified_repair_snapshot(run_path, checkpoint)
+        draft = _save_repair_snapshot(run_path, sources, plan["targets"], workspace_unchanged=True)
+        if draft["targets"] != checkpoint["targets"]:
+            raise ValueError("巻き戻しの保存版が更新されました。")
+        start = plan["rewind_to"]
+        operation["rewind_backup"] = backup
+        operation["superseded_checkpoints"] = {
+            index: record["capsule_checkpoints"].pop(index)
+            for index in list(record["capsule_checkpoints"]) if int(index) >= start
+        }
+        record.update(
+            completed_capsules=start - 1, current_capsule=start, status="interrupted",
+            target_hashes=plan["targets"].copy(),
+            migration_rewind={"draft": draft, "restore_from": plan["draft_targets"]},
+        )
+        for key in ("checker_reviews", "migration_reviews", "review_file_hashes", "checker_success_message",
+                    "checker_review_reason", "repair_history"):
+            if key in record:
+                operation.setdefault("superseded_reviews", {})[key] = record.pop(key)
+        if "after_migration" in record.get("completed_script_phases", []):
+            record["completed_script_phases"].remove("after_migration")
+        record.get("script_command_progress", {}).pop("after_migration", None)
+
+
+def _check_build_receipt(config, worktree, record):
+    receipt = record.get("checker_build")
+    if record.get("build_exit_code") != 0 or not receipt:
+        raise ValueError("照合できるビルド成果物がありません。ビルドを実行してください。")
+    inputs = build_inputs(worktree, config["build_project"])
+    if not inputs or receipt["inputs"] != inputs:
+        raise ValueError("ビルド入力、依存関係、または実行環境が変わりました。再ビルドしてください。")
+    if build_artifacts(worktree, inputs) != receipt["artifacts"]:
+        raise ValueError("ビルド成果物が変更または削除されました。再ビルドしてください。")
+    return receipt
+
+
+def plan_checker_resume(config, run_id):
+    run_path, worktree, _, unit = load_saved_run(config, run_id)
+    command = checker_command_for_unit(config, unit)
+    if command is None:
+        raise ValueError("チェッカーを設定してから再開してください。")
+    if _verification_scripts(config, command) or config.get("scripts", {}).get("after_migration"):
+        raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
+    with editor_queue(run_path) as queue, worktree_source_lock:
+        _, _, record, _ = load_saved_run(config, run_id)
+        if (record["status"] not in VERIFIED_STATUSES | _CHECKER_RESUME_STATUSES
+                or not record.get("completed_capsules")
+                or record["completed_capsules"] != record.get("context_capsules")
+                or record.get("target_apply_pending") or record.get("migration_rewind")
+                or record.get("repair_pending") or queue["edits"]
+                or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
+            raise ValueError("移行を完了し、保留中の編集・追加指示・修正を解決してから再開してください。")
+        plan = {
+            "run_id": run_id, "start_stage": "checker", "intent": "checker", "repair": False,
+            "invalidates": ["checker"], "checker_command": command, "completed_capsules": record["completed_capsules"],
+            "edit_revision": queue.get("edit_revision"), "build_receipt": _check_build_receipt(config, worktree, record),
+        }
+    plan["version"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()
+    return plan
+
+
+def _resume_checker(config, result, record, plan, request_id):
+    run_path, worktree = Path(result["run_path"]), Path(result["worktree_path"])
+    record_path = run_path / "run.json"
+    command = plan["checker_command"]
+    with editor_queue(run_path) as queue, worktree_source_lock:
+        if (queue.get("edit_revision") != plan["edit_revision"] or queue["edits"]
+                or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
+            raise ValueError("計画後に編集または指示が更新されました。")
+        _check_build_receipt(config, worktree, record)
+        record.setdefault("resume_operations", []).append({
+            **plan, "id": request_id, "accepted_at": datetime.now(timezone.utc).isoformat(),
+        })
+        verification = record["verification"]
+        verification.update(configured_checker_command=command, checker_command=command, checker_only=True,
+                            checker_from_cli=config.get("checker_from_cli", False), scripts={}, scripts_passed=False)
+        verification.pop("toml_checker_command", None)
+        if config.get("checker_from_cli"):
+            verification["toml_checker_command"] = config.get("toml_checker_command")
+        record.update(status="checking", checker_exit_code=None)
+        write_run_record(record_path, record)
+    checked, _, _ = _run_checker(
+        command, {**result, "request_id": request_id,
+                  **{key: record.get(key) for key in ("junie_exit_code", "agent_workspace_path", "completed_capsules",
+                                                     "build_exit_code", "build_log_path", "verification")}},
+        record, config["build_project"],
+    )
+    try:
+        _check_build_receipt(config, worktree, record)
+    except ValueError as exc:
+        record.update(status="checker_failed", checker_exit_code=None, error=str(exc))
+        write_run_record(record_path, record)
+        return {**checked, "status": record["status"], "checker_exit_code": None, "error": str(exc)}
+    verification["scripts_passed"] = True
+    write_run_record(record_path, record)
+    return checked
 
 
 def resume_with_junie(
@@ -2800,16 +2975,23 @@ def _resume_with_junie(
         raise ValueError("表示中の Run のチェッカー結果が変わりました。")
     explicit_build = verification_request and verification_request.get("start_stage") == "build"
     explicit_migration = verification_request and verification_request.get("start_stage") == "migration"
+    explicit_checker = verification_request and verification_request.get("start_stage") == "checker"
     if explicit_build:
         plan = plan_build_resume(config, run_id)
         if any(verification_request.get(key) != value for key, value in plan.items()):
             raise ValueError("確認後に保存版または実行条件が更新されました。再開する版を確認し直してください。")
     elif explicit_migration:
-        plan = plan_migration_resume(config, run_id, verification_request.get("through_capsule"))
+        plan = plan_migration_resume(
+            config, run_id, verification_request.get("through_capsule"), rewind_to=verification_request.get("rewind_to"),
+        )
         if any(verification_request.get(key) != value for key, value in plan.items()):
             raise ValueError("確認後に保存版または移行区間が更新されました。")
         if plan["through_capsule"] is None:
             _require_saved_checker(config, unit, record)
+    elif explicit_checker:
+        plan = plan_checker_resume(config, run_id)
+        if any(verification_request.get(key) != value for key, value in plan.items()):
+            raise ValueError("確認後にビルド成果物またはチェッカー条件が更新されました。")
     else:
         _require_saved_checker(config, unit, record)
     if not verification_request and not can_resume_run(config, record):
@@ -2883,16 +3065,29 @@ def _resume_with_junie(
         junie_cli.require_interactive_cli()
         if _previously_required_checker(record):
             record["checker_required"] = True
-        record.setdefault("resume_operations", []).append({
+        operation = {
             **plan, "id": verification_request["id"], "accepted_at": datetime.now(timezone.utc).isoformat(),
-        })
-        for key in ("verification", "build_exit_code", "checker_exit_code", "build_operation_id", "error"):
+        }
+        if "rewind_to" in plan:
+            _remember_diagnostic(run_path, record, "build")
+            _remember_diagnostic(run_path, record, "checker")
+            _stage_migration_rewind(run_path, worktree_path, unit, record, plan, operation)
+            record.pop("build_log_path", None)
+            record.pop("checker_log_path", None)
+        if plan["through_capsule"] is None:
+            record.pop("migration_range_stop", None)
+        else:
+            record["migration_range_stop"] = plan["through_capsule"]
+        record.setdefault("resume_operations", []).append(operation)
+        for key in ("verification", "build_exit_code", "checker_exit_code", "build_operation_id", "checker_build", "error"):
             record.pop(key, None)
         write_run_record(run_path / "run.json", record)
         return _run_prepared_with_junie(
             config, unit, run_path, result, record, resuming=True, through_capsule=plan["through_capsule"],
             expected_capsule_hashes=plan["capsule_hashes"],
         )
+    if explicit_checker:
+        return _resume_checker(config, result, record, plan, verification_request["id"])
     if verification_request:
         if not (migration_complete or waiting_at_final_checkpoint):
             raise ValueError("移行が完了してから、ビルドまたはチェッカーを実行してください。")

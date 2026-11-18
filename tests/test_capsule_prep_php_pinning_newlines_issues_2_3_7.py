@@ -343,6 +343,40 @@ class CapsulePreparationTests(HarnessCase):
             self.assertEqual(saved["resume_operations"][-1]["capsule_range"], [2, 2])
             verify.assert_not_called()
             result = workflow.resume_with_junie(config, run_id)
+            saved = self.read_json(record_path)
+            saved.update(status="build_succeeded", build_exit_code=0, checker_reviews=[{"old": True}])
+            record_path.write_text(json.dumps(saved), encoding="utf-8")
+            worktree_target = Path(saved["worktree_path"]) / saved["target"]
+            latest = worktree_target.read_bytes()
+            outside = worktree_target.parent / "outside.txt"
+            outside.write_bytes(b"operator's edit")
+            rewind = workflow.plan_migration_resume(config, run_id, 2, rewind_to=2)
+            self.assertEqual(rewind["capsule_range"], [2, 2])
+            worktree_target.write_bytes(b"manual conflict")
+            with self.assertRaises(ValueError):
+                workflow.resume_with_junie(config, run_id, verification_request={**rewind, "id": "replay"})
+            worktree_target.write_bytes(latest)
+
+            def replay(_command, completion, token, targets, **_kwargs):
+                self.assertNotIn(b"Partial", targets[0].read_bytes() if targets[0].exists() else b"")
+                self.assertEqual(worktree_target.read_bytes(), latest)
+                targets[0].write_bytes(b"class Replayed {}")
+                completion.write_text(token, encoding="ascii")
+                return 0
+
+            with patch.object(workflow, "_restore_repair_inputs", side_effect=OSError("fixture interruption")):
+                with self.assertRaisesRegex(OSError, "fixture interruption"):
+                    workflow.resume_with_junie(config, run_id, verification_request={**rewind, "id": "replay"})
+            self.assertEqual(worktree_target.read_bytes(), latest)
+            with patch.object(junie_cli, "run_interactive", side_effect=replay):
+                replayed = workflow.resume_with_junie(config, run_id)
+            self.assertEqual(replayed["completed_capsules"], 2)
+            self.assertEqual(outside.read_bytes(), b"operator's edit")
+            after = self.read_json(record_path)
+            self.assertNotIn("build_exit_code", after)
+            self.assertNotIn("checker_reviews", after)
+            backup = run_path / after["resume_operations"][-1]["rewind_backup"]["snapshot"] / "0.draft"
+            self.assertEqual(backup.read_bytes(), latest)
 
         manifest = self.read_json(run_path / "capsule" / "manifest.json")
         parts = manifest["parts"]
@@ -350,7 +384,7 @@ class CapsulePreparationTests(HarnessCase):
         self.assertGreater(len(parts), 2)
         self.assertEqual(observed_contexts, saved_contexts[:2] + saved_contexts[1:])
         self.assertEqual(result["completed_capsules"], len(parts))
-        self.assertEqual(self.read_json(record_path)["resume_attempts"], 2)
+        self.assertEqual(self.read_json(record_path)["resume_attempts"], 3)
         self.assertEqual([entry["path"] for entry in manifest["shared_sources"]], ["rules.md", "constraints.md"])
         saved_rules = b"".join((run_path / "capsule/materials" / chunk["file"]).read_bytes() for chunk in manifest["rule_files"])
         self.assertIn(b"REQUIRED_MIGRATION_RULE ````\r\n`````\n", saved_rules)

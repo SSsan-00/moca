@@ -250,6 +250,66 @@ class SavedRunFixture(unittest.TestCase):
 
 
 class CheckerResumeAndReviewTests(SavedRunFixture):
+    def test_junie_input_cli_preserves_unmeasured_and_measured_states(self):
+        args = ["php-to-csharp-harness", "junie-input", "--config", "fixture.toml", "--run-id", self.run_id]
+        for report in (None, {"phase": "rule_review", "bytes": 125, "blocked": True}):
+            self.save_record({**self.record(), "last_junie_input": report})
+            output = io.StringIO()
+            with (patch.object(sys, "argv", args), patch.object(cli, "load_config", return_value=self.config),
+                  redirect_stdout(output)):
+                cli.main()
+            self.assertEqual(json.loads(output.getvalue()), {"run_id": self.run_id, "last_junie_input": report})
+
+    def test_checker_only_requires_intact_build_inputs_and_artifacts(self):
+        project = self.worktree / "App.csproj"
+        project.write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+                           '<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>', encoding="utf-8")
+        self.config["build_project"] = project.name
+        toolchain = self.worktree.parent / "sdk"
+        dotnet = toolchain / "dotnet"
+        packs = toolchain / "packs" / "Microsoft.NETCore.App.Ref"
+        packs.mkdir(parents=True)
+        dotnet.write_bytes(b"fixture dotnet")
+        reference = packs / "reference.dll"
+        reference.write_bytes(b"fixture reference")
+        dll = self.worktree / "bin/Debug/net8.0/App.dll"
+        assets = self.worktree / "obj/project.assets.json"
+        helper = self.worktree / "Helper.cs"
+        helper.write_bytes(b"class Dependency {}")
+        calls = []
+
+        def run(command, **_kwargs):
+            calls.append(command)
+            if command[0] == "dotnet":
+                dll.parent.mkdir(parents=True, exist_ok=True)
+                dll.write_bytes(b"compiled")
+                assets.parent.mkdir(exist_ok=True)
+                assets.write_bytes(b'{"libraries": {}}')
+            return subprocess.CompletedProcess(command, 0)
+
+        with (patch("migration_harness.build_receipt.shutil.which", return_value=str(dotnet)),
+              patch.object(workflow, "run_process", side_effect=run),
+              patch.object(junie_cli, "run_interactive") as junie, redirect_stdout(io.StringIO())):
+            build = workflow.plan_build_resume(self.config, self.run_id)
+            workflow.resume_with_junie(self.config, self.run_id, verification_request={**build, "id": "build"})
+            plan = workflow.plan_checker_resume(self.config, self.run_id)
+            request = {**plan, "id": "checker"}
+            for path in (helper, dll, reference):
+                with self.subTest(path=path.name):
+                    original = path.read_bytes()
+                    path.write_bytes(b"changed")
+                    with self.assertRaisesRegex(ValueError, "再ビルド"):
+                        workflow.resume_with_junie(self.config, self.run_id, verification_request=request)
+                    path.write_bytes(original)
+            result = workflow.resume_with_junie(self.config, self.run_id, verification_request=request)
+            self.assertEqual(result["status"], "checker_succeeded")
+            self.assertEqual([command[0] for command in calls], ["dotnet", "fixture-checker"])
+            self.assertEqual(self.record()["resume_operations"][-1]["start_stage"], "checker")
+            self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+            helper.write_bytes(b"class EditedAfterChecker {}")
+            self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+            junie.assert_not_called()
+
     def test_concurrent_checker_approval_is_rejected_and_can_be_retried(self):
         self.checker_log.write_bytes(
             b"A Example.cs:1 warning: first finding\nB Example.cs:2 warning: second finding\n",

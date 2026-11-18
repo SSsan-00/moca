@@ -11,7 +11,7 @@ from typing import Any
 from migration_harness.config import find_unit, load_config, target_paths, validate_checker_command
 from migration_harness.errors import format_error
 from migration_harness.workflow import (
-    VERIFIED_STATUSES, RunScriptError, migration_ledger, plan_build_resume, plan_migration_resume,
+    VERIFIED_STATUSES, RunScriptError, migration_ledger, plan_build_resume, plan_checker_resume, plan_migration_resume,
     plan_stopped_repair, prepare_run, resolve_stopped_repair, resume_with_junie, review_checker, review_migration_ranges,
     run_with_junie,
 )
@@ -37,12 +37,17 @@ def _parse_args() -> argparse.Namespace:
     run.add_argument("--unit", required=True, help="Migration unit ID from the config")
     resume = configured_command("resume", "Continue migration, build or checker in the saved worktree")
     resume.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
-    resume.add_argument("--from", dest="start_stage", choices=("build", "migration"), help="Start at an explicit stage")
+    resume.add_argument("--from", dest="start_stage", choices=("build", "migration", "checker"), help="Start at an explicit stage")
     resume.add_argument("--through-capsule", type=int, help="With --from migration, stop after this capsule before verification")
+    resume.add_argument("--rewind-to", type=int, help="With --from migration, replay a completed capsule from its saved version")
+    resume.add_argument("--plan", action="store_true", help="Print the requested stage plan without running it")
+    resume.add_argument("--version", help="Require the plan printed by --plan to still match")
     draft = configured_command("repair-draft", "Inspect or select saved input for a stopped repair")
     draft.add_argument("--run-id", required=True)
     draft.add_argument("--version", help="Version from the plan printed without this option")
     draft.add_argument("--choose", action="append", metavar="PATH=SOURCE", help="Select draft or worktree for each path")
+    junie_input = configured_command("junie-input", "Show the last measured Junie launch input for a saved run")
+    junie_input.add_argument("--run-id", required=True)
     view = configured_command("view", "Open the dashboard for a saved run")
     view.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     review = configured_command("review", "List checker findings or accept one with a reason")
@@ -107,6 +112,13 @@ def main() -> None:
                 preview = preview_target_context(Path(config["project_root"]), target_paths(unit), unit.get("target_context"))
             print(json.dumps(preview, ensure_ascii=False, indent=2))
             return
+        if args.command == "junie-input":
+            from migration_harness.run_records import load_dashboard_record
+
+            _, record = load_dashboard_record(config, args.run_id)
+            print(json.dumps({"run_id": args.run_id, "last_junie_input": record.get("last_junie_input")},
+                             ensure_ascii=False, indent=2))
+            return
         if args.command == "repair-draft":
             if args.version is None and not args.choose:
                 print(json.dumps(plan_stopped_repair(config, args.run_id), ensure_ascii=False, indent=2))
@@ -117,8 +129,11 @@ def main() -> None:
                 resolve_stopped_repair(config, args.run_id, args.version, choices)
                 print("復元する内容を記録しました。通常の再開で反映します。")
             return
-        if args.command == "resume" and args.through_capsule is not None and args.start_stage != "migration":
-            raise ValueError("--through-capsule requires --from migration.")
+        if args.command == "resume":
+            if (args.through_capsule is not None or args.rewind_to is not None) and args.start_stage != "migration":
+                raise ValueError("--through-capsule and --rewind-to require --from migration.")
+            if (args.plan or args.version) and not args.start_stage:
+                raise ValueError("--plan and --version require --from.")
         if args.command == "ledger-review":
             review_migration_ranges(
                 config, args.run_id, args.ranges, args.state, args.reason, confirmed_targets=args.review_targets,
@@ -156,12 +171,22 @@ def main() -> None:
         elif args.command == "run":
             result = run_with_junie(config, args.unit)
         else:
+            request = None
             if args.start_stage == "build":
                 request = plan_build_resume(config, args.run_id)
-                print(f"保存版 {request['version'][:12]} をビルドします（自動修正なし）。", flush=True)
-                result = resume_with_junie(config, args.run_id, verification_request={**request, "id": uuid.uuid4().hex})
             elif args.start_stage == "migration":
-                request = plan_migration_resume(config, args.run_id, args.through_capsule)
+                request = plan_migration_resume(config, args.run_id, args.through_capsule, rewind_to=args.rewind_to)
+            elif args.start_stage == "checker":
+                request = plan_checker_resume(config, args.run_id)
+            if request is not None:
+                if args.plan:
+                    print(json.dumps(request, ensure_ascii=False, indent=2))
+                    return
+                if args.version and args.version != request["version"]:
+                    raise ValueError("計画の版が更新されました。--plan で確認し直してください。")
+                if args.rewind_to is not None and not args.version:
+                    raise ValueError("巻き戻しは --plan で確認し、--version を指定してください。")
+                print(f"保存版 {request['version'][:12]} から {request['start_stage']} を実行します。", flush=True)
                 result = resume_with_junie(config, args.run_id, verification_request={**request, "id": uuid.uuid4().hex})
             else:
                 result = resume_with_junie(config, args.run_id)
@@ -221,6 +246,8 @@ def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:
         else:
             print(f"Paused at capsule {result['current_capsule']}: {result['error']}")
             print("Resume with the Run ID shown above.")
+            if result.get("requested_range_complete"):
+                return
             raise SystemExit(1)
         if "checker_exit_code" in result:
             print(f"Checker:   {result['status']} (exit code: {result['checker_exit_code']})")
