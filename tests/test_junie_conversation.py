@@ -1437,6 +1437,8 @@ class JunieConversationTests(SavedRunFixture):
             identifier, _ = self.send("保存した版でビルドして。まだエラーがあれば直して")
             self.assertIn("ビルド成功", self.wait_for(identifier, "done")["message"])
             self.assertIn("Current build diagnostic", repair.call_args.args[5])
+            self.assertEqual(repair.call_args.args[6]["repair_history"][0]["operator_instruction"],
+                             "保存した版でビルドして。まだエラーがあれば直して")
         self.assertEqual(calls, [["dotnet", "build"], ["dotnet", "build"]])
         verification = self.record()["verification"]
         self.assertEqual(verification["configured_checker_command"], ["cli-checker"])

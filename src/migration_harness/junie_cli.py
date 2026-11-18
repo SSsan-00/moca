@@ -609,13 +609,12 @@ class _JunieSessionEvents:
                         if (
                             isinstance(agent, dict) and event.get("state") == "COMPLETED"
                             and agent.get("kind") == "ResultBlockUpdatedEvent"
-                            and agent.get("cancelled") is False
                             and isinstance(agent.get("agent"), dict) and agent["agent"].get("kind") == "MainAgent"
-                            and isinstance(agent.get("result"), str)
                         ):
-                            self.result = agent["result"]
                             if self._task_steering:
                                 self.finished_steering.add(self._task_steering)
+                            if agent.get("cancelled") is False and isinstance(agent.get("result"), str):
+                                self.result = agent["result"]
                     self.last_event_at = time.monotonic()
                     message = _event_activity(entry)
                     # 1回の読取で同じ状況通知はまとめるが、使用量は応答ごとに集計する。
@@ -902,6 +901,8 @@ class _AcpSession:
                     raise JunieSessionError(
                         self.command, 1, "追加ターンが完了記録を残さず終了しました。指示を送信待ちに戻します。",
                     )
+                request.new_turn = False
+        self.steering_new_turn = any(request.new_turn for request in self.steering_requests.values())
 
     def finish_prompts(self, success: bool) -> None:
         """配信済み追加指示の処理結果を確定する。"""

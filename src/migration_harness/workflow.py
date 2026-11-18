@@ -1553,7 +1553,10 @@ def _repair_target(
         "A target missing from this draft must be recreated as part of the repair before recording completion. "
         if resume_draft else ""
     )
-    instruction = "\n".join(filter(None, (attempt["details"].get("instruction"), attempt.get("operator_instruction"))))
+    instruction = "\n".join(filter(None, (
+        attempt["details"].get("instruction"), attempt["details"].get("operator_instruction"),
+        attempt.get("operator_instruction"),
+    )))
     operator_instructions = ""
     if instruction:
         instruction_path = agent_root / f"checker-findings-{token}-instruction.txt"
@@ -1882,6 +1885,7 @@ def _apply_verification_edits(run_path, worktree, unit, request):
 
 def _repair_build_failure(
     config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path, record: dict[str, Any],
+    *, operator_instruction: str | None = None,
 ) -> bool:
     """修正先を特定できるコンパイラエラーだけを、Runの残り回数内で修正する。"""
     limit = config["max_repair_attempts"]
@@ -1966,7 +1970,8 @@ def _repair_build_failure(
     repair_targets = tuple(path for path in targets if path.as_posix() in affected)
     _attempt_repair(
         config, targets, repair_targets, worktree, run_path, diagnostics, record,
-        {"kind": "build", "findings": sorted(fingerprints), "build_log_path": str(saved_log)},
+        {"kind": "build", "findings": sorted(fingerprints), "build_log_path": str(saved_log),
+         **({"operator_instruction": operator_instruction} if operator_instruction else {})},
     )
     return True
 
@@ -2051,6 +2056,7 @@ def _run_verification(
             try:
                 if (not request or mode == "build_repair" and len(history) < limit) and _repair_build_failure(
                     config, targets, worktree, run_path, record,
+                    **({"operator_instruction": request["text"]} if request else {}),
                 ):
                     continue
             except (OSError, RuntimeError, ValueError) as exc:

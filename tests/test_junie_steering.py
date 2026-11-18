@@ -18,7 +18,8 @@ from migration_harness.execution import OperationCancelled, control_scope
 
 class JunieSteeringTests(unittest.TestCase):
     def test_live_delivery_capability_fallback_completion_races_and_cancellation(self):
-        for scenario in ("injected", "new_turn", "new_turn_without_receipt", "exit", "multiple", "unsupported", "invalid_capability",
+        for scenario in ("injected", "new_turn", "new_turn_without_receipt", "new_turn_cancelled",
+                         "exit", "multiple", "unsupported", "invalid_capability",
                          "rejected", "invalid_response", "missing_receipt", "cancelled"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
                 run_path = Path(directory).resolve()
@@ -92,13 +93,14 @@ class JunieSteeringTests(unittest.TestCase):
                         if scenario != "multiple" or index == 1:
                             # 元の完了記録が先にあっても、追加指示の反映前には終了させない。
                             Path("complete.txt").write_text("token")
-                        if scenario == "new_turn_without_receipt":
+                        if scenario in {"new_turn_without_receipt", "new_turn_cancelled"}:
                             event_log = Path(os.environ["JUNIE_HOME"]) / "sessions" / "test" / "events.jsonl"
                             event_log.parent.mkdir(parents=True)
                             def result(task):
                                 return {"kind": "SessionA2uxEvent", "taskId": task, "event": {
                                     "state": "COMPLETED", "agentEvent": {"kind": "ResultBlockUpdatedEvent",
-                                    "agent": {"kind": "MainAgent"}, "cancelled": False, "result": task},
+                                    "agent": {"kind": "MainAgent"},
+                                    "cancelled": task == "followup" and scenario == "new_turn_cancelled", "result": task},
                                 }}
                             rows = [
                                 {"kind": "UserPromptEvent", "prompt": "original assignment token"},
@@ -136,7 +138,7 @@ class JunieSteeringTests(unittest.TestCase):
                     if scenario == "cancelled":
                         with self.assertRaises(OperationCancelled):
                             junie_cli.run_interactive(command, completion, "token", (target,), prompts=LivePrompts(run_path))
-                    elif scenario == "new_turn_without_receipt":
+                    elif scenario in {"new_turn_without_receipt", "new_turn_cancelled"}:
                         def run():
                             with control_scope(dashboard.control):
                                 junie_cli.run_interactive(command, completion, "token", (target,), prompts=LivePrompts(run_path))
