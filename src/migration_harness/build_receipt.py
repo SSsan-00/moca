@@ -58,12 +58,12 @@ def _fingerprint(root: Path, excluded=(), *, label: str | None = None) -> str:
 
 def build_inputs(worktree: Path, project_name: str | None) -> dict | None:
     """依存範囲を限定できる単一の SDK スタイルプロジェクトを照合する。"""
-    check_cancelled()
     if not project_name or not project_name.lower().endswith(".csproj"):
         return None
     relative = Path(project_name)
     if relative.is_absolute() or ".." in relative.parts:
         return None
+    check_cancelled()
     try:
         project = safe_target(worktree, relative)
         root = ElementTree.fromstring(project.read_bytes())
