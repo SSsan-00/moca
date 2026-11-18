@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import subprocess
 import sys
 import unittest
@@ -546,6 +547,67 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual((snapshot / "0.draft").read_bytes(), partial)
         self.assertIn("停止時の下書き", self.record()["error"])
         self.assertEqual(self.record()["repair_history"], [])
+
+        plan = workflow.plan_stopped_repair(self.config, self.run_id)
+        choices = {names[0]: "draft", names[1]: "worktree"}
+        (agent / names[0]).write_bytes(b"class AgentManual {}")
+        with self.assertRaisesRegex(ValueError, "更新"):
+            workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
+        plan = workflow.plan_stopped_repair(self.config, self.run_id)
+        active = self.run_path / plan["snapshot"] / "0.draft"
+        active.write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "snapshot"):
+            workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
+        active.write_bytes(partial)
+        with patch.object(workflow, "write_run_record", side_effect=OSError("injected plan save failure")):
+            with self.assertRaisesRegex(OSError, "save failure"):
+                workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
+        self.assertEqual(self.record()["repair_pending"]["draft"]["snapshot"], plan["snapshot"])
+        args = [
+            "php-to-csharp-harness", "repair-draft", "--config", "fixture.toml", "--run-id", self.run_id,
+            "--version", plan["version"], "--choose", f"{names[0]}=draft", "--choose", f"{names[1]}=worktree",
+        ]
+        with (
+            patch.object(sys, "argv", args),
+            patch.object(cli, "load_config", return_value=self.config),
+            redirect_stdout(io.StringIO()),
+        ):
+            cli.main()
+        self.assertEqual((agent / names[0]).read_bytes(), b"class AgentManual {}")
+
+        def recovered(_command, _completion, _token, targets, **kwargs):
+            self.assertEqual(targets[0].read_bytes(), partial)
+            self.assertEqual(targets[1].read_bytes(), (self.worktree / names[1]).read_bytes())
+            self.assertEqual(self.target.read_bytes(), manual)
+            raise OperationCancelled("stop after restored input")
+
+        with patch.object(junie_cli, "require_interactive_cli"):
+            copyfile = shutil.copyfile
+
+            def fail_second_restore(source, destination, **kwargs):
+                if Path(source).name == "1.draft":
+                    raise OSError("injected restore write failure")
+                return copyfile(source, destination, **kwargs)
+
+            with (
+                patch.object(shutil, "copyfile", side_effect=fail_second_restore),
+                patch.object(junie_cli, "run_interactive") as junie,
+            ):
+                self.resume(*responses)
+                junie.assert_not_called()
+            self.assertEqual((agent / names[0]).read_bytes(), partial)
+            self.assertFalse((agent / names[1]).exists())
+            self.assertIn("restore_from", self.record()["repair_pending"])
+            self.assertEqual(self.record()["repair_history"], [])
+            with patch.object(junie_cli, "run_interactive", side_effect=recovered) as junie:
+                with self.assertRaises(workflow.RunInterrupted):
+                    self.resume(*responses)
+                junie.assert_called_once()
+        self.assertEqual(self.target.read_bytes(), manual)
+        backups = self.record()["stopped_repair_recovery"]
+        saved_bytes = [(self.run_path / item["snapshot"] / "0.draft").read_bytes() for item in backups]
+        self.assertIn(b"class AgentManual {}", saved_bytes)
+        self.assertIn(manual, saved_bytes)
 
     def test_usage_save_failure_preserves_only_unconfirmed_repairs_for_explicit_resume(self):
         self.config["max_repair_attempts"] = 2

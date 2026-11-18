@@ -128,9 +128,19 @@ def preview_target_context(worktree, targets, policy):
     roots = _context_roots(targets, settings)
     largest = []
     total = count = max_size = 0
+    candidates = 0
+    last_report = time.monotonic()
+    report_activity("参照資料の候補を確認しています。")
 
-    def progress(relative):
+    def progress(_relative):
+        nonlocal candidates, last_report
         check_cancelled()
+        candidates += 1
+        now = time.monotonic()
+        if now - last_report >= 1:
+            report_activity(f"参照候補 {candidates:,} 項目を確認しました（対象ファイル {count:,} 件）。")
+            last_report = now
+            check_cancelled()
 
     for relative, _, size in _context_entries(worktree, targets, settings, roots, progress):
         if size is None:
@@ -141,9 +151,8 @@ def preview_target_context(worktree, targets, policy):
         largest.append((size, relative.as_posix()))
         largest.sort(reverse=True)
         del largest[10:]
-        if count % 256 == 0:
-            report_activity(f"参照候補 {count:,}件を確認しました。")
     usage = {"max_files": count, "max_bytes": total, "max_file_bytes": max_size}
+    check_cancelled()
     return {"roots": sorted(path.as_posix() for path in roots), "files": count, "bytes": total,
             "largest": [{"path": name, "bytes": size} for size, name in largest],
             "exceeded": {key: {"actual": value, "limit": settings[key]} for key, value in usage.items()

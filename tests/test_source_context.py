@@ -82,6 +82,19 @@ class TargetContextTests(unittest.TestCase):
         self.assertFalse((self.capsule / "target-context").exists())
         self.assertFalse((self.agent / "Shared").exists())
 
+    def test_preview_reports_progress_and_can_stop_without_copying(self):
+        self.put("Shared/first.cs")
+        control = ExecutionControl(on_activity=lambda event: (
+            control.cancelled.set() if "項目を確認" in event["message"] else None
+        ))
+        with control_scope(control), patch.object(source_context.time, "monotonic", side_effect=count(step=2)):
+            with self.assertRaises(OperationCancelled):
+                source_context.preview_target_context(
+                    self.worktree, self.targets, {"roots": [], "folders": ["Shared"]},
+                )
+        self.assertFalse((self.capsule / "target-context").exists())
+        self.assertFalse((self.agent / "Shared").exists())
+
     def symlink(self, path, destination, *, directory=False):
         path.parent.mkdir(parents=True, exist_ok=True)
         try:

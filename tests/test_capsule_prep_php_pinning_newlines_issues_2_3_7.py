@@ -315,7 +315,7 @@ class CapsulePreparationTests(HarnessCase):
         with (
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(junie_cli, "run_interactive", side_effect=junie),
-            patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result),
+            patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify,
         ):
             with self.assertRaises(workflow.RunInterrupted) as interrupted:
                 workflow.run_with_junie(config, "example")
@@ -327,6 +327,21 @@ class CapsulePreparationTests(HarnessCase):
             self.assertEqual(interrupted_record["current_capsule"], 2)
             rules.write_bytes(b"CHANGED_RULE\n")
             constraint.unlink()
+            plan = workflow.plan_migration_resume(config, run_id, 2)
+            request = {**plan, "id": "fixture-range"}
+            agent_target = run_path / "agent-workspace" / interrupted_record["target"]
+            prior = agent_target.read_bytes()
+            agent_target.write_bytes(b"class ChangedSincePlan {}")
+            with self.assertRaisesRegex(ValueError, "更新"):
+                workflow.resume_with_junie(config, run_id, verification_request=request)
+            agent_target.write_bytes(prior)
+            bounded = workflow.resume_with_junie(config, run_id, verification_request=request)
+            self.assertEqual(bounded["completed_capsules"], 2)
+            self.assertEqual(bounded["status"], "interrupted")
+            saved = self.read_json(record_path)
+            self.assertEqual(saved["current_capsule"], 3)
+            self.assertEqual(saved["resume_operations"][-1]["capsule_range"], [2, 2])
+            verify.assert_not_called()
             result = workflow.resume_with_junie(config, run_id)
 
         manifest = self.read_json(run_path / "capsule" / "manifest.json")
@@ -335,7 +350,7 @@ class CapsulePreparationTests(HarnessCase):
         self.assertGreater(len(parts), 2)
         self.assertEqual(observed_contexts, saved_contexts[:2] + saved_contexts[1:])
         self.assertEqual(result["completed_capsules"], len(parts))
-        self.assertEqual(self.read_json(record_path)["resume_attempts"], 1)
+        self.assertEqual(self.read_json(record_path)["resume_attempts"], 2)
         self.assertEqual([entry["path"] for entry in manifest["shared_sources"]], ["rules.md", "constraints.md"])
         saved_rules = b"".join((run_path / "capsule/materials" / chunk["file"]).read_bytes() for chunk in manifest["rule_files"])
         self.assertIn(b"REQUIRED_MIGRATION_RULE ````\r\n`````\n", saved_rules)

@@ -184,7 +184,7 @@ MIG101 src/Web/Pages/Menu.cshtml.cs:12 warning: 共通メソッドを使って�
 
 **参照起点** では **既定の4箇所を使う**、**個別に選ぶ**、**既定の起点を使わない** から選べます。例えば移行先が `src/Web/Pages/Orders/Index.cshtml.cs` なら、既定は `src/Web/Pages/Orders`、`src/Web/Pages/inc`、`src/Web/Libs`、`src/Web/Extensions` です。追加するフォルダーは作業ツリーからの相対パスで指定します。既定起点を外しても追加フォルダーは有効です。上限を超えると初回収集を中止します。`[units.target_context]` の指定項目は共通設定を上書きし、配列は置き換えます。
 
-`php-to-csharp-harness preview-context --config harness.local.toml --unit メニュー` は現在のアプリ作業コピーを読み取り、参照候補と容量を表示します。実行用の基準リビジョンや準備スクリプトでファイルが変わると、初回収集時の結果も変わります。固定済み Run は以前の資料を使います。
+`php-to-csharp-harness preview-context --config harness.local.toml --unit メニュー` は現在のアプリ作業コピーを読み取り、参照候補と容量を表示します。走査中は端末に進捗が出ます。`Ctrl+C` で取り消せます。実行用の基準リビジョンや準備スクリプトでファイルが変わると、初回収集時の結果も変わります。固定済み Run は以前の資料を使います。
 
 **差分ビューアーのHTML** の相対パスはアプリルートが基準です。**アンカーの参照JSON（任意）** は設定ファイルの場所が基準で、Junie に渡す対応行の手本です。HTML が空欄なら無効です。**使用しない** を選んでも入力済みのパスは保存されます。
 
@@ -295,6 +295,26 @@ tools/check-migration.ps1
 複数の移行単位にチェックを付けて一括で登録できます。同時実行数は最大5件で、残りは実行待ちになります。行の **待機を取消** はその登録だけを取り消します。**進捗** と **エディタ** の **表示する実行** でRunを切り替えても、他のRunは実行を続けます。入力途中のコード・エディタ指示は同じページ内の切り替えでは保持しますが、再読み込み前に保存してください。
 
 不要なRunは、行の **削除** を押すと実行一覧から取り除けます。実行中は **停止**、実行待ちは **待機を取消** の後に削除できます。作業ツリーとログは保存され、Run IDを指定すればCLIから開けます。
+
+### 停止した自動修正の下書きを選ぶ
+
+停止後に作業ツリーを手修正したときは、`repair-draft` で対象ごとの保存版を確認できます。出力の `base` は停止時の作業ツリー、`draft` は停止下書き、`worktree` は現在の手修正、`agent` は現在の Junie 作業領域のハッシュです。`null` はファイルの欠損です。下書きの生バイトとファイルの順番は Run の `stopped-repair-…/draft.json` と番号付きの `.draft` ファイルで確認できます。
+
+```powershell
+php-to-csharp-harness repair-draft --config harness.toml --run-id RUN_ID
+php-to-csharp-harness repair-draft --config harness.toml --run-id RUN_ID --version VERSION --choose 'Pages/A.cs=draft' --choose 'Pages/B.cs=worktree'
+php-to-csharp-harness resume --config harness.toml --run-id RUN_ID
+```
+
+`VERSION` とファイル名は計画の出力に合わせ、表示された下書き対象すべてについて選びます。`draft` を選ぶと停止時の欠損も引き継ぎます。欠損を埋めるには、その対象に作業ツリーの版を使う `worktree` を選びます。元の下書き、置き換え前の Junie 作業版、対象の手修正版を Run に保全します。作業ツリーに結果を反映するのは、通常の自動修正が完了した時点です。計画後に版が変わったときは計画を取り直してください。
+
+### 移行を指定区間まで再開する
+
+中断した移行は、`resume --from migration` で保存版を照合して次の未完了区間から再開できます。たとえば次の区間が3なら、`--through-capsule 3` でその区間だけ処理し、ビルドとチェッカーの手前で停止します。終了番号を省略すると最後まで移行し、通常どおり検証します。処理済み区間をやり直す操作は未対応です。
+
+```powershell
+php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from migration --through-capsule 3
+```
 
 ダッシュボードを再起動すると、保存済みの実行待ちを継続します。起動済みのRunは自動で再実行せず、一覧から **再開** します。**検証済み** のRunも移行台帳の確認が必要です。別Runの生成結果は合流しないため、相互に依存しない単位を並列化してください。
 

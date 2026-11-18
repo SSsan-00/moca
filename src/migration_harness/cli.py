@@ -11,8 +11,9 @@ from typing import Any
 from migration_harness.config import find_unit, load_config, target_paths, validate_checker_command
 from migration_harness.errors import format_error
 from migration_harness.workflow import (
-    VERIFIED_STATUSES, RunScriptError, migration_ledger, plan_build_resume, prepare_run, resume_with_junie, review_checker,
-    review_migration_ranges, run_with_junie,
+    VERIFIED_STATUSES, RunScriptError, migration_ledger, plan_build_resume, plan_migration_resume,
+    plan_stopped_repair, prepare_run, resolve_stopped_repair, resume_with_junie, review_checker, review_migration_ranges,
+    run_with_junie,
 )
 
 
@@ -36,7 +37,12 @@ def _parse_args() -> argparse.Namespace:
     run.add_argument("--unit", required=True, help="Migration unit ID from the config")
     resume = configured_command("resume", "Continue migration, build or checker in the saved worktree")
     resume.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
-    resume.add_argument("--from", dest="start_stage", choices=("build",), help="Rebuild saved targets without automatic repair")
+    resume.add_argument("--from", dest="start_stage", choices=("build", "migration"), help="Start at an explicit stage")
+    resume.add_argument("--through-capsule", type=int, help="With --from migration, stop after this capsule before verification")
+    draft = configured_command("repair-draft", "Inspect or select saved input for a stopped repair")
+    draft.add_argument("--run-id", required=True)
+    draft.add_argument("--version", help="Version from the plan printed without this option")
+    draft.add_argument("--choose", action="append", metavar="PATH=SOURCE", help="Select draft or worktree for each path")
     view = configured_command("view", "Open the dashboard for a saved run")
     view.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     review = configured_command("review", "List checker findings or accept one with a reason")
@@ -92,12 +98,27 @@ def main() -> None:
             config["checker_command"] = checker_command
             config["checker_from_cli"] = True
         if args.command == "preview-context":
+            from migration_harness.execution import ExecutionControl, control_scope
             from migration_harness.source_context import preview_target_context
 
             unit = find_unit(config, args.unit)
-            preview = preview_target_context(Path(config["project_root"]), target_paths(unit), unit.get("target_context"))
+            progress = ExecutionControl(on_activity=lambda event: print(event["message"], file=sys.stderr, flush=True))
+            with control_scope(progress):
+                preview = preview_target_context(Path(config["project_root"]), target_paths(unit), unit.get("target_context"))
             print(json.dumps(preview, ensure_ascii=False, indent=2))
             return
+        if args.command == "repair-draft":
+            if args.version is None and not args.choose:
+                print(json.dumps(plan_stopped_repair(config, args.run_id), ensure_ascii=False, indent=2))
+            else:
+                choices = dict(choice.rsplit("=", 1) for choice in args.choose or ())
+                if not args.version or len(choices) != len(args.choose or ()):
+                    raise ValueError("Supply the plan version and exactly one choice per target.")
+                resolve_stopped_repair(config, args.run_id, args.version, choices)
+                print("復元する内容を記録しました。通常の再開で反映します。")
+            return
+        if args.command == "resume" and args.through_capsule is not None and args.start_stage != "migration":
+            raise ValueError("--through-capsule requires --from migration.")
         if args.command == "ledger-review":
             review_migration_ranges(
                 config, args.run_id, args.ranges, args.state, args.reason, confirmed_targets=args.review_targets,
@@ -126,7 +147,7 @@ def main() -> None:
 
             if args.command != "run":
                 if getattr(args, "start_stage", None):
-                    raise ValueError("Use --from build without --dashboard, or choose ビルドのみ in the dashboard.")
+                    raise ValueError("Use --from without --dashboard.")
                 run_dashboard(config, run_id=args.run_id)
                 return
             result = run_dashboard(config, unit_id=args.unit)
@@ -138,6 +159,9 @@ def main() -> None:
             if args.start_stage == "build":
                 request = plan_build_resume(config, args.run_id)
                 print(f"保存版 {request['version'][:12]} をビルドします（自動修正なし）。", flush=True)
+                result = resume_with_junie(config, args.run_id, verification_request={**request, "id": uuid.uuid4().hex})
+            elif args.start_stage == "migration":
+                request = plan_migration_resume(config, args.run_id, args.through_capsule)
                 result = resume_with_junie(config, args.run_id, verification_request={**request, "id": uuid.uuid4().hex})
             else:
                 result = resume_with_junie(config, args.run_id)
