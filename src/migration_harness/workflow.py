@@ -777,6 +777,7 @@ def _read_operator_review(
 
 
 def _restore_operator_question_targets(agent_root, worktree, targets):
+    """質問待ちの編集を外部変更と照合し、作業領域に復元する。"""
     with worktree_source_lock:
         for target in targets:
             source = safe_target(worktree, target)
@@ -866,6 +867,7 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
                f" 必須ルール {sum(item['usage'] == 'required' for item in rules)}件、適用する詳細 {sum(item['usage'] == 'reference' for item in rules)}件。")
     if rules or files:
         def describe(items):
+            """ガイドラインに組み込む資料の容量の内訳を作る。"""
             return f"{sum(item['bytes'] for item in items):,} B / {sum(item.get('characters') or 0 for item in items):,}文字"
 
         required = [item for item in rules if item["usage"] == "required"]
@@ -890,9 +892,11 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
 def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, inputs, *args, embedded_input=(), **kwargs):
     """実行するたびに、確定した指示の容量を照合する。"""
     def observe(prompt):
+        """実際にJunieの起動に使う指示を計測し、警告や停止を適用する。"""
         _record_junie_input(config, record_path, record, phase, prompt, guidelines, root, inputs, embedded_input)
 
     def observe_steering(instruction):
+        """ACPで送る追加指示の容量を計測し、送信前に制限を適用する。"""
         count = len(instruction.encode("utf-8"))
         limits = config.get("junie_input_limits", {})
         blocked = count > limits.get("max_input_bytes", count)
@@ -918,6 +922,7 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
 
 
 def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targets, allowed, other_files, before):
+    """対象外と基準版が一致するときだけ、移行中の最新下書きを記録する。"""
     with worktree_source_lock:
         try:
             safe = (
@@ -938,12 +943,14 @@ def _run_migration_junie(
     config, record_path, record, phase, guidelines, agent_root, inputs, command, completion, token,
     agent_targets, *, worktree, targets, allowed, other_files, resumed_draft=None, **kwargs,
 ):
+    """セッションの終了確認を追跡し、停止時に保存できる下書きを判定する。"""
     before = {name.as_posix(): target_hash(file) for name, file in zip(targets, agent_targets, strict=True)}
     if resumed_draft and before != resumed_draft["targets"]:
         raise ValueError("Junie の起動前に停止時の下書きが更新されました。Junie 作業領域を確認してください。")
     closed = False
 
     def confirm_closed():
+        """子プロセス群の終了を確認した時点を記録する。"""
         nonlocal closed
         closed = True
 
@@ -1730,6 +1737,7 @@ def _discard_unconfirmed_draft(record):
 
 
 def _remember_repair_draft(record, draft):
+    """参照を置き換える前に、復元可能な旧下書きを履歴に残す。"""
     if draft and draft.get("snapshot"):
         record.setdefault("stopped_repair_recovery", []).append(draft)
 
@@ -1741,12 +1749,14 @@ def _snapshot_stopped_repair(run_path, agent_root, repair_targets, before, *, wo
 
 
 def _archive_stopped_migration(record):
+    """採用済みの停止下書きを現行の参照から履歴へ移す。"""
     if draft := record.pop("stopped_migration_draft", None):
         record.setdefault("stopped_migration_history", []).append(draft)
 
 
 def _save_stopped_migration(record_path, record, agent_root, targets, *, workspace_unchanged):
     # Run 記録の書き込みまで成功してから旧下書きの参照を更新する。
+    """最新の下書きと旧参照をRun記録へ一緒に保存し、失敗時は再開を保留する。"""
     updated = {**record}
     if "stopped_migration_history" in record:
         updated["stopped_migration_history"] = record["stopped_migration_history"].copy()
@@ -1785,6 +1795,7 @@ def _save_target_snapshot(run_path, sources, before, *, workspace_unchanged):
 
 
 def _save_capsule_checkpoint(run_path, worktree, targets, hashes):
+    """指定区間の移行先を、実行記録と同じ版で復元できるよう保存する。"""
     sources = {path.as_posix(): safe_target(worktree, path) for path in targets}
     checkpoint = _save_target_snapshot(run_path, sources, hashes, workspace_unchanged=True)
     if checkpoint["targets"] != hashes:
@@ -1808,6 +1819,7 @@ def _verified_target_snapshot(run_path, draft):
 
 
 def _stopped_repair_plan(run_path, worktree, unit, record, queue):
+    """現在の作業版と下書きを照合し、復元対象を選ぶための計画を作る。"""
     draft = record.get("repair_pending", {}).get("draft", {})
     if not draft.get("snapshot") or not draft.get("workspace_unchanged"):
         raise ValueError("復元できる停止時の下書きがありません。Run の記録を確認してください。")
@@ -1880,6 +1892,7 @@ def resolve_stopped_repair(config, run_id, version, choices):
 
 def _restore_snapshot_files(sources, destinations, expected, selected, *, preserve_mode=False):
     # A retry can see either the original version or the version already restored by this plan.
+    """既に復元済みの対象を識別し、想定した版からだけ残りを反映する。"""
     hashes = {name: target_hash(file) for name, file in destinations.items()}
     if any(hashes[name] not in (expected[name], selected.get(name, expected[name])) for name in hashes):
         raise ValueError("復元対象が更新されました。repair-draft で復元計画を取り直してください。")
@@ -1926,6 +1939,7 @@ def _restore_snapshot_targets(run_path, attempt, agent_files, before, record):
 
 
 def _recover_selected_repair(run_path, worktree, targets, record):
+    """保存した下書き選択を再照合し、中断していた復元を再開する。"""
     attempt = record.get("repair_pending", {})
     restoring = "restore_from" in attempt
     selection = attempt.get("selection")
@@ -2000,6 +2014,7 @@ def _recover_selected_repair(run_path, worktree, targets, record):
 
 
 def _check_selected_repair_targets(record, repair_targets):
+    """次に修正する対象が保存済みの下書き選択に対応するか確認する。"""
     selection = record.get("repair_pending", {}).get("selection")
     if selection:
         unresolved = set(selection["partial"]) - {path.as_posix() for path in repair_targets}
@@ -3239,6 +3254,7 @@ def plan_migration_resume(
 
 
 def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
+    """復元元の区間と直前の版を保存し、巻き戻しの記録を組み立てる。"""
     with editor_queue(run_path) as queue, worktree_source_lock:
         if (queue.get("edit_revision") != plan["edit_revision"] or queue["edits"]
                 or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
@@ -3287,6 +3303,7 @@ def plan_stage_resume(config, run_id, stage, *, through_capsule=None, rewind_to=
 
 
 def _check_build_receipt(config, worktree, record):
+    """チェッカーが使うビルドの入力・生成物が記録時の版か確認する。"""
     receipt = record.get("checker_build")
     if record.get("build_exit_code") != 0 or not receipt:
         raise ValueError("照合できるビルド成果物がありません。ビルドを実行してください。")
@@ -3299,6 +3316,7 @@ def _check_build_receipt(config, worktree, record):
 
 
 def plan_checker_resume(config, run_id):
+    """ビルド記録、対象版、チェッカー設定に対して単独再開の計画を返す。"""
     run_path, worktree, _, unit = load_saved_run(config, run_id)
     command = checker_command_for_unit(config, unit)
     if command is None:
@@ -3324,6 +3342,7 @@ def plan_checker_resume(config, run_id):
 
 
 def _resume_checker(config, result, record, plan, request_id):
+    """対象版を照合してチェッカーのみを実行し、検証記録を保存する。"""
     run_path, worktree = Path(result["run_path"]), Path(result["worktree_path"])
     record_path = run_path / "run.json"
     command = plan["checker_command"]

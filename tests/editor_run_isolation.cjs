@@ -96,17 +96,20 @@ const response = (runId, content = `class ${runId} {}`) => ({
   run_id: runId, targets: ["Page.cs"], target: "Page.cs", content,
   edit: null, prompts: [], can_save: true, can_prompt: true, exists: true,
 });
+// Drive the editor with the two events emitted before and after the initial SSE update.
 async function select(runId) {
   await document.emit("harnessrunselect");
   context.snapshot = {run_id: runId};
   await document.emit("harnessrunchange");
 }
+// Remove a pending request so each response can be delivered in the test’s chosen order.
 function take(endpoint = "editor") {
   const index = pending.findIndex(item => item.path.split("?")[0] === endpoint);
   assert.notEqual(index, -1, `missing ${endpoint} request`);
   return pending.splice(index, 1)[0];
 }
 
+// Exercise the production dashboard entry point with controllable SSE, HTTP, and popup doubles.
 async function checkDashboard() {
   const streams = [];
   const requests = [];

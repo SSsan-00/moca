@@ -15,10 +15,12 @@ from .files import safe_target, sha256_file
 
 
 def _fingerprint(root: Path, excluded=(), *, label: str | None = None) -> str:
+    """ディレクトリを安定した順で読み、停止可能なビルド版のハッシュを返す。"""
     digest = hashlib.sha256()
     next_update = monotonic() + HEARTBEAT_SECONDS
 
     def check():
+        """列挙・読み取りの合間に停止と進捗通知の時刻を確認する。"""
         nonlocal next_update
         check_cancelled()
         now = monotonic()

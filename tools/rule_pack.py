@@ -13,10 +13,12 @@ from pathlib import Path
 
 
 def json_text(value: object) -> str:
+    """日本語をそのまま保存できる、改行付きのJSON本文を作る。"""
     return json.dumps(value, ensure_ascii=False, indent=2) + "\n"
 
 
 def read_json(path: Path) -> dict:
+    """リンクを拒否し、最上位がオブジェクトのJSONを読む。"""
     if path.is_symlink():
         raise ValueError(f"シンボリックリンクは使えません: {path}")
     value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -27,6 +29,7 @@ def read_json(path: Path) -> dict:
 
 def regular_files(directory: Path):
     # rglobは読めないフォルダを省略するため、列挙失敗を伝播させる。
+    """通常ファイルを順序付きで集め、リンクや列挙エラーを拒否する。"""
     for path in sorted(directory.iterdir()):
         if path.is_symlink():
             raise ValueError(f"リンクは使えません: {path}")
@@ -39,6 +42,7 @@ def regular_files(directory: Path):
 
 
 def source_files(pack: Path) -> tuple[list[dict], dict[str, list[str]]]:
+    """原文のバイト列と行を読み、版の目録を作る。"""
     directory = pack / "sources"
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("sources/ に原文のコピーを配置してください。リンクは使えません。")
@@ -60,6 +64,7 @@ def source_files(pack: Path) -> tuple[list[dict], dict[str, list[str]]]:
 
 
 def snapshot(pack: Path) -> None:
+    """原文の初回スナップショットを排他的に作成する。"""
     inventory, _ = source_files(pack)
     # 採用済みの原文を別内容で上書きして検査をすり抜けないよう、初回だけ作る。
     with (pack / "sources.json").open("x", encoding="utf-8", newline="") as stream:
@@ -67,12 +72,14 @@ def snapshot(pack: Path) -> None:
 
 
 def label(value: object, name: str) -> str:
+    """タイトルや索引に使える1行の値を検証する。"""
     if not isinstance(value, str) or not value.strip() or any(c in value for c in "\r\n\0"):
         raise ValueError(f"{name}は空でない1行の文字列にしてください。")
     return value
 
 
 def render(pack: Path) -> dict[str, bytes]:
+    """全原文行が過不足なく配置されたか検証し、規則本文と照合資料を生成する。"""
     inventory, texts = source_files(pack)
     if read_json(pack / "sources.json") != {"sources": inventory}:
         raise ValueError("原文の変更・追加・削除を検出しました。新しい作業領域でsnapshotからやり直してください。")
@@ -165,10 +172,12 @@ def render(pack: Path) -> dict[str, bytes]:
 
 def toml_string(value: str) -> str:
     # JSONの引用に加えて、TOMLが生の文字として許さないDELをエスケープする。
+    """生成するTOMLへ安全に埋め込める文字列を返す。"""
     return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def build(pack: Path) -> None:
+    """確認した計画からルールパックを作成する。"""
     output = render(pack)
     destination = pack / "generated"
     if destination.exists() or destination.is_symlink():
@@ -185,6 +194,7 @@ def build(pack: Path) -> None:
 
 
 def verify(pack: Path) -> None:
+    """再計算した成果物と保存済みのルールパックを照合する。"""
     expected = render(pack)
     directory = pack / "generated"
     if directory.is_symlink() or not directory.is_dir():
@@ -198,6 +208,7 @@ def verify(pack: Path) -> None:
 
 
 def main() -> None:
+    """原文固定、生成、照合の各操作へ振り分ける。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("snapshot", "build", "verify"))
     parser.add_argument("pack", type=Path, help="sources/とplan.jsonを置く作業領域")

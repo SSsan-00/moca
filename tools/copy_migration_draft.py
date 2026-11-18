@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 
 def main() -> None:
     # ハーネスはログをUTF-8で読む。Windowsのリダイレクト先でも日本語を出力する。
+    """指定された初期下書きを移行先に配置する。"""
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)

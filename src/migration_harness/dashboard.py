@@ -1152,6 +1152,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 return
 
             def send_event(data):
+                """参照候補の進捗を改行区切りで即時に送る。"""
                 self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8") + b"\n")
                 self.wfile.flush()
 

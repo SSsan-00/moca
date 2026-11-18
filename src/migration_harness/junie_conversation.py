@@ -118,6 +118,7 @@ def _status_intent(value):
 
 
 def _stage_resume_options(text):
+    """開始工程と区間を明示した依頼だけを再開計画の引数へ変換する。"""
     value = unicodedata.normalize("NFKC", text).strip().rstrip("。.!！")
     if re.fullmatch(r"手修正したので[、 ]*ビルド(?:だけ|のみ)(?:を)?(?:再実行|実行|再開)?(?:して|してください)?", value):
         return {"stage": "build"}

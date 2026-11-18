@@ -22,24 +22,29 @@ class RegressionResult(unittest.TextTestResult):
     """成功したテストを記録し、必須検証が実行されたことを確認する。"""
 
     def __init__(self, *args, **kwargs):
+        """各テストの成功と所要時間を別々に記録する。"""
         super().__init__(*args, **kwargs)
         self.passed = set()
         self.timings = []
 
     def startTest(self, test):
+        """unittestのセットアップ前にテストの計測を始める。"""
         self.started = perf_counter()
         super().startTest(test)
 
     def stopTest(self, test):
+        """後始末を含めた経過時間をテストIDと一緒に残す。"""
         self.timings.append((test.id(), perf_counter() - self.started))
         super().stopTest(test)
 
     def addSuccess(self, test):
+        """必須テストの成功を、発見や起動と区別して記録する。"""
         super().addSuccess(test)
         self.passed.add(test.id())
 
 
 def test_cases(suite):
+    """unittestの入れ子を展開し、実行・比較できるテストIDを得る。"""
     for test in suite:
         if isinstance(test, unittest.TestSuite):
             yield from test_cases(test)
@@ -62,6 +67,7 @@ def windows_shards(tests):
 
 
 def main():
+    """回帰テストを発見・配分して実行し、CIで必要な成功を確認する。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("shard", choices=("full", *WINDOWS_SHARDS))
     parser.add_argument("--require-ui", action="store_true")

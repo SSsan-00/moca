@@ -9,6 +9,7 @@ import sys
 
 
 def collect(paths):
+    """各Runの工程時間・入力容量・結果を実行記録から集計する。"""
     trials = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     sessions = {trial["run_id"]: [] for trial in trials}
     for path in (Path.home() / ".junie/sessions").glob("*/events.jsonl"):

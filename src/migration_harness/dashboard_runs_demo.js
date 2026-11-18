@@ -19,11 +19,13 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
     make("demo-search", "商品検索", "checker_needs_review", true, 30),
     make("demo-partners", "取引先一覧", "checker_succeeded", true, 30)];
   pending.push(...runs.filter(run => run.queued));
+  // 実行待ちに追加し、デモの並列枠が空くまで保留する。
   function enqueue(run) {
     run.queued = true;
     run.ready = false;
     pending.push(run);
   }
+  // 実行一覧で使う要約を、デモ状態から組み立てる。
   function publish() {
     for (const run of runs) {
       run.queue_position = run.queued ? pending.indexOf(run) + 1 : undefined;
@@ -39,6 +41,7 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
       show(run);
     }
   }
+  // 空いたデモの実行枠へ待機順で割り当てる。
   function schedule() {
     let active = runs.filter(run => !run.ready && !run.queued).length;
     while (active < limit && pending.length) {

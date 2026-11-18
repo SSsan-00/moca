@@ -12,6 +12,7 @@ DATA = ROOT / "verification"
 
 
 def normalize_sql(sql):
+    """SQLの字句を照合するため、比較用の形にそろえる。"""
     parameters = {}
     parts = re.split(r"('(?:[^']|'')*')", sql)
     for i in range(0, len(parts), 2):
@@ -21,6 +22,7 @@ def normalize_sql(sql):
 
 
 def compare(expected, source, inspection):
+    """固定した期待値と静的検査結果の違いを列挙する。"""
     issues = list(inspection["problems"])
     actual = inspection["policies"]
     ids = [row.get("Id") for row in actual]
@@ -54,6 +56,7 @@ def compare(expected, source, inspection):
 
 
 def check():
+    """評価用の移行先を静的に検査し、差異を終了コードに反映する。"""
     start = time.monotonic()
     # This executable is a Roslyn source parser, not the migrated application.
     result = subprocess.run(["dotnet", "run", "--project", str(DATA / "inspector/Inspect.csproj"),

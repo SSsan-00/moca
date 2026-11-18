@@ -26,6 +26,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     checker_needs_review: "確認待ち", checker_failed: "チェック失敗", build_failed: "ビルド失敗",
     junie_failed: "移行を確認", interrupted: "停止中", editor_checkpoint: "編集を確認", cancelled: "取消済み",
     preparation_failed: "準備に失敗", preparation_interrupted: "準備を中断", script_failed: "スクリプト失敗"};
+  // 保存状態から実行一覧の分類を決める。
   function category(run) {
     if (run.queued) return "queued";
     if (run.awaiting_answer) return "review";
@@ -34,12 +35,14 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     if (["checker_needs_review", "checker_failed", "build_failed", "junie_failed", "editor_checkpoint", "preparation_failed", "script_failed"].includes(run.status) || run.error) return "review";
     return "paused";
   }
+  // 実行一覧の表示文字を、HTMLとして解釈せず要素に入れる。
   function node(tag, text, className) {
     const element = document.createElement(tag);
     if (text !== undefined) element.textContent = text;
     if (className) element.className = className;
     return element;
   }
+  // 実行操作の結果を表示するタブにフォーカスを移す。
   function goTab(id) {
     switchHarnessTab(harnessTabs.indexOf(find(id)), true);
   }
@@ -62,6 +65,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     back.addEventListener("click", () => goTab("#tab-runs"));
     host.append(label, select, back);
   }
+  // 接続状態と送信中の操作から、実行・再開ボタンを更新する。
   function sync() {
     const available = canAct() && !pending;
     for (const button of form.querySelectorAll("button")) button.disabled = !available || !selectedUnits.size;
@@ -71,6 +75,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     for (const button of rows.querySelectorAll("button")) button.disabled = !available;
     for (const select of document.querySelectorAll("[data-run-context] select")) select.disabled = !available;
   }
+  // 実行中の経過時間だけを保存済みの計測へ加える。
   function elapsed(run) {
     const now = Date.now() / 1000;
     let seconds = Object.values(run.stage_timings || {}).reduce((total, stage) => total + (stage.elapsed_seconds || 0)
@@ -81,6 +86,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     if (seconds >= 3600) parts.unshift(Math.floor(seconds / 3600));
     return parts.map(value => String(value).padStart(2, "0")).join(":");
   }
+  // 保存状態、待機位置、処理中の通知を実行一覧の案内へ変換する。
   function describe(run) {
     if (run.queued) {
       const position = `待機順 ${run.queue_position || "—"}`;
@@ -96,6 +102,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     if (run.status === "prepared") return "移行を再開できます";
     return run.error ? "進捗で原因と次の操作を確認" : statuses[run.status] || "進捗を確認";
   }
+  // フィルター、並列枠、Runの状態・操作を一覧へ反映する。
   function render() {
     const counts = Object.fromEntries(Object.keys(labels).map(key => [key, key === "all" ? data.runs.length : data.runs.filter(run => category(run) === key).length]));
     const active = data.runs.filter(run => !run.ready && !run.queued).length;
@@ -167,6 +174,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         const time = node("td", elapsed(run), "run-time");
         const actions = node("td");
         const buttons = node("div", undefined, "run-actions");
+        // 表示中のRunに対する操作をボタンへ結び付ける。
         function button(label, action, tab, subtle = false) {
           const item = node("button", label, `button${subtle ? " run-text-action" : ""}`);
           item.type = "button";
@@ -197,6 +205,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     find("#runs-empty").textContent = data.runs.length ? "条件に一致する実行はありません。" : "まだ実行がありません。移行単位を選んで準備または移行を始めてください。";
     sync();
   }
+  // 実行一覧の最新の要求だけを反映する。
   async function refresh() {
     if (loading) return;
     loading = true;
@@ -209,6 +218,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
       feedback.textContent = `実行一覧を読み込めませんでした。接続を確認してください。\n${error.message}`;
     } finally { loading = false; }
   }
+  // 実行操作を送り、選択中Runと一覧を結果に合わせて更新する。
   async function act(action, runId, tab) {
     if (pending || !canAct()) return;
     const run = data.runs.find(item => item.run_id === runId);

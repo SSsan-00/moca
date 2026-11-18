@@ -89,6 +89,7 @@ def _context_entries(worktree, targets, settings, roots, progress):
     visited = set()
 
     def visit(relative, *, root=False):
+        """参照起点の下で、除外条件を満たす通常ファイルを列挙する。"""
         progress(relative)
         if relative in visited or relative in targets or _reserved(relative) or _excluded(relative, settings):
             return
@@ -133,6 +134,7 @@ def preview_target_context(worktree, targets, policy):
     report_activity("参照資料の候補を確認しています。")
 
     def progress(_relative):
+        """参照候補の走査中に一定間隔で進捗を通知する。"""
         nonlocal candidates, last_report
         check_cancelled()
         candidates += 1
