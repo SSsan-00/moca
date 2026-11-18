@@ -740,7 +740,7 @@ def _operator_edit_context(
 
 def _read_operator_review(
     report: Path | None, agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any],
-    *, completed: bool,
+    *, completed: bool, save_stopped_draft: bool = True,
 ) -> str | None:
     """Junieの確認質問と編集結果を読み取る。"""
     if report is None:
@@ -764,9 +764,10 @@ def _read_operator_review(
         return None
     if not isinstance(review, dict) or set(review) != {"question"} or not isinstance(review["question"], str) or not review["question"].strip():
         raise ValueError("Junie の編集確認の形式が正しくありません。")
-    # 確認前の変更を残すと、次回そのまま反映されるため作業ツリーの版に戻す。
+    # 停止下書きがある場合は保全し、従来の経路では作業ツリーの版に戻す。
     if record.get("stopped_migration_draft"):
-        _save_stopped_migration(agent_root.parent / "run.json", record, agent_root, targets, workspace_unchanged=True)
+        if save_stopped_draft:
+            _save_stopped_migration(agent_root.parent / "run.json", record, agent_root, targets, workspace_unchanged=True)
     else:
         _restore_operator_question_targets(agent_root, worktree, targets)
     question = review["question"].strip()
@@ -935,9 +936,11 @@ def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targe
 
 def _run_migration_junie(
     config, record_path, record, phase, guidelines, agent_root, inputs, command, completion, token,
-    agent_targets, *, worktree, targets, allowed, other_files, **kwargs,
+    agent_targets, *, worktree, targets, allowed, other_files, resumed_draft=None, **kwargs,
 ):
     before = {name.as_posix(): target_hash(file) for name, file in zip(targets, agent_targets, strict=True)}
+    if resumed_draft and before != resumed_draft["targets"]:
+        raise ValueError("Junie の起動前に停止時の下書きが更新されました。Junie 作業領域を確認してください。")
     closed = False
 
     def confirm_closed():
@@ -946,8 +949,11 @@ def _run_migration_junie(
 
     observer = junie_cli.session_closed_observer.set(confirm_closed)
     try:
-        return _run_budgeted_junie(config, record_path, record, phase, guidelines, agent_root, inputs,
-                                   command, completion, token, agent_targets, **kwargs)
+        exit_code = _run_budgeted_junie(config, record_path, record, phase, guidelines, agent_root, inputs,
+                                       command, completion, token, agent_targets, **kwargs)
+        if resumed_draft and not closed:
+            raise junie_cli.JunieStopError("Junie と子プロセスの終了を確認できませんでした。")
+        return exit_code
     except (KeyboardInterrupt, OSError, RuntimeError, ValueError) as exc:
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
             record["migration_stop_unconfirmed"] = True
@@ -988,12 +994,13 @@ def _run_editor_followup(
                                       guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
     allowed = {*targets, completion.relative_to(agent_root)}
-    before = _unlisted_workspace_files(agent_root, allowed)
+    other_files = _unlisted_workspace_files(agent_root, allowed)
+    prior = record.get("stopped_migration_draft")
     try:
         _run_migration_junie(
             config, record_path, record, "editor_followup", guidelines, agent_root, inputs,
             command, completion, token, tuple(safe_target(agent_root, target) for target in targets),
-            worktree=worktree, targets=targets, allowed=allowed, other_files=before,
+            worktree=worktree, targets=targets, allowed=allowed, other_files=other_files, resumed_draft=prior,
             report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
             prompts=LivePrompts(record_path.parent),
         )
@@ -1001,12 +1008,24 @@ def _run_editor_followup(
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
             raise
         raise RunInterrupted(record["run_id"]) from None
-    if _unlisted_workspace_files(agent_root, allowed) != before:
+    if _unlisted_workspace_files(agent_root, allowed) != other_files:
+        if prior:
+            _checkpoint_migration_draft(
+                record_path, record, worktree, agent_root, targets, allowed, other_files, prior["targets"],
+            )
         raise ValueError("追加指示の実行中に移行対象外のファイルが変更されました。")
-    completed = junie_cli.has_completion_record(completion, token)
-    if _read_operator_review(report, agent_root, worktree, targets, record, completed=completed):
-        return False
-    if not completed or not all(safe_target(agent_root, target).is_file() for target in targets):
+    complete = junie_cli.has_completion_record(completion, token) and all(
+        safe_target(agent_root, target).is_file() for target in targets
+    )
+    # 質問も未完了として扱い、同じ照合で下書きを一度だけ保存する。
+    question = _read_operator_review(
+        report, agent_root, worktree, targets, record, completed=complete, save_stopped_draft=False,
+    )
+    if question or not complete:
+        if prior:
+            _checkpoint_migration_draft(
+                record_path, record, worktree, agent_root, targets, allowed, other_files, prior["targets"],
+            )
         return False
     record.pop("operator_question", None)
     apply_agent_targets(agent_root, worktree, targets, record["target_hashes"], record, record_path)
