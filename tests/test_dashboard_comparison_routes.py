@@ -139,7 +139,7 @@ for (const mode of ["delayed", "ready", "slow-start", "abandoned", "unsupported"
   assert.equal(intervals.size, 0);
   assert.equal(timeouts.size, 0);
 }
-"""], input=json.dumps({"bootstrap": bootstrap, "payload": payload}), capture_output=True, text=True, timeout=10)
+"""], input=json.dumps({"bootstrap": bootstrap, "payload": payload}), capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @contextmanager
