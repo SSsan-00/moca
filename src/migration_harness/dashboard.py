@@ -399,10 +399,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_body(200, "text/html; charset=utf-8", html)
             elif self.path == prefix + "dashboard.js":
                 self.send_body(200, "text/javascript; charset=utf-8", script)
-            elif self.path == prefix + "dashboard_runs.js":
-                self.send_body(200, "text/javascript; charset=utf-8", Path(__file__).with_name("dashboard_runs.js").read_bytes())
-            elif self.path == prefix + "dashboard_editor.js":
-                self.send_body(200, "text/javascript; charset=utf-8", Path(__file__).with_name("dashboard_editor.js").read_bytes())
+            elif self.path.removeprefix(prefix) in ("dashboard_runs.js", "dashboard_settings.js", "dashboard_editor.js"):
+                asset = Path(__file__).with_name(self.path.removeprefix(prefix))
+                self.send_body(200, "text/javascript; charset=utf-8", asset.read_bytes())
             elif self.path.startswith(prefix + "monaco/"):
                 name = self.path.removeprefix(prefix + "monaco/")
                 content_type = {
@@ -1330,7 +1329,8 @@ def render_dashboard_html(options: str) -> bytes:
     html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
     if not marker:
         raise ValueError("progress dashboard template is missing its script marker")
-    html = html.replace("./src/migration_harness/dashboard_runs.js", "dashboard_runs.js")
+    for asset in ("dashboard_runs.js", "dashboard_settings.js"):
+        html = html.replace(f"./src/migration_harness/{asset}", asset)
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
     html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>'
     return html.encode("utf-8")

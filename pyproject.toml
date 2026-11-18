@@ -19,7 +19,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # ダッシュボードのJavaScriptは、インストール後もPythonモジュールから配信する。
-migration_harness = ["dashboard.js", "dashboard_editor.js", "dashboard_runs.js", "monaco/*.js", "monaco/*.css", "monaco/LICENSE", "monaco/ThirdPartyNotices.txt"]
+migration_harness = ["dashboard.js", "dashboard_editor.js", "dashboard_runs.js", "dashboard_settings.js", "monaco/*.js", "monaco/*.css", "monaco/LICENSE", "monaco/ThirdPartyNotices.txt"]
 
 [tool.setuptools.data-files]
 # 本番とデモが共用するHTMLを、作業ツリーの外からも読み込める場所に置く。
