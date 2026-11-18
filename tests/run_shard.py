@@ -2,9 +2,14 @@
 
 import argparse
 import os
+from collections import Counter
 from pathlib import Path
 import unittest
+from time import perf_counter
 
+
+WINDOWS_SHARDS = ("conversation-editor", "remaining")
+CONVERSATION_EDITOR_MODULES = {"test_junie_conversation", "test_dashboard_editor"}
 
 REQUIRED_UI = {
     "test_settings_browser.SettingsBrowserTests.test_settings_round_trip_in_chromium",
@@ -19,6 +24,15 @@ class RegressionResult(unittest.TextTestResult):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.passed = set()
+        self.timings = []
+
+    def startTest(self, test):
+        self.started = perf_counter()
+        super().startTest(test)
+
+    def stopTest(self, test):
+        self.timings.append((test.id(), perf_counter() - self.started))
+        super().stopTest(test)
 
     def addSuccess(self, test):
         super().addSuccess(test)
@@ -33,24 +47,42 @@ def test_cases(suite):
             yield test
 
 
+def windows_shards(tests):
+    """全テストを発見順に分け、重複、欠落、空の分割を拒否する。"""
+    groups = {name: [] for name in WINDOWS_SHARDS}
+    for test in tests:
+        module = test.id().partition(".")[0]
+        name = "conversation-editor" if module in CONVERSATION_EDITOR_MODULES else "remaining"
+        groups[name].append(test)
+    discovered = Counter(test.id() for test in tests)
+    scheduled = Counter(test.id() for group in groups.values() for test in group)
+    if scheduled != discovered or any(count != 1 for count in scheduled.values()) or not all(groups.values()):
+        raise ValueError("Windows test shards must cover each discovered test exactly once and be nonempty")
+    return groups
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("shard", choices=("full", "conversation", "remaining"))
+    parser.add_argument("shard", choices=("full", *WINDOWS_SHARDS))
     parser.add_argument("--require-ui", action="store_true")
+    parser.add_argument("--timings", action="store_true", help="Print test durations and IDs")
     args = parser.parse_args()
-    suite = unittest.defaultTestLoader.discover(str(Path(__file__).resolve().parent))
-    conversation = args.shard == "conversation"
-    selected = unittest.TestSuite(
-        test for test in test_cases(suite)
-        # Module import failures also end in the module name.
-        if args.shard == "full" or ("test_junie_conversation" in test.id().split(".")) == conversation
-    )
-    if not selected.countTestCases():
-        parser.error(f"{args.shard} shard is empty")
+    loader = unittest.TestLoader()
+    tests = list(test_cases(loader.discover(str(Path(__file__).resolve().parent))))
+    if loader.errors:
+        parser.exit(1, "\n".join(loader.errors) + "\n")
+    try:
+        groups = windows_shards(tests)
+    except ValueError as error:
+        parser.error(str(error))
+    selected = unittest.TestSuite(tests if args.shard == "full" else groups[args.shard])
     if args.require_ui:
         os.environ["HARNESS_REQUIRE_UI"] = "1"
     discovered = selected.countTestCases()
     result = unittest.TextTestRunner(verbosity=2, resultclass=RegressionResult).run(selected)
+    if args.timings:
+        for name, seconds in result.timings:
+            print(f"TEST_TIME {seconds:.3f} {name}")
     print(f"Discovered: {discovered}; ran: {result.testsRun}; passed: {len(result.passed)}; "
           f"failed: {len(result.failures)}; errors: {len(result.errors)}; skipped: {len(result.skipped)}")
     missing_ui = REQUIRED_UI - result.passed if args.require_ui else set()

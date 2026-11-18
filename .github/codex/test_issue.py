@@ -97,11 +97,11 @@ class IssueTests(unittest.TestCase):
         self.assertEqual(issue.ci_ready("codex/issue-7", SHA), ["missing pull_request CI"])
         paginated.side_effect = ([push, pr | {"status": "in_progress"}], jobs)
         self.assertEqual(issue.ci_ready("codex/issue-7", SHA), ["pull_request CI pending"])
-        missing_shard = [job for job in jobs if job["name"] != "windows tests (3.13, conversation)"]
+        missing_shard = [job for job in jobs if job["name"] != "windows tests (3.13, conversation-editor)"]
         paginated.side_effect = ([push, pr], jobs, missing_shard)
         with self.assertRaisesRegex(issue.Stop, "full successful matrix"):
             issue.ci_ready("codex/issue-7", SHA)
-        failed_shard = [job | {"conclusion": "failure"} if job["name"] == "windows tests (3.13, conversation)"
+        failed_shard = [job | {"conclusion": "failure"} if job["name"] == "windows tests (3.13, conversation-editor)"
                         else job for job in jobs]
         paginated.side_effect = ([push, pr], jobs, failed_shard)
         with self.assertRaisesRegex(issue.Stop, "full successful matrix"):
