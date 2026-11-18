@@ -58,6 +58,8 @@ python -m unittest discover -s tests -v
 
 テストは一時ディレクトリにGitリポジトリとRunを作ります。準備処理はPythonとGitで実行し、制御のテストではJunieや.NETなどをテスト用の処理に置き換えます。GitHub ActionsはmainへのpushとPRで、WindowsとLinuxのPython 3.11・3.13を検証します。
 
+GitHubでIssueを1件ずつ処理する管理者向け手順は、[Codex Issueワークフロー](docs/codex-issue-workflow.md)を参照してください。
+
 コードの担当範囲と主なテストは [技術仕様の「実装の入口」](SPEC.md#実装の入口) にまとめています。実行順序は `workflow.py`、移行先ファイルの読み書き・反映は `worktree_targets.py`、チェッカー出力の解析は `checker_output.py`、並列実行は `run_manager.py` が担当します。
 
 ## 設定の補足（CLI・TOML）
