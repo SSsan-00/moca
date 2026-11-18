@@ -22,7 +22,8 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
+from tempfile import TemporaryFile
+from threading import Event, Thread
 from typing import TYPE_CHECKING, Any
 
 from .errors import format_error, safe_command
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
 
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
 ACP_TIMEOUT = 30
+MODEL_LIST_TIMEOUT = 10
 DASHBOARD_PROGRESS_INSTRUCTION = (
     "進捗と最終回答は日本語で書いてください。重要な確認や変更に進むときは、"
     "確認できた事実、判断の理由、次に行うことを日本語で1〜2文にまとめて利用者に伝えてください。"
@@ -177,18 +179,22 @@ def build_command(
 
 def list_models() -> list[dict[str, Any]]:
     """インストール済みCLIのモデル候補を、タスクを開始せずに取得する。"""
-    process = _launch_process(["junie", "list-models"], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # 親が先に終了しても、継承されたパイプのEOFを待たず所有プロセス群を閉じる。
+    with TemporaryFile() as output:
+        process = _launch_process(["junie", "list-models"], owned=True, stdin=subprocess.DEVNULL,
+                                  stdout=output, stderr=subprocess.DEVNULL)
+        try:
+            process.wait_for_launcher(timeout=MODEL_LIST_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise ValueError("Junieのモデル一覧の取得がタイムアウトしました。") from None
+        finally:
+            _close_junie(process)
+        if process.returncode:
+            raise ValueError("このJunie CLIではモデル一覧を取得できませんでした。")
+        output.seek(0)
+        data = output.read()
     try:
-        output, _ = process.communicate(timeout=10)
-    except subprocess.TimeoutExpired:
-        _close_junie(process)
-        process.communicate()
-        raise ValueError("Junieのモデル一覧の取得がタイムアウトしました。") from None
-    if process.returncode:
-        raise ValueError("このJunie CLIではモデル一覧を取得できませんでした。")
-    try:
-        models = json.loads(output)["models"]
+        models = json.loads(data)["models"]
         if not isinstance(models, list) or any(
             not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]
             or not isinstance(item.get("displayName"), str) for item in models
@@ -487,7 +493,7 @@ class _JunieSessionEvents:
                     # 環境変数は秘密値の伏せ字処理にだけ使い、変数名や一覧は診断へ出さない。
                     secrets = [value for name, value in os.environ.items() if value and re.search(
                         r"TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|API_?KEY|AUTH|JUNIE_(PROMPT|TASK)", name, re.I,
-                    )]
+                    ) and not (name.upper() == "TOKEN_BUDGET" and re.fullmatch(r"[0-9]+", value))]
                     for value in sorted(secrets, key=len, reverse=True):
                         for variant in (value, repr(value)[1:-1], json.dumps(value)[1:-1]):
                             text = text.replace(variant, "[REDACTED]")
@@ -786,6 +792,7 @@ class _AcpSession:
         self.project = project
         self.show_request = show_request
         self.messages: Queue[bytes] = Queue()
+        self.closing = Event()
         self.outgoing: Queue[tuple[bytes, Future[None]] | None] = Queue()
         self.writes: deque[tuple[float, Future[None]]] = deque()
         self.session_id = None
@@ -828,7 +835,7 @@ class _AcpSession:
     def _write(self) -> None:
         """ブロックし得る書込みとパイプのクローズを送信側だけで行う。"""
         try:
-            while (item := self.outgoing.get()) is not None:
+            while (item := self.outgoing.get()) is not None and not self.closing.is_set():
                 data, written = item
                 try:
                     self.process.stdin.write(data)
@@ -1040,6 +1047,7 @@ class _AcpSession:
 
     def close(self) -> None:
         """ACP標準入出力とセッション資源を閉じる。"""
+        self.closing.set()
         self.outgoing.put(None)
         self.writer.join(timeout=1)
         self.reader.join(timeout=1)
@@ -1248,9 +1256,10 @@ def _run_session(
                 dashboard.junie_steering = False
                 dashboard.on_junie_request(None)
             if acp is not None:
-                acp.finish_prompts(completed)
-            if acp is not None:
-                acp.close()
+                try:
+                    acp.finish_prompts(completed)
+                finally:
+                    acp.close()
             if process is not None and report_usage is not None:
                 # 停止要求が出ていても最後の使用量を回収する。最終回答の採用処理は行わない。
                 poll(cancellable=False)

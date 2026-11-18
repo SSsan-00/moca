@@ -247,7 +247,7 @@ class JunieLaunchTests(unittest.TestCase):
     def test_exit_zero_before_session_captures_exact_pid_startup_error_and_full_stack(self):
         with TemporaryDirectory() as directory, patch.dict(os.environ, {
             "JUNIE_HOME": directory, "JUNIE_API_KEY": "private-api-key", "PRIVATE_TOKEN": "private-env-token",
-        }):
+        }, clear=True):
             logs = Path(directory) / "logs"
             logs.mkdir()
             log = logs / "log-2026-11-16_010203-pid-123.log"
@@ -286,6 +286,25 @@ class JunieLaunchTests(unittest.TestCase):
             self.assertEqual(report.count("Cli.kt:100"), 100)
             restored.assert_called_once_with()
             delay.assert_not_called()
+
+    def test_public_token_budget_does_not_hide_stack_lines_but_numeric_secrets_are_redacted(self):
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {"JUNIE_HOME": directory}, clear=True):
+            logs = Path(directory) / "logs"
+            logs.mkdir()
+            events = junie_cli._JunieSessionEvents("token")
+            log = logs / "log-test-pid-123.log"
+            log.write_text("2026-11-16 01:02:03.100 [main] ERROR failure\n\tat Cli.kt:100\n",
+                           encoding="utf-8")
+            baseline = events.startup_diagnostics(123, ["junie"])
+            with patch.dict(os.environ, {"TOKEN_BUDGET": "100"}):
+                self.assertEqual(events.startup_diagnostics(123, ["junie"]), baseline)
+                with log.open("a", encoding="utf-8") as stream:
+                    stream.write("Caused by: rejected credential '47'\n")
+                with patch.dict(os.environ, {"PRIVATE_TOKEN": "47"}):
+                    report = events.startup_diagnostics(123, ["junie"])
+                    self.assertIn("Cli.kt:100", report)
+                    self.assertIn("Caused by: rejected credential", report)
+                    self.assertNotIn("'47'", report)
 
     def test_startup_logs_do_not_read_other_pids_or_old_logs(self):
         with TemporaryDirectory() as directory, patch.dict(os.environ, {"JUNIE_HOME": directory}):

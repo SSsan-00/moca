@@ -1,8 +1,12 @@
 import json
 import os
+import socket
 import subprocess
+import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import tomlkit
@@ -130,22 +134,73 @@ class ModelCliTests(unittest.TestCase):
 
     def test_model_catalog_validation_and_timeout(self):
         process = Mock(returncode=0)
-        process.communicate.return_value = (json.dumps({"models": [{"id": "one", "displayName": "Model One", "efforts": ["low", "high"]}]}).encode(), b"startup log")
-        with patch.object(junie_cli, "_launch_process", return_value=process) as launch:
+        output = json.dumps({"models": [{"id": "one", "displayName": "Model One", "efforts": ["low", "high"]}]}).encode()
+
+        def launch_model(_command, **streams):
+            streams["stdout"].write(output)
+            return process
+
+        with patch.object(junie_cli, "_launch_process", side_effect=launch_model) as launch, patch.object(junie_cli, "_close_junie"):
             self.assertEqual(junie_cli.list_models(), [{"id": "one", "name": "Model One", "efforts": ["low", "high"]}])
         self.assertEqual(launch.call_args.args[0], ["junie", "list-models"])
         for output in (b'not json', b'[]', b'{"models": null}', b'{"models": [{"id": "one"}]}',
                        b'{"models": [{"id": "one", "displayName": "One", "efforts": "high"}]}',
                        b'{"models": [{"id": "one", "displayName": "One", "efforts": [1]}]}'):
-            process.communicate.return_value = (output, b"")
-            with self.subTest(output=output), patch.object(junie_cli, "_launch_process", return_value=process):
+            with self.subTest(output=output), patch.object(junie_cli, "_launch_process", side_effect=launch_model), patch.object(junie_cli, "_close_junie"):
                 with self.assertRaisesRegex(ValueError, "読み取れません"):
                     junie_cli.list_models()
         process.returncode = 1
-        with patch.object(junie_cli, "_launch_process", return_value=process), self.assertRaisesRegex(ValueError, "取得できません"):
+        with patch.object(junie_cli, "_launch_process", side_effect=launch_model), patch.object(junie_cli, "_close_junie"), self.assertRaisesRegex(ValueError, "取得できません"):
             junie_cli.list_models()
-        process.communicate.side_effect = [subprocess.TimeoutExpired("junie", 10), (b"", b"")]
+        process.wait_for_launcher.side_effect = subprocess.TimeoutExpired("junie", 10)
         with patch.object(junie_cli, "_launch_process", return_value=process), patch.object(junie_cli, "_close_junie") as close:
             with self.assertRaisesRegex(ValueError, "タイムアウト"):
                 junie_cli.list_models()
         close.assert_called_once_with(process)
+
+    def test_model_catalog_closes_inheriting_child_after_exit_or_timeout(self):
+        child = "import socket, sys; s=socket.create_connection(('127.0.0.1', int(sys.argv[1])), 8); s.sendall(b'r'); s.recv(1)"
+        launcher = """
+import json, subprocess, sys, time
+from pathlib import Path
+port, held, child, ready = sys.argv[1:]
+subprocess.Popen([sys.executable, "-c", child, port])
+print(json.dumps({"models": [{"id": "one", "displayName": "Model One"}]}), flush=True)
+if held == "True":
+    time.sleep(12)
+else:
+    while not Path(ready).exists():
+        time.sleep(.01)
+"""
+        own_launch = junie_cli._launch_process
+        for held in (False, True):
+            with self.subTest(held=held), socket.socket() as listener, TemporaryDirectory() as directory:
+                ready = Path(directory) / "ready"
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                listener.settimeout(8)
+                port = listener.getsockname()[1]
+
+                def launch(_command, **streams):
+                    return own_launch([sys.executable, "-c", launcher, str(port), str(held), child, str(ready)], **streams)
+
+                with (
+                    patch.object(junie_cli, "_launch_process", side_effect=launch),
+                    patch.object(junie_cli, "MODEL_LIST_TIMEOUT", 3),
+                    ThreadPoolExecutor(max_workers=1) as pool,
+                ):
+                    future = pool.submit(junie_cli.list_models)
+                    conn, _ = listener.accept()
+                    with conn:
+                        conn.settimeout(8)
+                        self.assertEqual(conn.recv(1), b"r")
+                        ready.touch()
+                        if held:
+                            with self.assertRaisesRegex(ValueError, "タイムアウト"):
+                                future.result(timeout=8)
+                        else:
+                            self.assertEqual(future.result(timeout=8), [{"id": "one", "name": "Model One"}])
+                        try:
+                            self.assertEqual(conn.recv(1), b"")
+                        except ConnectionResetError:
+                            pass
