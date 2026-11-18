@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from migration_harness import junie_cli, workflow
-from test_checker_resume_review_dashboard import SavedRunFixture
+from fixtures import SavedRunFixture
 
 
 class TaskGuidelinesTests(unittest.TestCase):

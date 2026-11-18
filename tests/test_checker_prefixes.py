@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from migration_harness import checker_output, junie_cli, workflow
-from test_checker_resume_review_dashboard import SavedRunFixture
+from fixtures import SavedRunFixture
 
 
 def diagnostic(path="Example.cs", line="12", remedy="送料を加算する", message="合計に送料を含めてください"):

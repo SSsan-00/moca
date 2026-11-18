@@ -1279,6 +1279,18 @@ def execute_dashboard_action(view, config, action):
     return result
 
 
+def render_dashboard_html(options: str) -> bytes:
+    """本番ダッシュボード用に共有テンプレートと相対アセットURLを組み立てる。"""
+    demo = harness_asset("progress-demo.html")
+    html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
+    if not marker:
+        raise ValueError("progress dashboard template is missing its script marker")
+    html = html.replace("./src/migration_harness/dashboard_runs.js", "dashboard_runs.js")
+    html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
+    html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>'
+    return html.encode("utf-8")
+
+
 def run_dashboard(
     config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None,
     config_error: str | None = None,
@@ -1287,10 +1299,6 @@ def run_dashboard(
     if unit_id is not None and run_id is not None:
         raise ValueError("choose a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent
-    demo = harness_asset("progress-demo.html")
-    html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
-    if not marker:
-        raise ValueError("progress dashboard template is missing its script marker")
     view = Dashboard()
     options = " data-live"
     saved = None
@@ -1319,9 +1327,7 @@ def run_dashboard(
         view.publish({"status": "idle", "ready": True})
         options += " data-workspace"
     view.publish({**view.state, "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
-    html = html.replace("./src/migration_harness/dashboard_runs.js", "dashboard_runs.js")
-    html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
-    html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>'
+    html = render_dashboard_html(options)
     from .run_manager import RunManager
 
     manager = RunManager(config, view)
@@ -1331,7 +1337,7 @@ def run_dashboard(
             submitted = manager.submit({"action": "run", "unit_id": unit_id})
             run_id = submitted["run_id"]
             manager.default = manager.get(run_id)
-        with view.server(config, html.encode("utf-8"), (package_dir / "dashboard.js").read_bytes()) as server:
+        with view.server(config, html, (package_dir / "dashboard.js").read_bytes()) as server:
             thread = Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
