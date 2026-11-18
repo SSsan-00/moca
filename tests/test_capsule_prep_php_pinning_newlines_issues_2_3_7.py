@@ -370,7 +370,7 @@ class CapsulePreparationTests(HarnessCase):
                 completion.write_text(token, encoding="ascii")
                 return 0
 
-            with patch.object(workflow, "_restore_repair_inputs", side_effect=OSError("fixture interruption")):
+            with patch.object(workflow, "_restore_snapshot_targets", side_effect=OSError("fixture interruption")):
                 with self.assertRaisesRegex(OSError, "fixture interruption"):
                     workflow.resume_with_junie(config, run_id, verification_request={**rewind, "id": "replay"})
             self.assertEqual(worktree_target.read_bytes(), latest)

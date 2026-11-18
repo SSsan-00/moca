@@ -1086,7 +1086,7 @@ def _prepare_migration_workspace(config, unit, run_path, result, record, *, resu
         raise ValueError("停止時の下書きを保存できませんでした。Junie 作業領域を確認してください。")
     stopped_draft = record.get("stopped_migration_draft")
     if stopped_draft:
-        _verified_repair_snapshot(run_path, stopped_draft)
+        _verified_target_snapshot(run_path, stopped_draft)
         draft_hashes = {path.as_posix(): target_hash(file) for path, file in zip(relative_targets, agent_targets, strict=True)}
         if not stopped_draft["workspace_unchanged"] or stopped_draft["base"] != hashes or stopped_draft["targets"] != draft_hashes:
             raise ValueError("停止時の下書きと現行版が一致しません。"
@@ -1096,7 +1096,7 @@ def _prepare_migration_workspace(config, unit, run_path, result, record, *, resu
         with editor_queue(run_path) as queue, worktree_source_lock:
             if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
                 raise ValueError("巻き戻しと未反映の操作が競合しています。")
-            _restore_repair_inputs(
+            _restore_snapshot_targets(
                 run_path, rewind, dict(zip(hashes, agent_targets, strict=True)), hashes, record,
             )
     through_capsule = record.get("migration_range_stop", through_capsule)
@@ -1737,7 +1737,7 @@ def _remember_repair_draft(record, draft):
 def _snapshot_stopped_repair(run_path, agent_root, repair_targets, before, *, workspace_unchanged):
     """停止時の生バイトと欠損状態を、再同期の対象外に保存する。"""
     sources = {path.as_posix(): safe_target(agent_root, path) for path in repair_targets}
-    return _save_repair_snapshot(run_path, sources, before, workspace_unchanged=workspace_unchanged)
+    return _save_target_snapshot(run_path, sources, before, workspace_unchanged=workspace_unchanged)
 
 
 def _archive_stopped_migration(record):
@@ -1763,7 +1763,8 @@ def _save_stopped_migration(record_path, record, agent_root, targets, *, workspa
     record.update(updated)
 
 
-def _save_repair_snapshot(run_path, sources, before, *, workspace_unchanged):
+def _save_target_snapshot(run_path, sources, before, *, workspace_unchanged):
+    """移行、区間チェックポイント、修正で復元する生バイトと欠損を保存する。"""
     name = f"stopped-repair-{uuid.uuid4().hex}"
     root = run_path / name
     root.mkdir(mode=0o700)
@@ -1785,13 +1786,14 @@ def _save_repair_snapshot(run_path, sources, before, *, workspace_unchanged):
 
 def _save_capsule_checkpoint(run_path, worktree, targets, hashes):
     sources = {path.as_posix(): safe_target(worktree, path) for path in targets}
-    checkpoint = _save_repair_snapshot(run_path, sources, hashes, workspace_unchanged=True)
+    checkpoint = _save_target_snapshot(run_path, sources, hashes, workspace_unchanged=True)
     if checkpoint["targets"] != hashes:
         raise ValueError("保存中に移行先が更新されました。")
     return checkpoint
 
 
-def _verified_repair_snapshot(run_path, draft):
+def _verified_target_snapshot(run_path, draft):
+    """保存形式と対象のハッシュを照合し、復元に使うファイルを返す。"""
     snapshot = draft.get("snapshot", "")
     if not re.fullmatch(r"stopped-repair-[0-9a-f]{32}", snapshot):
         raise ValueError("停止時の snapshot の名前が無効です。")
@@ -1822,7 +1824,7 @@ def _stopped_repair_plan(run_path, worktree, unit, record, queue):
         raise ValueError("Junie 作業領域を確認してください。")
     current = {path.as_posix(): safe_target(worktree, path) for path in targets}
     agent_files = {name: safe_target(agent, Path(name)) for name in draft["targets"]}
-    snapshot_files = _verified_repair_snapshot(run_path, draft)
+    snapshot_files = _verified_target_snapshot(run_path, draft)
     plan = {
         "snapshot": draft["snapshot"], "base": draft["base"], "draft": draft["targets"],
         "worktree": {name: target_hash(path) for name, path in current.items()},
@@ -1857,9 +1859,9 @@ def resolve_stopped_repair(config, run_id, version, choices):
             if None in plan["worktree"].values():
                 raise ValueError("作業ツリーの欠損を手動で復元してから計画し直してください。")
             sources = {name: snapshot[name] if choices[name] == "draft" else current[name] for name in snapshot}
-            selected = _save_repair_snapshot(run_path, sources, plan["worktree"], workspace_unchanged=True)
-            agent_backup = _save_repair_snapshot(run_path, agent, plan["worktree"], workspace_unchanged=True)
-            worktree_backup = _save_repair_snapshot(
+            selected = _save_target_snapshot(run_path, sources, plan["worktree"], workspace_unchanged=True)
+            agent_backup = _save_target_snapshot(run_path, agent, plan["worktree"], workspace_unchanged=True)
+            worktree_backup = _save_target_snapshot(
                 run_path, {name: current[name] for name in snapshot}, plan["worktree"], workspace_unchanged=True,
             )
             if (agent_backup["targets"] != plan["agent"]
@@ -1908,10 +1910,11 @@ def _restore_snapshot_files(sources, destinations, expected, selected, *, preser
             temporary.unlink(missing_ok=True)
 
 
-def _restore_repair_inputs(run_path, attempt, agent_files, before, record):
+def _restore_snapshot_targets(run_path, attempt, agent_files, before, record):
+    """合意済みの版をJunie作業領域へ復元し、完了した復元計画を消す。"""
     draft = attempt["draft"]
     try:
-        snapshot = _verified_repair_snapshot(run_path, draft)
+        snapshot = _verified_target_snapshot(run_path, draft)
         expected = attempt["restore_from"]
         if draft["base"] != before or snapshot.keys() != agent_files.keys() or expected.keys() != snapshot.keys():
             raise ValueError("停止時の下書きと復元対象が一致しません。")
@@ -1941,7 +1944,7 @@ def _recover_selected_repair(run_path, worktree, targets, record):
                 raise ValueError("停止時の下書きと設定の対象範囲が一致しません。")
             if agent_root.is_symlink() or not agent_root.is_dir() or not agent_root.resolve().is_relative_to(run_path):
                 raise ValueError("Junie 作業領域を確認してください。")
-            snapshot = _verified_repair_snapshot(run_path, draft)
+            snapshot = _verified_target_snapshot(run_path, draft)
             agent_files = {name: safe_target(agent_root, Path(name)) for name in snapshot}
             worktree_files = {name: safe_target(worktree, Path(name)) for name in draft["base"]}
             if not restoring:
@@ -2041,49 +2044,9 @@ def _repair_target(
     material_instructions += stage_target_context(
         worktree, targets, capsule, agent_root, policy=find_unit(config, record["unit_id"]).get("target_context"),
     )
-    draft = attempt.get("draft", {})
-    if attempt.get("stopped_draft_save_failed"):
-        raise CheckerRepairBlocked(
-            "stopped_draft", "停止時の下書きの保存に失敗しました。Junie 作業領域の編集を確認してください。",
-        )
-    with editor_queue(run_path) as queue, worktree_source_lock:
-        source_files = {path: safe_target(worktree, path) for path in targets}
-        agent_files = {path: safe_target(agent_root, path) for path in targets}
-        before = {path.as_posix(): sha256_file(source) for path, source in source_files.items()}
-        draft_targets = draft.get("targets", {})
-        resume_draft = draft.get("base") == before and all(
-            path.as_posix() in draft_targets and target_hash(agent_files[path]) == draft_targets[path.as_posix()]
-            for path in repair_targets
-        )
-        preserved = {path for path in repair_targets if resume_draft}
-        if snapshot := draft.get("snapshot"):
-            try:
-                _verified_repair_snapshot(run_path, draft)
-            except (OSError, ValueError) as exc:
-                raise CheckerRepairBlocked("stopped_draft", str(exc)) from exc
-            selection = attempt.get("selection")
-            expected_base = selection["base"] if selection else draft["base"]
-            configured = {path.as_posix(): path for path in targets}
-            if (expected_base != before or not draft_targets or not draft_targets.keys() <= configured.keys()
-                    or not draft.get("workspace_unchanged")
-                    or any(target_hash(agent_files[configured[name]]) != digest for name, digest in draft_targets.items())
-                    or not selection and draft_targets.keys() != {path.as_posix() for path in repair_targets}):
-                raise CheckerRepairBlocked(
-                    "stopped_draft",
-                    f"停止時の下書きと現行版または修正対象が一致しません。"
-                    f"両方を保持しました。Run の {snapshot}/draft.json を確認し、repair-draft で選択してください。",
-                )
-            preserved = {configured[name] for name in draft_targets}
-            resume_draft = bool(preserved.intersection(repair_targets))
-        for path, source in source_files.items():
-            if path in preserved:
-                continue
-            destination = agent_files[path]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-            if sha256_file(destination) != before[path.as_posix()]:
-                raise ValueError(f"worktree target changed while synchronizing repair inputs: {path}")
-    agent_targets = tuple(agent_files[path] for path in repair_targets)
+    stopped_draft, before, agent_targets, resume_draft = _sync_repair_workspace(
+        run_path, worktree, agent_root, targets, repair_targets, attempt,
+    )
     token = uuid.uuid4().hex
     completion_path = agent_root / f"migration-complete-{token}.txt"
     findings_path = agent_root / f"checker-findings-{token}.txt"
@@ -2185,7 +2148,7 @@ def _repair_target(
             attempt["draft"] = saved
             attempt.pop("selection", None)
             raise
-        if draft.get("snapshot") and not isinstance(exc, junie_cli.JunieEditHandoff):
+        if stopped_draft.get("snapshot") and not isinstance(exc, junie_cli.JunieEditHandoff):
             raise
         _remember_repair_draft(record, attempt.pop("draft", None))
         attempt.pop("selection", None)
@@ -2209,6 +2172,63 @@ def _repair_target(
         raise
     report_activity("Junieの修正結果を確認しています", kind="phase",
                     detail=progress_context + " 完了記録・対象外の変更・手修正との競合を確認しています。")
+    _adopt_repair_result(
+        run_path, worktree, agent_root, repair_targets, record, attempt, before,
+        allowed, other_files, report, completion_path, token, exit_code, instruction,
+    )
+
+
+def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targets, attempt):
+    """キューと対象をロックし、停止下書きの照合と移行先の同期を行う。"""
+    draft = attempt.get("draft", {})
+    if attempt.get("stopped_draft_save_failed"):
+        raise CheckerRepairBlocked(
+            "stopped_draft", "停止時の下書きの保存に失敗しました。Junie 作業領域の編集を確認してください。",
+        )
+    with editor_queue(run_path) as queue, worktree_source_lock:
+        source_files = {path: safe_target(worktree, path) for path in targets}
+        agent_files = {path: safe_target(agent_root, path) for path in targets}
+        before = {path.as_posix(): sha256_file(source) for path, source in source_files.items()}
+        draft_targets = draft.get("targets", {})
+        resume_draft = draft.get("base") == before and all(
+            path.as_posix() in draft_targets and target_hash(agent_files[path]) == draft_targets[path.as_posix()]
+            for path in repair_targets
+        )
+        preserved = {path for path in repair_targets if resume_draft}
+        if snapshot := draft.get("snapshot"):
+            try:
+                _verified_target_snapshot(run_path, draft)
+            except (OSError, ValueError) as exc:
+                raise CheckerRepairBlocked("stopped_draft", str(exc)) from exc
+            selection = attempt.get("selection")
+            expected_base = selection["base"] if selection else draft["base"]
+            configured = {path.as_posix(): path for path in targets}
+            if (expected_base != before or not draft_targets or not draft_targets.keys() <= configured.keys()
+                    or not draft.get("workspace_unchanged")
+                    or any(target_hash(agent_files[configured[name]]) != digest for name, digest in draft_targets.items())
+                    or not selection and draft_targets.keys() != {path.as_posix() for path in repair_targets}):
+                raise CheckerRepairBlocked(
+                    "stopped_draft",
+                    f"停止時の下書きと現行版または修正対象が一致しません。"
+                    f"両方を保持しました。Run の {snapshot}/draft.json を確認し、repair-draft で選択してください。",
+                )
+            preserved = {configured[name] for name in draft_targets}
+            resume_draft = bool(preserved.intersection(repair_targets))
+        for path, source in source_files.items():
+            if path in preserved:
+                continue
+            destination = agent_files[path]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            if sha256_file(destination) != before[path.as_posix()]:
+                raise ValueError(f"worktree target changed while synchronizing repair inputs: {path}")
+    agent_targets = tuple(agent_files[path] for path in repair_targets)
+    return draft, before, agent_targets, resume_draft
+
+
+def _adopt_repair_result(run_path, worktree, agent_root, repair_targets, record, attempt, before,
+                        allowed, other_files, report, completion_path, token, exit_code, instruction):
+    """完了記録と作業領域を照合し、追加指示への引継ぎか修正の採用を行う。"""
     if _unlisted_workspace_files(agent_root, allowed) != other_files:
         raise CheckerRepairBlocked("unexpected_changes", "Junie changed files outside the repair targets; inspect the agent workspace")
     agent_targets = tuple(safe_target(agent_root, path) for path in repair_targets)
@@ -2541,6 +2561,74 @@ def _verify_worktree(
             write_run_record(record_path, record, timing_stage=None)
 
 
+def _execute_verification_build(config, unit, result, record, run_path, worktree, targets, *,
+                                expected_targets, previous_receipt, configured_checker, command, scripts, request):
+    """ビルド前の対象版・設定を記録し、ビルドと実行中の対象版を照合する。"""
+    _run_script_phase(config, "before_build", worktree, run_path, record)
+    hashes = {path.as_posix(): review_target_hash(worktree, path) for path in targets}
+    if expected_targets is not None and hashes != expected_targets:
+        raise ValueError("ビルドの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
+    record["verification"] = {
+        "target_hashes": hashes,
+        "build_project": config["build_project"],
+        "configured_checker_command": configured_checker,
+        "checker_command": command,
+        "checker_from_cli": config.get("checker_from_cli", False),
+        "scripts": scripts,
+        "scripts_passed": False,
+    }
+    if config.get("checker_from_cli"):
+        record["verification"]["toml_checker_command"] = unit.get(
+            "checker_command", config.get("toml_checker_command"),
+        )
+    inputs = None if scripts or config.get("scripts", {}).get("after_migration") else build_inputs(
+        worktree, config["build_project"],
+    )
+    if inputs and any((worktree / Path(inputs["project"]).parent / name).exists() for name in ("bin", "obj")):
+        if (not previous_receipt or previous_receipt["inputs"] != inputs
+                or previous_receipt["artifacts"] != build_artifacts(worktree, inputs)):
+            # 既存の生成物が古い場合、MSBuild の増分判定だけから対応する版を証明できない。
+            inputs = None
+    verified = _build_worktree(config, result, record, continue_timing=True)
+    if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
+        raise ValueError("ビルド中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
+    return verified, hashes, inputs
+
+
+def _checker_repair_inputs(run_path, remaining, targets, use_raw_output):
+    """出力制限と対象範囲を確認し、自動修正へ渡す診断と再発判定用の指紋を返す。"""
+    log = safe_target(run_path, Path("checker.log"))
+    if log.stat().st_size > 65_536:
+        raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
+    reported_paths = {Path(finding.path) for finding in remaining}
+    if not reported_paths.issubset(targets):
+        raise CheckerRepairBlocked("outside_targets", "checker reported a finding outside the configured migration targets")
+    fingerprints = {finding.finding_id for finding in remaining}
+    legacy_fingerprints = {finding.repair_fingerprint for finding in remaining}
+    if use_raw_output:
+        # 未知の形式を含む場合は、抽出できた指摘だけでなく元の出力全体を判断材料にする。
+        with log.open("rb") as stream:
+            raw = stream.read(65_537)
+        if len(raw) > 65_536:
+            raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
+        try:
+            diagnostic = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise CheckerRepairBlocked("output_encoding", "unrecognized checker output encoding; inspect checker.log") from None
+        if not diagnostic.strip() or "\0" in diagnostic:
+            raise CheckerRepairBlocked("output_unreadable", "unrecognized checker output has no readable diagnostic; inspect checker.log")
+        # 混在形式は全文で再発を判定し、減った指摘の一部が残るだけでは止めない。
+        fingerprints = {hashlib.sha256(" ".join(diagnostic.split()).encode("utf-8")).hexdigest()}
+        legacy_fingerprints = set()
+        repair_targets = targets
+    else:
+        if sum(len(finding.diagnostic) + 1 for finding in remaining) > 8_000:
+            raise CheckerRepairBlocked("output_too_large", "checker findings contain too much text for automatic repair")
+        diagnostic = "\n".join(finding.diagnostic for finding in remaining)
+        repair_targets = tuple(path for path in targets if path in reported_paths)
+    return log, repair_targets, diagnostic, fingerprints, legacy_fingerprints
+
+
 def _run_verification(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
     *, request: dict[str, Any] | None = None,
@@ -2594,35 +2682,12 @@ def _run_verification(
             except KeyboardInterrupt:
                 raise RunInterrupted(record["run_id"]) from None
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
-        _run_script_phase(config, "before_build", worktree, run_path, record)
-        hashes = {path.as_posix(): review_target_hash(worktree, path) for path in targets}
-        if expected_targets is not None and hashes != expected_targets:
-            raise ValueError("ビルドの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
-        expected_targets = None
-        record["verification"] = {
-            "target_hashes": hashes,
-            "build_project": config["build_project"],
-            "configured_checker_command": configured_checker,
-            "checker_command": command,
-            "checker_from_cli": config.get("checker_from_cli", False),
-            "scripts": scripts,
-            "scripts_passed": False,
-        }
-        if config.get("checker_from_cli"):
-            record["verification"]["toml_checker_command"] = unit.get(
-                "checker_command", config.get("toml_checker_command"),
-            )
-        inputs = None if scripts or config.get("scripts", {}).get("after_migration") else build_inputs(
-            worktree, config["build_project"],
+        verified, hashes, inputs = _execute_verification_build(
+            config, unit, result, record, run_path, worktree, targets, expected_targets=expected_targets,
+            previous_receipt=previous_receipt, configured_checker=configured_checker, command=command,
+            scripts=scripts, request=request,
         )
-        if inputs and any((worktree / Path(inputs["project"]).parent / name).exists() for name in ("bin", "obj")):
-            if (not previous_receipt or previous_receipt["inputs"] != inputs
-                    or previous_receipt["artifacts"] != build_artifacts(worktree, inputs)):
-                # 既存の生成物が古い場合、MSBuild の増分判定だけから対応する版を証明できない。
-                inputs = None
-        verified = _build_worktree(config, result, record, continue_timing=True)
-        if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
-            raise ValueError("ビルド中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
+        expected_targets = None
         if record["status"] == "build_failed":
             try:
                 if (not request or mode == "build_repair" and len(history) < limit) and _repair_build_failure(
@@ -2688,35 +2753,9 @@ def _run_verification(
                 record["checker_review_reason"] = "repair_disabled"
                 write_run_record(record_path, record, timing_stage=5)
                 return checked
-            log = safe_target(run_path, Path("checker.log"))
-            if log.stat().st_size > 65_536:
-                raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
-            reported_paths = {Path(finding.path) for finding in remaining}
-            if not reported_paths.issubset(targets):
-                raise CheckerRepairBlocked("outside_targets", "checker reported a finding outside the configured migration targets")
-            fingerprints = {finding.finding_id for finding in remaining}
-            legacy_fingerprints = {finding.repair_fingerprint for finding in remaining}
-            if use_raw_output:
-                # 未知の形式を含む場合は、抽出できた指摘だけでなく元の出力全体を判断材料にする。
-                with log.open("rb") as stream:
-                    raw = stream.read(65_537)
-                if len(raw) > 65_536:
-                    raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
-                try:
-                    diagnostic = raw.decode("utf-8-sig")
-                except UnicodeDecodeError:
-                    raise CheckerRepairBlocked("output_encoding", "unrecognized checker output encoding; inspect checker.log") from None
-                if not diagnostic.strip() or "\0" in diagnostic:
-                    raise CheckerRepairBlocked("output_unreadable", "unrecognized checker output has no readable diagnostic; inspect checker.log")
-                # 混在形式は全文で再発を判定し、減った指摘の一部が残るだけでは止めない。
-                fingerprints = {hashlib.sha256(" ".join(diagnostic.split()).encode("utf-8")).hexdigest()}
-                legacy_fingerprints = set()
-                repair_targets = targets
-            else:
-                if sum(len(finding.diagnostic) + 1 for finding in remaining) > 8_000:
-                    raise CheckerRepairBlocked("output_too_large", "checker findings contain too much text for automatic repair")
-                diagnostic = "\n".join(finding.diagnostic for finding in remaining)
-                repair_targets = tuple(path for path in targets if path in reported_paths)
+            log, repair_targets, diagnostic, fingerprints, legacy_fingerprints = _checker_repair_inputs(
+                run_path, remaining, targets, use_raw_output,
+            )
             if _repair_stalled(fingerprints, history, kind="checker", legacy=legacy_fingerprints, raw=use_raw_output):
                 raise CheckerRepairBlocked("finding_repeated", "a previous checker finding is still present")
             if sum("instruction" not in attempt for attempt in history) >= limit:
@@ -3190,7 +3229,7 @@ def plan_migration_resume(
             latest = checkpoints.get(str(completed))
             if not origin or not latest or start > completed:
                 raise ValueError("処理済み区間の開始前と現在の完了地点に保存版が必要です。")
-            _verified_repair_snapshot(run_path, origin)
+            _verified_target_snapshot(run_path, origin)
             if plan["targets"] != latest["targets"] or plan["draft_targets"] != latest["targets"]:
                 raise ValueError("保存後の編集を検出しました。現行版を保持したまま巻き戻しを中止します。")
             plan.update(rewind_to=start, rewind_checkpoint=origin, completed_capsules=completed)
@@ -3210,8 +3249,8 @@ def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
             raise ValueError("巻き戻し前に Junie 作業領域が更新されました。")
         backup = _save_capsule_checkpoint(run_path, worktree, targets, plan["targets"])
         checkpoint = plan["rewind_checkpoint"]
-        sources = _verified_repair_snapshot(run_path, checkpoint)
-        draft = _save_repair_snapshot(run_path, sources, plan["targets"], workspace_unchanged=True)
+        sources = _verified_target_snapshot(run_path, checkpoint)
+        draft = _save_target_snapshot(run_path, sources, plan["targets"], workspace_unchanged=True)
         if draft["targets"] != checkpoint["targets"]:
             raise ValueError("巻き戻しの保存版が更新されました。")
         start = plan["rewind_to"]
@@ -3332,31 +3371,13 @@ def resume_with_junie(
                                   verification_request=verification_request)
 
 
-def _resume_with_junie(
-    config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
-    checker_instruction: str | None = None, verification_request: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Runとカプセルを照合し、移行またはビルドから再開する。"""
-    run_path, worktree_path, record, unit = load_saved_run(config, run_id)
-    if record.get("migration_stop_unconfirmed"):
-        raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
-                         "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
-    if "stage_timings" in record:
-        record["stage_timings"] = freeze_timings(record)
-        record["active_stage"] = None
-    status = record.get("status")
-    if build_response is not None and status != "build_failed":
-        raise ValueError("表示中の Run のビルド結果が変わりました。")
-    if checker_instruction is not None and status not in {"checker_needs_review", "checker_failed"}:
-        raise ValueError("表示中の Run のチェッカー結果が変わりました。")
-    explicit_build = verification_request and verification_request.get("start_stage") == "build"
-    explicit_migration = verification_request and verification_request.get("start_stage") == "migration"
-    explicit_checker = verification_request and verification_request.get("start_stage") == "checker"
-    if explicit_build:
+def _validate_resume_plan(config, run_id, unit, record, verification_request, stage):
+    """照会済みの版と実行条件を再計算し、保存状態が変わっていれば止める。"""
+    if stage == "build":
         plan = plan_build_resume(config, run_id)
         if any(verification_request.get(key) != value for key, value in plan.items()):
             raise ValueError("確認後に保存版または実行条件が更新されました。再開する版を確認し直してください。")
-    elif explicit_migration:
+    elif stage == "migration":
         plan = plan_migration_resume(
             config, run_id, verification_request.get("through_capsule"), rewind_to=verification_request.get("rewind_to"),
         )
@@ -3364,28 +3385,18 @@ def _resume_with_junie(
             raise ValueError("確認後に保存版または移行区間が更新されました。")
         if plan["through_capsule"] is None:
             _require_saved_checker(config, unit, record)
-    elif explicit_checker:
+    elif stage == "checker":
         plan = plan_checker_resume(config, run_id)
         if any(verification_request.get(key) != value for key, value in plan.items()):
             raise ValueError("確認後にビルド成果物またはチェッカー条件が更新されました。")
     else:
         _require_saved_checker(config, unit, record)
-    if not verification_request and not can_resume_run(config, record):
-        if status in _CHECKER_RESUME_STATUSES:
-            raise ValueError("resuming the checker requires a successful build and a checker command")
-        raise ValueError(f"run is not resumable from status {status!r}")
-    history = record.get("repair_history", [])
-    if (
-        record.get("error") == "repair interrupted; inspect Junie's workspace"
-        and "repair_pending" not in record and history
-        and "junie_exit_code" not in history[-1]
-        and not record.get("target_apply_pending")
-    ):
-        # 旧版はJunieを起動した時点で試行を履歴に追加していた。
-        history.pop()
-        record.pop("error", None)
-        write_run_record(run_path / "run.json", record)
+        return None
+    return plan
 
+
+def _load_resume_context(config, run_id, run_path, worktree_path, record, unit, status):
+    """保存カプセルと進捗を検証し、再開時の移行・検証の入力を復元する。"""
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
     if max_steps is not None and (isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1):
         raise ValueError("run record contains an invalid Junie max-steps value")
@@ -3437,8 +3448,50 @@ def _resume_with_junie(
         "source_boundary_review_required": record["source_boundary_review_required"],
         "max_context_chars": record["max_context_chars"],
     }
+    return result, migration_complete, waiting_at_final_checkpoint, script_retry
+
+
+def _resume_with_junie(
+    config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
+    checker_instruction: str | None = None, verification_request: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Runとカプセルを照合し、移行またはビルドから再開する。"""
+    run_path, worktree_path, record, unit = load_saved_run(config, run_id)
+    if record.get("migration_stop_unconfirmed"):
+        raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
+                         "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
+    if "stage_timings" in record:
+        record["stage_timings"] = freeze_timings(record)
+        record["active_stage"] = None
+    status = record.get("status")
+    if build_response is not None and status != "build_failed":
+        raise ValueError("表示中の Run のビルド結果が変わりました。")
+    if checker_instruction is not None and status not in {"checker_needs_review", "checker_failed"}:
+        raise ValueError("表示中の Run のチェッカー結果が変わりました。")
+    stage = verification_request.get("start_stage") if verification_request else None
+    explicit_build = stage == "build"
+    plan = _validate_resume_plan(config, run_id, unit, record, verification_request, stage)
+    if not verification_request and not can_resume_run(config, record):
+        if status in _CHECKER_RESUME_STATUSES:
+            raise ValueError("resuming the checker requires a successful build and a checker command")
+        raise ValueError(f"run is not resumable from status {status!r}")
+    history = record.get("repair_history", [])
+    if (
+        record.get("error") == "repair interrupted; inspect Junie's workspace"
+        and "repair_pending" not in record and history
+        and "junie_exit_code" not in history[-1]
+        and not record.get("target_apply_pending")
+    ):
+        # 旧版はJunieを起動した時点で試行を履歴に追加していた。
+        history.pop()
+        record.pop("error", None)
+        write_run_record(run_path / "run.json", record)
+
+    result, migration_complete, waiting_at_final_checkpoint, script_retry = _load_resume_context(
+        config, run_id, run_path, worktree_path, record, unit, status,
+    )
     record.pop("last_stop", None)
-    if explicit_migration:
+    if stage == "migration":
         result["request_id"] = verification_request["id"]
         junie_cli.require_interactive_cli()
         if _previously_required_checker(record):
@@ -3464,7 +3517,7 @@ def _resume_with_junie(
             config, unit, run_path, result, record, resuming=True, through_capsule=plan["through_capsule"],
             expected_capsule_hashes=plan["capsule_hashes"],
         )
-    if explicit_checker:
+    if stage == "checker":
         return _resume_checker(config, result, record, plan, verification_request["id"])
     if verification_request:
         if not (migration_complete or waiting_at_final_checkpoint):
