@@ -18,7 +18,7 @@ CHECKS = {
 CI_JOBS = CHECKS | {
     f"windows tests ({version}, {suite})"
     for version in ("3.11", "3.13")
-    for suite in ("conversation", "remaining")
+    for suite in ("conversation-editor", "remaining")
 }
 CI = ".github/workflows/tests.yml"
 ACTIONS_APP = 15368
