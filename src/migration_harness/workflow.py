@@ -2504,6 +2504,28 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     return status not in _CHECKER_RESUME_STATUSES or record.get("build_exit_code") == 0
 
 
+def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """ビルドのみの明示再開を保存版と結び付ける。"""
+    from .junie_conversation import saved_edits, target_versions
+
+    run_path, worktree, _, unit = load_saved_run(config, run_id)
+    with editor_queue(run_path) as queue, worktree_source_lock:
+        _, _, record, _ = load_saved_run(config, run_id)
+        if (not record.get("completed_capsules") or record.get("completed_capsules") != record.get("context_capsules")
+                or record.get("status") in {"junie_running", "editor_followup"}):
+            raise ValueError("移行が完了してから「ビルドのみ」を選んでください。")
+        if record.get("target_apply_pending") or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+            raise ValueError("未反映の編集または Junie 指示があります。通常の再開で反映してください。")
+        plan = {
+            "run_id": run_id, "intent": "build", "start_stage": "build", "capsule_range": None,
+            "targets": target_versions(worktree, unit), "edits": saved_edits(queue),
+            "edit_revision": queue.get("edit_revision"), "completed_capsules": record["completed_capsules"],
+            "repair": False, "invalidates": ["build", "checker"],
+        }
+    plan["version"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()
+    return plan
+
+
 def resume_with_junie(
     config: dict[str, Any], run_id: str, *, build_response: dict[str, Any] | None = None,
     checker_instruction: str | None = None, verification_request: dict[str, Any] | None = None,
@@ -2602,6 +2624,9 @@ def _resume_with_junie(
             raise ValueError("移行が完了してから、ビルドまたはチェッカーを実行してください。")
         targets = target_paths(unit)
         record_path = run_path / "run.json"
+        if verification_request.get("start_stage") == "build":
+            if verification_request.get("version") != plan_build_resume(config, run_id)["version"]:
+                raise ValueError("確認後に保存版が更新されました。再開する版を確認し直してください。")
         finish_pending_targets(run_path / "agent-workspace", worktree_path, targets, record, record_path)
         result["request_id"] = verification_request["id"]
         if verification_request["intent"] == "checker_repair":
@@ -2610,6 +2635,16 @@ def _resume_with_junie(
             if len(history) >= config["max_repair_attempts"]:
                 raise ValueError("この Run の修正回数が上限に達しました。残った指摘はエディタで修正してください。")
         verification_request["build_targets"] = _apply_verification_edits(run_path, worktree_path, unit, verification_request)
+        if verification_request.get("start_stage") == "build":
+            operation = {
+                **verification_request, "build_targets": verification_request["build_targets"].copy(),
+                "accepted_at": datetime.now(timezone.utc).isoformat(),
+            }
+            record.setdefault("resume_operations", []).append(operation)
+            for key in ("verification", "build_exit_code", "checker_exit_code", "build_operation_id", "error"):
+                record.pop(key, None)
+            record["status"] = "junie_finished"
+            write_run_record(record_path, record)
         if verification_request["intent"] == "checker_repair":
             _repair_from_checker_instruction(config, targets, worktree_path, run_path, record, verification_request["text"])
             verification_request["build_targets"] = {

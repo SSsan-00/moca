@@ -183,6 +183,8 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
           if (run.worktree_path || preparationChat) button(run.worktree_path ? "エディタ" : "Junie", "open-run", "editor");
           if (!run.ready && run.cancellable) button(run.stop_requested ? "停止中" : "停止", "stop", null, true);
           if (run.ready && run.resumable) button(tone === "done" ? "再検証" : "再開", "resume-run", null, true);
+          if (preparationChat && run.ready && run.resumable && run.context_capsules > 0
+              && run.completed_capsules === run.context_capsules) button("ビルドのみ", "resume-build", null, true);
           if (run.ready) button("削除", "hide-run");
         }
         actions.append(buttons);

@@ -212,6 +212,31 @@ class JunieConversationTests(SavedRunFixture):
             repair.assert_not_called()
         self.assertEqual(len(calls), 2)
 
+    def test_explicit_build_plan_rejects_a_changed_version_then_builds_only(self):
+        action = {"action": "resume-run", "run_id": self.run_id, "revision": 0, "start_stage": "build"}
+        _, old = self.request("resume-plan?" + urlencode({"run_id": self.run_id}))
+        self.save_edit("class SavedVersion {}\n")
+        with self.assertRaises(HTTPError) as error:
+            self.request("control", {**action, "plan_version": old["version"]})
+        error.exception.close()
+        self.assertEqual(error.exception.code, 409)
+        _, new = self.request("resume-plan?" + urlencode({"run_id": self.run_id}))
+        self.assertNotEqual(old["version"], new["version"])
+        self.assertFalse(new["repair"])
+        mocked, calls = self.mock_commands(("dotnet", 0, b"saved version build"))
+        with mocked, patch.object(workflow.junie_cli, "run_interactive") as junie:
+            self.assertEqual(self.request("control", {**action, "plan_version": new["version"]})[0], 202)
+            self.wait_until_idle()
+            junie.assert_not_called()
+        self.assertEqual(calls, [["dotnet", "build"]])
+        record = self.record()
+        operation, = record["resume_operations"]
+        self.assertEqual(operation["version"], new["version"])
+        self.assertEqual(operation["invalidates"], ["build", "checker"])
+        self.assertEqual(record["status"], "build_succeeded")
+        self.assertEqual(record["completed_capsules"], 1)
+        self.assertNotIn("checker_exit_code", record)
+
     def test_clarification_waits_then_runs_build_and_checker(self):
         mocked, calls = self.mock_commands(("dotnet", 0, b"build ok\n"), ("checker", 0, b"check ok\n"))
         with mocked:

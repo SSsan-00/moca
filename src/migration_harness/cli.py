@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
 from migration_harness.config import load_config, validate_checker_command
 from migration_harness.errors import format_error
 from migration_harness.workflow import (
-    VERIFIED_STATUSES, RunScriptError, migration_ledger, prepare_run, resume_with_junie, review_checker,
+    VERIFIED_STATUSES, RunScriptError, migration_ledger, plan_build_resume, prepare_run, resume_with_junie, review_checker,
     review_migration_ranges, run_with_junie,
 )
 
@@ -32,6 +33,7 @@ def _parse_args() -> argparse.Namespace:
     run.add_argument("--unit", required=True, help="Migration unit ID from the config")
     resume = configured_command("resume", "Continue migration, build or checker in the saved worktree")
     resume.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
+    resume.add_argument("--from", dest="start_stage", choices=("build",), help="Rebuild saved targets without automatic repair")
     view = configured_command("view", "Open the dashboard for a saved run")
     view.add_argument("--run-id", required=True, help="Run ID printed by prepare or run")
     review = configured_command("review", "List checker findings or accept one with a reason")
@@ -113,6 +115,8 @@ def main() -> None:
             from migration_harness.dashboard import run_dashboard
 
             if args.command != "run":
+                if getattr(args, "start_stage", None):
+                    raise ValueError("Use --from build without --dashboard, or choose ビルドのみ in the dashboard.")
                 run_dashboard(config, run_id=args.run_id)
                 return
             result = run_dashboard(config, unit_id=args.unit)
@@ -121,7 +125,12 @@ def main() -> None:
         elif args.command == "run":
             result = run_with_junie(config, args.unit)
         else:
-            result = resume_with_junie(config, args.run_id)
+            if args.start_stage == "build":
+                request = plan_build_resume(config, args.run_id)
+                print(f"保存版 {request['version'][:12]} をビルドします（自動修正なし）。", flush=True)
+                result = resume_with_junie(config, args.run_id, verification_request={**request, "id": uuid.uuid4().hex})
+            else:
+                result = resume_with_junie(config, args.run_id)
         completion = migration_ledger(config, result["run_id"])["completion"] if result.get("status") in VERIFIED_STATUSES else None
     except RunScriptError as exc:
         print(f"error: {format_error(exc)}", file=sys.stderr)

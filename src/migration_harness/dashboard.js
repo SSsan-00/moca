@@ -603,6 +603,14 @@ bindHarnessWorkspace({
   saveSettings: (content, version) => workspaceRequest("settings", {content, version, revision: dashboardRevision}),
   execute: async (action, payload) => {
     if (action === "open-run") return connectRun(payload.run_id);
+    if (action === "resume-build") {
+      const plan = await workspaceRequest("resume-plan?" + new URLSearchParams({run_id: payload.run_id}));
+      const targets = Object.entries(plan.targets)
+        .map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}${plan.edits[name] ? "（保存済み編集あり）" : ""}`);
+      if (!window.confirm(`ビルドのみ（自動修正なし）\n保存版 ${plan.version.slice(0, 12)}\n\n${targets.join("\n")}\n\n以前のビルドとチェッカーの結果を無効にして開始しますか？`)) return;
+      payload = {...payload, start_stage: "build", plan_version: plan.version};
+      action = "resume-run";
+    }
     const result = await workspaceRequest("control", {action, revision: dashboardRevision, ...payload});
     if (action === "hide-run" && selectedRunId === result.run_id) await connectRun("", {removed: true});
     return result;

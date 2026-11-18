@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import time
+import uuid
 from collections import deque
 from concurrent.futures import Future
 from contextlib import suppress
@@ -45,7 +46,7 @@ from migration_harness.settings_form import build_settings_draft
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
     RunInterrupted, RunScriptError, _review_log,
-    build_failure_review, can_resume_run, migration_ledger, prepare_run, resume_with_junie,
+    build_failure_review, can_resume_run, migration_ledger, plan_build_resume, prepare_run, resume_with_junie,
     review_checker, run_with_junie,
 )
 from migration_harness.worktree_targets import EDIT_BYTES, save_target_edit, worktree_source_lock
@@ -395,6 +396,18 @@ class Dashboard:
                         self.send_body(200, content_type, asset)
                 elif self.path.partition("?")[0] == prefix + "editor":
                     self.send_editor()
+                elif self.path.partition("?")[0] == prefix + "resume-plan":
+                    try:
+                        run_id = parse_qs(urlsplit(self.path).query).get("run_id", [None])[0]
+                        if run_id:
+                            validate_run_id(run_id)
+                        view = manager.get(run_id) if manager and run_id else self.dashboard
+                        if not run_id or run_id != view.state.get("run_id") or not view.state.get("ready"):
+                            raise ValueError("処理が終わってから再開方法を選んでください。")
+                        plan = plan_build_resume(config, run_id)
+                        self.send_body(200, "application/json", json.dumps(plan, ensure_ascii=False).encode())
+                    except _ERRORS as exc:
+                        self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
                 elif self.path.partition("?")[0] == prefix + "editor-php":
                     self.send_editor_php()
                 elif self.path.partition("?")[0] == prefix + "events":
@@ -938,6 +951,11 @@ class Dashboard:
                 try:
                     if type(action.get("revision")) is not int:
                         raise ValueError
+                    if "verification_request" in action:
+                        raise ValueError
+                    if "start_stage" in action and (not manager or action.get("action") != "resume-run"
+                                                    or action["start_stage"] != "build"):
+                        raise ValueError
                     if action.get("action") not in (
                         "stop", "junie-answer", "accept", "resume", "anchors", "prepare", "run", "open-run", "resume-run",
                         "build-response", "cancel-queued", "hide-run",
@@ -971,6 +989,11 @@ class Dashboard:
                     return
                 if manager and action["action"] not in {"stop", "junie-answer", "anchors"}:
                     try:
+                        if action.get("start_stage") == "build":
+                            plan = plan_build_resume(config, action["run_id"])
+                            if action.get("plan_version") != plan["version"]:
+                                raise ValueError("保存版が更新されました。ビルドする版を確認し直してください。")
+                            action["verification_request"] = {**plan, "id": uuid.uuid4().hex}
                         result = manager.submit(action, self.dashboard)
                     except _ERRORS as exc:
                         self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
@@ -1098,6 +1121,8 @@ def execute_dashboard_action(view, config, action):
                     kwargs["build_response"] = action
                 if "checker_instruction" in action:
                     kwargs["checker_instruction"] = action["checker_instruction"]
+                if "verification_request" in action:
+                    kwargs["verification_request"] = action["verification_request"]
                 result = resume_with_junie(config, run_id, **kwargs)
             view.observe(result)
             view.ready(config, result, "判断理由を記録しました。" if kind == "accept" else "")

@@ -46,3 +46,11 @@ JSON用ロックと工程ロックは別物。ファイルのロック順やcond
 | 台帳とレビューの版照合 | [test_migration_ledger.py](../tests/test_migration_ledger.py): `test_keeps_review_reason_and_flags_stale_after_edit`、`test_anchor_usage_keeps_reviews_written_by_another_cli`、`test_completion_requires_verification_record_but_no_worktree_fingerprint` |
 
 横断ケースはHTTP受付・RunManager・保存と再読込・workflowを通す。Junieや.NETの実サービスは置換する統合テストがあるため、実環境の検証結果とは区別する。Windows Job Object、macOSの `waitid` 不在時の `/bin/ps` 観測などOS固有の保証は、実行したOSとPython版の結果に限る。
+
+## 明示的な再開要求
+
+通常の再開は、同じ Run と worktree の保存状態から未完了の工程を選ぶ。明示的な再開では、開始工程、対象ファイルとその内容のハッシュ、保留編集の ID と版、区間、後続結果の無効化を一つの要求に記録する。実行直前に保存版を照合し、差があれば編集を保持したまま実行を中止する。
+
+移行完了後の「ビルドのみ」は、設定済みの全移行先と保存済み手修正を対象とする。未反映の Junie 指示がある場合は通常の再開で処理する。以前のビルド・チェッカー結果を無効化してビルドし、チェッカーと自動修正は起動しない。通常の再開ボタンと旧 Run の扱いは従来どおり。
+
+区間を指定する要求は、開始位置、終点、対象版、対象外の編集、無効化する区間以降の完了記録・検証・レビューを同時に照合する。複数の区間が同じファイルを編集する場合に必要な復元地点と編集範囲の照合がそろうまで、区間の変更は提供しない。チェッカー単独の再開には、現在の対象版に対応するビルド成果物の照合が必要となる。
