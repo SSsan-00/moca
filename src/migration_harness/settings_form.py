@@ -34,7 +34,7 @@ _NUMERIC_FIELDS = {
 }
 _INPUT_FIELDS = ("path", "start_line", "end_line", "encoding", "symbol")
 _RULE_FIELDS = ("usage", "description")
-_UNIT_SETTINGS = ("id", "source", "targets", "checker_command", "draft_imports")
+_UNIT_SETTINGS = ("id", "source", "targets", "checker_command", "draft_imports", "target_context")
 _REFERENCE_TARGET_ROLES = ("reference_csharp", "reference_razor")
 
 
@@ -183,33 +183,36 @@ def _promote_legacy_materials(document: Any, units: list) -> bool:
 def _apply_table_edits(document: Any, changes: dict[str, Any]) -> None:
     """設定フォームのルール・参考資料編集を適用する。"""
     for section, keys in _TABLE_FIELDS.items():
-        edits = changes.get(section, {})
-        if not isinstance(edits, dict) or edits.keys() - set(keys):
+        _apply_table_fields(document, section, keys, changes.get(section, {}))
+
+
+def _apply_table_fields(document, section, keys, edits, *, preserve_empty=False):
+    if not isinstance(edits, dict) or edits.keys() - set(keys):
+        raise ValueError("設定フォームの入力内容を確認してください。")
+    for key, value in edits.items():
+        if key == "command":
+            if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
+                raise ValueError("チェッカーのコマンドと引数を確認してください。")
+        elif key in {"anchor_reference", "roots", "folders", "exclude"} and value != "":
+            if not isinstance(value, list) or any(not isinstance(path, str) or not path.strip() for path in value):
+                raise ValueError("パスやパターンは1行に1つ入力してください。")
+        elif not isinstance(value, str):
             raise ValueError("設定フォームの入力内容を確認してください。")
-        for key, value in edits.items():
-            if key == "command":
-                if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
-                    raise ValueError("チェッカーのコマンドと引数を確認してください。")
-            elif key in {"anchor_reference", "roots", "folders", "exclude"} and value != "":
-                if not isinstance(value, list) or any(not isinstance(path, str) or not path.strip() for path in value):
-                    raise ValueError("パスやパターンは1行に1つ入力してください。")
-            elif not isinstance(value, str):
-                raise ValueError("設定フォームの入力内容を確認してください。")
-            if key in _NUMERIC_FIELDS and value:
-                value = _settings_integer(value, key)
-            if section == "diff_viewer" and key == "enabled" and value:
-                if value != "false":
-                    raise ValueError("差分ビューアーの使用設定を確認してください。")
-                value = False
-            if key == "recursive" and value:
-                if value not in {"true", "false"}:
-                    raise ValueError("参照資料の再帰収集の設定を確認してください。")
-                value = value == "true"
-            if (value == "" or value == [] and key != "roots") and key not in {"root", "worktree_root", "run_root"}:
-                if section in document:
-                    document[section].pop(key, None)
-            else:
-                document.setdefault(section, tomlkit.table())[key] = value
+        if key in _NUMERIC_FIELDS and value:
+            value = _settings_integer(value, key)
+        if section == "diff_viewer" and key == "enabled" and value:
+            if value != "false":
+                raise ValueError("差分ビューアーの使用設定を確認してください。")
+            value = False
+        if key == "recursive" and value:
+            if value not in {"true", "false"}:
+                raise ValueError("参照資料の再帰収集の設定を確認してください。")
+            value = value == "true"
+        if (value == "" or value == [] and key != "roots" and not preserve_empty) and key not in {"root", "worktree_root", "run_root"}:
+            if section in document:
+                document[section].pop(key, None)
+        else:
+            document.setdefault(section, tomlkit.table())[key] = value
 
 
 def _apply_unit_edits(document: Any, unit_changes: dict[str, Any]) -> None:
@@ -227,6 +230,8 @@ def _apply_unit_edits(document: Any, unit_changes: dict[str, Any]) -> None:
         for key, value in fields.items():
             if key not in _UNIT_SETTINGS:
                 raise ValueError("移行単位の入力内容を確認してください。")
+            elif key == "target_context":
+                _apply_table_fields(unit, key, _TABLE_FIELDS[key], value, preserve_empty=True)
             elif key == "checker_command":
                 if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
                     raise ValueError("移行単位のチェッカーのコマンドと引数を確認してください。")
@@ -337,6 +342,12 @@ def _settings_form(document: Any) -> dict[str, Any]:
         ],
         "units": [{
             **{key: value for key in ("id", "source") if isinstance(value := unit.get(key), str)},
+            "target_context": {
+                key: (str(value).lower() if key in _NUMERIC_FIELDS or key == "recursive" else value)
+                for key in _TABLE_FIELDS["target_context"]
+                if isinstance(context := unit.get("target_context"), Mapping)
+                and (value := context.get(key)) is not None
+            },
             "checker_command": unit.get("checker_command", []),
             "draft_imports": unit.get("draft_imports", []),
             "targets": [path for path in unit.get("targets", [unit.get("target")]) if isinstance(path, str)]

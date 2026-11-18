@@ -1038,6 +1038,8 @@
               </fieldset>
               <fieldset class="settings-fields" id="settings-target-context-fields">
                 <legend>移行先周辺の参照資料</legend>
+                <label for="settings-context-scope">編集範囲</label>
+                <select id="settings-context-scope" class="workspace-select"></select>
                 <label for="settings-context-roots">参照起点</label>
                 <select id="settings-context-roots" class="workspace-select">
                   <option value="default">既定の4箇所を使う</option>
@@ -1059,6 +1061,7 @@
                 <label for="settings-context-recursive">下位フォルダーの収集</label>
                 <select id="settings-context-recursive" class="workspace-select" data-section="target_context" data-setting="recursive">
                   <option value="">下位フォルダーも収集する（既定）</option>
+                  <option value="true">下位フォルダーも収集する</option>
                   <option value="false">起点の直下だけ収集する</option>
                 </select>
                 <label for="settings-context-max-files">ファイル数の上限</label>
@@ -1073,7 +1076,12 @@
                     <input id="settings-context-max-file" data-section="target_context" data-setting="max_file_bytes" inputmode="numeric" placeholder="空欄なら上限なし">
                   </div>
                 </div>
-                <p class="settings-material-range">ここで指定した値は移行単位の既定値になります。固定済みの参照資料は、同じ実行を再開しても入れ替わりません。</p>
+                <div class="workspace-actions" id="settings-context-preview-actions" hidden>
+                  <button type="button" class="button" id="settings-context-preview">参照資料をプレビュー</button>
+                  <button type="button" class="button" id="settings-context-cancel" hidden>取消</button>
+                </div>
+                <p class="settings-material-range" id="settings-context-status" role="status"></p>
+                <pre id="settings-context-result" class="settings-command" style="white-space:pre-wrap;overflow-wrap:anywhere" hidden></pre>
               </fieldset>
               <fieldset class="settings-fields" id="settings-verification-fields">
                 <legend>ビルド・独自チェッカー</legend>
@@ -1629,7 +1637,7 @@ function validateRuleUsage(item) {
   }
 }
 
-function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettings, saveSettings, execute, canAct, canConfigure = canAct, preparationChat = false}) {
+function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettings, previewReferences, cancelReferences, saveSettings, execute, canAct, canConfigure = canAct, preparationChat = false}) {
   const runsUI = bindRunManager({readRuns, execute, canAct, preparationChat});
   window.harnessRuns = runsUI;
   const settings = document.querySelector("#workspace-config-form");
@@ -1712,6 +1720,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   }
   workspaceControls = () => {
     const available = canConfigure() && !busy;
+    referenceControls();
     runsUI.sync();
     settings.querySelector('button[type="submit"]').disabled = !available || previewPending || !settingsVersion
       || !workspaceConfig.value.trim() || !settingsForm;
@@ -2018,6 +2027,11 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     unit.replaceChildren(...settingsForm.units.map(({id}, i) => new Option(id || `移行単位 ${i + 1}`, i)));
     if (settingsForm.units.length) unit.value = String(Math.min(index, settingsForm.units.length - 1));
     showUnit();
+    const scope = contextScope.value;
+    contextScope.replaceChildren(new Option("共通設定", ""),
+      ...settingsForm.units.map(({id}, i) => new Option(id || `移行単位 ${i + 1}`, i)));
+    contextScope.value = [...contextScope.options].some(option => option.value === scope) ? scope : "";
+    showContext();
   }
 
   function showTOMLEditor(editing) {
@@ -2042,7 +2056,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     field.after(units);
     capacityUnits.set(field, units);
     units.addEventListener("change", () => {
-      const current = settingsForm[field.dataset.section]?.[field.dataset.setting];
+      const current = (field.dataset.section === "target_context" ? contextValues() : settingsForm[field.dataset.section])?.[field.dataset.setting];
       if (!units.value) field.value = "";
       else if (/^[0-9]+$/.test(current)) {
         const bytes = BigInt(current);
@@ -2061,6 +2075,77 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   const viewerHTML = document.querySelector("#settings-viewer-html");
   const viewerReference = document.querySelector("#settings-anchor-reference");
 
+  const referenceButton = document.querySelector("#settings-context-preview");
+  const referenceCancel = document.querySelector("#settings-context-cancel");
+  const referenceStatus = document.querySelector("#settings-context-status");
+  const referenceResult = document.querySelector("#settings-context-result");
+  document.querySelector("#settings-context-preview-actions").hidden = !previewReferences;
+  let referenceID;
+  function previewUnit() {
+    return settingsForm?.units[Number(contextScope.value || unit.value)]?.id;
+  }
+  function referenceControls() {
+    const id = previewUnit();
+    referenceButton.disabled = !id || previewPending || !!referenceID || busy;
+    referenceButton.textContent = id ? `${id}の参照資料をプレビュー` : "参照資料をプレビュー";
+    referenceCancel.hidden = !referenceID;
+  }
+  referenceButton.addEventListener("click", async () => {
+    const id = previewUnit();
+    const request = crypto.randomUUID();
+    const revision = draftRevision;
+    referenceID = request;
+    referenceCancel.disabled = true;
+    referenceResult.hidden = true;
+    referenceStatus.textContent = "参照資料を確認しています。";
+    referenceControls();
+    try {
+      await previewReferences(workspaceConfig.value, id, request, event => {
+        if (event.progress) {
+          referenceCancel.disabled = false;
+          referenceStatus.textContent = event.progress;
+        }
+        if (event.error) throw new Error(event.error);
+        if (event.cancelled) referenceStatus.textContent = "プレビューを取り消しました。";
+        if (event.result) {
+          if (revision !== draftRevision || id !== previewUnit()) {
+            referenceStatus.textContent = "設定が変わりました。もう一度プレビューしてください。";
+            return;
+          }
+          const {roots, files, bytes, largest, exceeded} = event.result;
+          const number = value => value.toLocaleString("ja-JP");
+          const limits = {max_files: "件数", max_bytes: "合計容量", max_file_bytes: "1ファイルの容量"};
+          referenceStatus.textContent = `${id}の参照資料を確認しました。`;
+          referenceResult.textContent = [
+            `${number(files)}件 · ${number(bytes)} B`,
+            `参照起点  ${roots.map(path => path === "." ? "作業ツリー直下" : path).join("、") || "なし"}`,
+            ...Object.entries(exceeded).map(([key, item]) => `上限超過  ${limits[key]} ${number(item.actual)} / ${BigInt(item.limit).toLocaleString("ja-JP")}`),
+            ...largest.map(item => `${number(item.bytes)} B  ${item.path}`),
+          ].join("\n");
+          referenceResult.hidden = false;
+        }
+      });
+    } catch (error) {
+      referenceStatus.textContent = `プレビューを完了できませんでした。設定と参照先を確認してください。\n${error.message}`;
+    } finally {
+      referenceID = undefined;
+      referenceCancel.disabled = false;
+      const restoreFocus = document.activeElement === referenceCancel;
+      referenceControls();
+      if (restoreFocus) referenceButton.focus();
+    }
+  });
+  referenceCancel.addEventListener("click", async () => {
+    referenceCancel.disabled = true;
+    try {
+      await cancelReferences(referenceID);
+    } catch (error) {
+      referenceCancel.disabled = false;
+      referenceStatus.textContent = error.message;
+    }
+  });
+  unit.addEventListener("change", referenceControls);
+
   function showViewerState() {
     const disabled = viewerMode.value === "false";
     viewerHTML.disabled = viewerReference.disabled = disabled;
@@ -2068,13 +2153,72 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       : viewerHTML.value.trim() ? "有効" : "無効（HTML 未設定）";
   }
 
+  const contextScope = document.querySelector("#settings-context-scope");
+  const contextFields = tableFields.filter(field => field.dataset.section === "target_context");
+  const listOverrides = new Map();
+  for (const field of contextFields.filter(field => ["exclude", "folders"].includes(field.dataset.setting))) {
+    const label = document.createElement("label");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.setAttribute("aria-label", field.labels[0].textContent + "を上書き");
+    label.append(check, " 共通設定を上書き");
+    field.before(label);
+    listOverrides.set(field, label);
+    check.addEventListener("change", () => {
+      field.disabled = !check.checked;
+      field.dispatchEvent(new Event("input"));
+      if (check.checked) field.focus();
+    });
+  }
+
+  function contextValues() {
+    return contextScope.value === "" ? settingsForm.target_context
+      : (settingsForm.units[Number(contextScope.value)].target_context ??= {});
+  }
+
+  function editContext(key, value) {
+    let edits = changes;
+    if (contextScope.value !== "") edits = changes.units[contextScope.value] ??= {};
+    edits.target_context ??= {};
+    edits.target_context[key] = contextValues()[key] = value;
+    schedulePreview();
+  }
+
+  function showContext() {
+    const inherited = contextScope.value !== "";
+    const context = contextValues();
+    rootMode.options[0].text = inherited ? "共通設定を継承" : "既定の4箇所を使う";
+    const roots = context.roots;
+    rootMode.value = Array.isArray(roots) ? (roots.length ? "custom" : "none") : "default";
+    rootChoices.hidden = rootMode.value !== "custom";
+    rootChecks.forEach(input => { input.checked = Array.isArray(roots) && roots.includes(input.value); });
+    for (const field of contextFields) {
+      const value = context[field.dataset.setting];
+      field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+      if (listOverrides.has(field)) {
+        const label = listOverrides.get(field);
+        label.hidden = !inherited;
+        label.firstChild.checked = Array.isArray(value);
+        field.disabled = inherited && !Array.isArray(value);
+      } else if (field.tagName === "SELECT") {
+        field.options[0].text = inherited ? "共通設定を継承" : "下位フォルダーも収集する（既定）";
+      } else {
+        field.placeholder = inherited ? "空欄なら共通設定を継承" : "空欄なら上限なし";
+      }
+      if (capacityUnits.has(field)) {
+        const options = capacityUnits.get(field);
+        options.options[0].text = inherited ? "共通設定を継承" : "上限なし";
+        options.value = field.value ? "1" : "";
+      }
+    }
+    workspaceControls();
+  }
+  contextScope.addEventListener("change", showContext);
+
   function saveRootChoices() {
     rootChoices.hidden = rootMode.value !== "custom";
     const chosen = rootChecks.filter(input => input.checked).map(input => input.value);
-    const value = rootMode.value === "default" ? "" : rootMode.value === "none" ? [] : chosen;
-    changes.target_context ??= {};
-    changes.target_context.roots = settingsForm.target_context.roots = value;
-    schedulePreview();
+    editContext("roots", rootMode.value === "default" ? "" : rootMode.value === "none" ? [] : chosen);
   }
   rootMode.addEventListener("change", () => {
     if (rootMode.value === "custom" && !rootChecks.some(input => input.checked)) {
@@ -2101,10 +2245,6 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
         if (capacityUnits.has(field)) capacityUnits.get(field).value = field.value ? "1" : "";
       }
       settingsForm.target_context ??= {};
-      const roots = settingsForm.target_context.roots;
-      rootMode.value = Array.isArray(roots) ? (roots.length ? "custom" : "none") : "default";
-      rootChoices.hidden = rootMode.value !== "custom";
-      rootChecks.forEach(input => { input.checked = Array.isArray(roots) && roots.includes(input.value); });
       showViewerState();
       showEfforts(settingsForm.junie.effort ?? "");
       showMaterials(settingsForm.migrationRules, "migrationRules");
@@ -2212,8 +2352,13 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     }
     if (setting === "command") value = value ? commandLines(field.value) : [];
     if (setting === "anchor_reference") value = field.value.split("\n").map(path => path.trim()).filter(Boolean);
-    if (section === "target_context" && ["folders", "exclude"].includes(setting) && value) {
-      value = value.split("\n").map(path => path.trim()).filter(Boolean);
+    if (section === "target_context") {
+      if (listOverrides.has(field)) {
+        if (field.disabled) value = "";
+        else if (value || contextScope.value !== "") value = value.split("\n").map(path => path.trim()).filter(Boolean);
+      }
+      editContext(setting, value);
+      return;
     }
     changes[section] ??= {};
     settingsForm[section] ??= {};
@@ -2231,7 +2376,10 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       : key === "checker_command" ? (field.value.trim() ? commandLines(field.value) : []) : field.value;
     changes.units[index] ??= {};
     changes.units[index][key] = settingsForm.units[index][key] = value;
-    if (key === "id") unit.selectedOptions[0].text = value || `移行単位 ${index + 1}`;
+    if (key === "id") {
+      unit.selectedOptions[0].text = value || `移行単位 ${index + 1}`;
+      contextScope.options[index + 1].text = unit.selectedOptions[0].text;
+    }
     schedulePreview();
   });
   unit.addEventListener("change", showUnit);
@@ -2938,7 +3086,7 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
     function patchBlock(block, fields) {
       for (const [key, value] of Object.entries(fields)) {
         if (value === undefined) continue;
-        let literal = key === "enabled" ? "false" : JSON.stringify(value);
+        let literal = key === "enabled" ? "false" : key === "recursive" ? value : JSON.stringify(value);
         if (key in numericSettings) {
           const [minimum, label] = numericSettings[key];
           if (!/^[0-9]+$/.test(value) || BigInt(value) < BigInt(minimum)) {
@@ -2955,10 +3103,11 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
       return block;
     }
     const findTable = section => blocks.findIndex(block => block.trimStart().startsWith(`[${section}]`));
-    for (const section of ["project", "build", "checker", "junie", "diff_viewer"]) {
+    for (const section of ["project", "build", "checker", "junie", "diff_viewer", "target_context"]) {
       for (const [key, value] of Object.entries(changes[section] || {})) {
         let index = findTable(section);
-        if (!value.length && !["root", "worktree_root", "run_root"].includes(key)) {
+        if ((value === "" || Array.isArray(value) && !value.length && key !== "roots")
+          && !["root", "worktree_root", "run_root"].includes(key)) {
           if (index >= 0) blocks[index] = blocks[index].replace(fieldPattern(key), "");
           continue;
         }
@@ -2995,10 +3144,29 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
       for (const position of previous.reverse()) blocks.splice(position, 1);
       blocks.splice(insertion, 0, ...updated);
     }
-    for (const [index, fields] of Object.entries(changes.units || {})) {
+    function unitContext(index) {
+      for (let next = index + 1; next < blocks.length && blocks[next].trimStart().startsWith("[") &&
+              !blocks[next].trimStart().startsWith("[[units]]"); next++) {
+        if (blocks[next].trimStart().startsWith("[units.target_context]")) return next;
+      }
+      return -1;
+    }
+    // 後ろの単位から編集し、テーブル追加による添字の変化を避ける。
+    for (const [index, fields] of Object.entries(changes.units || {}).reverse()) {
       units[index] ??= blocks.push("\n[[units]]\n") - 1;
       if ("targets" in fields) blocks[units[index]] = blocks[units[index]].replace(/^\s*target\s*=.*$/m, "");
-      const edited = {...fields};
+      const {target_context, ...edited} = fields;
+      if (target_context) {
+        let position = unitContext(units[index]);
+        if (position < 0) {
+          position = units[index] + 1;
+          blocks.splice(position, 0, "\n[units.target_context]\n");
+        }
+        for (const [key, value] of Object.entries(target_context)) {
+          blocks[position] = value === "" ? blocks[position].replace(fieldPattern(key), "")
+            : patchBlock(blocks[position], {[key]: value});
+        }
+      }
       for (const key of ["checker_command", "draft_imports"]) {
         if (edited[key]?.length !== 0) continue;
         blocks[units[index]] = blocks[units[index]].replace(fieldPattern(key), "");
@@ -3031,6 +3199,13 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
           : {index};
       });
     }
+    const readContext = index => Object.fromEntries(
+      ["roots", "folders", "exclude", "recursive", "max_files", "max_bytes", "max_file_bytes"]
+        .flatMap(key => {
+          const value = read(index, key);
+          return value === undefined ? [] : [[key, key === "recursive" ? String(value) : value]];
+        }),
+    );
     const updated = blocks.join("");
     try {
       const scripts = blocks.findIndex(block => /^\s*\[scripts\]/.test(block));
@@ -3049,12 +3224,14 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
           anchor_reference: read(findTable("diff_viewer"), "anchor_reference"),
           enabled: read(findTable("diff_viewer"), "enabled") === false ? "false" : "",
         },
+        target_context: readContext(findTable("target_context")),
         migrationRules: readMaterials(materialBlocks("migration_rules"), true),
         references: readMaterials(materialBlocks("references")),
         scripts: Object.keys(scriptPhases).flatMap(phase => (read(scripts, phase) || []).map(command => ({phase, command}))),
         units: unitBlocks().map(index => ({id: read(index, "id"), source: read(index, "source"),
           checker_command: read(index, "checker_command") ?? [],
           draft_imports: read(index, "draft_imports") ?? [],
+          target_context: readContext(unitContext(index)),
           targets: read(index, "targets") || [read(index, "target")].filter(Boolean)})),
       }};
     } catch {

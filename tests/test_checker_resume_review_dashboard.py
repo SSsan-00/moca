@@ -1063,6 +1063,77 @@ class SavedDashboardTests(SavedRunFixture):
                 self.assertEqual(result["status"], status)
                 self.assertEqual(self.record_path.read_bytes(), before)
 
+    def test_reference_preview_streams_and_cancels_without_saving(self):
+        from migration_harness.execution import check_cancelled, report_activity
+
+        project = Path(self.config["project_root"])
+        (project / ".git").mkdir()
+        config_path = project.parent / "settings.toml"
+        self.config["config_path"] = str(config_path)
+        content = (
+            '[project]\nroot = "project"\nworktree_root = "trees"\nrun_root = "runs"\n'
+            '[target_context]\nroots = []\nfolders = ["Shared"]\nmax_files = 0\n'
+            '[[units]]\nid = "例"\nsource = "example.php"\ntarget = "Example.cs"\n'
+        )
+        shared = project / "Shared"
+        shared.mkdir()
+        (shared / "Helper.cs").write_bytes(b"helper")
+        release = Event()
+
+        def inspect(url):
+            request = {"mode": "reference-preview", "content": content, "unit": "例",
+                       "request_id": str(uuid.uuid4())}
+            with self.post(url, "settings", request) as response:
+                events = [json.loads(line) for line in response]
+            self.assertTrue(events[0]["progress"])
+            result = events[-1]["result"]
+            self.assertEqual((result["roots"], result["files"], result["bytes"]), (["Shared"], 1, 6))
+            self.assertEqual(result["exceeded"]["max_files"], {"actual": 1, "limit": "0"})
+
+            def wait_for_cancel(*_args):
+                report_activity("fixture scanning")
+                self.assertTrue(release.wait(5))
+                check_cancelled()
+                raise AssertionError("preview should be cancelled")
+
+            with patch.object(dashboard, "preview_target_context", side_effect=wait_for_cancel):
+                with self.post(url, "settings", request) as response:
+                    self.assertTrue(json.loads(response.readline())["progress"])
+                    self.assertEqual(json.loads(response.readline()), {"progress": "fixture scanning"})
+                    try:
+                        with self.post(url, "settings", {"mode": "reference-cancel",
+                                                         "request_id": request["request_id"]}) as cancelled:
+                            self.assertEqual(cancelled.status, 200)
+                    finally:
+                        release.set()
+                    self.assertEqual(json.loads(response.readline()), {"cancelled": True})
+            self.assertFalse(config_path.exists())
+            self.assertFalse((project.parent / "trees").exists())
+
+        self.open_dashboard(inspect)
+
+    def test_settings_unit_context_distinguishes_inheritance_empty_and_zero(self):
+        import tomllib
+
+        source = (
+            '[target_context]\nfolders = ["Shared"]\nexclude = ["bin"]\n'
+            '[[units]]\nid = "a"\n[units.target_context]\nroots = []\n'
+            'max_bytes = 9007199254740993 # keep this value\nlegacy_key = "keep"\n'
+            '[[units]]\nid = "b"\n[units.target_context]\nrecursive = false\n'
+        )
+        draft = build_settings_draft(source, {"units": {"0": {"target_context": {
+            "folders": [], "exclude": "", "max_files": "0", "recursive": "true",
+        }}}})
+        context = tomllib.loads(draft["content"])["units"][0]["target_context"]
+        self.assertEqual(context, {"roots": [], "folders": [], "max_files": 0, "recursive": True,
+                                  "max_bytes": 9007199254740993, "legacy_key": "keep"})
+        self.assertEqual(draft["form"]["units"][0]["target_context"]["max_bytes"], "9007199254740993")
+        self.assertEqual(draft["form"]["units"][1]["target_context"], {"recursive": "false"})
+        self.assertIn("max_bytes = 9007199254740993 # keep this value", draft["content"])
+        inherited = build_settings_draft(draft["content"], {"units": {"0": {"target_context": {"folders": ""}}}})
+        self.assertNotIn("folders", tomllib.loads(inherited["content"])["units"][0]["target_context"])
+        self.assertEqual(tomllib.loads(inherited["content"])["target_context"]["folders"], ["Shared"])
+
     def test_dashboard_validates_settings_before_saving_and_detects_external_edits(self):
         project = Path(self.config["project_root"])
         (project / ".git").mkdir()

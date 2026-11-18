@@ -17,7 +17,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
-from threading import Condition, Thread
+from threading import Condition, Lock, Thread
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -26,7 +26,7 @@ from tomlkit.exceptions import TOMLKitError
 from migration_harness.capsules import (
     input_encoding, load_capsule_manifest, migration_php_encodings, pinned_php_sources, read_pinned_php,
 )
-from migration_harness.config import load_config, target_paths
+from migration_harness.config import find_unit, load_config, target_paths
 from migration_harness.diff_viewer import _inside_file, create_snapshot, review_html, snapshot_bytes
 from migration_harness.editor_queue import (
     AGENT_PHASES, EDITOR_TARGET_SUFFIXES, QUEUE_PHASES,
@@ -43,6 +43,7 @@ from migration_harness.junie_thoughts import FILENAME as JUNIE_THOUGHTS_FILENAME
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.run_records import load_saved_run, run_observer, validate_run_id
 from migration_harness.settings_form import build_settings_draft
+from migration_harness.source_context import preview_target_context
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
     RunInterrupted, RunScriptError, _review_log,
@@ -330,6 +331,8 @@ class Dashboard:
         manager = getattr(self, "manager", None)
         # ポート番号だけで操作できないようにし、他サイトからのPOSTも拒否する。
         prefix = "/" + secrets.token_urlsafe(24) + "/"
+        preview_lock = Lock()
+        reference_previews: dict[str, ExecutionControl] = {}
 
         class Handler(BaseHTTPRequestHandler):
             """ダッシュボード専用のパスとオリジンでHTTPの受付範囲を絞る。"""
@@ -1020,6 +1023,9 @@ class Dashboard:
 
             def save_settings(self, action: dict[str, Any]) -> None:
                 """利用者の設定変更を検証して保存する。"""
+                if action.get("mode") in {"reference-preview", "reference-cancel"}:
+                    self.reference_preview(action)
+                    return
                 if action.get("mode") == "preview":
                     if not isinstance(action.get("content"), str) or not isinstance(action.get("changes"), dict):
                         self.send_error(400)
@@ -1054,6 +1060,64 @@ class Dashboard:
                 else:
                     version = hashlib.sha256(action["content"].encode()).hexdigest()
                     self.send_body(200, "application/json", json.dumps({"version": version}).encode())
+
+            def reference_preview(self, action):
+                """未保存のTOMLから参照候補だけを走査し、同じ画面へ進捗を返す。"""
+                request_id = action.get("request_id")
+                if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", request_id):
+                    self.send_error(400)
+                    return
+                if action["mode"] == "reference-cancel":
+                    with preview_lock:
+                        if control := reference_previews.get(request_id):
+                            control.cancelled.set()
+                    self.send_body(200, "application/json", b"{}")
+                    return
+                if not all(isinstance(action.get(key), str) for key in ("content", "unit")):
+                    self.send_error(400)
+                    return
+
+                def send_event(data):
+                    self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8") + b"\n")
+                    self.wfile.flush()
+
+                control = ExecutionControl(lambda event: send_event({"progress": event["message"]}))
+                with preview_lock:
+                    if reference_previews:
+                        self.send_body(409, "text/plain; charset=utf-8", "別の参照資料を確認中です。".encode())
+                        return
+                    reference_previews[request_id] = control
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.close_connection = True
+                    send_event({"progress": "参照資料を確認しています。"})
+                    path = Path(config["config_path"])
+                    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+                        candidate = Path(stream.name)
+                    try:
+                        candidate.write_bytes(action["content"].encode("utf-8"))
+                        draft = load_config(candidate)
+                    finally:
+                        candidate.unlink(missing_ok=True)
+                    unit = find_unit(draft, action["unit"])
+                    with control_scope(control):
+                        result = preview_target_context(Path(draft["project_root"]), target_paths(unit), unit.get("target_context"))
+                    for excess in result["exceeded"].values():
+                        excess["limit"] = str(excess["limit"])
+                    send_event({"result": result})
+                except OperationCancelled:
+                    with suppress(OSError):
+                        send_event({"cancelled": True})
+                except _ERRORS as exc:
+                    with suppress(OSError):
+                        send_event({"error": format_error(exc)})
+                finally:
+                    with preview_lock:
+                        reference_previews.pop(request_id, None)
 
             def send_anchored_comparison(self, action: dict[str, Any]) -> None:
                 """端末側でアンカー生成が終わるまで待ち、作成元Runと比較のIDを返す。"""
