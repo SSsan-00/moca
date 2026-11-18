@@ -298,6 +298,8 @@ sequenceDiagram
     end
 ```
 
+`workflow.py` では作業領域の照合・途中反映の復旧、固定資料の配置、カプセルの実行、最終区間の追加指示を順に呼び出します。区間指定なしで最終区間の手編集・追加指示を処理し終えた Run は、検証に進みます。
+
 ### Junie が読む内容
 
 - 初回の作業領域作成前に `before_migration` と単位別の `draft_imports` を実行します。初回編集前に詳細ルールの説明を全移行範囲と照合し、判定に詳細本文が必要な場合はハッシュを検証して読ませます。全件の ID・適用可否・理由を検証して `detail_applicability` に保存します。毎回必須のルールは本文を渡し、適用対象と移行先が明記された詳細の原文や、参考実装の索引を作業領域に配置します。 [workflow.py](../src/migration_harness/workflow.py) · [rule_materials.py](../src/migration_harness/rule_materials.py)

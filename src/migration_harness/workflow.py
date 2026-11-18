@@ -36,7 +36,7 @@ from .editor_queue import (
 )
 from .errors import format_error
 from .execution import build_process_scope, check_cancelled, current_operation_id, report_activity, run_process
-from .files import harness_asset, has_symlink_component, safe_target, sha256_file
+from .files import harness_asset, safe_target, sha256_file
 from .rule_materials import detail_index, effective_details, render_guidelines, selected_details
 from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, validate_run_id, write_run_record
 from .source_context import stage_target_context
@@ -1041,19 +1041,8 @@ def _run_editor_followup(
     return True
 
 
-def _run_prepared_with_junie(
-    config: dict[str, Any],
-    unit: dict[str, Any],
-    run_path: Path,
-    result: dict[str, Any],
-    record: dict[str, Any],
-    *,
-    resuming: bool,
-    followup_only: bool = False,
-    through_capsule: int | None = None,
-    expected_capsule_hashes: list[str] | None = None,
-) -> dict[str, Any]:
-    """保存済みの編集と進捗から未完了のカプセルを順に処理する。"""
+def _prepare_migration_workspace(config, unit, run_path, result, record, *, resuming, followup_only, through_capsule):
+    """既存Runを照合し、途中反映の復旧と作業領域の初期化を済ませて進捗を保存する。"""
     worktree_root = Path(result["worktree_path"]).resolve()
     if not worktree_root.is_dir() or not worktree_root.is_relative_to(Path(config["worktree_root"]).resolve()):
         raise ValueError(f"run worktree is missing or outside configured worktree root: {worktree_root}")
@@ -1138,6 +1127,13 @@ def _run_prepared_with_junie(
         )
     write_run_record(record_path, record)
 
+    return worktree_root, relative_targets, agent_root, agent_targets, capsule, manifest, through_capsule
+
+
+def _prepare_migration_materials(config, unit, run_path, record, worktree_root, relative_targets,
+                                 agent_root, capsule, manifest, *, followup_only):
+    """ルール適用の判断と移行先周辺の固定資料をJunie作業領域に用意する。"""
+    record_path = run_path / "run.json"
     try:
         selected = None
         if not followup_only or "detail_applicability" in record:
@@ -1166,209 +1162,224 @@ def _run_prepared_with_junie(
         worktree_root, relative_targets, capsule, agent_root, policy=unit.get("target_context"),
     )
 
+    return material_instructions
+
+
+def _stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targets, index,
+                             context_path, capsule_count, material_instructions, *,
+                             resume_first_capsule, expected_capsule_hashes):
+    """保存カプセルを照合し、対象範囲と完了記録の指示を準備する。"""
     agent_context = agent_root / ".migration-context.md"
-    exit_code = record.get("junie_exit_code")
-    with editor_queue(run_path) as queue:
-        finish_prompts(queue, False)
-    # 未完了のカプセルから再開する。保存済みの下書きがあっても完了数は先に進めない。
-    start_index = record["completed_capsules"] + 1
-    for index, context_path in enumerate(result["context_paths"][start_index - 1 : through_capsule], start=start_index):
-        part = manifest["parts"][index - 1]
-        expected = expected_capsule_hashes[index - 1] if expected_capsule_hashes is not None else part.get("sha256")
-        if expected and target_hash(Path(context_path)) != expected:
-            raise ValueError(f"capsule {index}: saved context changed or is missing")
-        shutil.copyfile(context_path, safe_target(agent_root, Path(agent_context.name)))
-        source_instruction = ""
-        if len(manifest["parts"]) > 1:
-            _stage_source_excerpts(capsule, manifest, agent_root, through_capsule=index)
-            source_instruction = (
-                "For checking accumulated data, `.migration-materials/source-*.md` contains the exact assigned "
-                "excerpts from segment 1 through this segment, in filename order. Use only the assigned source "
-                "headings; exclude any shared examples in legacy capsules. Mechanically extract and compare "
-                "the entire accumulated sequence against "
-                "these files, including values, order, duplicates and PHP literal decoding, before completing "
-                "this segment. Do not rely on the previous target's count or contents as the source of truth. "
-                "Never append data from `.migration-boundary.md`; those rows belong to another segment. "
-                "Before writing extraction or verification scripts, inspect existing scripts in `.migration-scratch`. "
-                "Reuse correct scripts from earlier segments where applicable, adapting their input ranges and "
-                "checking complete coverage, rather than rebuilding the same extraction logic. "
-                "A function may span several source excerpts. Reassemble its numbered rows by original file and "
-                "line across all available segments before parsing the function; do not parse each segment as "
-                "a separate complete function or invent defaults for fields beyond its boundary. "
-            )
-        boundary_instruction = ""
-        boundary = safe_target(agent_root, Path(".migration-boundary.md"))
-        boundary_digest = part.get("boundary_sha256")
-        if boundary_digest:
-            boundary_source = Path(context_path).with_name("boundary.md")
-            if not boundary_source.resolve().is_relative_to(capsule) or boundary_source.is_symlink() or target_hash(boundary_source) != boundary_digest:
-                raise ValueError(f"capsule {index}: boundary context changed or is missing")
-            shutil.copyfile(boundary_source, boundary)
-            boundary_instruction = (
-                'Read `.migration-boundary.md` before editing. Use its neighboring lines and the changes '
-                'already in the targets to carry declarations, values, and control flow across this boundary. '
-                'Migrate only the range assigned in the current capsule. '
-            )
-        else:
-            boundary.unlink(missing_ok=True)
-        completion_token = uuid.uuid4().hex
-        # 隠しファイルはJunieが書き込み前に承認を求めるため、通常の名前を使う。
-        completion_path = agent_root / f"migration-complete-{completion_token}.txt"
-        resume_instruction = ""
-        if resuming and index == start_index:
-            resume_instruction = (
-                "This capsule was interrupted. Compare its source ranges with the saved target, "
-                "keep completed edits, and migrate only what is still missing. "
-            )
-        final_review = (
-            "This is the final segment. Reconcile every now-complete function against the original PHP across "
-            "all saved source excerpts. Check exact branch conditions and selector strings, comparison operators, "
-            "operation order and return behavior, not only the data sequence. Correct provisional logic from "
-            "earlier segments, including every constant in functions split across segments, against their now-complete "
-            "original bodies. Rule titles, filenames and descriptions "
-            "select guidance; they are not the source of executable selector names or conditions. "
-        ) if index == result["capsule_count"] and index > 1 else ""
-        prompt = (
-            f"Start with the headings and shared rules in `{agent_context}`; inspect source in bounded ranges. "
-            f"This is context segment {index} of {result['capsule_count']} "
-            f"for migration unit `{unit['id']}`. The configured target files are "
-            + ", ".join(f"`{path.as_posix()}`" for path in relative_targets) + ". "
-            "Preserve work from earlier segments and continue only with this segment. "
-            "Edit only the configured targets, the completion record, and temporary files in .migration-scratch/. "
-            "Ensure every configured target exists before writing a completion record. "
-            f"{_TARGET_ENCODING}"
-            "Apply all mandatory rules in the Shared context section if present. "
-            f"{material_instructions}{boundary_instruction}{source_instruction}"
-            f"{resume_instruction}"
-            "The source excerpt may begin or end inside a function or control structure. Use its original line numbers; "
-            "do not treat the excerpt boundary as a PHP statement boundary or add closing syntax just for the excerpt end. "
-            "For `focus chars START-END context chars CONTEXT_START-CONTEXT_END` records, migrate only the focus range. "
-            "The surrounding context range overlaps adjacent segments and is reference-only; do not migrate it twice. "
-            "These records are slices of one physical source line, and displayed line breaks are not source newlines. "
-            "Do not infer text outside the context range. "
-            f"{_EXACT_SOURCE_DATA}{_razor_instructions(relative_targets)}"
-            f"{final_review}"
-            "Check target-language constructs as well as source values: SQL placeholders such as :name are "
-            "string binding keys, not valid C# property identifiers. Translate PHP string comparisons and null "
-            "handling explicitly; copying the original operator spelling may be invalid or change behavior in C#. "
-            "For database transactions, ensure each command participates in the active transaction as required by "
-            "the target provider, including reads, and preserve commit/rollback behavior. "
-            "Do not access files outside this workspace. Do not run builds, tests, or external checkers. "
-            f"{_STATIC_SOURCE_REVIEW}"
-            "After verifying that all required changes for this capsule are saved, write exactly "
-            f"`{completion_token}` as plain text to `{completion_path}` as your final file action. "
-            "Leave this record absent while anything remains, including when blocked or at the step limit. "
-            "The harness closes this session when it sees the record. Finish all edits and checks before writing it. "
-            "If interrupted, preserve the edits and report what remains. "
-            "Claim the entire migration is complete only after the final capsule."
+    part = manifest["parts"][index - 1]
+    expected = expected_capsule_hashes[index - 1] if expected_capsule_hashes is not None else part.get("sha256")
+    if expected and target_hash(Path(context_path)) != expected:
+        raise ValueError(f"capsule {index}: saved context changed or is missing")
+    shutil.copyfile(context_path, safe_target(agent_root, Path(agent_context.name)))
+    source_instruction = ""
+    if len(manifest["parts"]) > 1:
+        _stage_source_excerpts(capsule, manifest, agent_root, through_capsule=index)
+        source_instruction = (
+            "For checking accumulated data, `.migration-materials/source-*.md` contains the exact assigned "
+            "excerpts from segment 1 through this segment, in filename order. Use only the assigned source "
+            "headings; exclude any shared examples in legacy capsules. Mechanically extract and compare "
+            "the entire accumulated sequence against "
+            "these files, including values, order, duplicates and PHP literal decoding, before completing "
+            "this segment. Do not rely on the previous target's count or contents as the source of truth. "
+            "Never append data from `.migration-boundary.md`; those rows belong to another segment. "
+            "Before writing extraction or verification scripts, inspect existing scripts in `.migration-scratch`. "
+            "Reuse correct scripts from earlier segments where applicable, adapting their input ranges and "
+            "checking complete coverage, rather than rebuilding the same extraction logic. "
+            "A function may span several source excerpts. Reassemble its numbered rows by original file and "
+            "line across all available segments before parsing the function; do not parse each segment as "
+            "a separate complete function or invent defaults for fields beyond its boundary. "
         )
-        max_steps = record.get("junie_max_steps", config["junie_max_steps"])
-        allowed = {*relative_targets, completion_path.relative_to(agent_root)}
-        complete = False
-        with editor_queue(run_path) as queue:
-            # Junieが停止している区間の境目で、画面からの編集と追加指示を取り込む。
-            if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
-                break
-            extra = dispatch_prompts(queue)
-            if not extra and record.get("operator_question"):
-                record.update(status="editor_checkpoint", error=record["operator_question"])
-                write_run_record(record_path, record, timing_stage=None)
-                break
-            record.update(current_capsule=index, status="junie_running")
-            record.pop("error", None)
-            write_run_record(record_path, record)
-        inputs = [Path(agent_context.name)]
-        if boundary_digest:
-            inputs.append(Path(boundary.name))
-        if extra:
-            instructions = _stage_operator_prompts(agent_root, completion_token, extra)
-            inputs.append(Path(instructions))
-            prompt = (
-                "Operator follow-up for this migration. Re-read the current target files and preserve"
-                " the operator's edits. Adjust previously migrated C# if the follow-up requests it."
-                f" Keep the PHP source range for this segment unchanged. Read `{instructions}`.\n\n{prompt}"
-            )
-        context, report = _operator_edit_context(run_path, agent_root, completion_token, inputs, record.get("operator_question"))
-        guidelines, supplied = _task_guidelines(agent_root, inputs)
-        prompt = context + prompt
-        other_files = _unlisted_workspace_files(agent_root, allowed)
-        command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
-                                          model=record.get("junie_model", config.get("junie_model")),
-                                          effort=record.get("junie_effort"))
+    boundary_instruction = ""
+    boundary = safe_target(agent_root, Path(".migration-boundary.md"))
+    boundary_digest = part.get("boundary_sha256")
+    if boundary_digest:
+        boundary_source = Path(context_path).with_name("boundary.md")
+        if not boundary_source.resolve().is_relative_to(capsule) or boundary_source.is_symlink() or target_hash(boundary_source) != boundary_digest:
+            raise ValueError(f"capsule {index}: boundary context changed or is missing")
+        shutil.copyfile(boundary_source, boundary)
+        boundary_instruction = (
+            'Read `.migration-boundary.md` before editing. Use its neighboring lines and the changes '
+            'already in the targets to carry declarations, values, and control flow across this boundary. '
+            'Migrate only the range assigned in the current capsule. '
+        )
+    else:
+        boundary.unlink(missing_ok=True)
+    completion_token = uuid.uuid4().hex
+    # 隠しファイルはJunieが書き込み前に承認を求めるため、通常の名前を使う。
+    completion_path = agent_root / f"migration-complete-{completion_token}.txt"
+    resume_instruction = ""
+    if resume_first_capsule:
+        resume_instruction = (
+            "This capsule was interrupted. Compare its source ranges with the saved target, "
+            "keep completed edits, and migrate only what is still missing. "
+        )
+    final_review = (
+        "This is the final segment. Reconcile every now-complete function against the original PHP across "
+        "all saved source excerpts. Check exact branch conditions and selector strings, comparison operators, "
+        "operation order and return behavior, not only the data sequence. Correct provisional logic from "
+        "earlier segments, including every constant in functions split across segments, against their now-complete "
+        "original bodies. Rule titles, filenames and descriptions "
+        "select guidance; they are not the source of executable selector names or conditions. "
+    ) if index == capsule_count and index > 1 else ""
+    prompt = (
+        f"Start with the headings and shared rules in `{agent_context}`; inspect source in bounded ranges. "
+        f"This is context segment {index} of {capsule_count} "
+        f"for migration unit `{unit['id']}`. The configured target files are "
+        + ", ".join(f"`{path.as_posix()}`" for path in relative_targets) + ". "
+        "Preserve work from earlier segments and continue only with this segment. "
+        "Edit only the configured targets, the completion record, and temporary files in .migration-scratch/. "
+        "Ensure every configured target exists before writing a completion record. "
+        f"{_TARGET_ENCODING}"
+        "Apply all mandatory rules in the Shared context section if present. "
+        f"{material_instructions}{boundary_instruction}{source_instruction}"
+        f"{resume_instruction}"
+        "The source excerpt may begin or end inside a function or control structure. Use its original line numbers; "
+        "do not treat the excerpt boundary as a PHP statement boundary or add closing syntax just for the excerpt end. "
+        "For `focus chars START-END context chars CONTEXT_START-CONTEXT_END` records, migrate only the focus range. "
+        "The surrounding context range overlaps adjacent segments and is reference-only; do not migrate it twice. "
+        "These records are slices of one physical source line, and displayed line breaks are not source newlines. "
+        "Do not infer text outside the context range. "
+        f"{_EXACT_SOURCE_DATA}{_razor_instructions(relative_targets)}"
+        f"{final_review}"
+        "Check target-language constructs as well as source values: SQL placeholders such as :name are "
+        "string binding keys, not valid C# property identifiers. Translate PHP string comparisons and null "
+        "handling explicitly; copying the original operator spelling may be invalid or change behavior in C#. "
+        "For database transactions, ensure each command participates in the active transaction as required by "
+        "the target provider, including reads, and preserve commit/rollback behavior. "
+        "Do not access files outside this workspace. Do not run builds, tests, or external checkers. "
+        f"{_STATIC_SOURCE_REVIEW}"
+        "After verifying that all required changes for this capsule are saved, write exactly "
+        f"`{completion_token}` as plain text to `{completion_path}` as your final file action. "
+        "Leave this record absent while anything remains, including when blocked or at the step limit. "
+        "The harness closes this session when it sees the record. Finish all edits and checks before writing it. "
+        "If interrupted, preserve the edits and report what remains. "
+        "Claim the entire migration is complete only after the final capsule."
+    )
+    return prompt, completion_path, completion_token, boundary_digest
+
+
+def _execute_migration_capsule(config, run_path, record, worktree_root, agent_root, relative_targets,
+                               agent_targets, index, capsule_count, through_capsule,
+                               prompt, completion_path, completion_token, boundary_digest, exit_code):
+    """編集と指示を受け取り、Junieの結果の採用・停止下書き・完了区間を保存する。"""
+    record_path = run_path / "run.json"
+    agent_context = agent_root / ".migration-context.md"
+    boundary = agent_root / ".migration-boundary.md"
+    max_steps = record.get("junie_max_steps", config["junie_max_steps"])
+    allowed = {*relative_targets, completion_path.relative_to(agent_root)}
+    complete = False
+    with editor_queue(run_path) as queue:
+        # Junieが停止している区間の境目で、画面からの編集と追加指示を取り込む。
+        if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
+            return exit_code, False
+        extra = dispatch_prompts(queue)
+        if not extra and record.get("operator_question"):
+            record.update(status="editor_checkpoint", error=record["operator_question"])
+            write_run_record(record_path, record, timing_stage=None)
+            return exit_code, False
+        record.update(current_capsule=index, status="junie_running")
+        record.pop("error", None)
+        write_run_record(record_path, record)
+    inputs = [Path(agent_context.name)]
+    if boundary_digest:
+        inputs.append(Path(boundary.name))
+    if extra:
+        instructions = _stage_operator_prompts(agent_root, completion_token, extra)
+        inputs.append(Path(instructions))
+        prompt = (
+            "Operator follow-up for this migration. Re-read the current target files and preserve"
+            " the operator's edits. Adjust previously migrated C# if the follow-up requests it."
+            f" Keep the PHP source range for this segment unchanged. Read `{instructions}`.\n\n{prompt}"
+        )
+    context, report = _operator_edit_context(run_path, agent_root, completion_token, inputs, record.get("operator_question"))
+    guidelines, supplied = _task_guidelines(agent_root, inputs)
+    prompt = context + prompt
+    other_files = _unlisted_workspace_files(agent_root, allowed)
+    command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
+                                      model=record.get("junie_model", config.get("junie_model")),
+                                      effort=record.get("junie_effort"))
+    try:
         try:
-            try:
-                exit_code = _run_migration_junie(
-                    config, record_path, record, "migration", guidelines, agent_root, inputs,
-                    command, completion_path, completion_token, agent_targets,
-                    worktree=worktree_root, targets=relative_targets, allowed=allowed, other_files=other_files,
-                    report_usage=junie_usage_recorder(run_path, "migration", index),
-                    prompts=LivePrompts(run_path),
-                )
-            except KeyboardInterrupt as exc:
-                if junie_cli.unconfirmed_junie_stop(exc) is not None:
-                    raise
-                record.update(status="interrupted", error="interrupted by user; current capsule can be resumed")
-                write_run_record(record_path, record)
-                raise RunInterrupted(record["run_id"]) from None
-            if _unlisted_workspace_files(agent_root, allowed) != other_files:
-                raise ValueError("Junie changed files outside the configured targets; inspect the agent workspace")
-            completed = junie_cli.has_completion_record(completion_path, completion_token)
-            missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
-            complete = completed and not missing
-            if not complete and (prior := record.get("stopped_migration_draft")):
-                _checkpoint_migration_draft(
-                    record_path, record, worktree_root, agent_root, relative_targets, allowed, other_files,
-                    prior["targets"],
-                )
-            question = _read_operator_review(
-                report, agent_root, worktree_root, relative_targets, record, completed=completed,
+            exit_code = _run_migration_junie(
+                config, record_path, record, "migration", guidelines, agent_root, inputs,
+                command, completion_path, completion_token, agent_targets,
+                worktree=worktree_root, targets=relative_targets, allowed=allowed, other_files=other_files,
+                report_usage=junie_usage_recorder(run_path, "migration", index),
+                prompts=LivePrompts(run_path),
             )
-            if question:
-                complete = False
-                record.update(status="editor_checkpoint", error=question, junie_exit_code=exit_code)
-                write_run_record(record_path, record, timing_stage=None)
-                break
-            if completed:
-                record.pop("operator_question", None)
-            # 旧経路の途中編集は保持するが、完了トークンと全対象がそろうまで進捗は進めない。
-            if complete or not record.get("stopped_migration_draft"):
-                apply_agent_targets(agent_root, worktree_root, relative_targets, record["target_hashes"], record, record_path)
-                _archive_stopped_migration(record)
-        except (OSError, ValueError) as exc:
-            record.update(status="junie_failed", error=format_error(exc, command=command))
+        except KeyboardInterrupt as exc:
+            if junie_cli.unconfirmed_junie_stop(exc) is not None:
+                raise
+            record.update(status="interrupted", error="interrupted by user; current capsule can be resumed")
             write_run_record(record_path, record)
-            raise
-        finally:
-            with editor_queue(run_path) as queue:
-                finish_prompts(queue, complete)
-        record["junie_exit_code"] = exit_code
-        if not complete:
-            record["status"] = "interrupted" if len(missing) < len(agent_targets) else "junie_failed"
-            record["error"] = (
-                f"Junie did not produce configured targets: {', '.join(missing)}" if missing
-                else "Junie did not leave a valid completion record for this capsule"
-            ) + f"\nExit code: {exit_code}\n" + junie_cli.launch_diagnostics(command)
-            write_run_record(record_path, record)
-            break
-
-        record["completed_capsules"] = index
-        record["current_capsule"] = min(index + 1, result["capsule_count"])
-        with worktree_source_lock:
-            record.setdefault("capsule_checkpoints", {})[str(index)] = _save_capsule_checkpoint(
-                run_path, worktree_root, relative_targets, record["target_hashes"],
+            raise RunInterrupted(record["run_id"]) from None
+        if _unlisted_workspace_files(agent_root, allowed) != other_files:
+            raise ValueError("Junie changed files outside the configured targets; inspect the agent workspace")
+        completion_recorded = junie_cli.has_completion_record(completion_path, completion_token)
+        missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
+        complete = completion_recorded and not missing
+        if not complete and (prior := record.get("stopped_migration_draft")):
+            _checkpoint_migration_draft(
+                record_path, record, worktree_root, agent_root, relative_targets, allowed, other_files,
+                prior["targets"],
             )
-        record.pop("migration_rewind", None)
-        if index == through_capsule:
-            record.pop("migration_range_stop", None)
-            record["status"] = "editor_checkpoint" if index == result["capsule_count"] else "interrupted"
-            record["error"] = "指定区間を完了しました。ビルドとチェッカーは通常の再開で実行できます。"
-        else:
-            record["status"] = "editor_checkpoint" if index == result["capsule_count"] else "junie_running"
-            record.pop("error", None)
-        write_run_record(record_path, record, timing_stage=3)
+        question = _read_operator_review(
+            report, agent_root, worktree_root, relative_targets, record, completed=completion_recorded,
+        )
+        if question:
+            complete = False
+            record.update(status="editor_checkpoint", error=question, junie_exit_code=exit_code)
+            write_run_record(record_path, record, timing_stage=None)
+            return exit_code, False
+        if completion_recorded:
+            record.pop("operator_question", None)
+        # 旧経路の途中編集は保持するが、完了トークンと全対象がそろうまで進捗は進めない。
+        if complete or not record.get("stopped_migration_draft"):
+            apply_agent_targets(agent_root, worktree_root, relative_targets, record["target_hashes"], record, record_path)
+            _archive_stopped_migration(record)
+    except (OSError, ValueError) as exc:
+        record.update(status="junie_failed", error=format_error(exc, command=command))
+        write_run_record(record_path, record)
+        raise
+    finally:
+        with editor_queue(run_path) as queue:
+            finish_prompts(queue, complete)
+    record["junie_exit_code"] = exit_code
+    if not complete:
+        record["status"] = "interrupted" if len(missing) < len(agent_targets) else "junie_failed"
+        record["error"] = (
+            f"Junie did not produce configured targets: {', '.join(missing)}" if missing
+            else "Junie did not leave a valid completion record for this capsule"
+        ) + f"\nExit code: {exit_code}\n" + junie_cli.launch_diagnostics(command)
+        write_run_record(record_path, record)
+        return exit_code, False
 
-    # 最後のカプセル後にも編集を受け取り、保留中の追加指示を処理し終えてから検証に進む。
-    while through_capsule is None and record["completed_capsules"] == result["capsule_count"] and record["status"] == "editor_checkpoint":
+    record["completed_capsules"] = index
+    record["current_capsule"] = min(index + 1, capsule_count)
+    with worktree_source_lock:
+        record.setdefault("capsule_checkpoints", {})[str(index)] = _save_capsule_checkpoint(
+            run_path, worktree_root, relative_targets, record["target_hashes"],
+        )
+    record.pop("migration_rewind", None)
+    if index == through_capsule:
+        record.pop("migration_range_stop", None)
+        record["status"] = "editor_checkpoint" if index == capsule_count else "interrupted"
+        record["error"] = "指定区間を完了しました。ビルドとチェッカーは通常の再開で実行できます。"
+    else:
+        record["status"] = "editor_checkpoint" if index == capsule_count else "junie_running"
+        record.pop("error", None)
+    write_run_record(record_path, record, timing_stage=3)
+    return exit_code, True
+
+
+def _finish_migration_followups(config, run_path, record, worktree_root, agent_root, relative_targets, capsule_count):
+    """最終カプセル後の編集と追加指示を処理し、検証開始または確認待ちを保存する。"""
+    record_path = run_path / "run.json"
+    while record["completed_capsules"] == capsule_count and record["status"] == "editor_checkpoint":
         with editor_queue(run_path) as queue:
             check_cancelled()
             if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
@@ -1399,6 +1410,51 @@ def _run_prepared_with_junie(
             record["error"] = record.get("operator_question") or "Junie が追加指示を完了できませんでした。実行を再開するともう一度試します。"
             write_run_record(record_path, record, timing_stage=None)
             break
+
+
+def _run_prepared_with_junie(
+    config: dict[str, Any],
+    unit: dict[str, Any],
+    run_path: Path,
+    result: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    resuming: bool,
+    followup_only: bool = False,
+    through_capsule: int | None = None,
+    expected_capsule_hashes: list[str] | None = None,
+) -> dict[str, Any]:
+    """準備、未完了カプセル、最終区間の追加指示を順に進め、保存済みの結果を検証へ渡す。"""
+    worktree_root, relative_targets, agent_root, agent_targets, capsule, manifest, through_capsule = (
+        _prepare_migration_workspace(config, unit, run_path, result, record, resuming=resuming,
+                                     followup_only=followup_only, through_capsule=through_capsule)
+    )
+    material_instructions = _prepare_migration_materials(
+        config, unit, run_path, record, worktree_root, relative_targets, agent_root, capsule, manifest,
+        followup_only=followup_only,
+    )
+    exit_code = record.get("junie_exit_code")
+    with editor_queue(run_path) as queue:
+        finish_prompts(queue, False)
+    # 未完了のカプセルから再開する。保存済みの下書きがあっても完了数は先に進めない。
+    start_index = record["completed_capsules"] + 1
+    for index, context_path in enumerate(result["context_paths"][start_index - 1 : through_capsule], start=start_index):
+        prompt, completion_path, completion_token, boundary_digest = _stage_migration_capsule(
+            unit, capsule, manifest, agent_root, relative_targets, index, context_path, result["capsule_count"],
+            material_instructions, resume_first_capsule=resuming and index == start_index,
+            expected_capsule_hashes=expected_capsule_hashes,
+        )
+        exit_code, completed = _execute_migration_capsule(
+            config, run_path, record, worktree_root, agent_root, relative_targets, agent_targets,
+            index, result["capsule_count"], through_capsule, prompt, completion_path, completion_token,
+            boundary_digest, exit_code,
+        )
+        if not completed:
+            break
+
+    if through_capsule is None:
+        _finish_migration_followups(config, run_path, record, worktree_root, agent_root,
+                                    relative_targets, result["capsule_count"])
 
     if exit_code is None and record["completed_capsules"] != result["capsule_count"] and record["status"] != "editor_checkpoint":
         raise RuntimeError("context preparation produced no capsules")
