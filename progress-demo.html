@@ -1030,6 +1030,7 @@
                   <option value="">使用する</option>
                   <option value="false">使用しない</option>
                 </select>
+                <p id="settings-viewer-state" class="settings-material-range" role="status"></p>
                 <label for="settings-viewer-html">差分ビューアーのHTML</label>
                 <input id="settings-viewer-html" data-section="diff_viewer" data-setting="html" placeholder="例：tools/dist/index.min.html" autocomplete="off">
                 <label for="settings-anchor-reference">アンカーの参照JSON（任意）</label>
@@ -1037,10 +1038,18 @@
               </fieldset>
               <fieldset class="settings-fields" id="settings-target-context-fields">
                 <legend>移行先周辺の参照資料</legend>
-                <label for="settings-context-roots">既定の参照起点</label>
-                <textarea id="settings-context-roots" class="settings-command" data-section="target_context" data-setting="roots"
-                  aria-describedby="settings-context-roots-help" spellcheck="false" placeholder="空欄なら既定の4箇所"></textarea>
-                <p class="settings-material-range" id="settings-context-roots-help">移行先の親フォルダーは target_parent を指定します。inc、Libs、Extensions と合わせて1行に1箇所入力できます。すべて外す場合は「なし」と入力します。</p>
+                <label for="settings-context-roots">参照起点</label>
+                <select id="settings-context-roots" class="workspace-select">
+                  <option value="default">既定の4箇所を使う</option>
+                  <option value="custom">個別に選ぶ</option>
+                  <option value="none">既定の起点を使わない</option>
+                </select>
+                <div id="settings-context-root-choices" role="group" aria-label="参照起点の個別選択" hidden>
+                  <label><input type="checkbox" value="target_parent"> 移行先と同じフォルダー</label>
+                  <label><input type="checkbox" value="inc"> inc</label>
+                  <label><input type="checkbox" value="Libs"> Libs</label>
+                  <label><input type="checkbox" value="Extensions"> Extensions</label>
+                </div>
                 <label for="settings-context-folders">追加するフォルダー（作業ツリーからの相対パス）</label>
                 <textarea id="settings-context-folders" class="settings-command" data-section="target_context" data-setting="folders"
                   spellcheck="false" placeholder="例：src/Shared"></textarea>
@@ -2023,6 +2032,61 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     if (!workspaceConfig.hidden) workspaceConfig.focus();
   });
 
+  const capacityUnits = new Map();
+  for (const field of tableFields.filter(field => field.dataset.setting.endsWith("_bytes"))) {
+    const units = document.createElement("select");
+    units.className = "workspace-select";
+    units.setAttribute("aria-label", field.labels[0].textContent + "の単位");
+    units.replaceChildren(new Option(field.dataset.setting === "warn_input_bytes" ? "警告しない" : "上限なし", ""),
+      new Option("B", "1"), new Option("KiB", "1024"), new Option("MiB", "1048576"));
+    field.after(units);
+    capacityUnits.set(field, units);
+    units.addEventListener("change", () => {
+      const current = settingsForm[field.dataset.section]?.[field.dataset.setting];
+      if (!units.value) field.value = "";
+      else if (/^[0-9]+$/.test(current)) {
+        const bytes = BigInt(current);
+        const divisor = BigInt(units.value);
+        if (bytes % divisor === 0n) field.value = String(bytes / divisor);
+        else { units.value = "1"; field.value = current; }
+      }
+      field.dispatchEvent(new Event("input"));
+    });
+  }
+
+  const rootMode = document.querySelector("#settings-context-roots");
+  const rootChoices = document.querySelector("#settings-context-root-choices");
+  const rootChecks = [...rootChoices.querySelectorAll("input")];
+  const viewerMode = document.querySelector("#settings-viewer-enabled");
+  const viewerHTML = document.querySelector("#settings-viewer-html");
+  const viewerReference = document.querySelector("#settings-anchor-reference");
+
+  function showViewerState() {
+    const disabled = viewerMode.value === "false";
+    viewerHTML.disabled = viewerReference.disabled = disabled;
+    document.querySelector("#settings-viewer-state").textContent = disabled ? "無効"
+      : viewerHTML.value.trim() ? "有効" : "無効（HTML 未設定）";
+  }
+
+  function saveRootChoices() {
+    rootChoices.hidden = rootMode.value !== "custom";
+    const chosen = rootChecks.filter(input => input.checked).map(input => input.value);
+    const value = rootMode.value === "default" ? "" : rootMode.value === "none" ? [] : chosen;
+    changes.target_context ??= {};
+    changes.target_context.roots = settingsForm.target_context.roots = value;
+    schedulePreview();
+  }
+  rootMode.addEventListener("change", () => {
+    if (rootMode.value === "custom" && !rootChecks.some(input => input.checked)) {
+      rootChecks.forEach(input => { input.checked = true; });
+    }
+    saveRootChoices();
+    if (!rootChoices.hidden) rootChecks[0].focus();
+  });
+  rootChecks.forEach(input => input.addEventListener("change", saveRootChoices));
+  viewerMode.addEventListener("input", showViewerState);
+  viewerHTML.addEventListener("input", showViewerState);
+
   function showSettingsDraft(data, showFields, unitIndex) {
     workspaceConfig.value = data.content;
     if (!showFields) return;
@@ -2033,9 +2097,15 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       for (const field of tableFields) {
         const value = settingsForm[field.dataset.section]?.[field.dataset.setting];
         if (field === modelSelect) selectModel(value ?? "");
-        else if (field !== effortSelect) field.value = Array.isArray(value)
-          ? (field.dataset.setting === "roots" && !value.length ? "なし" : value.join("\n")) : value ?? "";
+        else if (field !== effortSelect) field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+        if (capacityUnits.has(field)) capacityUnits.get(field).value = field.value ? "1" : "";
       }
+      settingsForm.target_context ??= {};
+      const roots = settingsForm.target_context.roots;
+      rootMode.value = Array.isArray(roots) ? (roots.length ? "custom" : "none") : "default";
+      rootChoices.hidden = rootMode.value !== "custom";
+      rootChecks.forEach(input => { input.checked = Array.isArray(roots) && roots.includes(input.value); });
+      showViewerState();
       showEfforts(settingsForm.junie.effort ?? "");
       showMaterials(settingsForm.migrationRules, "migrationRules");
       showMaterials(settingsForm.references);
@@ -2135,10 +2205,15 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   for (const field of tableFields) field.addEventListener("input", () => {
     const {section, setting} = field.dataset;
     let value = field.value.trim();
+    const units = capacityUnits.get(field);
+    if (units && value && /^[0-9]+$/.test(value)) {
+      if (!units.value) units.value = "1";
+      value = String(BigInt(value) * BigInt(units.value));
+    }
     if (setting === "command") value = value ? commandLines(field.value) : [];
     if (setting === "anchor_reference") value = field.value.split("\n").map(path => path.trim()).filter(Boolean);
-    if (section === "target_context" && ["roots", "folders", "exclude"].includes(setting) && value) {
-      value = setting === "roots" && value === "なし" ? [] : value.split("\n").map(path => path.trim()).filter(Boolean);
+    if (section === "target_context" && ["folders", "exclude"].includes(setting) && value) {
+      value = value.split("\n").map(path => path.trim()).filter(Boolean);
     }
     changes[section] ??= {};
     settingsForm[section] ??= {};

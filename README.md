@@ -62,6 +62,8 @@ python -m unittest discover -s tests -v
 
 ## 設定の補足（CLI・TOML）
 
+入力例、単位、既存 Run への反映時点は[詳細設定の選び方](docs/windows-user-guide.md#詳細設定の選び方)を参照してください。
+
 設定タブの「移行先周辺の参照資料」で、収集の起点、追加・除外するパス、再帰収集と容量上限を指定できます。TOML では `[target_context]` が共通設定です。`[units.target_context]` では、その移行単位の指定項目だけを上書きできます。`roots` の省略時は親フォルダー、`inc`、`Libs`、`Extensions` を使います。`roots = []` で既定の起点を外し、`folders` に作業ツリー内のフォルダーを指定できます。上限を超えると、対象と超過量を表示して移行の開始前に停止します。初回収集時の設定と容量は Run の `capsule/target-context/manifest.json` に記録します。
 
 Junie を起動する際の指示と同梱ガイドラインの容量は、`[junie]` の `warn_input_bytes` と `max_input_bytes` で警告・停止を設定できます。起動入力と同梱したルールの量は `run.json` の `last_junie_input` に記録します。後からツールで読み込む参照資料や、モデル側の追加コンテキストはこの容量に含みません。

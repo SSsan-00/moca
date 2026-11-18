@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
-from migration_harness.config import load_config, validate_checker_command
+from migration_harness.config import find_unit, load_config, target_paths, validate_checker_command
 from migration_harness.errors import format_error
 from migration_harness.workflow import (
     VERIFIED_STATUSES, RunScriptError, migration_ledger, plan_build_resume, prepare_run, resume_with_junie, review_checker,
@@ -27,6 +28,8 @@ def _parse_args() -> argparse.Namespace:
         return command
 
     configured_command("dashboard", "Open the local workspace for configuration and migration runs")
+    preview = configured_command("preview-context", "List target reference sizes in the current application checkout")
+    preview.add_argument("--unit", required=True, help="Migration unit ID from the config")
     prepare = configured_command("prepare", "Create a worktree and bounded context capsules")
     prepare.add_argument("--unit", required=True, help="Migration unit ID from the config")
     run = configured_command("run", "Migrate, build and run the configured checker")
@@ -88,6 +91,13 @@ def main() -> None:
             config["toml_checker_command"] = config["checker_command"]
             config["checker_command"] = checker_command
             config["checker_from_cli"] = True
+        if args.command == "preview-context":
+            from migration_harness.source_context import preview_target_context
+
+            unit = find_unit(config, args.unit)
+            preview = preview_target_context(Path(config["project_root"]), target_paths(unit), unit.get("target_context"))
+            print(json.dumps(preview, ensure_ascii=False, indent=2))
+            return
         if args.command == "ledger-review":
             review_migration_ranges(
                 config, args.run_id, args.ranges, args.state, args.reason, confirmed_targets=args.review_targets,

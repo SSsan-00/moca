@@ -60,6 +60,20 @@ class TargetContextTests(unittest.TestCase):
         self.assertFalse((self.agent / "Pages/Orders/helper.cs").exists())
         self.assertEqual(self.manifest(), saved)
 
+    def test_preview_shares_collection_boundaries_and_reports_budgets(self):
+        self.put("Shared/small.cs", b"123")
+        self.put("Shared/Nested/large.cs", b"12345")
+        self.put("Shared/ignore.bin", b"ignore")
+        policy = {"roots": [], "folders": ["Shared", "Shared/Nested"], "exclude": ["*.bin"]}
+        preview = source_context.preview_target_context(self.worktree, self.targets, {**policy, "max_bytes": 7})
+        self.assertFalse((self.capsule / "target-context").exists())
+        self.assertEqual(preview["exceeded"], {"max_bytes": {"actual": 8, "limit": 7}})
+        self.stage(policy=policy)
+        self.assertEqual(preview["bytes"], self.manifest()["bytes"])
+        self.assertEqual(preview["files"], len(self.manifest()["files"]))
+        self.assertEqual({row["path"] for row in preview["largest"]},
+                         {row["path"] for row in self.manifest()["files"]})
+
     def test_policy_budget_failure_does_not_publish_partial_references(self):
         self.put("Shared/first.cs", b"first")
         self.put("Shared/second.cs", b"second")

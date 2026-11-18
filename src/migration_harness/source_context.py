@@ -68,6 +68,88 @@ def _copy(source: Path, destination: Path, expected: str | None = None) -> str:
         temporary.unlink(missing_ok=True)
 
 
+def _context_roots(targets, settings):
+    """移行先別の起点と任意のフォルダーを作業ツリー内で解決する。"""
+    choices = set(settings.get("roots", TARGET_CONTEXT_ROOTS))
+    roots = set(map(Path, settings.get("folders", [])))
+    for path in targets:
+        origin = {"target_parent": path.parent, "inc": path.parent.parent / "inc",
+                  "Libs": path.parent.parent.parent / "Libs", "Extensions": path.parent.parent.parent / "Extensions"}
+        roots.update(origin[key] for key in choices)
+    return roots
+
+def _excluded(relative, settings):
+    """除外したディレクトリの配下も参照から外す。"""
+    return any(PurePosixPath(path.as_posix()).match(pattern)
+               for path in (relative, *relative.parents) for pattern in settings.get("exclude", []))
+
+
+def _context_entries(worktree, targets, settings, roots, progress):
+    """参照候補を検査し、実収集では各候補の処理後にも版を確かめる。"""
+    visited = set()
+
+    def visit(relative, *, root=False):
+        progress(relative)
+        if relative in visited or relative in targets or _reserved(relative) or _excluded(relative, settings):
+            return
+        source = _safe(worktree, relative)
+        before = _stamp(source)
+        if stat.S_ISDIR(before[2]):
+            if root or settings.get("recursive", True):
+                visited.add(relative)
+                yield relative, source, None
+                with os.scandir(source) as children:
+                    for child in children:
+                        yield from visit(relative / child.name)
+        elif stat.S_ISREG(before[2]):
+            visited.add(relative)
+            yield relative, source, before[3]
+        else:
+            raise ValueError(f"target context requires a regular file: {source}")
+        _safe(worktree, relative)
+        if before != _stamp(source):
+            raise ValueError(f"target context changed while copying: {source}; retry when files are stable")
+
+    for relative in sorted(roots):
+        check_cancelled()
+        if _reserved(relative) or _excluded(relative, settings):
+            continue
+        source = _safe(worktree, relative)
+        if source.exists():
+            if not source.is_dir():
+                raise ValueError(f"target context directory is not a directory: {source}")
+            yield from visit(relative, root=True)
+
+
+def preview_target_context(worktree, targets, policy):
+    """固定やコピーを行わず、現在のツリーで新規収集した場合の容量を集計する。"""
+    settings = target_context_policy(policy or {})
+    targets = set(targets)
+    roots = _context_roots(targets, settings)
+    largest = []
+    total = count = max_size = 0
+
+    def progress(relative):
+        check_cancelled()
+
+    for relative, _, size in _context_entries(worktree, targets, settings, roots, progress):
+        if size is None:
+            continue
+        count += 1
+        total += size
+        max_size = max(max_size, size)
+        largest.append((size, relative.as_posix()))
+        largest.sort(reverse=True)
+        del largest[10:]
+        if count % 256 == 0:
+            report_activity(f"参照候補 {count:,}件を確認しました。")
+    usage = {"max_files": count, "max_bytes": total, "max_file_bytes": max_size}
+    return {"roots": sorted(path.as_posix() for path in roots), "files": count, "bytes": total,
+            "largest": [{"path": name, "bytes": size} for size, name in largest],
+            "exceeded": {key: {"actual": value, "limit": settings[key]} for key, value in usage.items()
+                         if key in settings and value > settings[key]}}
+
+
 def stage_target_context(
     worktree: Path, targets: tuple[Path, ...], capsule: Path, agent_root: Path, *, policy: dict | None = None,
 ) -> str:
@@ -89,20 +171,6 @@ def stage_target_context(
     for target in targets:
         if not target.parts or target.anchor or ".." in target.parts or _reserved(target):
             raise ValueError(f"target conflicts with a reserved or invalid context path: {target}")
-    def context_roots(settings):
-        """移行先別の起点と任意のフォルダーを作業ツリー内で解決する。"""
-        choices = set(settings.get("roots", TARGET_CONTEXT_ROOTS))
-        roots = set(map(Path, settings.get("folders", [])))
-        for path in targets:
-            origin = {"target_parent": path.parent, "inc": path.parent.parent / "inc",
-                      "Libs": path.parent.parent.parent / "Libs", "Extensions": path.parent.parent.parent / "Extensions"}
-            roots.update(origin[key] for key in choices)
-        return roots
-
-    def excluded(relative, settings):
-        """除外したディレクトリの配下も参照から外す。"""
-        return any(PurePosixPath(path.as_posix()).match(pattern)
-                   for path in (relative, *relative.parents) for pattern in settings.get("exclude", []))
     target_names = sorted(path.as_posix() for path in targets)
     snapshot = _safe(capsule, Path("target-context"))
     manifest_path = _safe(snapshot, Path("manifest.json"))
@@ -123,53 +191,26 @@ def stage_target_context(
     check_cancelled()
     if not snapshot.exists():
         settings = target_context_policy(policy if policy is not None else {})
-        roots = context_roots(settings)
+        roots = _context_roots(targets, settings)
         capsule.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix=".target-context-", dir=capsule) as temporary:
             staging = Path(temporary)
             manifest = {"targets": target_names, "directories": [], "files": [], "policy": settings,
                         "roots": sorted(path.as_posix() for path in roots), "bytes": 0}
-            visited = set()
-
-            def visit(relative: Path, *, root=False) -> None:
-                """ディレクトリを走査して参照対象を固定する。"""
-                progress(relative)
-                if relative in visited or relative in targets or _reserved(relative) or excluded(relative, settings):
-                    return
-                source = _safe(worktree, relative)
-                before = _stamp(source)
-                if stat.S_ISDIR(before[2]):
-                    if root or settings.get("recursive", True):
-                        visited.add(relative)
-                        manifest["directories"].append(relative.as_posix())
-                        with os.scandir(source) as children:
-                            for child in children:
-                                visit(relative / child.name)
-                else:
-                    visited.add(relative)
-                    size = before[3]
-                    usage = {"max_file_bytes": size, "max_bytes": manifest["bytes"] + size,
-                             "max_files": len(manifest["files"]) + 1}
-                    for key, actual in usage.items():
-                        if key in settings and actual > settings[key]:
-                            raise ValueError(
-                                f"参照資料 {relative.as_posix()} で {key} の上限を超えました（{actual:,} / {settings[key]:,}）。",
-                            )
-                    digest = _copy(source, staging / "files" / relative)
-                    manifest["files"].append({"path": relative.as_posix(), "source": str(source), "sha256": digest, "bytes": size})
-                    manifest["bytes"] += size
-                _safe(worktree, relative)
-                if before != _stamp(source):
-                    raise ValueError(f"target context changed while copying: {source}; retry when files are stable")
-
-            for relative in sorted(roots):
-                if _reserved(relative) or excluded(relative, settings):
+            for relative, source, size in _context_entries(worktree, targets, settings, roots, progress):
+                if size is None:
+                    manifest["directories"].append(relative.as_posix())
                     continue
-                source = _safe(worktree, relative)
-                if source.exists():
-                    if not source.is_dir():
-                        raise ValueError(f"target context directory is not a directory: {source}")
-                    visit(relative, root=True)
+                usage = {"max_file_bytes": size, "max_bytes": manifest["bytes"] + size,
+                         "max_files": len(manifest["files"]) + 1}
+                for key, actual in usage.items():
+                    if key in settings and actual > settings[key]:
+                        raise ValueError(
+                            f"参照資料 {relative.as_posix()} で {key} の上限を超えました（{actual:,} / {settings[key]:,}）。",
+                        )
+                digest = _copy(source, staging / "files" / relative)
+                manifest["files"].append({"path": relative.as_posix(), "source": str(source), "sha256": digest, "bytes": size})
+                manifest["bytes"] += size
             with (staging / "manifest.json").open("w", encoding="utf-8") as stream:
                 json.dump(manifest, stream, ensure_ascii=False, indent=2)
                 stream.write("\n")
@@ -183,7 +224,7 @@ def stage_target_context(
     ):
         raise ValueError("invalid saved target context manifest or changed targets; prepare a new run")
     settings = target_context_policy(manifest.get("policy", {}))
-    roots = context_roots(settings)
+    roots = _context_roots(targets, settings)
     if "roots" in manifest and manifest["roots"] != sorted(path.as_posix() for path in roots):
         raise ValueError("保存済み参照資料の起点が設定と一致しません。")
     for directory, entry in chain(((True, value) for value in manifest["directories"]),
@@ -193,7 +234,7 @@ def stage_target_context(
         if not isinstance(name, str):
             raise ValueError("invalid saved target context entry")
         relative = Path(name)
-        if any(relative.is_relative_to(target) for target in targets) or _reserved(relative) or excluded(relative, settings) or not any(
+        if any(relative.is_relative_to(target) for target in targets) or _reserved(relative) or _excluded(relative, settings) or not any(
             relative.is_relative_to(root) and (settings.get("recursive", True)
                                                or relative == root or relative.parent == root and not directory)
             for root in roots

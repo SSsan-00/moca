@@ -36,6 +36,22 @@ max_context_chars = 500000
 # effort = "high"
 # 任意の正の整数。省略するとJunie CLI側の設定に従う。
 # max_steps = 20
+# 起動ごとの最終指示と同梱ガイドラインの合計（UTF-8 バイト）。省略で無効、0は不可。
+# 設定値の例であり、モデルの推奨値ではありません。
+# warn_input_bytes = 1048576
+# max_input_bytes = 2097152
+
+[target_context]
+# 省略時の起点は以下の4箇所。roots = [] にすると既定起点のみ無効。
+# roots = ["target_parent", "inc", "Libs", "Extensions"]
+# 追加フォルダーは worktree からの相対パス。除外は相対パス・パターン。
+# folders = ["src/Shared"]
+# exclude = ["bin", "obj", "*.zip"]
+# recursive = false
+# 省略で上限なし。0は0件・0バイト。
+# max_files = 500
+# max_bytes = 10485760
+# max_file_bytes = 1048576
 
 [build]
 # アプリルートからの相対パス、またはアプリリポジトリ内の絶対パス。
@@ -85,3 +101,7 @@ targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
 # Razorページは同じ場所・同じ名前の .cshtml と .cshtml.cs を両方指定する。
 # 通常のC#ファイル1つなら target = "Menu.cs" でも指定できる。
 # 文字コードの自動判定が曖昧なときは source_encoding = "euc-jp" などを指定する。
+
+# [units.target_context]
+# 共通設定の指定項目だけ上書き。配列は置き換え、省略した項目は継承。
+# roots = []
