@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from migration_harness import junie_cli, workflow
-from fixtures import SavedRunFixture
+from fixtures import HarnessCase, SavedRunFixture
 
 
 class TaskGuidelinesTests(unittest.TestCase):
@@ -118,6 +118,32 @@ class TaskGuidelinesTests(unittest.TestCase):
                 self.skipTest("symlinks unavailable")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 workflow._task_guidelines(root, [Path(other.name)])
+
+
+class PreparationScriptHandoffTests(HarnessCase):
+    def test_before_prepare_handoff_survives_git_worktree_creation_only_for_same_target(self):
+        (self.project / "source.php").write_text("<?php echo CalculateShipping();", encoding="utf-8")
+        target = self.project / "Page.cs"
+        target.write_text("class Baseline {}\n", encoding="utf-8")
+        self.commit_project()
+        for modified in (False, True):
+            with self.subTest(modified=modified):
+                if modified:
+                    target.write_text("class Different {}", encoding="utf-8")
+                config = self.config()
+                config.update(junie_apply_output_decisions=True, junie_review_script_output=True,
+                              scripts={"before_prepare": [[sys.executable, "-c", "print('Check CalculateShipping')"]]})
+                with patch("migration_harness.checker_advisory.run_text_advisory",
+                           return_value='{"verdict":"handoff","evidence_lines":[1],"symbol":"CalculateShipping"}'):
+                    result = workflow.prepare_run(config, "sample")
+                run_path = Path(result["run_path"])
+                record = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+                context = workflow.script_handoff_context(
+                    run_path, record, config["scripts"],
+                    workflow._script_decision_versions(Path(result["worktree_path"]), record),
+                )
+                self.assertEqual("CalculateShipping" in context, not modified)
+                self.assertNotIn("Check CalculateShipping", context)
 
 
 class CycleRecoveryTests(SavedRunFixture):
@@ -245,6 +271,61 @@ class CycleRecoveryTests(SavedRunFixture):
         attempt, = self.record()["repair_history"]
         self.assertEqual(attempt["kind"], "script")
         self.assertTrue(self.record()["verification"]["scripts_passed"])
+
+    def test_early_successful_script_hands_off_only_corroborated_identifier_once(self):
+        self.config.update(junie_apply_output_decisions=True, junie_review_script_output=True)
+        self.config["scripts"] = {"after_prepare": [[sys.executable, "-c",
+            "from pathlib import Path; p = Path('counter.txt'); p.write_text(p.read_text() + 'x'); print('Inspect CalculateShipping before migration')"]]}
+        counter = self.run_path / "counter.txt"
+        counter.write_text("", encoding="utf-8")
+        with patch("migration_harness.checker_advisory.run_text_advisory",
+                   return_value='{"verdict":"handoff","evidence_lines":[1],"symbol":"CalculateShipping"}') as agent:
+            for _ in range(2):
+                workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
+        agent.assert_called_once()
+        self.assertEqual(counter.read_text(encoding="utf-8"), "x")
+        saved = self.record()
+        self.assertEqual(saved["script_advisories"][-1]["applied"], "handed_off")
+        context = workflow.script_handoff_context(self.run_path, saved, self.config["scripts"], {"Example.cs": None})
+        self.assertIn("CalculateShipping", context)
+        self.assertNotIn("Inspect CalculateShipping before migration", context)
+
+    def test_after_checker_free_output_repair_rebuilds_from_start(self):
+        self.config.update(max_repair_attempts=2, junie_apply_output_decisions=True,
+                           junie_review_script_output=True, junie_ground_output_repairs=True)
+        self.config["scripts"] = {"after_checker": [[sys.executable, "-c", (
+            "from pathlib import Path; import sys; "
+            "fixed = 'Fixed' in Path('Example.cs').read_text(); "
+            "print('1 test passed' if fixed else 'Shipping charge was omitted'); "
+            "sys.exit(0 if fixed else 2)"
+        )]]}
+        def repair(_config, _targets, allowed, _worktree, _run_path, diagnostic, _record):
+            self.assertEqual(allowed, (Path("Example.cs"),))
+            self.assertIn("Shipping charge was omitted", diagnostic)
+            self.target.write_text("class Fixed {}", encoding="utf-8")
+
+        commands = []
+        actual = workflow.run_process
+
+        def process(command, **kwargs):
+            commands.append(command[0])
+            if command[0] in {"dotnet", "fixture-checker"}:
+                return subprocess.CompletedProcess(command, 0)
+            return actual(command, **kwargs)
+
+        responses = ['{"verdict":"problem","evidence_lines":[1]}', '{"verdict":"passed","evidence_lines":[1]}']
+        with (
+            patch.object(workflow, "run_process", side_effect=process),
+            patch.object(workflow, "_repair_target", side_effect=repair) as repair_call,
+            patch.object(workflow, "grounded_diagnostic",
+                         return_value={"status": "grounded", "citations": [{"target":"Example.cs","source_id":"source"}]}),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=responses),
+        ):
+            result = workflow.resume_with_junie(self.config, self.run_id)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(commands, ["dotnet", "fixture-checker", sys.executable, "dotnet", "fixture-checker", sys.executable])
+        repair_call.assert_called_once()
 
     def test_operator_repair_gets_original_output_source_and_instruction_together(self):
         self.save_record({**self.record(), "junie_model": "sonnet", "junie_effort": "high"})

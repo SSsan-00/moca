@@ -993,7 +993,7 @@ function setElapsed(time, seconds, missing = "未計測", label = time) {
 }
 
 function advisoryVerdict(advisory) {
-  return ({problem: "問題の可能性あり", informational: "情報のみ", passed: "成功の報告あり", unclear: "判断不能"})[advisory.verdict] || "判断不能";
+  return ({problem: "問題の可能性あり", informational: "情報のみ", passed: "成功の報告あり", handoff: "移行時の参照候補", unclear: "判断不能"})[advisory.verdict] || "判断不能";
 }
 
 function addEvent(data) {
@@ -1018,9 +1018,10 @@ function addEvent(data) {
         const phase = scriptPhases[item.phase] || item.phase;
         const verdict = ({pending: "確認待ち", interrupted: "中止", unavailable: "判定取得不可"})[item.status]
           || advisoryVerdict(item);
-        const applied = ({continued: "、続行", repair_requested: "、再検証に向けた修正", review_required: "、要確認"})[item.applied] || "";
+        const applied = ({continued: "、続行", handed_off: "、申し送り保存", repair_requested: "、再検証に向けた修正", review_required: "、要確認"})[item.applied] || "";
+        const symbol = item.applied === "handed_off" && typeof item.symbol === "string" ? `、識別子 ${item.symbol}` : "";
         const lines = Array.isArray(item.evidence_lines) ? item.evidence_lines.filter(Number.isInteger) : [];
-        detail.push(`${phase}のスクリプト #${item.command_number}: Junie 参考判定 ${verdict}（終了 ${item.exit_code}${applied}${lines.length ? `、このコマンドの出力行 ${lines.join(", ")}` : ""}）`);
+        detail.push(`${phase}のスクリプト #${item.command_number}: Junie 参考判定 ${verdict}（終了 ${item.exit_code}${applied}${symbol}${lines.length ? `、このコマンドの出力行 ${lines.join(", ")}` : ""}）`);
       }
     }
   }

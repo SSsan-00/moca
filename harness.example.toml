@@ -34,7 +34,9 @@ max_context_chars = 500000
 # apply_output_decisions = true # 終了コードと根拠の照合に成功したときだけ工程に反映する。
 # 既定はfalse。有効にすると工程スクリプトの今回のUTF-8出力（最大32 KiB）をモデルへ送信する。
 # review_script_output = true
-# 設定タブでも選択可能。省略するとJunieの既定モデルを使う。
+# 既定はfalse。工程への反映に加え、自由文の指摘の照合に固定PHPと現行C#の限られた抜粋を送信する。
+# ground_output_repairs = true
+# 設定タブでも選択可能。ログ判定・ソース照合もRunのモデル指定を使う。省略時はJunieの既定。
 # model = "sonnet"
 # モデルを指定した場合のみ使用。省略すると選択モデルの既定値を使う。
 # effort = "high"

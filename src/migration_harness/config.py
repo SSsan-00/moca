@@ -244,6 +244,11 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         raise ValueError("[junie].apply_output_decisions must be a boolean")
     if apply_output_decisions and not (review_script_output or review_free_output):
         raise ValueError("[junie].apply_output_decisions requires a checker or script advisory to be enabled")
+    ground_output_repairs = junie.get("ground_output_repairs", False)
+    if type(ground_output_repairs) is not bool:
+        raise ValueError("[junie].ground_output_repairs must be a boolean")
+    if ground_output_repairs and not apply_output_decisions:
+        raise ValueError("[junie].ground_output_repairs requires apply_output_decisions")
     junie_model = junie.get("model")
     if junie_model is not None:
         if not isinstance(junie_model, str) or any(character.isspace() or ord(character) < 32 or ord(character) == 127
@@ -280,6 +285,7 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         "junie_model": junie_model,
         "junie_review_script_output": review_script_output,
         "junie_apply_output_decisions": apply_output_decisions,
+        "junie_ground_output_repairs": ground_output_repairs,
         "junie_effort": junie_effort,
     }
 

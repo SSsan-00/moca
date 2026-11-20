@@ -130,3 +130,18 @@ class CheckerAdvisoryTests(unittest.TestCase):
                     with patch.object(advisory, "run_text_advisory", return_value=answer):
                         decision = advisory.checker_advisory(root, code, allow_pass=True)
                     self.assertEqual(decision["corroborated"], result)
+
+    def test_acp_launcher_receives_model_and_effort_without_prompt_or_brave(self):
+        launched = []
+
+        def launch(command, *, owned, cwd, **streams):
+            self.assertTrue(owned)
+            self.assertEqual(command, ["junie", "--project", str(cwd),
+                                       "--model", "fixture-model", "--effort", "high", "--acp=true"])
+            process = subprocess.Popen([sys.executable, "-c", FAKE_ACP, "complete"], cwd=cwd, **streams)
+            launched.append(process)
+            return process
+
+        with patch.object(junie_cli, "_launch_process", side_effect=launch):
+            advisory.run_text_advisory("sample only", model="fixture-model", effort="high", timeout=5)
+        self.assertIsNotNone(launched[0].poll())
