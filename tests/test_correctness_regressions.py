@@ -123,13 +123,15 @@ class DetailReviewEvidenceTests(HarnessCase):
         rule = rule_materials.detail_index(manifest)[0]["file"]
         context_file = "evidence/target/Context/Helper.cs"
         expected_helper = helper
+        expected_bytes = (worktree / "Context/Helper.cs").read_bytes()
         expected_applies = True
 
         def decide(command, completion, token, _outputs, **kwargs):
             review_root = completion.parent
             inventory = json.loads((review_root / "evidence.json").read_bytes())
             self.assertEqual((review_root / context_file).read_text(encoding="utf-8"), expected_helper)
-            self.assertEqual(inventory[context_file]["sha256"], hashlib.sha256(expected_helper.encode()).hexdigest())
+            self.assertEqual((review_root / context_file).read_bytes(), expected_bytes)
+            self.assertEqual(inventory[context_file]["sha256"], hashlib.sha256(expected_bytes).hexdigest())
             self.assertTrue(any("preservation detail" in (review_root / path).read_text(encoding="utf-8")
                                 for path, entry in inventory.items() if entry["path"] == "required.md"))
             self.assertTrue(any(path.endswith("/reference-0001.txt") for path in inventory))
@@ -159,12 +161,14 @@ class DetailReviewEvidenceTests(HarnessCase):
         self.git("commit", "-qm", "Change fixture implementation")
         other = workflow.prepare_run(config, unit["id"])
         other_run = Path(other["run_path"])
+        other_worktree = Path(other["worktree_path"])
+        expected_bytes = (other_worktree / "Context/Helper.cs").read_bytes()
         other_capsule, other_manifest = workflow.load_capsule_manifest(other_run)
         other_agent = other_run / "agent-workspace"
         other_agent.mkdir()
         other_record = json.loads((other_run / "run.json").read_bytes())
         with patch.object(junie_cli, "run_interactive", side_effect=decide) as reviewer:
-            workflow._prepare_migration_materials(config, unit, other_run, other_record, Path(other["worktree_path"]),
+            workflow._prepare_migration_materials(config, unit, other_run, other_record, other_worktree,
                                                   targets, other_agent, other_capsule, other_manifest, followup_only=False)
             self.assertEqual(reviewer.call_count, 1)
         self.assertFalse(other_record["detail_applicability"][rule]["applies"])

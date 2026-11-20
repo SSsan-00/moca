@@ -575,6 +575,7 @@ def _syntax_manifest(
 
 def load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
     """Runに属し、番号が連続したカプセルのmanifestを読み込む。"""
+    run_path = run_path.resolve()
     capsule_path = (run_path / "capsule").resolve()
     if not capsule_path.is_relative_to(run_path) or not capsule_path.is_dir():
         raise ValueError("run capsule directory is missing or outside the run directory")

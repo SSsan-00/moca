@@ -23,7 +23,16 @@ class ContextEvidenceTests(unittest.TestCase):
             "encoding": encoding, "shared": False,
         }]}
         prepare_context({"project_root": str(self.root), "max_context_chars": limit}, unit, self.run)
-        return json.loads((self.run / "capsule/manifest.json").read_text())
+        return json.loads((self.run / "capsule/manifest.json").read_text(encoding="utf-8"))
+
+    def test_run_directory_alias_is_resolved_before_capsule_containment(self):
+        self.prepare(b"<?php\necho 42;\n")
+        alias = self.root / "nested"
+        alias.mkdir()
+        self.assertEqual(
+            inspect_context(self.run, 1),
+            inspect_context(alias / ".." / self.run.name, 1),
+        )
 
     def test_fit_named_functions_before_preceding_capsule_runs_out(self):
         body = "".join(
