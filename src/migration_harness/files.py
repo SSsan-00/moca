@@ -9,13 +9,11 @@ from typing import Callable
 
 
 def harness_asset(name: str) -> Path:
-    """ハーネスのチェックアウトまたはインストール先の付属ファイルを解決する。"""
     path = Path(__file__).resolve().parents[2] / name
     return path if path.is_file() else Path(sys.prefix) / "share" / "php-to-csharp-harness" / name
 
 
 def has_symlink_component(root: Path, relative_path: Path) -> bool:
-    """中間ディレクトリも含めてリンクの有無を調べる。"""
     current = root
     for part in relative_path.parts:
         current /= part
@@ -41,7 +39,6 @@ def sha256_file(path: Path, *, check: Callable[[], None] | None = None) -> str:
 
 
 def safe_target(root: Path, relative: Path) -> Path:
-    """作業場所の内側にある通常ファイルのパスを返す。新規作成前のパスも許可する。"""
     target = root / relative
     if has_symlink_component(root, relative) or not target.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"target escapes its workspace or is a symlink: {relative}")

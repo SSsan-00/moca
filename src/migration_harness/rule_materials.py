@@ -31,7 +31,6 @@ def write_rule_files(directory: Path, sources: list[tuple[dict, str]]) -> list[d
 
 
 def _target_mentions(targets: tuple[Path, ...]) -> re.Pattern[str] | None:
-    """詳細ルールに移行先ファイルの記載があるか判定する。"""
     mentions = []
     for target in targets:
         path = r"[\\/]".join(re.escape(part) for part in target.parts)
@@ -44,7 +43,6 @@ def _target_mentions(targets: tuple[Path, ...]) -> re.Pattern[str] | None:
 
 
 def detail_index(manifest: dict) -> list[dict]:
-    """詳細ルールの索引と用途説明を作成する。"""
     return [
         {"file": entry["file"], "source": entry["path"], "when_to_read": entry["description"]}
         for entry in manifest.get("rule_files", ()) if entry.get("usage") == "reference"
@@ -55,7 +53,6 @@ def selected_details(
     index: list[dict], decisions: object, line_counts: dict[str, int] | None = None,
     evidence_inventory: dict[str, dict] | None = None,
 ) -> frozenset[str]:
-    """確認漏れや不明な資料のIDがあれば、移行に進めない。"""
     if not isinstance(decisions, dict) or decisions.keys() != {item["file"] for item in index}:
         raise ValueError("detail review must contain exactly one decision for every saved detail")
     selected = set()

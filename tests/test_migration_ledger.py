@@ -10,10 +10,8 @@ from migration_harness.diff_viewer import capture_workspace, save_workspace
 
 
 class LedgerReviewTest(HarnessCase):
-    """判断の記録と対応候補の再確認を台帳から検証する。"""
 
     def setUp(self):
-        """一つのPHP範囲と対応先を持つRunを準備する。"""
         super().setUp()
         (self.project / "source.php").write_text("<?php function label() {}\n", encoding="utf-8")
         (self.project / "Page.cs").write_text("public void Label() {}\n", encoding="utf-8")
@@ -56,7 +54,6 @@ class LedgerReviewTest(HarnessCase):
             return workflow.resume_with_junie(self.settings, self.run_id)
 
     def source(self):
-        """台帳の対象範囲を、毎回ディスクの最新状態から取得する。"""
         return workflow.migration_ledger(self.settings, self.run_id)["capsules"][0]["sources"][0]
 
     def test_checker_success_sentence_counts_as_current_verification(self):

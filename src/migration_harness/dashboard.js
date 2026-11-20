@@ -1,6 +1,5 @@
 "use strict";
 
-// ダッシュボードテンプレートの単一要素を取得する。
 const element = selector => document.querySelector(selector);
 const dialog = element("#review-dialog");
 const note = element("#review-note");
@@ -219,7 +218,6 @@ function syncActions() {
   syncProgressPrompts();
 }
 
-// 進捗の状態に合わせ、追加指示を送れる時点とボタンの表示を更新する。
 function syncProgressPrompts() {
   progressPrompt.button.hidden = !snapshot.worktree_path;
   progressPrompt.button.disabled = !connected;
@@ -247,7 +245,6 @@ async function refreshProgressPrompts() {
   }
 }
 
-// 同じRunの受付結果で入力欄と送信状態を更新する。
 async function submitProgressPrompt(text) {
   const runId = snapshot.run_id;
   const request = ++promptRequest;
@@ -268,7 +265,6 @@ async function submitProgressPrompt(text) {
   }
 }
 
-// ビルド失敗時の保存版と入力中の本文を比較する。
 function buildEditIsDirty() {
   return !!buildFile && buildSource.value !== buildFile.content;
 }
@@ -297,7 +293,6 @@ function syncBuildReview(canAct) {
   }
 }
 
-// 指定Runと対象のビルド失敗時の保存版を取得する。
 async function fetchBuildReview(runId, target) {
   const query = new URLSearchParams({run_id: runId});
   if (target) query.set("target", target);
@@ -336,7 +331,6 @@ async function loadBuildSource() {
   }
 }
 
-// ビルドの対象・ログ・エディタを同じRunの結果で初期化する。
 async function openBuildReview() {
   const request = ++buildRequest;
   const runId = snapshot.run_id;
@@ -386,7 +380,6 @@ async function openBuildReview() {
   }
 }
 
-// 選んだ指摘の診断とソース位置を表示する。
 function renderSelectedFinding() {
   const selected = snapshot.review?.findings[findings.selectedIndex];
   diagnostic.textContent = selected?.[1] || snapshot.review_error || "選択できる指摘はありません。";
@@ -415,7 +408,6 @@ function openReview(index = findings.selectedIndex) {
   }
 }
 
-// 指摘の確認画面に、現在選んでいるRunの出力を表示する。
 async function loadCheckerOutput() {
   const request = ++checkerOutputRequest;
   const path = `checker-output?run_id=${encodeURIComponent(snapshot.run_id)}`;
@@ -435,7 +427,6 @@ async function loadCheckerOutput() {
   }
 }
 
-// 現在のJunie確認を共有モーダルに表示する。
 function openJunieReview() {
   if (!dialog.open) dialog.showModal();
   reviewTitle.focus();
@@ -494,7 +485,6 @@ async function answerJunie(requestId, optionId) {
   }
 }
 
-// 判断状態で行を絞り込み、該当件数がない場合の表示を更新する。
 function applyFindingFilter() {
   allFilter.setAttribute("aria-pressed", String(!pendingOnly));
   pendingFilter.setAttribute("aria-pressed", String(pendingOnly));
@@ -506,7 +496,6 @@ function applyFindingFilter() {
   emptyFinding.hidden = visible > 0;
 }
 
-// 同じRun状態の説明を、実行ログと画面上部に使う。
 function describe(state) {
   if (state.queued) return "実行待ち";
   if (state.status === "queued") return "準備を開始しています";
@@ -520,7 +509,6 @@ function describe(state) {
   return label;
 }
 
-// 台帳と完了判定を、同じRunの最新情報から更新する。
 async function loadMigrationLedger() {
   const request = ++migrationLedgerRequest;
   try {
@@ -553,7 +541,6 @@ window.addEventListener("focus", () => {
   if (snapshot.worktree_path && (snapshot.ready || migrationLedgerDialog.open)) loadMigrationLedger();
 });
 
-// サーバーの診断を捨てず、HTMLのエラー本文も文字列として表示する。
 async function responseError(response) {
   return new Error(`HTTP ${response.status} ${response.statusText}\n${await response.text()}`);
 }
@@ -566,12 +553,10 @@ function runFetch(path, options = {}) {
   return fetch(path, {...options, headers});
 }
 
-// 別タブで思考ログを追記取得し、タブが閉じたときに終了する。
 function tailJunieLog(view) {
   const url = new URL("junie-thoughts", location.href);
   url.searchParams.set("run_id", view.run.run_id);
   let cursor = 0;
-  // 詳細ログの続きから取得し、受信量に応じて次回の間隔を調整する。
   async function poll() {
     if (view.popup.closed) return;
     let delay = 750;
@@ -744,7 +729,6 @@ workspaceTabs.addEventListener("harnesstab", async () => {
   }
 });
 
-// 保存済みカプセル数と実行中の区間の容量を表示する。
 function renderCapsuleProgress(data, total, completed) {
   const capsuleIndex = Math.max(0, (data.current_capsule ?? 1) - 1);
   const chars = data.context_part_chars?.[capsuleIndex] ?? 0;
@@ -781,6 +765,9 @@ const checkerReviewGuidance = {
   unexpected_changes: ["Junie が修正対象外のファイルを変更したため、修正の反映を止めました。",
     "詳細ログを確認し、修正対象と変更内容を指定して「指示を送って再開」を選んでください。"],
   repair_interrupted: ["Junie の修正が途中で停止しました。"],
+  free_output_advisory: ["形式未対応のチェッカー出力です。Junie の判定は参考情報で、合格や修正を意味しません。",
+    "チェッカー出力と参考判定を確認し、修正が必要なら明示的に指示してください。"],
+  free_output_advisory_interrupted: ["チェッカー出力の参考判定を中止しました。チェッカー出力を確認してください。"],
   junie_unavailable: ["Junie を起動できなかったか、実行中に接続やセッションが終了しました。",
     "詳細ログで Junie の起動や接続の状態を確認し、復旧後に「同じ実行を再開」を選んでください。"],
   checker_incomplete: ["チェッカーが正常に完了しなかったため、自動修正に進めませんでした。",
@@ -816,7 +803,6 @@ function checkerReviewCopy(data) {
   return {reason, action};
 }
 
-// 確認可能な段階で、次の操作と診断をレビュー欄に表示する。
 function renderCheckerStatus(data) {
   if (!data.ready) return;
   const {reason, action} = checkerReviewCopy(data);
@@ -824,10 +810,17 @@ function renderCheckerStatus(data) {
   element("#checker-review-next").textContent = action;
   const diagnostics = [...new Set([data.error, data.review_error, data.error_details].filter(Boolean))];
   if (Number.isInteger(data.checker_exit_code)) diagnostics.unshift(`チェッカーの終了コード ${data.checker_exit_code}`);
+  const advisory = data.checker_advisory;
+  if (advisory?.status === "reported") {
+    const verdict = advisoryVerdict(advisory);
+    const lines = Array.isArray(advisory.evidence_lines) ? advisory.evidence_lines.filter(Number.isInteger) : [];
+    diagnostics.push(`Junie の参考判定: ${verdict}${lines.length ? `（checker.log の行: ${lines.join(", ")}）` : ""}`);
+  } else if (advisory?.status === "unavailable") {
+    diagnostics.push(`Junie の参考判定は利用できませんでした（${advisory.reason}）。`);
+  }
   element("#checker-review-technical").textContent = diagnostics.join("\n\n") || "詳細ログはありません。";
 }
 
-// チェッカー判断の要点と実行エラーを進捗欄に表示する。
 function progressFeedback(data) {
   if (data.ready && checkerReviewStatuses.has(data.status)) {
     return data.message?.split("\n", 1)[0] || checkerReviewCopy(data).reason;
@@ -890,7 +883,6 @@ function renderCheckerReview(data, showReview) {
   }
 }
 
-// 使用量の集計を更新し、選択中はRun別一覧にも反映する。
 function renderTokens() {
   const data = snapshot;
   const usingJunie = !data.ready && (["junie_running", "editor_followup", "repairing"].includes(data.status) || data.generating_anchors);
@@ -903,7 +895,6 @@ function renderTokens() {
   }
 }
 
-// 最新のSSE状態を工程・入力・指摘に反映し、確認待ちを案内する。
 function render() {
   const data = snapshot;
   renderTokens();
@@ -994,7 +985,6 @@ function renderElapsed() {
   setElapsed(element("#elapsed"), measured ? total : null, "未計測", element("#elapsed-value"));
 }
 
-// 未計測と計測済みの表示および時刻要素をそろえる。
 function setElapsed(time, seconds, missing = "未計測", label = time) {
   const text = seconds === null ? missing : formatDuration(seconds * 1000);
   if (label.textContent !== text) label.textContent = text;
@@ -1002,7 +992,10 @@ function setElapsed(time, seconds, missing = "未計測", label = time) {
   else time.dateTime = `PT${Math.floor(seconds)}S`;
 }
 
-// 同じログの連続表示を抑え、画面に直近100件を残す。
+function advisoryVerdict(advisory) {
+  return ({problem: "問題の可能性あり", informational: "情報のみ", unclear: "判断不能"})[advisory.verdict] || "判断不能";
+}
+
 function addEvent(data) {
   if (savedView && !data.ready && !activity.childElementCount) return;
   const title = describe(data);
@@ -1020,6 +1013,15 @@ function addEvent(data) {
       logs.push(`${scriptPhases[phase]}のスクリプトログ ${path}`);
     }
     detail.push(...logs);
+    if (Array.isArray(data.script_advisories)) {
+      for (const item of data.script_advisories.slice(-12)) {
+        const phase = scriptPhases[item.phase] || item.phase;
+        const verdict = ({pending: "確認待ち", interrupted: "中止", unavailable: "判定取得不可"})[item.status]
+          || advisoryVerdict(item);
+        const lines = Array.isArray(item.evidence_lines) ? item.evidence_lines.filter(Number.isInteger) : [];
+        detail.push(`${phase}のスクリプト #${item.command_number}: Junie 参考判定 ${verdict}（終了 ${item.exit_code}${lines.length ? `、このコマンドの出力行 ${lines.join(", ")}` : ""}）`);
+      }
+    }
   }
   const key = [title, ...detail].join("\n");
   if (key === previousLog) return;
@@ -1040,7 +1042,6 @@ function addActivity(data) {
   appendEvent(event.at, "実行状況", [event.message, event.detail].filter(Boolean), "activity");
 }
 
-// 読む位置を保ちながら、上限付きの進捗ログへ追加する。
 function appendEvent(at, title, detail, kind = "state") {
   const follow = activity.scrollHeight - activity.scrollTop - activity.clientHeight < 32;
   const row = document.createElement("div");
@@ -1063,7 +1064,6 @@ function appendEvent(at, title, detail, kind = "state") {
   if (follow) activity.scrollTop = savedView && activity.childElementCount === 1 ? 0 : activity.scrollHeight;
 }
 
-// 受信済みの連番を付けて利用者の操作を端末へ送る。
 async function send(action, fields = {finding_id: findings.value, reason: note.value.trim()}) {
   if (submitting || !connected) return;
   if (action === "stop") {
@@ -1122,12 +1122,10 @@ element("#checker-open-editor").addEventListener("click", () => {
 });
 stopButton.addEventListener("click", () => send("stop"));
 
-// 画面とダウンロードが共有する、Run内の比較結果の相対パスを作る。
 function comparisonPath(runId, snapshotId) {
   return `review/${runId}/${snapshotId}`;
 }
 
-// 比較の進捗と保存リンクを上部と確認モーダルに揃えて表示する。
 function showComparisonStatus(...content) {
   snapshotStatus.replaceChildren(...content);
   modalComparisonStatus.replaceChildren(...Array.from(snapshotStatus.childNodes, node => node.cloneNode(true)));
@@ -1148,7 +1146,6 @@ function reserveComparisonTab(progress) {
   }
 }
 
-// 確保したタブを使い、利用できない環境では画面内で比較を開く。
 function displayComparison(url, popup) {
   try {
     if (popup && !popup.closed) {
@@ -1166,7 +1163,6 @@ function displayComparison(url, popup) {
   viewerPreview.showModal();
 }
 
-// 現在の指摘を基準にスナップショットを作り、Viewerで開けるようにする。
 async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
   if (snapshotting) return;
   const sourceRunId = snapshot.run_id;
@@ -1304,7 +1300,6 @@ function connectRun(runId = "", {removed = false} = {}) {
     };
   });
 }
-// 進捗を反映し、Runが切り替わるときは入力と履歴を切り離す。
 function receiveProgress(event) {
 
   const data = JSON.parse(event.data);

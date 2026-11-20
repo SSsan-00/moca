@@ -20,7 +20,6 @@ def _pane_lines(text: str) -> list[str]:
 
 
 def _anchor_pair(entry: Any, left: list[str], right: list[str], *, first_line: int) -> tuple[int, int]:
-    """左右のアンカーが有効な行を指すことを確認し、0始まりにそろえる。"""
     if not isinstance(entry, dict):
         raise ValueError("アンカーは leftLineNo と rightLineNo を持つオブジェクトで指定してください。")
     a, b = entry.get("leftLineNo"), entry.get("rightLineNo")
@@ -32,7 +31,6 @@ def _anchor_pair(entry: Any, left: list[str], right: list[str], *, first_line: i
 
 
 def _reference_examples(path: Path) -> list[dict[str, str]]:
-    """既存の手動アンカーから、Junieに渡す対応行の例を用意する。"""
     reference = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(reference, dict) or reference.get("kind") != "diff-viewer-workspace" or reference.get("version") != 1:
         raise ValueError("参照JSONにはDiff Viewerのワークスペース（version 1）を指定してください。")
@@ -64,7 +62,6 @@ def _reviewed_examples(config: dict[str, Any], run_id: str) -> list[dict[str, st
     snapshots: dict[str, dict[str, Any]] = {}
 
     def bounds(segments: list[dict[str, Any]], area: dict[str, Any]) -> tuple[int, int]:
-        """確認済み対応例が参照する行範囲を返す。"""
         segment = next(item for item in segments if Path(item["fileName"]) == Path(area["path"]))
         offset = segment["startLine"] - 2
         return offset + area["start_line"], offset + area["end_line"]
@@ -94,7 +91,6 @@ def _reviewed_examples(config: dict[str, Any], run_id: str) -> list[dict[str, st
 
 
 def _reference_examples_for_paths(references: list[Path]) -> list[dict[str, str]]:
-    """指定対象に対応する参考実装例を選ぶ。"""
     examples = []
     for index, reference in enumerate(references, 1):
         check_cancelled()
@@ -107,7 +103,6 @@ def _reference_examples_for_paths(references: list[Path]) -> list[dict[str, str]
 
 
 def _automatic_examples(config: dict[str, Any], run_id: str) -> list[dict[str, str]]:
-    """PHPと移行先の自動対応候補を列挙する。"""
     references = config.get("diff_viewer_anchor_reference")
     return _reference_examples_for_paths(references) if references else _reviewed_examples(config, run_id)
 
@@ -135,7 +130,6 @@ def generate_anchors(
     config: dict[str, Any], run_id: str, reference: Path | list[Path] | None = None,
     *, focus: dict[str, Any] | None = None,
 ) -> tuple[Path, int]:
-    """Junieに対応を提案させ、検証した比較をRunに保存する。"""
     if not config.get("diff_viewer_html"):
         raise ValueError("アンカーを生成するには、設定で差分ビューアーを有効にしてください。")
     target_hashes: dict[str, str] = {}

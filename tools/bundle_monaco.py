@@ -13,7 +13,6 @@ DESTINATION = Path(__file__).resolve().parents[1] / "src" / "migration_harness" 
 
 
 def main() -> None:
-    """同梱するMonacoのエディタとワーカーを生成する。"""
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
         subprocess.run(

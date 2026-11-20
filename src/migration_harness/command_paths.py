@@ -15,9 +15,7 @@ _PATH_ALIAS = re.compile(r"\{(worktree|build_project|target)\}")
 def expand_command_paths(
     command: list[str], worktree: Path | None, build_project: str | None, target: str | None,
 ) -> list[str]:
-    """工程コマンド内のパス指定を実行時の値へ展開する。"""
     def replace(match: re.Match[str]) -> str:
-        """1つのコマンド引数に含まれるパス指定を置き換える。"""
         alias = match.group(1)
         if worktree is None:
             raise ValueError(f"{{{alias}}} はworktree作成後の工程で使用してください（before_prepareでは使用できません）")

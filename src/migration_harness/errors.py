@@ -24,7 +24,6 @@ def _text(value: object) -> str:
 
 
 def _sensitive(flag: str) -> bool:
-    """機密情報を含む可能性がある値か判定する。"""
     name = flag.lstrip("-").replace("-", "").replace("_", "").lower()
     return any(word in name for word in (
         "token", "password", "passwd", "passphrase", "secret", "credential",
@@ -33,7 +32,6 @@ def _sensitive(flag: str) -> bool:
 
 
 def _redact_flags(text: str, values: set[str]) -> str:
-    """コマンド引数中の機密フラグを伏せる。"""
     replacements = []
     end = 0
     for flag in _FLAG.finditer(text):
@@ -80,7 +78,6 @@ def _command(command: Command, values: set[str]) -> str:
 
 
 def _redact(text: str, values: set[str]) -> str:
-    """診断文字列の機密値を伏せる。"""
     _redact_flags(text, values)
     variants = set()
     for value in values - {"", _REDACTED, repr(_REDACTED)}:

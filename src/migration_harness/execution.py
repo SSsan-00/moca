@@ -35,7 +35,6 @@ class ExecutionControl:
     _building: bool = False
 
     def request_build_stop(self) -> bool:
-        """現在のビルド操作に対して停止を記録する。"""
         with self._build_lock:
             if not self._building:
                 return False
@@ -48,7 +47,6 @@ _control: ContextVar[ExecutionControl | None] = ContextVar("execution_control", 
 
 @contextmanager
 def control_scope(control: ExecutionControl | None) -> Iterator[None]:
-    """現在の実行制御と操作IDをスレッド文脈へ設定する。"""
     token = _control.set(control)
     try:
         yield
@@ -62,13 +60,11 @@ def is_controlled() -> bool:
 
 
 def current_operation_id() -> str | None:
-    """現在の実行操作IDを返す。"""
     control = _control.get()
     return control.operation_id if control is not None else None
 
 
 def junie_dashboard_control() -> ExecutionControl | None:
-    """操作確認を受け付けられる現在のダッシュボード制御を返す。"""
     control = _control.get()
     return control if control is not None and control.on_junie_request is not None else None
 
@@ -81,7 +77,6 @@ def check_cancelled() -> None:
 
 @contextmanager
 def build_process_scope() -> Iterator[None]:
-    """ビルド本体の開始から終了までを停止判定対象にする。"""
     control = _control.get()
     if control is None:
         yield

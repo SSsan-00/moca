@@ -23,7 +23,6 @@ def _parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def configured_command(name: str, help_text: str) -> argparse.ArgumentParser:
-        """設定ファイルを必須とするサブコマンドを定義する。"""
         command = subparsers.add_parser(name, help=help_text)
         command.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
         return command
@@ -52,6 +51,8 @@ def _parse_args() -> argparse.Namespace:
     junie_input.add_argument("--run-id", required=True)
     evidence = configured_command("context-evidence", "Inspect fixed PHP evidence or read a bounded page")
     evidence.add_argument("--run-id", required=True)
+    evidence.add_argument("--feature", help="Look up an exact declared symbol or named PHP function")
+    evidence.add_argument("--last-plan", action="store_true", help="Show the last migration, resume or repair navigation plan")
     evidence.add_argument("--source-id")
     evidence.add_argument("--start-line", type=int)
     evidence.add_argument("--end-line", type=int)
@@ -100,7 +101,6 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """利用者の操作を振り分け、途中停止や入力エラーを終了コードで伝える。"""
     args = _parse_args()
     try:
         try:
@@ -165,12 +165,20 @@ def main() -> None:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return
         if args.command == "context-evidence":
-            from migration_harness.context_evidence import inspect_context, read_context
+            from migration_harness.context_evidence import find_feature, inspect_context, read_context
             from migration_harness.run_records import load_dashboard_record
 
-            run_path, _ = load_dashboard_record(config, args.run_id)
+            run_path, record = load_dashboard_record(config, args.run_id)
             requested = (args.source_id, args.start_line, args.end_line)
-            if all(value is None for value in requested):
+            if args.last_plan:
+                if args.feature is not None or args.through_capsule is not None or any(value is not None for value in requested):
+                    raise ValueError("--last-plan cannot be combined with evidence selection")
+                result = {"plan": record.get("last_context_plan"), "supplied_rules": record.get("supplied_rules", [])}
+            elif args.feature is not None:
+                if any(value is not None for value in requested):
+                    raise ValueError("--feature cannot be combined with source range selection")
+                result = find_feature(run_path, args.feature, args.through_capsule)
+            elif all(value is None for value in requested):
                 result = inspect_context(run_path, args.through_capsule)
             elif all(value is not None for value in requested):
                 result = read_context(run_path, *requested, through=args.through_capsule, offset=args.offset,
@@ -285,7 +293,6 @@ def main() -> None:
 
 
 def _print_migration_progress(completion: dict[str, Any]) -> None:
-    """コマンドの成功とは別に、現在の移行完了判定を伝える。"""
     status = "complete" if completion["complete"] else "incomplete"
     print(f"Migration: {status} ({completion['reviewed']}/{completion['total']} PHP ranges reviewed)")
     if not completion["verification_passed"]:
@@ -293,7 +300,6 @@ def _print_migration_progress(completion: dict[str, Any]) -> None:
 
 
 def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:
-    """Run ID、成果物の場所と、次の操作に必要な結果を伝える。"""
     print(f"Run:       {result['run_id']}")
     print(f"Worktree:  {result['worktree_path']}")
     print(f"Capsules:  {result['capsule_count']} (max {result['max_context_chars']} characters each)")

@@ -13,7 +13,6 @@ _STOP_TIMEOUT = 5
 
 class JunieProcess(subprocess.Popen):
     def __init__(self, command, *, terminal=False, **kwargs):
-        """OSごとの所有範囲でJunieとランチャーを起動する。"""
         self._terminal = None
         self._job = None
         if os.name == "nt":
@@ -57,7 +56,6 @@ class JunieProcess(subprocess.Popen):
             super().__init__(command, start_new_session=True, **kwargs)
 
     def terminal_interrupted(self):
-        """対話端末でCtrl+Cにより終了したか判定する。"""
         return self._terminal is not None and self.returncode == 128 + signal.SIGINT
 
     def wait_for_launcher(self, timeout):
@@ -88,7 +86,6 @@ class JunieProcess(subprocess.Popen):
             time.sleep(min(.025 if waitid is not None else .1, remaining))
 
     def stop(self):
-        """所有する子プロセス群の終了を確認して後始末する。"""
         deadline = time.monotonic() + _STOP_TIMEOUT
         if self._job is not None:
             try:

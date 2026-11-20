@@ -19,10 +19,8 @@ REQUIRED_UI = {
 
 
 class RegressionResult(unittest.TextTestResult):
-    """成功したテストを記録し、必須検証が実行されたことを確認する。"""
 
     def __init__(self, *args, **kwargs):
-        """各テストの成功と所要時間を別々に記録する。"""
         super().__init__(*args, **kwargs)
         self.passed = set()
         self.timings = []
@@ -33,7 +31,6 @@ class RegressionResult(unittest.TextTestResult):
         super().startTest(test)
 
     def stopTest(self, test):
-        """後始末を含めた経過時間をテストIDと一緒に残す。"""
         self.timings.append((test.id(), perf_counter() - self.started))
         super().stopTest(test)
 
@@ -44,7 +41,6 @@ class RegressionResult(unittest.TextTestResult):
 
 
 def test_cases(suite):
-    """unittestの入れ子を展開し、実行・比較できるテストIDを得る。"""
     for test in suite:
         if isinstance(test, unittest.TestSuite):
             yield from test_cases(test)

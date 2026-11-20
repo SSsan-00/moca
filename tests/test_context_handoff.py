@@ -1,7 +1,13 @@
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from fixtures import HarnessCase
+from migration_harness import workflow
 
 from migration_harness.capsules import prepare_context
 from migration_harness.context_handoff import context_handoff, handoff_prompt, record_handoff
@@ -57,3 +63,71 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertEqual("", handoff_prompt(self.run, self.root, self.targets, {}))
         (self.run / "context-handoff.json").write_text("invalid", encoding="utf-8")
         self.assertIn("unreadable", handoff_prompt(self.run, self.root, self.targets, {}))
+
+    def test_junie_memos_are_versioned_bounded_and_do_not_supersede_operator(self):
+        from migration_harness.context_handoff import junie_memo_request, save_junie_memo
+        from migration_harness.worktree_targets import target_hash
+
+        record = {"completed_capsules": 0, "target_hashes": {"Demo.cs": target_hash(self.target)}}
+        draft, _ = junie_memo_request(self.root, "fixture")
+        operator = self.add("operator lead")
+        note = {"kind": "pending", "source_path": "demo.php", "start_line": 2, "end_line": 2,
+                "note": "check the branch before finalizing"}
+        draft.write_text(json.dumps([{**note, "supersedes": operator["id"]}]), encoding="utf-8")
+        save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        self.assertIn("junie_memo_warning", record)
+        self.assertNotIn("junie_memos", record)
+        draft.write_text(json.dumps([note]), encoding="utf-8")
+        save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        reopened = json.loads(json.dumps(record))
+        self.assertEqual(len(reopened["junie_memos"]), 1)
+        prompt = handoff_prompt(self.run, self.root, self.targets, reopened)
+        self.assertIn("operator lead", prompt)
+        self.assertIn(note["note"], prompt)
+        reopened["detail_applicability"] = {"example": {"applies": True}}
+        prompt = handoff_prompt(self.run, self.root, self.targets, reopened)
+        self.assertNotIn(note["note"], prompt)
+        self.assertIn("Earlier unresolved items whose versions differ", prompt)
+        self.target.write_text("class HumanEdited {}", encoding="utf-8")
+        prompt = handoff_prompt(self.run, self.root, self.targets, record)
+        self.assertNotIn(note["note"], prompt)
+        self.assertIn(record["junie_memos"][0]["id"], prompt)
+        draft.write_text(json.dumps([{**note, "end_line": 999}]), encoding="utf-8")
+        save_junie_memo(draft, self.run, record, phase="repair")
+        self.assertIn("junie_memo_warning", record)
+        self.assertEqual(len(record["junie_memos"]), 1)
+        self.assertEqual(record["completed_capsules"], 0)
+
+
+class JunieMemoLifecycleTests(HarnessCase):
+    def test_capsule_seam_passes_adopted_memo_but_does_not_save_unfinished_output(self):
+        source = self.project / "source.php"
+        source.write_text("<?php\nfunction calculate() {\n" + "echo 1;" + " " * 75 + "\n"
+                          + ("echo 2;" + " " * 75 + "\n") * 27 + "}\n", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config["units"][0]["inputs"][0]["end_line"] = None
+        prompts = []
+
+        def junie(command, completion, token, targets, **kwargs):
+            prompts.append(command[-1])
+            memo = completion.parent / f"handoff-{token}.json"
+            memo.write_text(json.dumps([{
+                "kind": "pending", "note": f"pending review {len(prompts)}", "source_id": "php-0001",
+                "start_line": 2, "end_line": 2,
+            }]), encoding="utf-8")
+            targets[0].write_text(f"class Provisional{len(prompts)} {{}}", encoding="utf-8")
+            if len(prompts) == 1:
+                completion.write_text(token, encoding="utf-8")
+            return 0
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=junie), redirect_stdout(io.StringIO())):
+            workflow.run_with_junie(config, "sample")
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("pending review 1", prompts[1])
+        completed, = Path(config["run_root"]).glob("*/run.json")
+        saved = json.loads(completed.read_bytes())
+        self.assertEqual(saved["completed_capsules"], 1)
+        self.assertEqual([row["note"] for row in saved["junie_memos"]], ["pending review 1"])

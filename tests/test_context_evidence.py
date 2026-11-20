@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from migration_harness.capsules import prepare_context
-from migration_harness.context_evidence import boundary_hints, inspect_context, read_context
+from migration_harness.context_evidence import boundary_hints, find_feature, inspect_context, read_context
 
 
 class ContextEvidenceTests(unittest.TestCase):
@@ -16,12 +16,13 @@ class ContextEvidenceTests(unittest.TestCase):
         self.source = self.root / "sample.php"
         self.run = self.root / "saved"
 
-    def prepare(self, source, limit=850, encoding="auto", start=1, end=None):
+    def prepare(self, source, limit=850, encoding="auto", start=1, end=None, symbol=None, references=()):
         self.source.write_bytes(source)
         unit = {"id": "demo", "source": "sample.php", "target": "Sample.cs", "inputs": [{
             "role": "php", "path": "sample.php", "start_line": start, "end_line": end,
             "encoding": encoding, "shared": False,
-        }]}
+            **({"symbol": symbol} if symbol is not None else {}),
+        }, *references]}
         prepare_context({"project_root": str(self.root), "max_context_chars": limit}, unit, self.run)
         return json.loads((self.run / "capsule/manifest.json").read_text(encoding="utf-8"))
 
@@ -33,6 +34,35 @@ class ContextEvidenceTests(unittest.TestCase):
             inspect_context(self.run, 1),
             inspect_context(alias / ".." / self.run.name, 1),
         )
+
+    def test_feature_keeps_declared_names_distinct_from_lexical_functions(self):
+        self.prepare(b"<?php\nfunction Calculate() { return 42; }\n", symbol="Order total")
+        declaration = find_feature(self.run, "ORDER TOTAL", 1)
+        match, = declaration["matches"]
+        self.assertEqual("Order total", match["declared_ranges"][0]["symbol"])
+        self.assertEqual([], match["lexical_functions"])
+        lexical, = find_feature(self.run, "calculate")["matches"]
+        self.assertEqual([], lexical["declared_ranges"])
+        self.assertEqual("Calculate", lexical["lexical_functions"][0]["name"])
+        self.assertEqual([], find_feature(self.run, "unknown")["matches"])
+        self.assertTrue(inspect_context(self.run)["sources"])
+        (self.run / "capsule/php-sources/0001.php").write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "ハッシュ"):
+            find_feature(self.run, "Order total")
+
+    def test_feature_returns_shared_evidence_without_merging_unverified_relationships(self):
+        shared = self.root / "helpers.php"
+        shared.write_bytes(b"<?php\nfunction Calculate() { return 7; }\n")
+        self.prepare(b"<?php\nfunction Calculate() { return 42; }\n", symbol="Calculation", references=[{
+            "role": "php", "path": "helpers.php", "start_line": 1, "end_line": 2,
+            "encoding": "utf-8", "shared": True, "symbol": "Calculation",
+        }])
+        results = find_feature(self.run, "Calculation", 1)["matches"]
+        by_file = {row["path"]: row for row in results}
+        self.assertEqual({"sample.php", "helpers.php"}, set(by_file))
+        self.assertEqual("current", by_file["sample.php"]["declared_ranges"][0]["role"])
+        self.assertEqual("reference", by_file["helpers.php"]["declared_ranges"][0]["role"])
+        self.assertEqual(2, len({row["sha256"] for row in results}))
 
     def test_fit_named_functions_before_preceding_capsule_runs_out(self):
         body = "".join(

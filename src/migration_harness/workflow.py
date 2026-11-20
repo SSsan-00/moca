@@ -25,12 +25,14 @@ from typing import Any
 from . import junie_cli
 from .build_receipt import build_artifacts, build_inputs
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
+from .checker_advisory import checker_advisory, output_advisory
 from .checker_output import (
     CHECKER_SUCCESS_MESSAGE, CheckerFinding, accepted_findings, checker_findings, checker_response_status,
 )
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
 from .context_evidence import boundary_hints
-from .context_handoff import handoff_prompt
+from .context_handoff import handoff_prompt, junie_memo_request, save_junie_memo
+from .context_plan import navigation_plan
 from .config import checker_command_for_unit, find_unit, target_paths
 from .editor_queue import (
     EDITOR_TARGET_SUFFIXES, LivePrompts, dispatch_prompts, editor_queue, editor_target, finish_prompts, merge_edit,
@@ -84,7 +86,6 @@ def _create_worktree(
     config: dict[str, Any], unit: dict[str, Any], run_path: Path, context: dict[str, Any],
     record: dict[str, Any] | None = None,
 ) -> Path:
-    """指定リビジョンの分離したworktreeと初期Run記録を用意する。"""
     root = Path(config["project_root"])
     run_id = run_path.name
     worktree = Path(config["worktree_root"]) / run_id
@@ -130,14 +131,12 @@ def _create_worktree(
 
 
 def prepare_run(config: dict[str, Any], unit_id: str, *, run_id: str | None = None) -> dict[str, Any]:
-    """新しいRunの入力と作業ツリーを準備する。"""
     run_id = str(uuid.UUID(run_id)) if run_id else str(uuid.uuid4())
     with execution_lock(config, run_id), execution_lock(config, "prepare", wait=True):
         return _prepare_run(config, unit_id, run_id)
 
 
 def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str, Any]:
-    """入力を検証し、カプセルの作成が成功してから作業ツリーを作る。"""
     run_path = Path(config["run_root"]) / run_id
     unit = find_unit(config, unit_id)
     run_path.mkdir(parents=True, exist_ok=False)
@@ -194,8 +193,8 @@ def _run_script_phase(
     record: dict[str, Any] | None = None, *, once: bool = False,
     extra_commands: tuple[list[str], ...] = (),
 ) -> None:
-    """工程スクリプトを順に実行し成功分を記録する。"""
-    commands = [*config.get("scripts", {}).get(phase, []), *extra_commands]
+    configured = config.get("scripts", {}).get(phase, [])
+    commands = [*configured, *extra_commands]
     if not commands or (record is not None and once and phase in record.get("completed_script_phases", [])):
         return
 
@@ -230,12 +229,20 @@ def _run_script_phase(
                 invocation = script_command_for_phase(
                     command, phase, cwd, config.get("build_project"), (record or {}).get("target"),
                 )
+                review_output = bool(record is not None and config.get("junie_review_script_output")
+                                     and number <= len(configured) and not command[0].startswith("@"))
+                start_output = os.fstat(log.fileno()).st_size if review_output else 0
                 completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
-                if completed.returncode:
-                    raise ValueError(f"終了コード {completed.returncode}")
-                if record is not None and once:
+                if completed.returncode == 0 and record is not None and once:
                     record.setdefault("script_command_progress", {})[phase] = command_ids[:number]
                     write_run_record(record_path, record)
+                if review_output and completed.returncode >= 0:
+                    log.flush()
+                    length = os.fstat(log.fileno()).st_size - start_output
+                    if length > 0:
+                        _review_script_output(run_path, record, phase, command, number, completed.returncode, start_output, length)
+                if completed.returncode:
+                    raise ValueError(f"終了コード {completed.returncode}")
     except (KeyboardInterrupt, OSError, ValueError) as exc:
         reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else format_error(exc, command=invocation, cwd=cwd)
         message = f"スクリプト {phase} の {number} 番目で停止しました。ログ {log_path}\n{reason}"
@@ -246,6 +253,8 @@ def _run_script_phase(
             run_id = record["run_id"]
             record.update(status="script_failed", error=message)
             write_run_record(record_path, record)
+        if junie_cli.unconfirmed_junie_stop(exc) is not None:
+            raise
         raise RunScriptError(message, run_id) from None
     if record is not None:
         if once:
@@ -254,6 +263,30 @@ def _run_script_phase(
         record["status"] = previous_status
         record.pop("script_phase", None)
         write_run_record(record_path, record, timing_stage=previous_stage)
+
+
+def _review_script_output(run_path, record, phase, command, number, exit_code, offset, length):
+    item = {
+        "phase": phase, "command_number": number, "exit_code": exit_code, "log": f"{phase}.log",
+        "byte_offset": offset, "byte_length": length,
+        "command_sha256": hashlib.sha256(json.dumps(command).encode("utf-8")).hexdigest(),
+        "status": "pending",
+    }
+    history = record.setdefault("script_advisories", [])
+    history.append(item)
+    del history[:-100]
+    path = run_path / "run.json"
+    write_run_record(path, record)
+    try:
+        report_activity(f"Junie に {phase} の {number} 番目の出力の参考判定を依頼しています。", kind="phase")
+        advisory = output_advisory(run_path, item["log"], exit_code, phase=phase, byte_offset=offset, byte_length=length)
+        check_cancelled()
+        item.update(advisory)
+    except KeyboardInterrupt:
+        item["status"] = "interrupted"
+        raise
+    finally:
+        write_run_record(path, record)
 
 
 def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]:
@@ -440,7 +473,6 @@ _EXACT_SOURCE_DATA = (
 
 
 def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> str:
-    """Razorページの複数ファイル構成に沿った指示を作る。"""
     if not any(path.suffix.lower() == ".cshtml" for path in targets):
         return ""
     route = (
@@ -571,7 +603,6 @@ def _review_detail_applicability(
 
         def save_decisions(answer: str) -> None:
             # 原文と詳細索引の全文を渡した場合は、最終回答を照合してハーネス側で完了記録を作る。
-            """判定結果を検証してRun記録へ保存する。"""
             lines = answer.strip().splitlines()
             if len(lines) >= 2 and lines[0] in {"```", "```json"} and lines[-1] == "```":
                 answer = "\n".join(lines[1:-1])
@@ -656,7 +687,6 @@ def _apply_editor_edits(
     queue: dict[str, Any], agent_root: Path, worktree: Path, targets: tuple[Path, ...],
     record: dict[str, Any], record_path: Path,
 ) -> bool:
-    """Junieの書き込みが止まっている区間の境目で、両者の変更を突き合わせる。"""
 
     edits = queue["edits"]
     if not edits:
@@ -695,7 +725,6 @@ def _apply_editor_edits(
 
 def _stage_operator_prompts(agent_root: Path, token: str, instruction: str) -> str:
     # 指示をファイルに置き、Windows のコマンドライン長制限を避ける。
-    """Runに保存された利用者指示を作業資料へ配置する。"""
     path = agent_root / f"checker-findings-{token}-operator.txt"
     with path.open("x", encoding="utf-8", newline="") as stream:
         stream.write(instruction + "\n")
@@ -706,7 +735,6 @@ def _operator_edit_context(
     run_path: Path, agent_root: Path, token: str, inputs: list[Path], question: str | None,
 ) -> tuple[str, Path | None]:
 
-    """保留編集をJunieへ渡す差分コンテキストを作る。"""
     with editor_queue(run_path) as queue:
         edits = queue.get("operator_edits", {})
     if not edits:
@@ -749,7 +777,6 @@ def _read_operator_review(
     report: Path | None, agent_root: Path, worktree: Path, targets: tuple[Path, ...], record: dict[str, Any],
     *, completed: bool, save_stopped_draft: bool = True,
 ) -> str | None:
-    """Junieの確認質問と編集結果を読み取る。"""
     if report is None:
         return None
     path = safe_target(agent_root, report)
@@ -874,7 +901,6 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
                f" 必須ルール {sum(item['usage'] == 'required' for item in rules)}件、適用する詳細 {sum(item['usage'] == 'reference' for item in rules)}件。")
     if rules or files:
         def describe(items):
-            """ガイドラインに組み込む資料の容量の内訳を作る。"""
             return f"{sum(item['bytes'] for item in items):,} B / {sum(item.get('characters') or 0 for item in items):,}文字"
 
         required = [item for item in rules if item["usage"] == "required"]
@@ -899,7 +925,6 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
 def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, inputs, *args, embedded_input=(), **kwargs):
     """実行するたびに、確定した指示の容量を照合する。"""
     def observe(prompt):
-        """実際にJunieの起動に使う指示を計測し、警告や停止を適用する。"""
         _record_junie_input(config, record_path, record, phase, prompt, guidelines, root, inputs, embedded_input)
 
     def observe_steering(instruction):
@@ -950,14 +975,12 @@ def _run_migration_junie(
     config, record_path, record, phase, guidelines, agent_root, inputs, command, completion, token,
     agent_targets, *, worktree, targets, allowed, other_files, resumed_draft=None, **kwargs,
 ):
-    """セッションの終了確認を追跡し、停止時に保存できる下書きを判定する。"""
     before = {name.as_posix(): target_hash(file) for name, file in zip(targets, agent_targets, strict=True)}
     if resumed_draft and before != resumed_draft["targets"]:
         raise ValueError("Junie の起動前に停止時の下書きが更新されました。Junie 作業領域を確認してください。")
     closed = False
 
     def confirm_closed():
-        """子プロセス群の終了を確認した時点を記録する。"""
         nonlocal closed
         closed = True
 
@@ -988,13 +1011,14 @@ def _run_editor_followup(
     """保留中の指示を、ビルド前に同じ移行先へ適用する。"""
     token = uuid.uuid4().hex
     completion = agent_root / f"migration-complete-{token}.txt"
+    memo, memo_request = junie_memo_request(agent_root, token)
     instructions = _stage_operator_prompts(agent_root, token, instruction)
     names = ", ".join(target.as_posix() for target in targets)
     prompt = (
         f"Read `{instructions}` and apply the operator's follow-up instructions to the completed migration. "
         f"Read the current versions of the configured targets: {names}. "
         "Consult the staged PHP source and migration rules when needed. "
-        "Preserve unrelated edits and the migration rules. Edit only these targets. "
+        "Preserve unrelated edits and the migration rules. Edit only these targets and the optional handoff file. "
         f"{_TARGET_ENCODING}"
         f"{_STATIC_SOURCE_REVIEW}"
         "Do not access files outside this workspace or run builds, tests, or checkers. "
@@ -1003,11 +1027,11 @@ def _run_editor_followup(
     inputs = [Path(instructions)]
     context, report = _operator_edit_context(record_path.parent, agent_root, token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
-    prompt = context + prompt
+    prompt = context + handoff_prompt(record_path.parent, agent_root, targets, record) + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
                                       guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
-    allowed = {*targets, completion.relative_to(agent_root)}
+    allowed = {*targets, completion.relative_to(agent_root), Path(memo.name)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     prior = record.get("stopped_migration_draft")
     try:
@@ -1051,6 +1075,7 @@ def _run_editor_followup(
         return False
     record.pop("operator_question", None)
     apply_agent_targets(agent_root, worktree, targets, record["target_hashes"], record, record_path)
+    save_junie_memo(memo, record_path.parent, record, phase="editor_followup")
     _archive_stopped_migration(record)
     return True
 
@@ -1244,7 +1269,7 @@ def _stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targe
         f"for migration unit `{unit['id']}`. The configured target files are "
         + ", ".join(f"`{path.as_posix()}`" for path in relative_targets) + ". "
         "Preserve work from earlier segments and continue only with this segment. "
-        "Edit only the configured targets, the completion record, and temporary files in .migration-scratch/. "
+        "Edit only the configured targets, the optional handoff file, the completion record, and temporary files in .migration-scratch/. "
         "Ensure every configured target exists before writing a completion record. "
         f"{_TARGET_ENCODING}"
         "Apply all mandatory rules in the Shared context section if present. "
@@ -1278,13 +1303,13 @@ def _stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targe
 
 def _execute_migration_capsule(config, run_path, record, worktree_root, agent_root, relative_targets,
                                agent_targets, index, capsule_count, through_capsule,
-                               prompt, completion_path, completion_token, boundary_digest, exit_code):
-    """編集と指示を受け取り、Junieの結果の採用・停止下書き・完了区間を保存する。"""
+                               prompt, completion_path, completion_token, boundary_digest, exit_code, *, manifest, resuming=False):
     record_path = run_path / "run.json"
     agent_context = agent_root / ".migration-context.md"
     boundary = agent_root / ".migration-boundary.md"
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
-    allowed = {*relative_targets, completion_path.relative_to(agent_root)}
+    memo, memo_request = junie_memo_request(agent_root, completion_token)
+    allowed = {*relative_targets, completion_path.relative_to(agent_root), Path(memo.name)}
     complete = False
     with editor_queue(run_path) as queue:
         # Junieが停止している区間の境目で、画面からの編集と追加指示を取り込む。
@@ -1311,7 +1336,11 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         )
     context, report = _operator_edit_context(run_path, agent_root, completion_token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
-    prompt = context + handoff_prompt(run_path, agent_root, relative_targets, record, through=index) + prompt
+    plan, plan_hint = navigation_plan(
+        manifest, record, "resume" if resuming else "migration", relative_targets, current=index,
+    )
+    record["last_context_plan"] = plan
+    prompt = context + plan_hint + handoff_prompt(run_path, agent_root, relative_targets, record, through=index) + memo_request + prompt
     other_files = _unlisted_workspace_files(agent_root, allowed)
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
@@ -1372,6 +1401,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         write_run_record(record_path, record)
         return exit_code, False
 
+    save_junie_memo(memo, run_path, record, phase="migration", through=index)
     record["completed_capsules"] = index
     record["current_capsule"] = min(index + 1, capsule_count)
     with worktree_source_lock:
@@ -1391,7 +1421,6 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
 
 
 def _finish_migration_followups(config, run_path, record, worktree_root, agent_root, relative_targets, capsule_count):
-    """最終カプセル後の編集と追加指示を処理し、検証開始または確認待ちを保存する。"""
     record_path = run_path / "run.json"
     while record["completed_capsules"] == capsule_count and record["status"] == "editor_checkpoint":
         with editor_queue(run_path) as queue:
@@ -1438,7 +1467,6 @@ def _run_prepared_with_junie(
     through_capsule: int | None = None,
     expected_capsule_hashes: list[str] | None = None,
 ) -> dict[str, Any]:
-    """準備、未完了カプセル、最終区間の追加指示を順に進め、保存済みの結果を検証へ渡す。"""
     worktree_root, relative_targets, agent_root, agent_targets, capsule, manifest, through_capsule = (
         _prepare_migration_workspace(config, unit, run_path, result, record, resuming=resuming,
                                      followup_only=followup_only, through_capsule=through_capsule)
@@ -1461,7 +1489,7 @@ def _run_prepared_with_junie(
         exit_code, completed = _execute_migration_capsule(
             config, run_path, record, worktree_root, agent_root, relative_targets, agent_targets,
             index, result["capsule_count"], through_capsule, prompt, completion_path, completion_token,
-            boundary_digest, exit_code,
+            boundary_digest, exit_code, manifest=manifest, resuming=resuming and index == start_index,
         )
         if not completed:
             break
@@ -1491,7 +1519,6 @@ def _run_prepared_with_junie(
 def _build_worktree(
     config: dict[str, Any], result: dict[str, Any], record: dict[str, Any], *, continue_timing: bool = False,
 ) -> dict[str, Any]:
-    """対象worktreeをビルドし、以前のチェッカー結果を更新対象から外す。"""
     worktree = Path(result["worktree_path"])
     run_path = Path(result["run_path"])
     record_path = run_path / "run.json"
@@ -1562,7 +1589,6 @@ class CheckerRepairBlocked(ValueError):
 
 
 def _checker_repair_reason(error: BaseException) -> str:
-    """チェッカー修正を止める条件を判定して理由を返す。"""
     if isinstance(error, CheckerRepairBlocked):
         return error.reason
     if isinstance(error, (junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieConnectionError)):
@@ -1572,9 +1598,8 @@ def _checker_repair_reason(error: BaseException) -> str:
 
 def _run_checker(
     command: list[str], result: dict[str, Any], record: dict[str, Any],
-    build_project: str | None,
+    build_project: str | None, *, require_zero_for_success: bool = False,
 ) -> tuple[dict[str, Any], list[CheckerFinding], bool]:
-    """元の出力を保存し、読み取れた指摘をその時点のファイル内容にひも付ける。"""
     run_path = Path(result["run_path"])
     record_path = run_path / "run.json"
     log_path = run_path / "checker.log"
@@ -1584,6 +1609,7 @@ def _run_checker(
     record.pop("error", None)
     record.pop("checker_review_reason", None)
     record.pop("checker_success_message", None)
+    record.pop("checker_advisory", None)
     write_run_record(record_path, record)
     _print_progress(f"Running checker in {result['worktree_path']} (log: {log_path})")
     report_activity("独自チェッカーで確認しています", kind="phase",
@@ -1606,7 +1632,8 @@ def _run_checker(
             try:
                 findings, unrecognized = checker_findings(log_path, worktree)
                 response_status = checker_response_status(log_path)
-                if not findings and response_status == "checker_succeeded":
+                if (not findings and response_status == "checker_succeeded"
+                        and (not require_zero_for_success or completed.returncode == 0)):
                     record.update(status="checker_succeeded", checker_success_message=CHECKER_SUCCESS_MESSAGE)
                 elif findings or completed.returncode > 0 or response_status == "checker_needs_review":
                     record["status"] = "checker_needs_review"
@@ -1639,8 +1666,28 @@ def _run_checker(
     }, findings, use_raw_output
 
 
+def _review_free_checker_output(config, checked, record):
+    if not config.get("checker_review_free_output"):
+        return checked
+    run_path = Path(checked["run_path"])
+    record_path = run_path / "run.json"
+    exit_code = record["checker_exit_code"]
+    try:
+        report_activity("Junie にチェッカー出力の読み取り専用判定を依頼しています。", kind="phase")
+        advisory = checker_advisory(run_path, exit_code)
+        check_cancelled()
+    except KeyboardInterrupt:
+        record.pop("checker_advisory", None)
+        record["checker_review_reason"] = "free_output_advisory_interrupted"
+        write_run_record(record_path, record)
+        raise RunInterrupted(record["run_id"]) from None
+    record.update(checker_advisory=advisory, checker_review_reason="free_output_advisory",
+                  error="Free-form checker output requires operator review; inspect checker.log and run.json.")
+    write_run_record(record_path, record)
+    return {**checked, "checker_advisory": advisory, "error": record["error"]}
+
+
 def _charge_repair(record: dict[str, Any]) -> None:
-    """完了した試行を回数と再発判定に反映する。"""
     attempt = _finish_repair_attempt(record)
     if attempt is not None:
         record["repair_history"].append(attempt["details"])
@@ -1752,7 +1799,6 @@ def _snapshot_stopped_repair(run_path, agent_root, repair_targets, before, *, wo
 
 
 def _archive_stopped_migration(record):
-    """採用済みの停止下書きを現行の参照から履歴へ移す。"""
     if draft := record.pop("stopped_migration_draft", None):
         record.setdefault("stopped_migration_history", []).append(draft)
 
@@ -1798,7 +1844,6 @@ def _save_target_snapshot(run_path, sources, before, *, workspace_unchanged):
 
 
 def _save_capsule_checkpoint(run_path, worktree, targets, hashes):
-    """指定区間の移行先を、実行記録と同じ版で復元できるよう保存する。"""
     sources = {path.as_posix(): safe_target(worktree, path) for path in targets}
     checkpoint = _save_target_snapshot(run_path, sources, hashes, workspace_unchanged=True)
     if checkpoint["targets"] != hashes:
@@ -2017,7 +2062,6 @@ def _recover_selected_repair(run_path, worktree, targets, record):
 
 
 def _check_selected_repair_targets(record, repair_targets):
-    """次に修正する対象が保存済みの下書き選択に対応するか確認する。"""
     selection = record.get("repair_pending", {}).get("selection")
     if selection:
         unresolved = set(selection["partial"]) - {path.as_posix() for path in repair_targets}
@@ -2130,11 +2174,16 @@ def _repair_target(
     max_steps = record.get("junie_max_steps", config["junie_max_steps"])
     context, report = _operator_edit_context(run_path, agent_root, token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
-    prompt = context + handoff_prompt(run_path, agent_root, targets, record) + prompt
+    memo, memo_request = junie_memo_request(agent_root, token)
+    plan, plan_hint = navigation_plan(
+        manifest, record, "repair", repair_targets, diagnostic=findings_path,
+    )
+    record["last_context_plan"] = plan
+    prompt = context + plan_hint + handoff_prompt(run_path, agent_root, targets, record) + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
-    allowed = {*repair_targets, completion_path.relative_to(agent_root)}
+    allowed = {*repair_targets, completion_path.relative_to(agent_root), Path(memo.name)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     try:
         phase = "build_repair" if attempt["details"].get("kind") == "build" else "checker_repair"
@@ -2194,6 +2243,7 @@ def _repair_target(
         run_path, worktree, agent_root, repair_targets, record, attempt, before,
         allowed, other_files, report, completion_path, token, exit_code, instruction,
     )
+    save_junie_memo(memo, run_path, record, phase=phase)
 
 
 def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targets, attempt):
@@ -2276,7 +2326,6 @@ def _adopt_repair_result(run_path, worktree, agent_root, repair_targets, record,
 
 
 def _verification_scripts(config: dict[str, Any], checker_command: list[str] | None) -> dict[str, Any]:
-    """現在の検証設定に対応する工程スクリプトを返す。"""
     phases = ("before_build", "after_build")
     if checker_command is not None:
         phases += ("before_checker", "after_checker")
@@ -2294,7 +2343,6 @@ _RAZOR_GENERATOR = "Microsoft.NET.Sdk.Razor.SourceGenerators.RazorSourceGenerato
 
 def _razor_generated_path(page: Path) -> Path:
     # Razorの命名規則に合わせ、区切りを保ち、BMP外の文字はUTF-16の2単位分に置換する。
-    """Razor生成コードの診断から編集対象ページを特定する。"""
     name = "".join(
         char if char == "/" or (ord(char) <= 0xFFFF and (char.isalpha() or char.isdecimal()))
         else "__" if ord(char) > 0xFFFF else "_"
@@ -2304,7 +2352,6 @@ def _razor_generated_path(page: Path) -> Path:
 
 
 def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
-    """ビルド・チェッカー診断を人が確認しやすいログへ整える。"""
     log = safe_target(run_path, Path(name))
     if not log.is_file():
         return "", False
@@ -2319,7 +2366,6 @@ def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
 
 
 def _remember_diagnostic(run_path: Path, record: dict[str, Any], kind: str) -> None:
-    """修正履歴に診断の指紋と対象版を記録する。"""
     code = record.get(f"{kind}_exit_code")
     if code is None:
         return
@@ -2332,7 +2378,6 @@ def _remember_diagnostic(run_path: Path, record: dict[str, Any], kind: str) -> N
 
 
 def build_failure_review(config: dict[str, Any], run_id: str, target: str | None = None) -> dict[str, Any]:
-    """ビルド失敗時の出力と、選択した移行対象の編集用スナップショットを取得する。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     if record["status"] != "build_failed":
         raise ValueError("表示中の Run のビルド結果が変わりました。")
@@ -2369,7 +2414,6 @@ def build_failure_review(config: dict[str, Any], run_id: str, target: str | None
 
 
 def _build_error_lines(log: str) -> list[str]:
-    """ビルド出力から修正可能な診断行を抽出する。"""
     lines = (line.strip() for line in log.splitlines())
     return list(dict.fromkeys(line for line in lines if _BUILD_ERROR.search(line)))
 
@@ -2378,7 +2422,6 @@ def _respond_to_build_failure(
     config: dict[str, Any], targets: tuple[Path, ...], worktree: Path, run_path: Path,
     record: dict[str, Any], response: dict[str, Any],
 ) -> None:
-    """ビルド失敗を保存し修正または停止を決める。"""
     record_path = run_path / "run.json"
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
     check_cancelled()
@@ -2410,7 +2453,6 @@ def _respond_to_build_failure(
 
 
 def _repair_from_checker_instruction(config, targets, worktree, run_path, record, instruction):
-    """保存済み指摘をJunieへ渡して修正する。"""
     record_path = run_path / "run.json"
     status = record["status"]
     output, truncated = _review_log(run_path, "checker.log")
@@ -2570,7 +2612,6 @@ def _verify_worktree(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
     *, request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """移行先と検証設定が記録済み版と一致するか確認する。"""
     record_path = Path(result["run_path"]) / "run.json"
     try:
         return _run_verification(config, unit, result, record, request=request)
@@ -2620,7 +2661,6 @@ def _execute_verification_build(config, unit, result, record, run_path, worktree
 
 
 def _checker_repair_inputs(run_path, remaining, targets, use_raw_output):
-    """出力制限と対象範囲を確認し、自動修正へ渡す診断と再発判定用の指紋を返す。"""
     log = safe_target(run_path, Path("checker.log"))
     if log.stat().st_size > 65_536:
         raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
@@ -2683,7 +2723,6 @@ def _run_verification(
     expected_targets = request.get("build_targets") if request else None
 
     def save_verification() -> None:
-        """検証結果と対象版をRun記録へ保存する。"""
         record["verification"]["scripts_passed"] = True
         write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
@@ -2750,10 +2789,15 @@ def _run_verification(
         _run_script_phase(config, "before_checker", worktree, run_path, record)
         if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
             raise ValueError("チェッカーの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
-        checked, findings, use_raw_output = _run_checker(command, verified, record, config["build_project"])
+        review_free_output = bool(config.get("checker_review_free_output"))
+        checked, findings, use_raw_output = _run_checker(
+            command, verified, record, config["build_project"], require_zero_for_success=review_free_output,
+        )
         check_cancelled()
         if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
             raise ValueError("チェッカー実行中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
+        if use_raw_output and review_free_output:
+            checked = _review_free_checker_output(config, checked, record)
         if record.get("checker_exit_code") is not None:
             _run_script_phase(config, "after_checker", worktree, run_path, record)
         try:
@@ -2771,7 +2815,7 @@ def _run_verification(
                 _finish_repair_attempt(record)
                 save_verification()
                 return {**checked, "status": record["status"]}
-            if request:
+            if request or (use_raw_output and review_free_output):
                 return checked
             if not limit:
                 record["checker_review_reason"] = "repair_disabled"
@@ -2808,7 +2852,6 @@ def _run_verification(
 
 
 def run_with_junie(config: dict[str, Any], unit_id: str, *, run_id: str | None = None) -> dict[str, Any]:
-    """新規Runを準備し、移行から検証まで実行する。"""
     junie_cli.require_interactive_cli()
     run_id = str(uuid.UUID(run_id)) if run_id else str(uuid.uuid4())
     with execution_lock(config, run_id):
@@ -2830,7 +2873,6 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     hashes: dict[str, str | None] = {}
 
     def current_hash(path: str) -> str | None:
-        """同じ移行先を複数のPHP範囲が参照する場合に再読込を避ける。"""
         if path not in hashes:
             try:
                 hashes[path] = review_target_hash(worktree, Path(path))
@@ -3013,12 +3055,10 @@ def review_migration_ranges(
 def record_migration_candidates(
     config: dict[str, Any], run_id: str, snapshot_id: str, workspace: dict[str, Any], target_hashes: dict[str, str],
 ) -> None:
-    """確認できるアンカーを、処理済みPHP範囲の候補として保存する。"""
     run_path, _, _, _ = load_saved_run(config, run_id)
     _, manifest = load_capsule_manifest(run_path)
 
     def file_line(segments: list[dict[str, Any]], index: int) -> tuple[str, int]:
-        """0始まりのペイン座標を1始まりのファイル内行番号に戻す。"""
         for segment in segments:
             local = index + 2 - segment["startLine"]
             if 1 <= local <= segment["lineCount"]:
@@ -3079,7 +3119,6 @@ def review_checker(
 def _review_checker(
     config: dict[str, Any], run_id: str, finding_id: str | None, reason: str | None,
 ) -> dict[str, Any]:
-    """チェッカー指摘の承認内容を保存する。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     allowed_status = {"checker_needs_review"} if finding_id is not None else {"checker_needs_review", "checker_accepted"}
     if (record.get("status") not in allowed_status or record.get("checker_exit_code") is None
@@ -3172,7 +3211,6 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
 
 
 def can_resume_build(record):
-    """記録上、明示ビルドを選べる段階か判定する。"""
     return (record.get("status") in (
         _BUILD_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES
         | _SCRIPT_RESUME_STATUSES | {"editor_checkpoint"}
@@ -3205,7 +3243,6 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
 def plan_migration_resume(
     config: dict[str, Any], run_id: str, through_capsule: int | None, *, rewind_to: int | None = None,
 ) -> dict[str, Any]:
-    """保存地点の次から、指定した上限までの移行を計画する。"""
     from .junie_conversation import target_versions
 
     run_path, worktree, _, unit = load_saved_run(config, run_id)
@@ -3265,7 +3302,6 @@ def plan_migration_resume(
 
 
 def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
-    """復元元の区間と直前の版を保存し、巻き戻しの記録を組み立てる。"""
     with editor_queue(run_path) as queue, worktree_source_lock:
         if (queue.get("edit_revision") != plan["edit_revision"] or queue["edits"]
                 or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
@@ -3301,7 +3337,6 @@ def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
 
 
 def plan_stage_resume(config, run_id, stage, *, through_capsule=None, rewind_to=None):
-    """工程の指定をどの操作入口からでも同じ計画に変換する。"""
     if stage == "migration":
         return plan_migration_resume(config, run_id, through_capsule, rewind_to=rewind_to)
     if through_capsule is not None or rewind_to is not None:
@@ -3314,7 +3349,6 @@ def plan_stage_resume(config, run_id, stage, *, through_capsule=None, rewind_to=
 
 
 def _check_build_receipt(config, worktree, record):
-    """チェッカーが使うビルドの入力・生成物が記録時の版か確認する。"""
     receipt = record.get("checker_build")
     if record.get("build_exit_code") != 0 or not receipt:
         raise ValueError("照合できるビルド成果物がありません。ビルドを実行してください。")
@@ -3373,11 +3407,11 @@ def _resume_checker(config, unit, result, record, plan, request_id):
         verification.update(_checker_provenance(config, unit))
         record.update(status="checking", checker_exit_code=None)
         write_run_record(record_path, record)
-    checked, _, _ = _run_checker(
+    checked, _, use_raw_output = _run_checker(
         command, {**result, "request_id": request_id,
                   **{key: record.get(key) for key in ("junie_exit_code", "agent_workspace_path", "completed_capsules",
                                                      "build_exit_code", "build_log_path", "verification")}},
-        record, config["build_project"],
+        record, config["build_project"], require_zero_for_success=bool(config.get("checker_review_free_output")),
     )
     try:
         _check_build_receipt(config, worktree, record)
@@ -3387,6 +3421,8 @@ def _resume_checker(config, unit, result, record, plan, request_id):
         return {**checked, "status": record["status"], "checker_exit_code": None, "error": str(exc)}
     verification["scripts_passed"] = True
     write_run_record(record_path, record)
+    if use_raw_output:
+        return _review_free_checker_output(config, checked, record)
     return checked
 
 
@@ -3402,7 +3438,6 @@ def resume_with_junie(
 
 
 def _validate_resume_plan(config, run_id, unit, record, verification_request, stage):
-    """照会済みの版と実行条件を再計算し、保存状態が変わっていれば止める。"""
     if stage == "build":
         plan = plan_build_resume(config, run_id)
         if any(verification_request.get(key) != value for key, value in plan.items()):

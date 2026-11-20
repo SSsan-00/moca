@@ -38,6 +38,7 @@ def _catalog(manifest: dict[str, Any], through: int | None) -> list[dict[str, An
                         "end_line": source["end_line"],
                         "capsule": part["index"],
                         "character_slices": source.get("character_slices", []),
+                        **({"symbol": source["symbol"]} if isinstance(source.get("symbol"), str) else {}),
                         "role": ("assigned" if through is None else "current" if part["index"] == through else "prior"),
                     })
     for source in [*manifest.get("shared_sources", []), *manifest.get("reference_sources", [])]:
@@ -46,6 +47,7 @@ def _catalog(manifest: dict[str, Any], through: int | None) -> list[dict[str, An
                 "start_line": source["start_line"],
                 "end_line": source["end_line"],
                 "role": "reference",
+                **({"symbol": source["symbol"]} if isinstance(source.get("symbol"), str) else {}),
             })
     return [
         {**pin, "id": f"php-{index:04d}", "ranges": sources.get(pin["path"], [])}
@@ -55,6 +57,10 @@ def _catalog(manifest: dict[str, Any], through: int | None) -> list[dict[str, An
 
 def inspect_context(run_path: Path, through: int | None = None) -> dict[str, Any]:
     _, manifest = load_capsule_manifest(run_path)
+    return _inspect_manifest(manifest, through)
+
+
+def _inspect_manifest(manifest: dict[str, Any], through: int | None) -> dict[str, Any]:
     sources = _catalog(manifest, through)
     index = manifest.get("syntax_boundaries", {})
     items = []
@@ -76,6 +82,30 @@ def inspect_context(run_path: Path, through: int | None = None) -> dict[str, Any
             ],
         })
     return {"version": 1, "unit_id": manifest["unit_id"], "through_capsule": through, "sources": items}
+
+
+def find_feature(run_path: Path, name: str, through: int | None = None) -> dict[str, Any]:
+    query = name.strip().casefold()
+    if not query:
+        raise ValueError("feature requires a non-empty input symbol or named PHP function")
+    capsule, manifest = load_capsule_manifest(run_path)
+    result = _inspect_manifest(manifest, through)
+    pinned = {source["path"]: source for source in pinned_php_sources(manifest) or []}
+    matches: list[dict[str, Any]] = []
+    for source in result["sources"]:
+        declarations = [row for row in source["ranges"] if row.get("symbol", "").casefold() == query]
+        lexical = [row for row in source["functions"] if row["name"].casefold() == query]
+        if declarations or lexical:
+            read_pinned_php(capsule, pinned[source["path"]])
+            matches.append({
+                "id": source["id"], "path": source["path"], "sha256": source["sha256"],
+                "declared_ranges": declarations, "lexical_functions": lexical,
+            })
+    return {
+        "version": result["version"], "unit_id": result["unit_id"], "through_capsule": through,
+        "query": name.strip(), "matches": matches, "relationship_status": "not-semantically-verified",
+        "unmatched_policy": "Unmatched source remains in the existing evidence catalog and assigned capsules.",
+    }
 
 
 def _whole_line_assigned(ranges: list[dict[str, Any]], line: int, width: int) -> bool:

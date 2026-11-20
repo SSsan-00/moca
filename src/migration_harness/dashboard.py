@@ -57,8 +57,8 @@ PROGRESS_FIELDS = (
     "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule",
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
     "build_exit_code", "build_log_path", "build_attempt_seconds",
-    "checker_exit_code", "checker_log_path", "checker_review_reason", "error",
-    "script_phase", "script_logs", "stage_timings", "active_stage", "timing_updated_at", "last_stop",
+    "checker_exit_code", "checker_log_path", "checker_review_reason", "checker_advisory", "error",
+    "script_phase", "script_logs", "script_advisories", "stage_timings", "active_stage", "timing_updated_at", "last_stop",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
@@ -101,7 +101,6 @@ def _editor_history_delta(payload, previous_version, versions):
 
 
 def _prompt_timing(config, state, run_path, record, *, live: bool = False, pending_edits: bool = False) -> str | None:
-    """保留中の指示に適用する送信タイミングを選ぶ。"""
     if state.get("stop_requested") or state.get("generating_anchors"):
         return None
     phase = record["status"]
@@ -122,7 +121,6 @@ def _prompt_timing(config, state, run_path, record, *, live: bool = False, pendi
 
 
 def _read_settings(path: Path) -> tuple[bytes, str]:
-    """設定ファイルの内容と版を読み取る。"""
     if not path.exists():
         return harness_asset("harness.example.toml").read_bytes(), "missing"
     data = path.read_bytes()
@@ -149,7 +147,6 @@ def _save_settings(path: Path, content: str, version: str, *, before_replace=Non
 
 
 class Dashboard:
-    """端末側の実行状態、ブラウザー向けのイベント履歴、操作待ち行列を管理する。"""
 
     def __init__(self) -> None:
         """接続し直すブラウザー向けに直近のイベントを保持できる状態を作る。"""
@@ -180,7 +177,6 @@ class Dashboard:
                           "operation_id": self.control.operation_id, "stop_requested": False})
 
     def activity(self, entry: dict[str, Any]) -> None:
-        """Runの状態と操作可能範囲を画面表示へ反映する。"""
         with self.condition:
             if not self.control or self.state.get("ready"):
                 return
@@ -197,7 +193,6 @@ class Dashboard:
             self.publish(state)
 
     def show_junie_request(self, request: dict | None) -> Future[str] | None:
-        """Junieの確認依頼をRunの画面状態へ表示する。"""
         with self.condition:
             state = self.state.copy()
             state.pop("junie_request", None)
@@ -209,7 +204,6 @@ class Dashboard:
             return self.junie_reply
 
     def answer_junie(self, action: dict) -> bool:
-        """表示中のJunie確認へ利用者の選択を返す。"""
         with self.condition:
             request = self.state.get("junie_request")
             option = action.get("option_id")
@@ -223,7 +217,6 @@ class Dashboard:
             return True
 
     def request_stop(self, action: dict[str, Any]) -> bool:
-        """表示中の操作IDに結び付けて停止を要求する。"""
         with self.condition:
             if (self.control is None or self.state.get("ready")
                     or action.get("operation_id") != self.state.get("operation_id")):
@@ -276,7 +269,6 @@ class Dashboard:
                 self.publish({**self.state, "token_usage": usage})
 
     def ready(self, config: dict[str, Any], result: dict[str, Any], message: str = "") -> None:
-        """処理が一区切りついた時点の操作可否とレビュー状態を公開する。"""
         stopped = result.get("last_stop") or {}
         if not message and stopped.get("saved_status") == result["status"]:
             message = stopped["message"]
@@ -351,22 +343,18 @@ class Dashboard:
 
 
 def _dashboard_handler(dashboard, config, html, script, prefix):
-    """HTTPハンドラーを組み立て、設定とプレビューの状態をサーバー単位で共有する。"""
     manager = getattr(dashboard, "manager", None)
     preview_lock = Lock()
     reference_previews: dict[str, ExecutionControl] = {}
     dry_run_controls: dict[str, ExecutionControl] = {}
 
     class Handler(BaseHTTPRequestHandler):
-        """ダッシュボード専用のパスとオリジンでHTTPの受付範囲を絞る。"""
 
         @property
         def expected_host(self) -> str:
-            """実際に割り当てたループバックのポートを含むHostを返す。"""
             return f"127.0.0.1:{self.server.server_port}"
 
         def bind_view(self) -> bool:
-            """HTTP要求から対象Runの画面状態を取得する。"""
             try:
                 requested = self.headers.get("X-Run-ID") or parse_qs(urlsplit(self.path).query).get("run_id", [None])[0]
                 self.dashboard = manager.get(requested) if manager else dashboard
@@ -394,7 +382,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            """閲覧用のアセット、進捗配信、保存された結果を振り分ける。"""
             if self.headers.get("Host") != self.expected_host or not self.path.startswith(prefix):
                 self.send_error(403)
                 return
@@ -403,7 +390,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.send_get_route()
 
         def send_get_route(self) -> None:
-            """検証済みのGETを、アセットまたはRunの読み取り操作へ振り分ける。"""
             if self.path.partition("?")[0] == prefix:
                 self.send_body(200, "text/html; charset=utf-8", html)
             elif self.path == prefix + "dashboard.js":
@@ -485,7 +471,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_error(404)
 
         def send_junie_thoughts(self) -> None:
-            """Runに保存されたJunieの思考表示を返す。"""
             state = self.dashboard.state
             args = parse_qs(urlsplit(self.path).query)
             run_id = args.get("run_id", [None])[0]
@@ -510,7 +495,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.send_body(200, "application/json", json.dumps({**batch, "live": live}, ensure_ascii=False).encode("utf-8"))
 
         def send_prompts(self, action: dict[str, Any] | None = None) -> None:
-            """追加指示の受付状態を画面へ返す。"""
             state = self.dashboard.state
             run_id = state.get("run_id")
             payload = {"run_id": run_id, "timing": None, "prompts": []}
@@ -578,7 +562,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
 
         def editor_view_versions(self, query, state, run_id, run_path, worktree, record, unit):
-            """Run内の現物と履歴の版を算出し、変更なしの取得で本文の再読込を省く。"""
             names = [path.as_posix() for path in target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES]
             name = query.get("target", names[:1] or [None])[0]
             if name is not None and name not in names:
@@ -750,7 +733,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             return payload
 
         def send_checker_output(self) -> None:
-            """最新チェッカー結果と対象版を返す。"""
             query = parse_qs(urlsplit(self.path).query)
             with self.dashboard.condition:
                 state = self.dashboard.state
@@ -791,7 +773,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     return
 
         def send_build_review(self) -> None:
-            """ビルド失敗と修正確認に必要な情報を返す。"""
             query = parse_qs(urlsplit(self.path).query)
             with self.dashboard.condition:
                 state = self.dashboard.state
@@ -808,7 +789,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_body(200, "application/json; charset=utf-8", json.dumps(review, ensure_ascii=False).encode())
 
         def send_workspace(self, *, include_usage: bool = False) -> None:
-            """Runの状態と画面操作情報を返す。"""
             if manager:
                 try:
                     body = json.dumps(manager.workspace(include_usage=include_usage), ensure_ascii=False).encode()
@@ -841,7 +821,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.send_body(200, "application/json", body)
 
         def send_settings(self) -> None:
-            """設定フォーム用の現在値と選択肢を返す。"""
             try:
                 path = Path(config["config_path"])
                 data, version = _read_settings(path)
@@ -912,7 +891,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 return
 
         def do_POST(self) -> None:
-            """URL、オリジン、本文を検証し、対象Runの操作に振り分ける。"""
             if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
                                   prefix + "build-response", prefix + "editor", prefix + "prompts"):
                 self.send_error(404)
@@ -1012,7 +990,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             return action
 
         def bind_post_view(self, route: str, action: dict[str, Any]) -> bool:
-            """新規Runでは既定の画面を使い、既存Runでは明示IDを優先する。"""
             creating = manager and route == "control" and action.get("action") in ("run", "prepare")
             if creating:
                 self.dashboard = manager.get()
@@ -1046,7 +1023,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.send_editor(action)
 
         def create_comparison(self, action: dict[str, Any]) -> None:
-            """表示中のRunからアンカー生成なしで比較を作る。"""
             with self.dashboard.condition:
                 comparison_config = config.copy()
                 state = self.dashboard.state
@@ -1108,7 +1084,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     raise ValueError
 
         def post_control(self, action: dict[str, Any]) -> None:
-            """検証済みの制御操作をRunManagerまたは表示中のRunへ渡す。"""
             try:
                 self.validate_control_action(action)
             except (OSError, ValueError):
@@ -1147,7 +1122,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_error(409)
 
         def save_settings(self, action: dict[str, Any]) -> None:
-            """利用者の設定変更を検証して保存する。"""
             if action.get("mode") in {"reference-preview", "reference-cancel"}:
                 self.reference_preview(action)
                 return
@@ -1246,7 +1220,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     reference_previews.pop(request_id, None)
 
         def send_anchored_comparison(self, action: dict[str, Any]) -> None:
-            """端末側でアンカー生成が終わるまで待ち、作成元Runと比較のIDを返す。"""
             if not config.get("diff_viewer_html"):
                 self.send_body(409, "text/plain; charset=utf-8", "設定の差分ビューアーのHTMLを指定してください。".encode())
                 return
@@ -1376,7 +1349,6 @@ def execute_dashboard_action(view, config, action):
 
 
 def render_dashboard_html(options: str) -> bytes:
-    """本番ダッシュボード用に共有テンプレートと相対アセットURLを組み立てる。"""
     demo = harness_asset("progress-demo.html")
     html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
     if not marker:
@@ -1392,7 +1364,6 @@ def run_dashboard(
     config: dict[str, Any], *, unit_id: str | None = None, run_id: str | None = None,
     config_error: str | None = None,
 ) -> dict[str, Any] | None:
-    """サーバーを開き、ブラウザーで移行の進捗と確認操作を公開する。"""
     if unit_id is not None and run_id is not None:
         raise ValueError("choose a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent

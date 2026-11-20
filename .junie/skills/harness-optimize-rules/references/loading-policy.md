@@ -80,14 +80,18 @@ python tools/rule_review.py apply rule-workspace/LegacyApp rule-workspace/Legacy
 python tools/rule_usage.py harness.local.toml --output rule-workspace/LegacyApp/loading-after.json
 ```
 
-`meaning` は候補の版と原文→配置先の行対応を出力します。出力後、`meaning-review.json` の `entries` に、実際に照合した判断を次の形で記録してください。 `kind` は `obligation`（義務）、`condition`（適用条件）、`exception`（例外）、`priority`（優先関係）、`description`（読む場面）のいずれかです。読む場面には候補TOMLと同じ `description` も記録します。変更した配置先ごとに根拠を記録し、見つかった矛盾・不足は `unresolved` に残します。確認のためだけにハッシュや引用を機械生成して済ませないでください。
+`meaning` は候補の版と原文→配置先の行対応を出力します。出力後、`meaning-review.json` の `entries` に、実際に照合した判断を次の形で記録してください。 `kind` は `obligation`（義務）、`condition`（適用条件）、`exception`（例外）、`priority`（優先関係）、`description`（読む場面）のいずれかです。読む場面には候補TOMLと同じ `description` も記録します。変更した配置先ごとに根拠を記録します。適用条件・例外・優先関係では `related` で結び付ける別の原文行と配置先を示します。ハーネスは参照が同じ資料内に実際に残る場合だけ反映します。同時提供の保証がない別資料への分割は保留し、見つかった矛盾・不足は `unresolved` に残します。確認のためだけにハッシュや引用を機械生成して済ませないでください。
 
 ```json
 {
   "kind": "exception",
   "reason": "失敗時の例外は義務がある同じDB資料に残した",
   "source": {"path": "原文の絶対パス", "line": 18, "quote": "原文の18行目"},
-  "destination": {"path": "生成ファイルの絶対パス", "line": 9, "quote": "原文の18行目"}
+  "destination": {"path": "生成ファイルの絶対パス", "line": 9, "quote": "原文の18行目"},
+  "related": {
+    "source": {"path": "原文の絶対パス", "line": 17, "quote": "原文の17行目"},
+    "destination": {"path": "生成ファイルの絶対パス", "line": 8, "quote": "原文の17行目"}
+  }
 }
 ```
 

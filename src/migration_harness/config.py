@@ -52,14 +52,12 @@ def _input_encoding(value: Any, scope: str) -> str:
 
 
 def _draft_extension(path: Path) -> str:
-    """仮移行先の種類を判定する複合拡張子を返す。"""
     if path.name.lower().endswith(".cshtml.cs"):
         return ".cshtml.cs"
     return path.suffix.lower()
 
 
 def _draft_import_commands(unit: dict[str, Any], targets: list[Path], root: Path) -> list[list[str]]:
-    """移行単位の仮成果物コピー設定をコマンドへ変換する。"""
     sources = unit.get("draft_imports", [])
     scope = f"移行単位「{unit['id']}」の仮C#取り込み"
     if not isinstance(sources, list):
@@ -107,7 +105,6 @@ def _file_path(value: Any, root: Path, scope: str, *, inside: bool = False) -> s
 
 
 def _outside(root: Path, path: Path, name: str) -> Path:
-    """アプリのリポジトリと実行データが混ざらないよう、保存先を解決する。"""
     resolved = path.expanduser().resolve()
     if resolved == root or resolved.is_relative_to(root):
         raise ValueError(f"{name} must be outside the application repository: {resolved}")
@@ -132,12 +129,10 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def _config_relative_path(config_path: Path, value: str) -> Path:
-    """設定ファイルの場所を基準に、保存先やアンカー参照のパスを解決する。"""
     return (config_path.parent / Path(value).expanduser()).resolve()
 
 
 def _project_settings(project: Any, config_path: Path) -> dict[str, Any]:
-    """Git作業領域、実行データの保存先とカプセル上限を検証する。"""
     if not isinstance(project, dict):
         raise ValueError("[project] must be a table")
     root_value = project.get("root")
@@ -179,7 +174,6 @@ def _project_settings(project: Any, config_path: Path) -> dict[str, Any]:
 
 
 def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
-    """ビルド、チェッカー、スクリプト、ビューアー、Junieの設定を検証する。"""
     build = raw.get("build", {})
     if not isinstance(build, dict):
         raise ValueError("[build] must be a table")
@@ -196,6 +190,9 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     checker_command = checker.get("command")
     if "command" in checker:
         validate_checker_command(checker_command)
+    review_free_output = checker.get("review_free_output_with_junie", False)
+    if type(review_free_output) is not bool:
+        raise ValueError("[checker].review_free_output_with_junie must be a boolean")
     max_repair_attempts = checker.get("max_repair_attempts", 2)
     if type(max_repair_attempts) is not int or max_repair_attempts < 0:
         raise ValueError("[checker].max_repair_attempts must be a non-negative integer")
@@ -239,6 +236,9 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
         raise ValueError("[junie] must be a table")
+    review_script_output = junie.get("review_script_output", False)
+    if type(review_script_output) is not bool:
+        raise ValueError("[junie].review_script_output must be a boolean")
     junie_model = junie.get("model")
     if junie_model is not None:
         if not isinstance(junie_model, str) or any(character.isspace() or ord(character) < 32 or ord(character) == 127
@@ -269,9 +269,11 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         "diff_viewer_html": viewer_html if viewer_enabled else None,
         "diff_viewer_anchor_reference": anchor_references,
         "max_repair_attempts": max_repair_attempts,
+        "checker_review_free_output": review_free_output,
         "junie_max_steps": junie_max_steps,
         "junie_input_limits": input_limits,
         "junie_model": junie_model,
+        "junie_review_script_output": review_script_output,
         "junie_effort": junie_effort,
     }
 
@@ -383,7 +385,6 @@ def _normalize_unit(unit, root, project_context, common_rules, common_references
 def _normalize_input(
     item: Any, scope: str, *, root: Path, project_rule: bool = False, project_reference: bool = False,
 ) -> dict[str, Any]:
-    """入力資料のパスと範囲を正規化する。"""
     if not isinstance(item, dict):
         raise ValueError(f"{scope}: each [[units.inputs]] entry must be a table")
     item_path = _file_path(item.get("path"), root, scope)
@@ -427,7 +428,6 @@ def _normalize_input(
 
 
 def validate_rule_usage(usage: Any, description: Any) -> None:
-    """ルールの用途と説明の設定を検証する。"""
     if not isinstance(usage, str) or usage not in {"required", "reference"}:
         raise ValueError(
             "移行ルールの読み込み方（usage）は「毎回適用する必須事項」（required）または"
@@ -446,7 +446,6 @@ def validate_checker_command(command: Any) -> None:
 
 
 def is_command(command: Any) -> bool:
-    """値が実行可能なコマンドとして設定されているか判定する。"""
     return (
         isinstance(command, list) and bool(command)
         and all(isinstance(arg, str) and "\0" not in arg for arg in command)
@@ -463,7 +462,6 @@ def find_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
 
 
 def checker_command_for_unit(config: dict[str, Any], unit: dict[str, Any]) -> list[str] | None:
-    """CLI指定、移行単位、プロジェクト共通の順でチェッカーを選ぶ。"""
     if config.get("checker_from_cli"):
         return config["checker_command"]
     return unit.get("checker_command", config["checker_command"])

@@ -222,3 +222,91 @@ target = "One.cs"
         applied = run("apply", candidate, "--register-new")
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertEqual(config.read_bytes(), candidate.read_bytes())
+
+    def test_fixed_exception_must_stay_with_the_obligation_after_pack_split(self):
+        from migration_harness import workflow
+        from migration_harness.config import load_config
+        from migration_harness.rule_materials import render_guidelines
+
+        config = self.root / "settings.toml"
+        original = b'''[project]
+root = "app"
+worktree_root = "trees"
+run_root = "runs"
+[[project.migration_rules]]
+path = "original.md"
+[[units]]
+id = "one"
+source = "source.php"
+target = "One.cs"
+# keep this comment
+'''
+        config.write_bytes(original)
+        primary = "Record an audit event on every migrated operation."
+        exception = "Except health checks: do not emit an audit event."
+        unrelated = "If exporting CSV, preserve column order."
+        raw = ("\n".join([primary, exception, unrelated]) + "\n").encode()
+        source = self.project / "original.md"
+        source.write_bytes(raw)
+        (self.project / "source.php").write_bytes(b"<?php echo 'synthetic';\n")
+        self.commit_project()
+        pack = self.root / "semantic-review"
+        candidate = self.root / "candidate.toml"
+        tool = Path(__file__).resolve().parents[1] / "tools/rule_review.py"
+        pack_tool = tool.with_name("rule_pack.py")
+
+        def run(action, *arguments, script=tool):
+            return subprocess.run(
+                [sys.executable, str(script), action, str(pack), *map(str, arguments)],
+                capture_output=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            )
+
+        def success(result):
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result
+
+        success(run("start", config))
+        success(run("read", 1))
+        success(run("record", json.dumps({"1": {"end": unrelated, "note": "Audit and exception", "required_lines": [1]}})))
+        (pack / "sources").mkdir()
+        (pack / "sources" / source.name).write_bytes(raw)
+        success(run("snapshot", script=pack_tool))
+
+        def plan(last_required):
+            (pack / "plan.json").write_text(json.dumps({"documents": [
+                {"path": "Agent.md", "title": "Audit", "parts": [
+                    {"source": source.name, "start": 1, "end": last_required}]},
+                {"path": "details/export.md", "title": "CSV", "description": "When exporting CSV",
+                 "parts": [{"source": source.name, "start": last_required + 1, "end": 3}]},
+            ]}), encoding="utf-8")
+            success(run("build", script=pack_tool))
+            success(run("verify", script=pack_tool))
+            generated = (pack / "generated/rules.toml").read_bytes()
+            candidate.write_bytes(original[:original.index(b"[[project.migration_rules]]")] + generated
+                                  + original[original.index(b"[[units]]"):])
+            evidence = json.loads(success(run("meaning", candidate)).stdout)
+            required = pack / "generated/Agent.md"
+            detail = pack / "generated/details/export.md"
+            obligation = self.evidence("obligation", source, 1, primary, required)
+            evidence["entries"] = [
+                obligation,
+                self.evidence("exception", source, 2, exception, required if last_required == 2 else detail,
+                              related={key: obligation[key] for key in ("source", "destination")}),
+                self.evidence("description", source, 3, unrelated, detail, description="When exporting CSV"),
+            ]
+            (pack / "meaning-review.json").write_text(json.dumps(evidence), encoding="utf-8")
+
+        plan(1)
+        self.assertIn("同じ資料", run("apply", candidate).stderr)
+        self.assertEqual(config.read_bytes(), original)
+        (pack / "generated").rename(pack / "generated-rejected")
+        plan(2)
+        success(run("apply", candidate))
+        self.assertIn(b"# keep this comment", config.read_bytes())
+        settings = load_config(config)
+        prepared = workflow.prepare_run(settings, "one")
+        capsule, manifest = workflow.load_capsule_manifest(Path(prepared["run_path"]))
+        rules = render_guidelines(capsule / "materials", manifest, selected=frozenset())
+        self.assertIn(primary, rules)
+        self.assertIn(exception, rules)
+        self.assertNotIn(unrelated, rules)

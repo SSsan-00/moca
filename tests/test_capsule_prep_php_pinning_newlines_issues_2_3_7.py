@@ -26,7 +26,6 @@ class CapsulePreparationTests(HarnessCase):
     """カプセルの上限・固定した原文・改行を準備経路から検証する。"""
 
     def setUp(self):
-        """移行対象と元PHPの基準版をGitに入れる。"""
         super().setUp()
         self.php = self.project / PHP["path"]
         self.php.write_bytes(b"<?php\necho 100;\n")
@@ -47,7 +46,6 @@ class CapsulePreparationTests(HarnessCase):
         return path
 
     def prepare(self, *inputs):
-        """実際の準備処理を使い、保存済みmanifestまで取得する。"""
         config = load_config(self.config_path(*inputs))
         result = workflow.prepare_run(config, "example")
         run_path = Path(result["run_path"])
@@ -297,7 +295,6 @@ class CapsulePreparationTests(HarnessCase):
         observed_contexts = []
 
         def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
-            """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
             guidelines = Path(command[command.index("--ide-guidelines") + 1])
             self.assertIn(b"REQUIRED_MIGRATION_RULE", guidelines.read_bytes())
@@ -551,7 +548,6 @@ class CapsulePreparationTests(HarnessCase):
         config["diff_viewer_html"] = "viewer.html"
 
         def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
-            """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             proposal, = targets
             numbered_php = (proposal.parent / "left.txt").read_text(encoding="utf-8")
             self.assertIn('2\techo "日本語";\n', numbered_php)
@@ -627,7 +623,6 @@ class CapsulePreparationTests(HarnessCase):
             capture_workspace(config, result["run_id"])
 
         def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
-            """Junieの代わりにテストに必要な成果物と完了状態を作る。"""
             target, = targets
             self.assertEqual((target.parent / ".migration-context.md").read_bytes(), expected_context)
             return 0

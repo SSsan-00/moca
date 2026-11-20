@@ -52,7 +52,6 @@ class JunieConversationTests(SavedRunFixture):
             self.raise_background_error()
 
     def diagnostics(self, run_id):
-        """待機失敗時の保存状態、操作、および会話スレッドの状態を取得する。"""
         view = self.manager.views.get(run_id)
         state = view.state if view else {}
         thread = self.manager.conversations.thread
@@ -89,13 +88,11 @@ class JunieConversationTests(SavedRunFixture):
         self.headers = {"Origin": f"{origin.scheme}://{origin.netloc}", "Content-Type": "application/json"}
 
     def restart_server(self, **settings):
-        """同じ保存領域からRunManagerと会話履歴を読み直す。"""
         self.server_cleanup.close()
         self.config = {**self.config, **settings}
         self.start_server()
 
     def request(self, endpoint, body=None, run_id=None):
-        """テスト用のRun IDとオリジンを付けてダッシュボードへ要求する。"""
         headers = {**self.headers, "X-Run-ID": run_id or self.run_id}
         started = time.monotonic()
         request = Request(self.url + endpoint, None if body is None else json.dumps(body).encode(), headers)
@@ -122,7 +119,6 @@ class JunieConversationTests(SavedRunFixture):
         return identifier, result
 
     def wait_for(self, identifier, status, *, run_path=None):
-        """保存済みの履歴を読み、対象指示が期待した状態になるまで待つ。"""
         end = time.monotonic() + 6
         while time.monotonic() < end:
             self.raise_background_error()

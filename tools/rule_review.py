@@ -174,7 +174,7 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
         evidence = evidence_inputs(pack, data, before, after, register_new)
         if collect_evidence:
             versions, _, _, placements, _, relevant = evidence
-            print(json.dumps({"format_version": 1, "versions": versions, "unresolved": [], "entries": []},
+            print(json.dumps({"format_version": 2, "versions": versions, "unresolved": [], "entries": []},
                              ensure_ascii=False, indent=2))
             print("確認が必要な配置先: " + ", ".join(sorted(relevant)), file=sys.stderr)
             print(json.dumps(placements, ensure_ascii=False, indent=2), file=sys.stderr)

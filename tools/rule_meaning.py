@@ -5,6 +5,7 @@ from pathlib import Path
 from rule_pack import read_json, source_files
 
 KINDS = {"obligation", "condition", "exception", "priority", "description"}
+DEPENDENT_KINDS = {"condition", "exception", "priority"}
 
 
 def _sha(data: bytes) -> str:
@@ -21,6 +22,8 @@ def _rule_text(item: dict) -> list[str]:
 def evidence_inputs(pack: Path, candidate: bytes, before: dict, after: dict, additions: bool):
     old = {item["path"]: item for item in before["rules"]}
     new = {item["path"]: item for item in after["rules"]}
+    if len(old) != len(before["rules"]) or len(new) != len(after["rules"]):
+        raise ValueError("同じ資料に複数の登録があります。意味レビューの前に登録を整理してください。")
     relevant = {path for path, item in new.items() if old.get(path) != item}
     sources = {path: _rule_text(item) for path, item in old.items()}
     destinations = {path: _rule_text(new[path]) for path in relevant}
@@ -77,12 +80,33 @@ def _quote(entry: object, texts: dict[str, list[str]], name: str):
     return path, line
 
 
+def _placement(entry, sources, destinations, placements):
+    source, source_line = _quote(entry.get("source"), sources, "原文")
+    destination, destination_line = _quote(entry.get("destination"), destinations, "配置先")
+    if not any(source == original and start <= source_line <= end
+               and destination_line == first + source_line - start
+               for original, start, end, first in placements.get(destination, ())):
+        raise ValueError("原文と配置先が実際の配置に対応していません。")
+    return source, source_line, destination
+
+
+def _check_related(entry, anchor, sources, destinations, placements):
+    related = entry.get("related")
+    if not isinstance(related, dict):
+        raise ValueError("適用条件・例外・優先関係には、結び付ける原文と配置先の根拠が必要です。")
+    original, line, path = _placement(related, sources, destinations, placements)
+    if (original, line) == anchor[:2]:
+        raise ValueError("適用条件・例外・優先関係の参照が同じ原文行を指しています。")
+    if path != anchor[2]:
+        raise ValueError("適用条件・例外・優先関係を参照する義務と同じ資料に配置してください。")
+
+
 def validate_evidence(pack: Path, snapshot, mandatory):
     versions, sources, destinations, placements, new, relevant = snapshot
     if not relevant:
         return
     review = read_json(pack / "meaning-review.json")
-    if review.get("format_version") != 1 or review.get("versions") != versions:
+    if not isinstance(review, dict) or review.get("format_version") != 2 or review.get("versions") != versions:
         raise ValueError("意味レビューが候補や原文の現行版と一致しません。")
     unresolved = review.get("unresolved")
     if not isinstance(unresolved, list) or unresolved:
@@ -97,12 +121,9 @@ def validate_evidence(pack: Path, snapshot, mandatory):
         detail = entry.get("reason")
         if not isinstance(detail, str) or not detail.strip():
             raise ValueError("判断理由を記録してください。")
-        source, source_line = _quote(entry.get("source"), sources, "原文")
-        destination, destination_line = _quote(entry.get("destination"), destinations, "配置先")
-        if not any(source == original and start <= source_line <= end
-                   and destination_line == first + source_line - start
-                   for original, start, end, first in placements.get(destination, ())):
-            raise ValueError("原文と配置先が実際の配置に対応していません。")
+        source, source_line, destination = _placement(entry, sources, destinations, placements)
+        if entry["kind"] in DEPENDENT_KINDS:
+            _check_related(entry, (source, source_line, destination), sources, destinations, placements)
         covered.add(destination)
         if entry.get("kind") == "description":
             if not new[destination]["description"] or entry.get("description") != new[destination]["description"]:

@@ -1353,7 +1353,6 @@ RZ-017: a previous checker finding is still present</pre>
   </div>
 </template>
 <script>
-// 使用量を表示するRunの選択を一覧の更新後も保つ。
 function bindTokenRuns(renderRun) {
   const filter = document.querySelector("#token-run-filter");
   const sort = document.querySelector("#token-run-sort");
@@ -1369,7 +1368,6 @@ function bindTokenRuns(renderRun) {
   let displayedId;
   let error = "";
 
-  // 移行単位やRunの条件で使用量を絞り込み、選択とフォーカスを保つ。
   function render() {
     const query = filter.value.trim().toLocaleLowerCase();
     const records = (runs ?? []).filter(run => run.run_id !== active?.run_id);
@@ -1456,7 +1454,6 @@ function summarizeTokenUsage(rows) {
   }, {input: 0, output: 0, reported: false});
 }
 
-// 選んだRunの集計と使用量の待機表示を更新する。
 function renderRunTokenSummary(rows = [], waiting = false) {
   const {input, output, reported} = summarizeTokenUsage(rows);
   document.querySelector("#run-token-counts").hidden = !reported;
@@ -1471,7 +1468,6 @@ function renderRunTokenSummary(rows = [], waiting = false) {
   }
 }
 
-// 保存された呼び出し別の使用量とキャッシュの内訳を描画する。
 function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
   const tokenNumber = new Intl.NumberFormat("ja-JP");
   const {input: inputTokens, output: outputTokens, reported: hasUsage} = summarizeTokenUsage(rows);
@@ -1483,7 +1479,6 @@ function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
     ["キャッシュ読み込み", "cache-read", read],
     ["キャッシュ作成", "cache-write", write],
   ];
-  // 項目名と利用量を日本語の桁区切りで表示する。
   function quantityLabel(label, key, value) {
     const quantity = document.createElement("span");
     quantity.className = `token-key-${key}`;
@@ -1552,7 +1547,6 @@ const tabIndicator = workspaceTabs.querySelector(".workspace-tab-indicator");
 const harnessPanes = harnessTabs.map(tab => document.getElementById(tab.getAttribute("aria-controls")));
 let activeHarnessTab = 0;
 
-// 選択タブの実測位置へインジケーターを移す。
 function positionTabIndicator() {
   const tab = harnessTabs[activeHarnessTab];
   tabIndicator.style.width = `${tab.offsetWidth}px`;
@@ -1675,7 +1669,6 @@ function toggleHarnessTheme(event) {
 }
 document.querySelector("#theme-toggle").addEventListener("click", toggleHarnessTheme);
 
-// 比較メニューの項目選択・外側クリック・Escape時の閉じ方を揃える。
 function bindComparisonOptions(button, compare) {
   const options = button.closest("details");
   const summary = options.querySelector("summary");
@@ -1701,7 +1694,6 @@ const migrationLedgerList = document.querySelector("#migration-ledger-list");
 const migrationLedgerMessage = document.querySelector("#migration-ledger-message");
 const migrationLedgerDetails = document.querySelector("#migration-ledger-details");
 const migrationCandidateComparison = document.querySelector("#migration-candidate-comparison");
-// 受信したカプセルの状態を台帳の既存行に反映する。
 function updateMigrationLedgerStatuses(snapshot) {
   if (!migrationLedgerDialog.open) return;
   for (const badge of migrationLedgerList.querySelectorAll("[data-capsule]")) {
@@ -1747,7 +1739,6 @@ function migrationMapping({mapping, review}) {
   return entry;
 }
 
-// カプセル内のPHP範囲を、元ファイルの行番号とともに並べる。
 function migrationLedgerRow(capsule) {
   const row = document.createElement("li");
   row.className = "migration-ledger-row";
@@ -1788,7 +1779,6 @@ function migrationLedgerRow(capsule) {
 }
 
 
-// 前のRunの表示をクリアし、内容を読み込む間も見出しにフォーカスを置く。
 function openMigrationLedger(message = "") {
   migrationLedgerList.replaceChildren();
   migrationLedgerDetails.hidden = true;
@@ -1798,7 +1788,6 @@ function openMigrationLedger(message = "") {
   document.querySelector("#migration-ledger-title").focus();
 }
 
-// 閲覧用の台帳と、その対応候補を作った比較への導線を表示する。
 function showMigrationLedger(ledger, snapshot, compare) {
   document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
   document.querySelector("#migration-ledger-target").textContent = (ledger.targets || [ledger.target]).join(" / ");
@@ -1817,7 +1806,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
   updateMigrationLedgerStatuses(snapshot);
 }
 
-  // 進捗から追加指示を受け付けるダイアログを接続する。
   function bindProgressPromptDialog({open, submit, inputChanged}) {
     const button = document.querySelector("#open-progress-prompt");
     const dialog = document.querySelector("#progress-prompt-dialog");
@@ -1828,12 +1816,10 @@ function showMigrationLedger(ledger, snapshot, compare) {
     const list = document.querySelector("#progress-prompt-list");
     const labels = {queued: "送信待ち", steering: "Junie に送信・処理中", applying: "反映確認中", sending: "Junie が実行中", sent: "反映済み"};
     let renderedPrompts = "";
-    // 追加指示の失敗をダイアログ内に文字列として表示する。
     function showError(error) {
       feedback.textContent = error?.message || "";
       feedback.hidden = !error;
     }
-    // 確認中の送信可否と保存済みの追加指示をダイアログに反映する。
     function render({timing, prompts = []} = {}, {available = true, loading = false, saving = false} = {}) {
       if (!dialog.open) return;
       const bytes = new TextEncoder().encode(input.value.trim()).length;
@@ -1995,7 +1981,6 @@ function showMigrationLedger(ledger, snapshot, compare) {
   .junie-log-body:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 </style>
 <script>
-// 追加で受け取った思考ログを順に表示し、接続状態を案内する。
 function renderJunieLog({body, list, statusLabel, empty}, {entries = [], status, live = false, reset = false}) {
   const follow = reset || body.scrollHeight - body.scrollTop - body.clientHeight < 24;
   if (statusLabel.textContent !== status) statusLabel.textContent = status;
@@ -2019,7 +2004,6 @@ function renderJunieLog({body, list, statusLabel, empty}, {entries = [], status,
   if (follow && (entries.length || reset)) body.scrollTop = body.scrollHeight;
 }
 
-// 表示中Runの詳細ログを別タブで開き、受信処理を開始する。
 function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
   const logButton = document.createElement("button");
   logButton.type = "button";
@@ -2111,7 +2095,6 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
   let junieLog = [];
   const demoLog = bindJunieLog(() => logRun, renderDemoLog, {demo: true});
 
-  // デモのRunで表示する架空の進捗ログを用意する。
   function sampleJunieLog(run) {
     return [
       [2, "ファイルの読み取り",
@@ -2137,7 +2120,6 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
     });
   }
 
-  // デモの進捗に合わせて表示するログを更新する。
   function renderDemoLog(view) {
     const {run, list} = view;
     const live = !run.ready && !run.queued && !run.prepareOnly && run.tick < lastJunieLogTick;
@@ -2243,7 +2225,6 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
       token_usage: [{label: "カプセル 1", input: 15380, output: 2210, cache_read: 8800, cache_write: 420, responses: 1}]},
     ...olderSamples,
   ]);
-  // 現在までに実行したデモ区間の使用量を表示する。
   function renderDemoTokenUsage() {
     const rows = sampleUsage.slice(0, reportedCapsules);
     if (reportedRepair) rows.push(repairUsage);
@@ -2276,7 +2257,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
     return name.lastIndexOf(".") > 0 ? name.slice(name.lastIndexOf(".")) : "";
   }
 
-  // コピー先が一意に対応するか、デモの保存時に確認する。
   function validateDemoDraftImports({id, targets, draft_imports: sources}) {
     const scope = `移行単位「${id}」の仮C#取り込み`;
     if (!Array.isArray(sources) || sources.some(path => typeof path !== "string" || !path.trim())) {
@@ -2299,7 +2279,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
     }
   }
 
-  // デモでは設定例とフォームから生成するTOMLを取り扱う。
   function demoSettingsDraft(content, changes = {}) {
     const blocks = content.split(/(?=^[\t ]*\[)/m);
     const unitBlocks = () => blocks.flatMap((block, index) => /^\s*\[\[units\]\]/.test(block) ? [index] : []);
@@ -2370,7 +2349,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
       for (const position of previous.reverse()) blocks.splice(position, 1);
       blocks.splice(insertion, 0, ...updated);
     }
-    // 指定した移行単位に属する参照資料設定を探す。
     function unitContext(index) {
       for (let next = index + 1; next < blocks.length && blocks[next].trimStart().startsWith("[") &&
               !blocks[next].trimStart().startsWith("[[units]]"); next++) {
@@ -2419,7 +2397,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
       if (key in numericSettings) return value.split("#")[0].trim().replaceAll("_", "");
       return JSON.parse(value.trim());
     };
-    // デモのTOMLから編集に必要な資料項目を取り出す。
     function readMaterials(positions, commonRule = false) {
       return positions.map((block, index) => {
         const role = commonRule ? "migration_rules" : read(block, "role");
@@ -2473,7 +2450,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
   const demoRuns = createDemoRuns(demoRunID, demoUnits, renderParallelDemo, () => demoSettingsDraft(demoSettings).form.junie);
   let shownDemoRun;
   let shownDemoStatus;
-  // Runが変わったときに進捗とエディタの模擬状態を切り替える。
   function renderParallelDemo(run) {
     const changed = shownDemoRun !== run.run_id;
     shownDemoRun = run.run_id;
@@ -2584,7 +2560,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
     showDemoMigrationLedger();
   });
   document.querySelector("#migration-ledger-compare").addEventListener("click", () => openDiffViewer(migrationLedgerMessage));
-  // 工程の切り替えに合わせて、計測・表示・人の確認待ちを更新する。
   function updateStep(index) {
     toggle.removeAttribute("aria-haspopup");
     toggle.removeAttribute("aria-controls");
@@ -2649,7 +2624,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
     if (migrationLedgerDialog.open) showDemoMigrationLedger();
   }
 
-  // 指摘の見出しにフォーカスして確認を始める。
   function openReviewDialog() {
     if (reviewDialog.open) return;
     reviewDialog.showModal();
@@ -2666,7 +2640,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
     }, 220);
   }
 
-  // 現在のデモの内容を、Viewerが読み込める行座標付きの形式にする。
   function createReviewWorkspace(withAnchors) {
     const php = `function get_status_label($status) {
     return $statusLabels[$status] ?? 'Unknown';
@@ -2713,7 +2686,6 @@ echo $statusText;
     };
   }
 
-  // 比較時点のデモデータを保存し、組み込みViewerへ渡す。
   async function openDiffViewer(status, withAnchors = false, savedWorkspace) {
     // 画面を開くのを待つ間にデモが進んでも、クリックした時点の内容を保持する。
     const workspace = savedWorkspace ?? createReviewWorkspace(withAnchors);
@@ -2746,7 +2718,6 @@ echo $statusText;
     download.click();
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
     if (!loading.isConnected) return;
-    // 画面内で読み込めない環境から、手動で取り込めるViewerへ案内する。
     const openViewerFile = () => {
       if (loading.isConnected) {
         const link = document.createElement("a");
@@ -2813,7 +2784,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     }
   }
 
-  // 判断を待つ間は模擬実行と経過時間の計測を止める。
   function requestHumanReview() {
     clearTimeout(timer);
     timer = undefined;
@@ -2833,7 +2803,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     openReviewDialog();
   }
 
-  // 未判断の件数とフィルタの強調状態を揃える。
   function updateReviewCount() {
     const count = document.querySelectorAll('.ledger-row[data-status="judgment"]').length;
     document.querySelector("#pending-count").innerHTML = `${count} <span>件</span>`;
@@ -2864,7 +2833,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     addEvent(timestamp, title, detail);
   }
 
-  // 人の判断を受け、デモの修正工程に戻す。
   function resumeForCorrection() {
     humanReviewHandled = true;
     correctionRequested = true;
@@ -2890,7 +2858,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     scheduleNext();
   }
 
-  // 指摘の判断を表示に反映し、デモの実行を続ける。
   function acceptReview() {
     humanReviewHandled = true;
     setReviewRow("done", "問題なし", false);
@@ -2902,7 +2869,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateStep(steps.length);
   }
 
-  // 初回再生と同じ指摘・入力状態に戻す。
   function resetReview() {
     humanReviewHandled = false;
     correctionRequested = false;
@@ -2912,7 +2878,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     applyLedgerFilter();
   }
 
-  // 新しい実行ログをリスト末尾に置き、追って読める位置に移す。
   function addEvent(time, title, detail, logIndex) {
     const row = document.createElement("div");
     row.className = "event live";
@@ -2938,7 +2903,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     activity.scrollTop = activity.scrollHeight;
   }
 
-  // その時点のJunie呼び出しと文字数の比率を表示する。
   function updateCapsuleCall(index) {
     const call = capsuleCalls[index];
     const percent = Math.round(call.chars / Number(capsuleMeter.getAttribute("aria-valuemax")) * 100);
@@ -2971,14 +2935,12 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     }, 1300);
   }
 
-  // 現在のカプセル表示を残したまま、進行タイマーを止める。
   function stopCapsuleCalls() {
     clearInterval(capsuleTimer);
     capsuleTimer = undefined;
     renderDemoTokenUsage();
   }
 
-  // 次の再生で最初のカプセルを表示できる状態に戻す。
   function resetCapsuleCalls() {
     capsuleCallIndex = -1;
     reportedCapsules = 0;
@@ -2991,7 +2953,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     capsuleMeter.setAttribute("aria-valuenow", "0");
   }
 
-  // 状態が変わった行にも、選択中の絞り込みを適用する。
   function applyLedgerFilter() {
     let visibleCount = 0;
     ledgerRows.forEach(row => {
@@ -3026,7 +2987,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
-  // 保留した工程から再生を続け、完了後は先頭の状態に戻す。
   function play() {
     if (current >= steps.length) reset();
     playing = true;
@@ -3045,7 +3005,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     updateMigrationLedgerStatuses(demoMigrationLedgerState());
   }
 
-  // 再生中の工程に対応する待ち時間で次の工程を予約する。
   function scheduleNext() {
     clearTimeout(timer);
     timer = setTimeout(() => {
@@ -3061,7 +3020,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     }, current === 4 && demoRepairIndex >= 0 ? demoRepairPhases[demoRepairIndex][2] : durations[current] || 2300);
   }
 
-  // 模擬実行と比較候補を初期化し、先頭で一時停止する。
   function reset() {
     demoRepairIndex = -1;
     clearTimeout(stopTimer);
@@ -3092,7 +3050,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     toggle.textContent = "デモを再生";
   }
 
-  // 全体と各工程の経過時間を同じ更新周期で表示する。
   function updateElapsed() {
     const seconds = Math.floor((elapsedTotal + (elapsedStarted ? performance.now() - elapsedStarted : 0)) / 1000);
     elapsedValue.textContent = formatDuration(seconds * 1000);
@@ -3132,7 +3089,6 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
     elapsedTimer = setInterval(updateElapsed, 1000);
   }
 
-  // 再生中の加算を確定し、停止中の時間を集計から外す。
   function stopElapsed() {
     if (!elapsedStarted) return;
     elapsedTotal += performance.now() - elapsedStarted;

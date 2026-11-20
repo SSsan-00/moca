@@ -20,12 +20,10 @@ from .rule_materials import write_rule_files
 
 
 def is_php_input(source: dict[str, Any]) -> bool:
-    """拡張子を問わずPHP用途を扱い、従来の.php入力・保存済みRunも引き続き扱う。"""
     return source.get("role") in {"php", "reference_php"} or Path(source["path"]).suffix.lower() == ".php"
 
 
 def migration_php_encodings(manifest: dict[str, Any]) -> dict[str, str]:
-    """移行対象に含まれるPHPを、カプセルに現れた順に返す。"""
     # 固定済みPHPの一覧には、共通資料として登録した参考PHPも含まれる。
     encodings: dict[str, str] = {}
     for part in manifest["parts"]:
@@ -93,7 +91,6 @@ def _selected_lines(path: Path, start: int, end: int | None, encoding: str) -> I
 
 
 def _context_header(unit: dict[str, Any]) -> str:
-    """共通ヘッダに移行単位と編集を許可したファイルを記載する。"""
     return "\n".join([
         f"# Migration unit: {unit['id']}",
         "",
@@ -105,12 +102,10 @@ def _context_header(unit: dict[str, Any]) -> str:
 
 
 def _max_backtick_run(text: str) -> int:
-    """ソース中のバッククォートでMarkdownの囲みが閉じないよう最長の連続数を求める。"""
     return max((len(run) for run in re.findall(r"`+", text)), default=0)
 
 
 def _group_markdown_frame(group: dict[str, Any]) -> tuple[str, str]:
-    """予算の計算と出力に使うMarkdownの前後を組み立てる。"""
     item = group["item"]
     fence = "`" * max(3, group["max_backticks"] + 1)
     opening = (
@@ -187,7 +182,6 @@ def _render_groups(groups: list[dict[str, Any]]) -> str:
 
 
 def _manifest_source(group: dict[str, Any]) -> dict[str, Any]:
-    """抜粋を元のファイル・行範囲・行内の担当範囲に結び付ける。"""
     return {
         "role": group["item"]["role"],
         "path": group["item"]["path"],
@@ -392,7 +386,6 @@ def _write_segments(
     boundary_chars = min(1200, max_chars // 10)
 
     def flush_capsule() -> None:
-        """確定した抜粋と実際の文字数を保存して、次のカプセルを空にする。"""
         nonlocal previous_tail
         if not groups:
             return
@@ -574,7 +567,6 @@ def _syntax_manifest(
     }
 
 def load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
-    """Runに属し、番号が連続したカプセルのmanifestを読み込む。"""
     run_path = run_path.resolve()
     capsule_path = (run_path / "capsule").resolve()
     if not capsule_path.is_relative_to(run_path) or not capsule_path.is_dir():
