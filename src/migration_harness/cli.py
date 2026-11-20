@@ -13,7 +13,7 @@ from migration_harness.errors import format_error
 from migration_harness.workflow import (
     VERIFIED_STATUSES, RunScriptError, migration_ledger, plan_stage_resume,
     plan_stopped_repair, prepare_run, resolve_stopped_repair, resume_with_junie, review_checker, review_migration_ranges,
-    run_with_junie,
+    run_with_junie, script_recovery,
 )
 
 
@@ -43,6 +43,9 @@ def _parse_args() -> argparse.Namespace:
     resume.add_argument("--rewind-to", type=int, help="With --from migration, replay a completed capsule from its saved version")
     resume.add_argument("--plan", action="store_true", help="Print the requested stage plan without running it")
     resume.add_argument("--version", help="Require the plan printed by --plan to still match")
+    script = configured_command("script-recovery", "Inspect or explicitly retry an uncertain one-time script")
+    script.add_argument("--run-id", required=True)
+    script.add_argument("--retry", metavar="VERSION", help="Retry only the approved script after checking its effects and processes")
     draft = configured_command("repair-draft", "Inspect or select saved input for a stopped repair")
     draft.add_argument("--run-id", required=True)
     draft.add_argument("--version", help="Version from the plan printed without this option")
@@ -226,6 +229,10 @@ def main() -> None:
             report = review_rules(config, args.run_id, rule=args.rule, kind=args.record, version=args.version,
                                   start=args.start_line, end=args.end_line, reason=args.reason, reference=args.reference)
             print(json.dumps(report, ensure_ascii=False, indent=2))
+            return
+        if args.command == "script-recovery":
+            result = script_recovery(config, args.run_id, retry_version=args.retry)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return
         if args.command == "repair-draft":
             if args.version is None and not args.choose:

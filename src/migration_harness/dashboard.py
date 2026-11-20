@@ -42,6 +42,7 @@ from migration_harness.junie_conversation import (
 from migration_harness.junie_thoughts import FILENAME as JUNIE_THOUGHTS_FILENAME, read_junie_thoughts
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.run_records import edit_run_record, load_saved_run, run_observer, validate_run_id
+from migration_harness.recovery_status import recovery_status
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.source_context import preview_target_context
 from migration_harness.timings import freeze_timings
@@ -242,7 +243,7 @@ class Dashboard:
     @staticmethod
     def list_record(record: dict[str, Any]) -> dict[str, Any]:
         fields = (*PROGRESS_FIELDS, "token_usage", "hidden_from_dashboard", "repair_pending",
-                  "migration_stop_unconfirmed", "checker_required", "verification", "target_apply_pending")
+                  "migration_stop_unconfirmed", "checker_required", "verification", "target_apply_pending", "script_inflight")
         result = {key: record[key] for key in fields if key in record}
         result["repair_history"] = range(len(record.get("repair_history", [])))
         return result
@@ -421,6 +422,20 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     self.send_body(200, content_type, asset)
             elif self.path.partition("?")[0] == prefix + "editor":
                 self.send_editor()
+            elif self.path.partition("?")[0] == prefix + "recovery":
+                try:
+                    run_id = parse_qs(urlsplit(self.path).query).get("run_id", [""])[0]
+                    validate_run_id(run_id)
+                    view = manager.get(run_id) if manager else self.dashboard
+                    if view.state.get("run_id") != run_id or not view.state.get("ready"):
+                        raise ValueError("停止・中断した実行を選び直してください。")
+                    blocked = bool(manager and run_id in manager.blocked_conversations)
+                    data = recovery_status(config, run_id, blocked=blocked)
+                    if not view.state.get("ready"):
+                        raise ValueError("実行状態が変わりました。")
+                    self.send_body(200, "application/json", json.dumps(data, ensure_ascii=False).encode("utf-8"))
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
             elif self.path.partition("?")[0] == prefix + "resume-plan":
                 try:
                     query = parse_qs(urlsplit(self.path).query)

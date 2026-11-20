@@ -197,11 +197,65 @@ def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str,
     }
 
 
+_RECOVERABLE_ONCE_PHASES = frozenset({"after_prepare", "before_migration", "after_migration"})
+
+
+def _script_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _script_attempt_matches(attempt, phase, number, cwd, invocation):
+    return (attempt["phase"], attempt["number"], attempt["command"], attempt["cwd"]) == (
+        phase, number, _script_digest(invocation), str(cwd.resolve()),
+    )
+
+
+def _block_unknown_script(record):
+    if attempt := record.get("script_inflight"):
+        raise ValueError(
+            f"自作スクリプトの実行結果不明: {attempt['phase']} #{attempt['number']}。"
+            "ログと残存プロセスを確認し、script-recovery で再試行する版を確認してください。"
+        )
+
+
+def script_recovery(config, run_id, *, retry_version=None):
+    validate_run_id(run_id)
+    with execution_lock(config, run_id):
+        run_path, worktree, record, unit = load_saved_run(config, run_id)
+        attempt = record.get("script_inflight")
+        if not attempt or attempt["phase"] not in _RECOVERABLE_ONCE_PHASES:
+            raise ValueError("実行結果が不明な一度限りのスクリプトはありません。")
+        phase, number = attempt["phase"], attempt["number"]
+        extras = tuple(unit.get("draft_import_commands", ())) if phase == "before_migration" else ()
+        commands = [*config.get("scripts", {}).get(phase, []), *extras]
+        invocation = script_command_for_phase(commands[number - 1], phase, worktree,
+                                              config.get("build_project"), record.get("target")) if 1 <= number <= len(commands) else ()
+        saved_progress = record.get("script_command_progress", {}).get(phase, [])
+        current = (_script_attempt_matches(attempt, phase, number, worktree, invocation)
+                   and [_script_digest(command) for command in commands[:number - 1]] == saved_progress)
+        targets = {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}
+        version = _script_digest([run_id, attempt, commands, invocation, targets])
+        if retry_version is None:
+            return {"run_id": run_id, "phase": phase, "number": number,
+                    "log": str(run_path / f"{phase}.log"), "version": version,
+                    "can_retry": current and not record.get("migration_stop_unconfirmed"),
+                    "warning": "実行済みの可能性があります。ログ・対象と残存プロセスを確認してください。"}
+        if not current or version != retry_version:
+            raise ValueError("確認後にコマンド・対象版が変わりました。保存状態とログを確認してください。")
+        if record.get("migration_stop_unconfirmed"):
+            raise ValueError("前回のプロセス終了を確認できないため、再試行できません。")
+        _run_script_phase(config, phase, worktree, run_path, record, once=True,
+                          extra_commands=extras, retry_attempt=attempt)
+        return {"run_id": run_id, "phase": phase, "number": number, "retried": True}
+
+
 def _run_script_phase(
     config: dict[str, Any], phase: str, cwd: Path, run_path: Path,
     record: dict[str, Any] | None = None, *, once: bool = False,
-    extra_commands: tuple[list[str], ...] = (),
+    extra_commands: tuple[list[str], ...] = (), retry_attempt: dict[str, Any] | None = None,
 ) -> None:
+    if record is not None and retry_attempt is None:
+        _block_unknown_script(record)
     configured = config.get("scripts", {}).get(phase, [])
     commands = [*configured, *extra_commands]
     if not commands or (record is not None and once and phase in record.get("completed_script_phases", [])):
@@ -212,17 +266,21 @@ def _run_script_phase(
     record_path = run_path / "run.json"
     previous_status = record["status"] if record is not None else "preparing"
     previous_stage = record.get("active_stage") if record is not None else None
+    if retry_attempt is not None:
+        previous_status, previous_stage = retry_attempt["previous_status"], retry_attempt["previous_stage"]
     command_ids = []
     start = 0
     apply_decisions = bool(config.get("junie_apply_output_decisions") and config.get("junie_review_script_output"))
     if record is not None and once:
-        command_ids = [hashlib.sha256(json.dumps(command).encode("utf-8")).hexdigest() for command in commands]
+        command_ids = [_script_digest(command) for command in commands]
         completed_ids = record.get("script_command_progress", {}).get(phase, [])
         # 中断後は成功済みの先頭部分だけを飛ばす。コマンドが変わった位置からは再実行する。
         for saved, current in zip(completed_ids, command_ids):
             if saved != current:
                 break
             start += 1
+    if retry_attempt is not None and retry_attempt["number"] != start + 1:
+        raise ValueError("保存済みの実行位置が確認したコマンドと一致しません。")
     if record is not None:
         record.setdefault("script_logs", {})[phase] = str(log_path)
         record.update(status="script_running", script_phase=phase)
@@ -242,14 +300,16 @@ def _run_script_phase(
                 previous_stage = pending["previous_stage"]
                 record.pop("error", None)
         with log_path.open("ab") as log:
-            for number, command in enumerate(commands[start:], start + 1):
+            stop = start + 1 if retry_attempt is not None else len(commands)
+            for number, command in enumerate(commands[start:stop], start + 1):
                 if record is not None and record.get("script_handoffs"):
                     remaining_receipts = [item for item in record["script_handoffs"]
                                           if (item["phase"], item["command_number"]) != (phase, number)]
                     if len(remaining_receipts) != len(record["script_handoffs"]):
                         record["script_handoffs"] = remaining_receipts
                         write_run_record(record_path, record)
-                log.write(f"\n[{phase} {number}] {command[0]}\n".encode("utf-8"))
+                retry_label = " (operator retry)" if retry_attempt is not None else ""
+                log.write(f"\n[{phase} {number}]{retry_label} {command[0]}\n".encode("utf-8"))
                 log.flush()
                 invocation = command
                 invocation = script_command_for_phase(
@@ -258,7 +318,21 @@ def _run_script_phase(
                 review_output = bool(record is not None and config.get("junie_review_script_output")
                                      and number <= len(configured) and not command[0].startswith("@"))
                 start_output = os.fstat(log.fileno()).st_size if review_output else 0
+                tracked = record is not None and once and phase in _RECOVERABLE_ONCE_PHASES
+                if tracked:
+                    check_cancelled()
+                    record["script_inflight"] = {
+                        "id": uuid.uuid4().hex, "phase": phase, "number": number,
+                        "command": _script_digest(invocation), "cwd": str(cwd.resolve()),
+                        "previous_status": previous_status, "previous_stage": previous_stage,
+                    }
+                    write_run_record(record_path, record)
                 completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
+                if tracked:
+                    if completed.returncode < 0:
+                        _block_unknown_script(record)
+                    record.pop("script_inflight")
+
                 settled_once = completed.returncode == 0 and record is not None and once
                 if settled_once:
                     record.setdefault("script_command_progress", {})[phase] = command_ids[:number]
@@ -279,12 +353,14 @@ def _run_script_phase(
                         write_run_record(record_path, record)
                         _resolve_script_decision(config, run_path, cwd, record, decision)
                     else:
+                        if tracked:
+                            write_run_record(record_path, record)
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
                         if apply_decisions and completed.returncode == 0:
                             _save_script_handoff(run_path, cwd, record, decision)
                         if apply_decisions and completed.returncode == 0 and decision.get("applied") not in {"continued", "handed_off"}:
                             raise ValueError("The script response needs operator review; see the script log and advisory")
-                elif settled_once:
+                elif settled_once or tracked:
                     write_run_record(record_path, record)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
@@ -304,10 +380,12 @@ def _run_script_phase(
             raise
         raise RunScriptError(message, run_id, interrupted=isinstance(exc, KeyboardInterrupt)) from None
     if record is not None:
-        if once:
+        if once and (retry_attempt is None or retry_attempt["number"] == len(commands)):
             record.setdefault("completed_script_phases", []).append(phase)
             record.get("script_command_progress", {}).pop(phase, None)
         record["status"] = previous_status
+        if retry_attempt is not None:
+            record.pop("error", None)
         record.pop("script_phase", None)
         write_run_record(record_path, record, timing_stage=previous_stage)
 
@@ -3500,7 +3578,7 @@ def _require_saved_checker(config: dict[str, Any], unit: dict[str, Any], record:
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
-    if record.get("migration_stop_unconfirmed") or status not in (
+    if record.get("script_inflight") or record.get("migration_stop_unconfirmed") or status not in (
         _SCRIPT_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES
     ):
         return False
@@ -3514,7 +3592,7 @@ def can_resume_build(record):
     return (record.get("status") in (
         _BUILD_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES
         | _SCRIPT_RESUME_STATUSES | {"editor_checkpoint"}
-    ) and bool(record.get("completed_capsules"))
+    ) and not record.get("script_inflight") and bool(record.get("completed_capsules"))
         and record["completed_capsules"] == record.get("context_capsules")
         and not record.get("target_apply_pending"))
 
@@ -3637,6 +3715,7 @@ def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
 
 
 def plan_stage_resume(config, run_id, stage, *, through_capsule=None, rewind_to=None):
+    _block_unknown_script(load_saved_run(config, run_id)[2])
     if stage == "migration":
         return plan_migration_resume(config, run_id, through_capsule, rewind_to=rewind_to)
     if through_capsule is not None or rewind_to is not None:
@@ -3830,6 +3909,7 @@ def _resume_with_junie(
 ) -> dict[str, Any]:
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = load_saved_run(config, run_id)
+    _block_unknown_script(record)
     if record.get("migration_stop_unconfirmed"):
         raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
                          "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")

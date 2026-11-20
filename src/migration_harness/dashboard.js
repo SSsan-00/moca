@@ -895,6 +895,70 @@ function renderTokens() {
   }
 }
 
+let recoveryKey;
+let recoveryRequest = 0;
+
+function renderRecovery(data, force = false) {
+  const panel = element("#recovery-summary");
+  if (!panel) return;
+  const eligible = data.ready && data.run_id && !data.queued && !data.generating_anchors;
+  const key = eligible ? JSON.stringify([data.run_id, data.status, data.completed_capsules, data.message,
+    data.error_details]) : null;
+  if (!force && recoveryKey === key) return;
+  const changedRun = !recoveryKey || !key || JSON.parse(recoveryKey)[0] !== data.run_id;
+  recoveryKey = key;
+  const request = ++recoveryRequest;
+  if (changedRun) panel.hidden = true;
+  if (!key) return;
+
+  fetch(`recovery?run_id=${encodeURIComponent(data.run_id)}`, {cache: "no-store"})
+    .then(response => {
+      if (!response.ok) throw new Error("復旧情報を取得できませんでした。");
+      return response.json();
+    })
+    .then(info => {
+      if (request !== recoveryRequest || snapshot.run_id !== info.run_id || !snapshot.ready) return;
+      panel.hidden = !info.available;
+      if (!info.available) return;
+      const completed = info.completed ?? "記録なし";
+      const total = info.total ?? "記録なし";
+      const saved = info.saved_targets ? "採用版の記録あり" : "採用版の記録なし";
+      const draft = info.draft === "migration" ? "移行下書きあり"
+        : info.draft === "repair" ? "修正下書きあり" : "下書きの記録なし";
+      element("#recovery-checkpoint").textContent =
+        `保存済み区間: ${completed} / ${total} · 工程: ${statusNames[info.stage] || info.stage} · ${saved} · ${draft}`;
+      element("#recovery-reason").textContent = (data.message || data.error || "").split("\n", 1)[0].slice(0, 400);
+      element("#recovery-pending").textContent =
+        `未反映: 編集 ${info.pending_edits} 件、指示 ${info.pending_prompts} 件`;
+      let next = data.resumable ? "保存された内容を見て「同じ実行を再開」を選べます。"
+        : "停止理由と実行ログを確認してください。";
+      if (info.status === "preparation_failed" || info.status === "preparation_interrupted") {
+        next = "入力や設定を確認し、作業ツリーが未作成なら「準備のみ」からやり直してください。";
+      } else if (checkerReviewStatuses.has(info.status)) {
+        next = "チェッカー出力を確認してください。成果物の版が変わった場合はビルドから再検証します。";
+      }
+      if (info.draft === "repair") next = "下書きと手修正版が競合する場合は repair-draft で版を確認してください。";
+      if (info.conflict) next = "エディタで差分を確認し、競合を解消して保存してください。";
+      if (info.needs_process_check) next = "ログと残存プロセスを確認するまで処理を再開しないでください。";
+      if (info.unknown_script) {
+        const script = info.unknown_script;
+        next = `実行結果不明: ${script.phase} #${script.number}。${script.log} と残存プロセスを確認後、端末の script-recovery で再試行する版を確認してください。自動では再実行しません。`;
+      }
+      element("#recovery-next").textContent = next;
+      element("#recovery-editor").hidden = !snapshot.worktree_path;
+    })
+    .catch(() => {
+      if (request !== recoveryRequest || snapshot.run_id !== data.run_id || !snapshot.ready) return;
+      if (panel.hidden && !force) return;
+      element("#recovery-next").textContent = "復旧情報を取得できません。実行を開き直すかログを確認してください。";
+    });
+}
+
+element("#recovery-refresh")?.addEventListener("click", () => renderRecovery(snapshot, true));
+element("#recovery-editor")?.addEventListener("click", () => {
+  switchHarnessTab(harnessTabs.indexOf(element("#tab-editor")), true);
+});
+
 function render() {
   const data = snapshot;
   renderTokens();
@@ -954,6 +1018,7 @@ function render() {
       ? stopped && !showReview ? "停止中" : data.ready ? "確認待ち" : "処理中" : "待機中";
   });
   renderCapsuleProgress(data, total, completed);
+  renderRecovery(data);
   renderJunieReview(data.junie_request);
   renderCheckerReview(data, showReview);
   syncActions();
@@ -1266,6 +1331,9 @@ function connectRun(runId = "", {removed = false} = {}) {
   stream?.close();
   connected = false;
   selectedRunId = runId;
+  recoveryKey = undefined;
+  ++recoveryRequest;
+  element("#recovery-summary").hidden = true;
   document.dispatchEvent(new Event("harnessrunselect"));
   syncActions();
   const url = new URL(location.href);

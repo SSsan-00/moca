@@ -108,6 +108,18 @@ try {
   await cdp("Runtime.enable");
   await cdp("Page.navigate", {url});
   await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true" && typeof window.harnessEditorCanSwitch === "function" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);
+  await click("tab-progress");
+  await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
+  assert(await evaluate(`${field("recovery-checkpoint")}.textContent.includes("1 / 3")`));
+  assert(await evaluate(`${field("recovery-pending")}.textContent.includes("指示 1 件")`));
+  assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
+  await click("recovery-editor");
+  assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
+  await cdp("Page.reload");
+  await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true"`);
+  await click("tab-progress");
+  await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
+  console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reload");
   await click("tab-settings");
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
   await evaluate('document.querySelector("#settings-project-details > summary").click()');

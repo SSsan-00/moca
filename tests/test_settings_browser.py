@@ -1,11 +1,13 @@
 """保存と再読込みをインストール済み Chromium の画面で確認する。"""
 import io
+import json
 import os
 import shutil
 import subprocess
 import tempfile
 import tomllib
 import unittest
+import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 from threading import Thread
@@ -68,12 +70,30 @@ target = "Example.cs"
 [units.target_context]
 max_bytes = 9007199254740993 # preserve this value
 """, encoding="utf-8")
+            config = dashboard.load_config(path)
+            run_id = str(uuid.uuid4())
+            run = root / "runs" / run_id
+            worktree = root / "trees" / run_id
+            run.mkdir(parents=True)
+            worktree.mkdir(parents=True)
+            record = {
+                "run_id": run_id, "unit_id": "例", "target": "Example.cs",
+                "project_root": config["project_root"], "worktree_path": str(worktree.resolve()),
+                "status": "script_failed", "script_phase": "before_migration",
+                "completed_capsules": 1, "context_capsules": 3,
+                "script_inflight": {"phase": "before_migration", "number": 2},
+            }
+            (run / "run.json").write_text(json.dumps(record), encoding="utf-8")
+            (run / "editor.json").write_text(json.dumps({
+                "edits": {}, "prompts": [{"id": "pending", "text": "fixture", "status": "queued"}],
+            }), encoding="utf-8")
             view = dashboard.Dashboard()
-            view.publish({"status": "idle", "ready": True})
+            view.observe(record)
+            view.ready(config, record)
             package = Path(dashboard.__file__).parent
             terminal = io.StringIO()
             with redirect_stdout(terminal):
-                server = view.server(dashboard.load_config(path), dashboard.render_dashboard_html(" data-live data-workspace"),
+                server = view.server(config, dashboard.render_dashboard_html(" data-live data-workspace"),
                                      (package / "dashboard.js").read_bytes())
             url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
             worker = Thread(target=server.serve_forever, daemon=True)
