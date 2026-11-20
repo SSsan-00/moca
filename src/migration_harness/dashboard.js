@@ -691,6 +691,8 @@ function bindResumeStage() {
   };
 }
 
+document.querySelector("#dry-run-selected").hidden = false;
+
 bindHarnessWorkspace({
   preparationChat: true,
   readRuns: () => workspaceRequest("workspace"),

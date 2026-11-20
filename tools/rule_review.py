@@ -3,11 +3,13 @@
 import argparse
 import json
 import stat
+import sys
 import tomllib
 from collections import Counter
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from rule_meaning import evidence_inputs, validate_evidence
 from rule_pack import source_files, verify
 from rule_usage import inspect_rules
 
@@ -15,13 +17,11 @@ PAGE_CHARS = 2800
 
 
 def save_new(path: Path, data: bytes) -> None:
-    """既存の確認記録を上書きせずに原本を保存する。"""
     with path.open("xb") as stream:
         stream.write(data)
 
 
 def pages_for(report: dict) -> list:
-    """物理行番号を保ち、長い行も確認ページに収める。"""
     pages = []
     for item in report["rules"]:
         source = Path(item["path"])
@@ -45,7 +45,6 @@ def pages_for(report: dict) -> list:
 
 
 def inventory(pack: Path) -> tuple[Path, bytes, list]:
-    """設定と原文を確認開始時の版に照合する。"""
     report = json.loads((pack / "loading-before.json").read_text(encoding="utf-8"))
     config = Path(report["config_path"])
     original = (pack / "config.before.toml").read_bytes()
@@ -55,7 +54,6 @@ def inventory(pack: Path) -> tuple[Path, bytes, list]:
 
 
 def review_records(pack: Path) -> dict:
-    """ページ単位で途中保存された読了記録を読み出す。"""
     review_path = pack / "reading-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8")) if review_path.exists() else {}
     if not isinstance(review, dict):
@@ -65,7 +63,6 @@ def review_records(pack: Path) -> dict:
 
 def check_review(pack: Path, pages: list, *, records: dict | None = None,
                  numbers: set[int] | None = None) -> set[tuple[Path, int]]:
-    """指定ページの表示・読了と引用を照合し、必須行を返す。"""
     review = review_records(pack) if records is None else records
     if set(review) - {str(i) for i in range(1, len(pages) + 1)}:
         raise ValueError("確認記録に不明なページ番号があります。")
@@ -101,7 +98,6 @@ def check_review(pack: Path, pages: list, *, records: dict | None = None,
 
 def show_pages(pack: Path, pages: list, numbers: list[int]) -> None:
     # 全文を1回で出すとツール側で省略される。小さい束でも確認記録はページごとに残す。
-    """指定ページを表示し、確認画面に出した記録を残す。"""
     for index in numbers:
         source, page = pages[index - 1]
         print(f"ページ {index}/{len(pages)}: {source}")
@@ -112,7 +108,6 @@ def show_pages(pack: Path, pages: list, numbers: list[int]) -> None:
 
 
 def without_rules(data: bytes) -> dict:
-    """ルール以外の設定が維持されているか比較できる辞書を作る。"""
     doc = tomllib.loads(data.decode("utf-8"))
     doc["project"].pop("migration_rules", None)
     for unit in doc.get("units", []):
@@ -123,8 +118,8 @@ def without_rules(data: bytes) -> dict:
     return doc
 
 
-def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: Path) -> None:
-    """採用候補のルールと設定を照合してから作業設定を更新する。"""
+def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: Path, *,
+          collect_evidence: bool = False, register_new: bool = False) -> None:
     pack = pack.resolve()
     data = candidate.read_bytes()
     if without_rules(data) != without_rules(original):
@@ -142,7 +137,20 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
         }
         old_paths = source_text.keys()
         new_rules = {Path(item["path"]): item["usage"] for item in after["rules"]}
-        if old_paths != new_rules.keys():
+        if register_new:
+            unchanged = {item["path"]: item for item in after["rules"] if Path(item["path"]) in old_paths}
+            if unchanged != {item["path"]: item for item in before["rules"]} or old_paths == new_rules.keys():
+                raise ValueError("新規登録では既存ルールを変更せず、新しいルールを追加してください。")
+            generated = pack / "generated"
+            registered = {path for path in new_rules.keys() - old_paths if path.is_relative_to(generated)}
+            if registered:
+                verify(pack)
+                expected = tomllib.loads((generated / "rules.toml").read_text(encoding="utf-8"))
+                if {Path(row["path"]): row["usage"] for row in expected["project"]["migration_rules"]} != {
+                    path: new_rules[path] for path in registered
+                }:
+                    raise ValueError("新規生成した資料の登録が生成結果と一致しません。")
+        elif old_paths != new_rules.keys():
             verify(pack)
             _, split_sources = source_files(pack)
             removed = Counter(source_text[path] for path in old_paths - new_rules.keys())
@@ -163,8 +171,21 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
             line = source_text[path].splitlines()[number - 1]
             if not any(line in lines for lines in required.values()):
                 raise ValueError(f"必須登録に原文がありません: {path}:{number}")
-        if config.read_bytes() != original:
-            raise ValueError("設定が同時に変更されました。")
+        evidence = evidence_inputs(pack, data, before, after, register_new)
+        if collect_evidence:
+            versions, _, _, placements, _, relevant = evidence
+            print(json.dumps({"format_version": 1, "versions": versions, "unresolved": [], "entries": []},
+                             ensure_ascii=False, indent=2))
+            print("確認が必要な配置先: " + ", ".join(sorted(relevant)), file=sys.stderr)
+            print(json.dumps(placements, ensure_ascii=False, indent=2), file=sys.stderr)
+            return
+        if not (pack / "meaning-review.json").is_file() and evidence[-1]:
+            raise ValueError("意味レビューがありません。meaningで現行版を確認してください。")
+        validate_evidence(pack, evidence, mandatory)
+        fresh = inspect_rules(temporary)
+        if (fresh != after or config.read_bytes() != original
+                or evidence_inputs(pack, data, before, fresh, register_new)[0] != evidence[0]):
+            raise ValueError("設定または資料が同時に変更されました。")
         temporary.chmod(stat.S_IMODE(config.stat().st_mode))
         temporary.replace(config)
         after["config_path"] = str(config)
@@ -174,10 +195,9 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
 
 
 def main() -> None:
-    """ルールの確認開始、ページ表示、確認記録、反映を実行する。"""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    for name in ("start", "read", "record", "check", "apply"):
+    for name in ("start", "read", "record", "check", "meaning", "apply"):
         command = commands.add_parser(name)
         command.add_argument("pack", type=Path)
         if name == "start":
@@ -187,8 +207,9 @@ def main() -> None:
         if name == "record":
             command.add_argument("records", help="読んだ1〜2ページの確認記録（JSON、または@JSONファイル）")
             command.add_argument("--next", action="store_true", help="記録後に次の未読2ページを表示")
-        if name == "apply":
+        if name in {"meaning", "apply"}:
             command.add_argument("candidate", type=Path)
+            command.add_argument("--register-new", action="store_true")
     args = parser.parse_args()
     pack = args.pack
     try:
@@ -233,8 +254,9 @@ def main() -> None:
                 show_pages(pack, pages, sorted(set(range(1, len(pages) + 1)) - shown)[:2])
             return
         mandatory = check_review(pack, pages)
-        if args.action == "apply":
-            apply(pack, config, original, mandatory, args.candidate)
+        if args.action in {"meaning", "apply"}:
+            apply(pack, config, original, mandatory, args.candidate,
+                  collect_evidence=args.action == "meaning", register_new=args.register_new)
         else:
             print(f"全 {len(pages)} ページ確認済み")
     except (OSError, ValueError) as exc:

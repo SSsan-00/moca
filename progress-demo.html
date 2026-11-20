@@ -952,12 +952,13 @@
       <h2>新規実行</h2>
       <div class="runs-new-controls">
         <details class="unit-picker" id="unit-picker"><summary><span id="unit-selection-label">移行単位を選択</span><span aria-hidden="true">⌄</span></summary><div class="unit-options" id="unit-options" aria-label="実行する移行単位"></div></details>
-        <button class="button" type="submit" value="prepare">準備のみ</button><button class="button primary" id="run-selected" type="submit" value="run" disabled>選択した単位を実行</button>
+        <button class="button" type="submit" value="dry-run" id="dry-run-selected" hidden>設定を検証</button><button class="button" type="submit" value="prepare">準備のみ</button><button class="button primary" id="run-selected" type="submit" value="run" disabled>選択した単位を実行</button>
       </div>
       <p class="runs-hint">上限を超えたRunは実行待ちに追加されます。</p>
     </form>
     <section class="runs-list" aria-labelledby="runs-title">
       <div class="runs-toolbar"><h2 id="runs-title">実行一覧 <span id="run-count"></span></h2><div class="run-filters" id="run-filters" role="group" aria-label="実行状態で絞り込み"></div><input id="run-search" type="search" aria-label="移行単位・Run IDで検索" placeholder="移行単位・Run IDで検索"></div>
+      <button class="button" type="button" id="dry-run-cancel" hidden>設定の検証を中止</button>
       <p class="workspace-feedback" id="workspace-run-feedback" role="status"></p>
       <div class="panel runs-table-wrap" role="region" aria-labelledby="runs-title" tabindex="0"><table class="runs-table"><thead><tr><th scope="col">移行単位 / Run ID</th><th scope="col">状態</th><th scope="col">現在の処理</th><th scope="col">経過時間</th><th scope="col">操作</th></tr></thead><tbody id="run-rows"></tbody></table><p id="runs-empty" class="runs-empty" role="status">実行一覧を読み込んでいます。</p></div>
       <div class="runs-footer"><span>実行枠が空くと、待機中のRunを順に開始します。</span><span>詳細は「進捗」、編集は「エディタ」で行えます。</span></div>

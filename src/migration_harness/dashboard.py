@@ -246,6 +246,14 @@ class Dashboard:
             self.events.append((self.revision, payload))
             self.condition.notify_all()
 
+    @staticmethod
+    def list_record(record: dict[str, Any]) -> dict[str, Any]:
+        fields = (*PROGRESS_FIELDS, "token_usage", "hidden_from_dashboard", "repair_pending",
+                  "migration_stop_unconfirmed", "checker_required", "verification", "target_apply_pending")
+        result = {key: record[key] for key in fields if key in record}
+        result["repair_history"] = range(len(record.get("repair_history", [])))
+        return result
+
     def observe(self, record: dict[str, Any]) -> None:
         """Run記録から公開する項目を絞り、進捗に影響する変更だけを配信する。"""
         state = {key: copy.deepcopy(record[key]) for key in PROGRESS_FIELDS if key in record}
@@ -347,6 +355,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
     manager = getattr(dashboard, "manager", None)
     preview_lock = Lock()
     reference_previews: dict[str, ExecutionControl] = {}
+    dry_run_controls: dict[str, ExecutionControl] = {}
 
     class Handler(BaseHTTPRequestHandler):
         """ダッシュボード専用のパスとオリジンでHTTPの受付範囲を絞る。"""
@@ -917,6 +926,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             except (OSError, ValueError):
                 self.send_error(400)
                 return
+            if route == "control" and action.get("action") in ("dry-run", "dry-run-cancel"):
+                self.send_dry_run(action)
+                return
             if not self.bind_post_view(route, action):
                 return
             if route == "settings":
@@ -929,6 +941,45 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.create_comparison(action)
             else:
                 self.post_control(action)
+
+        def send_dry_run(self, action):
+            from migration_harness.dry_run import plan_dry_run
+
+            request_id = action.get("request_id")
+            if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", request_id):
+                self.send_error(400)
+                return
+            if action["action"] == "dry-run-cancel":
+                with preview_lock:
+                    if control := dry_run_controls.get(request_id):
+                        control.cancelled.set()
+                self.send_body(200, "application/json", b"{}")
+                return
+
+            unit = action.get("unit_id")
+            if not isinstance(unit, str) or not unit:
+                self.send_error(400)
+                return
+            control = ExecutionControl(lambda _: None)
+            with preview_lock:
+                occupied = bool(dry_run_controls)
+                if not occupied:
+                    dry_run_controls[request_id] = control
+            if occupied:
+                self.send_body(409, "text/plain; charset=utf-8", "別の設定を検証しています。".encode())
+                return
+
+            try:
+                with control_scope(control):
+                    report = plan_dry_run(load_config(Path(config["config_path"])), unit)
+                self.send_body(200, "application/json", json.dumps(report, ensure_ascii=False).encode())
+            except OperationCancelled:
+                self.send_body(200, "application/json", b'{"cancelled": true}')
+            except _ERRORS as exc:
+                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+            finally:
+                with preview_lock:
+                    dry_run_controls.pop(request_id, None)
 
         def read_post_action(self, route: str) -> dict[str, Any]:
             """ルートごとの上限とJSONの共通条件を確認して本文を読む。"""

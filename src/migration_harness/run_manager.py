@@ -8,23 +8,29 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Thread
+from stat import S_ISDIR, S_ISREG
+from threading import Lock, Thread
 from time import monotonic
 
 from .config import find_unit
 from .junie_conversation import JunieConversations
-from .run_records import edit_run_record, execution_lock, load_dashboard_record, load_saved_run, validate_run_id
+from .run_records import (
+    edit_run_record, execution_lock, load_dashboard_record, load_saved_run, validate_dashboard_worktree, validate_run_id,
+)
 
 
 class RunManager:
     limit = 5
 
     def __init__(self, config, default):
-        """Run一覧、キュー、ワーカー、会話管理を初期化する。"""
         self.config = config
         self.default = default
         self.condition = default.condition
         self.views = {}
+        self._workspace_scan = Lock()
+        self._workspace_cache = {}
+        self._workspace_config = None
+        self._disk_run_ids = set()
         self.jobs = {}
         self.pending = deque()
         self.workers = {}
@@ -42,7 +48,6 @@ class RunManager:
         self.configure()
 
     def configure(self, updated=None):
-        """実行中には設定を変えず、保存先を変えたときだけ一覧を読み直す。"""
         config = updated if updated is not None else self.config
         root = config.get("run_root")
         scope = tuple(config.get(key) for key in ("project_root", "run_root", "worktree_root"))
@@ -68,6 +73,7 @@ class RunManager:
             for view in [self.default, *self.views.values()]:
                 view.publish({"status": "idle", "ready": True})
             self.views.clear()
+            self._disk_run_ids.clear()
             self.results.clear()
         self.scope = scope
         self.root = root
@@ -82,7 +88,6 @@ class RunManager:
         self._restore_saved_jobs(jobs)
 
     def _read_saved_queue(self, config, root):
-        """保存済みキューを読み、復元前にRunと設定の整合性を確認する。"""
         path = Path(root) / "dashboard-queue.json" if root else None
         saved = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
         jobs = saved.get("jobs", [])
@@ -103,7 +108,6 @@ class RunManager:
         return jobs, cancelled, blocked
 
     def _restore_saved_jobs(self, jobs):
-        """未起動ジョブだけをFIFOへ戻し、起動済み・保留中Runは止めて表示する。"""
         for job in jobs:
             run_id = job["run_id"]
             if job.get("running"):
@@ -130,16 +134,13 @@ class RunManager:
 
     @property
     def queue_path(self):
-        """実行待ちデータの保存先を返す。"""
         return Path(self.config["run_root"]) / "dashboard-queue.json"
 
     @property
     def busy(self):
-        """実行中または待機中のRunがあるか判定する。"""
         return bool(self.jobs)
 
     def persist(self):
-        """ジョブと会話保留状態をキュー保存先へ記録する。"""
         if not self.root:
             return
         jobs = [{key: value for key, value in job.items() if key not in {"reply", "config"}}
@@ -153,7 +154,6 @@ class RunManager:
         temporary.replace(self.queue_path)
 
     def new_view(self, run_id, unit_id):
-        """新しいRunの画面状態を作成する。"""
         view = type(self.default)()
         view.condition = self.condition
         view.publish({"run_id": run_id, "unit_id": unit_id, "status": "queued", "ready": False,
@@ -163,21 +163,24 @@ class RunManager:
         return view
 
     def get(self, run_id=None):
-        """Run IDに対応する画面状態を取得または復元する。"""
         with self.condition:
             if not run_id:
                 return self.default
             if run_id not in self.views:
                 _, record = load_dashboard_record(self.config, run_id)
-                view = type(self.default)()
-                view.condition = self.condition
-                view.observe(record)
-                view.ready(self.config, record, self.blocked_conversations.get(run_id, ""))
-                self.views[run_id] = view
+                self._restore_view(run_id, record)
+                self._disk_run_ids.add(run_id)
             return self.views[run_id]
 
+    def _restore_view(self, run_id, record):
+        view = type(self.default)()
+        view.condition = self.condition
+        view.observe(record)
+        view.ready(self.config, record, self.blocked_conversations.get(run_id, ""))
+        self.views[run_id] = view
+        return view
+
     def enqueue(self, view, action, *, operation_id=None):
-        """新規・再開・復元を同じFIFOキューと画面状態へ登録する。"""
         run_id = view.state["run_id"]
         self.jobs[run_id] = {
             **action, "run_id": run_id, "unit_id": view.state["unit_id"],
@@ -189,7 +192,6 @@ class RunManager:
         self.pending.append(run_id)
 
     def save_enqueued(self):
-        """登録が保存されるまで待機位置を保ち、保存の復旧後に開始する。"""
         try:
             self.persist()
         except OSError:
@@ -199,7 +201,6 @@ class RunManager:
             self.start_pending()
 
     def cancel_queued(self, view):
-        """まだ開始していないRunの操作を取り消す。"""
         run_id = view.state["run_id"]
         if run_id not in self.pending:
             raise ValueError("このRunはすでに実行されています。一覧を更新して停止してください。")
@@ -237,7 +238,6 @@ class RunManager:
         return {"run_id": run_id}
 
     def hide_run(self, run_id):
-        """Runを一覧から隠し、記録ファイルは保持する。"""
         validate_run_id(run_id)
         candidate = Path(self.config["run_root"]).resolve() / run_id
         record_path = candidate / "run.json"
@@ -256,7 +256,6 @@ class RunManager:
         return {"run_id": run_id}
 
     def submit(self, action, selected=None):
-        """HTTP操作を検証し、Runを実行待ちへ登録する。"""
         from .workflow import can_resume_build, can_resume_run
 
         with self.condition:
@@ -316,7 +315,6 @@ class RunManager:
             return {"run_ids": ids, "run_id": ids[0]}
 
     def start_pending(self):
-        """空きワーカー枠にFIFO順で処理を割り当てる。"""
         with self.condition:
             if self._queue_retry_at is not None:
                 return
@@ -341,14 +339,12 @@ class RunManager:
                 thread.start()
 
     def _defer_queue_retry(self):
-        """既存の巡回で共有キューの保存を再試行するよう予約する。"""
         if not self.closing:
             self._queue_retry_at = monotonic() + self._queue_retry_delay
             self._queue_retry_delay = min(2 * self._queue_retry_delay, 8.0)
             self.conversations.start()
 
     def retry_queue(self):
-        """共有キューを保存し、空き枠の割り当てを再開する。"""
         with self.condition:
             if self.closing or self._queue_retry_at is None or monotonic() < self._queue_retry_at:
                 return
@@ -363,13 +359,11 @@ class RunManager:
                 self._queue_retry_delay = 1.0
 
     def block_conversations(self, run_id, message):
-        """終了未確認のRunを会話処理から保留する。"""
         with self.condition:
             self.blocked_conversations[run_id] = message
             self.conversations.notify(run_id)
 
     def execute(self, run_id):
-        """割り当て済みRunのworkflowを実行して結果を反映する。"""
         from .dashboard import execute_dashboard_action
         try:
             job = self.jobs[run_id]
@@ -395,40 +389,98 @@ class RunManager:
                     self.condition.notify_all()
 
     def workspace(self, *, include_usage=False):
-        """Runの保存状態と画面操作情報をまとめて返す。"""
-        with self.condition:
-            units = [unit["id"] for unit in self.config.get("units", [])]
-            records = Path(self.config["run_root"]).glob("*/run.json") if units else ()
-            rows = {}
-            hidden = set()
-            for path in records:
-                try:
-                    _, record = load_dashboard_record(self.config, path.parent.name)
+        # Serialize only list scans. Requests to get, stop or update a Run use condition, not this lock.
+        with self._workspace_scan:
+            while True:
+                with self.condition:
+                    config = copy.deepcopy(self.config)
+                    revisions = {run_id: (view, view.revision) for run_id, view in self.views.items()}
+                units = [unit["id"] for unit in config.get("units", [])]
+                records, seen = self._list_records(config) if units else ({}, set())
+                rows = {}
+                hidden = set()
+                for run_id, record in records.items():
                     if include_usage:
-                        rows[path.parent.name] = {key: record[key] for key in ("run_id", "unit_id", "created_at", "token_usage") if key in record}
+                        rows[run_id] = {key: record[key] for key in ("run_id", "unit_id", "created_at", "token_usage")
+                                        if key in record}
                     elif record.get("hidden_from_dashboard") is True:
-                        hidden.add(path.parent.name)
+                        hidden.add(run_id)
                     else:
-                        view = self.get(path.parent.name)
-                        if path.parent.name not in self.jobs:
-                            revision = view.revision
-                            notice = {key: view.state[key] for key in ("message", "error_details") if key in view.state}
-                            unchanged = record.get("status") == view.state.get("status") and record.get("error") == view.state.get("error")
-                            view.observe(record)
-                            if view.revision != revision:
-                                view.ready(self.config, record)
-                                if unchanged and notice:
-                                    view.publish({**view.state, **notice})
-                        rows[path.parent.name] = self.row(view)
-                except (OSError, ValueError, KeyError, TypeError):
-                    continue
-            if not include_usage:
-                rows.update((run_id, self.row(view)) for run_id, view in self.views.items() if run_id not in hidden)
-            return {"units": units, "runs": sorted(rows.values(), key=lambda row: row.get("created_at", ""), reverse=True),
-                    "parallel_limit": self.limit, "busy": self.busy}
+                        with self.condition:
+                            if config != self.config:
+                                break
+                            try:
+                                self._refresh_list_view(run_id, record, revisions.get(run_id))
+                            except (OSError, ValueError, KeyError, TypeError):
+                                continue
+                with self.condition:
+                    if config != self.config:
+                        continue
+                    if not include_usage:
+                        self._disk_run_ids.update(seen)
+                        self._disk_run_ids.intersection_update(self.views)
+                        visible = dict.fromkeys((*records, *self.views))
+                        rows = {run_id: self.row(self.views[run_id]) for run_id in visible
+                                if run_id in self.views and run_id not in hidden and
+                                (run_id in records or run_id in self.jobs or run_id not in self._disk_run_ids
+                                 or revisions.get(run_id) != (self.views[run_id], self.views[run_id].revision))}
+                    limit, busy = self.limit, self.busy
+                return {"units": units, "runs": sorted(rows.values(), key=lambda row: row.get("created_at", ""), reverse=True),
+                        "parallel_limit": limit, "busy": busy}
+
+    def _list_records(self, config):
+        previous = self._workspace_cache if config == self._workspace_config else {}
+        root = Path(config["run_root"]).resolve()
+        cache, records, seen = {}, {}, set()
+        for path in root.glob("*/run.json"):
+            run_id = path.parent.name
+            seen.add(run_id)
+            try:
+                stamp = self._list_stamp(path)
+                cached = previous.get(run_id)
+                if cached is not None and stamp == cached[0]:
+                    record = cached[1]
+                    validate_dashboard_worktree(config, run_id, record)
+                else:
+                    _, record = load_dashboard_record(config, run_id)
+                    record = self.default.list_record(record)
+                    if stamp != self._list_stamp(path):
+                        continue
+                records[run_id] = record
+                cache[run_id] = stamp, record
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        self._workspace_config, self._workspace_cache = config, cache
+        return records, seen
+
+    @staticmethod
+    def _list_stamp(path):
+        directory = path.parent.lstat()
+        file = path.lstat()
+        if (not S_ISDIR(directory.st_mode) or not S_ISREG(file.st_mode)
+                or getattr(directory, "st_reparse_tag", 0) or getattr(file, "st_reparse_tag", 0)):
+            raise ValueError("linked or invalid run record")
+        return (directory.st_dev, directory.st_ino, file.st_dev, file.st_ino,
+                file.st_size, file.st_mtime_ns, file.st_ctime_ns)
+
+    def _refresh_list_view(self, run_id, record, previous):
+        view = self.views.get(run_id)
+        if view is None:
+            try:
+                self._restore_view(run_id, record)
+            except (OSError, ValueError, KeyError, TypeError):
+                return
+        elif run_id not in self.jobs and previous == (view, view.revision):
+            revision = view.revision
+            notice = {key: view.state[key] for key in ("message", "error_details") if key in view.state}
+            unchanged = record.get("status") == view.state.get("status") and record.get("error") == view.state.get("error")
+            view.observe(record)
+            if view.revision != revision:
+                view.ready(self.config, record)
+                if unchanged and notice:
+                    view.publish({**view.state, **notice})
 
     def row(self, view):
-        """Run一覧に表示する要約を作成する。"""
         keys = ("run_id", "unit_id", "created_at", "status", "ready", "resumable", "build_resumable", "worktree_path", "queued",
                 "operation_id", "cancellable", "stop_requested", "context_capsules", "current_capsule", "completed_capsules",
                 "active_stage", "stage_timings", "timing_updated_at", "phase_activity", "error", "message")
@@ -441,7 +493,6 @@ class RunManager:
         return row
 
     def close(self):
-        """新しい処理を止め、ワーカーと資源を終了する。"""
         with self.condition:
             self.closing = True
             self.conversations.wake.set()

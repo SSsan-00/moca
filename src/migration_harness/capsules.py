@@ -9,11 +9,13 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from itertools import chain
 from typing import Any, Iterator
 
 from .config import REFERENCE_ROLES, target_paths
 from .execution import check_cancelled, report_activity
 from .files import safe_target, sha256_file
+from .php_boundaries import PhpFunction, function_boundaries
 from .rule_materials import write_rule_files
 
 
@@ -332,17 +334,28 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
         "max_context_chars is too small for a segment input after including shared context"
         if shared_groups else "max_context_chars is too small for the context headers"
     )
+    syntax_by_path = {
+        pin["path"]: function_boundaries(capsule / pin["snapshot"], pin["encoding"])
+        for pin in php_sources
+    }
     manifest_parts, split_line_coverage = _write_segments(
-        capsule, segment_inputs, prefix, max_chars, overlap_chars, budget_error,
+        capsule, segment_inputs, prefix, max_chars, overlap_chars, budget_error, syntax_by_path,
     )
+    syntax_boundaries = _syntax_manifest(manifest_parts, syntax_by_path)
+
     context_paths = [part["path"] for part in manifest_parts]
     context_part_chars = [part["chars"] for part in manifest_parts]
     total_chars = sum(context_part_chars)
     manifest = {
         "unit_id": unit["id"],
         "max_context_chars": max_chars,
-        "segmentation_policy": "line_with_character_fallback_and_overlap",
-        "syntax_boundaries_analyzed": False,
+        "segmentation_policy": (
+            "php_function_boundaries_with_line_and_character_fallback"
+            if any(item["functions"] for item in syntax_boundaries.values())
+            else "line_with_character_fallback_and_overlap"
+        ),
+        "syntax_boundaries_analyzed": any(item["functions"] for item in syntax_boundaries.values()),
+        "syntax_boundaries": syntax_boundaries,
         "split_line_coverage": split_line_coverage,
         "total_context_chars": total_chars,
         "shared_sources": rule_ranges + [_manifest_source(group) for group in shared_groups],
@@ -368,6 +381,7 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
 def _write_segments(
     capsule: Path, segment_inputs: list[tuple[int, dict[str, Any], Path]], prefix: str,
     max_chars: int, overlap_chars: int, budget_error: str,
+    syntax_by_path: dict[str, tuple[tuple[PhpFunction, ...], str]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """分割した本文と読み取り用の境界資料を保存する。"""
     base_chars = len(prefix)
@@ -420,7 +434,31 @@ def _write_segments(
 
     for input_index, item, source_path in segment_inputs:
         lines = _selected_lines(source_path, item["start_line"], item["end_line"], item["resolved_encoding"])
-        for number, line in lines:
+        functions = {
+            part.start_line: part for part in syntax_by_path.get(item["path"], ((), ""))[0]
+            if part.start_line >= item["start_line"]
+            and (item["end_line"] is None or part.end_line <= item["end_line"])
+        }
+        while (source_line := next(lines, None)) is not None:
+            number, line = source_line
+            function = functions.get(number)
+            if function is not None:
+                block = [source_line, *(next(lines) for _ in range(function.end_line - number))]
+                candidate: list[dict[str, Any]] = []
+                for row, body in block:
+                    if not _append_context_record(
+                        candidate, input_index, item, row, f"{row:>6} | {body}", base_chars, max_chars,
+                    ):
+                        lines = chain(block[1:], lines)
+                        break
+                else:
+                    group = candidate[0]
+                    fitted = _combine_segment_group(groups, group)
+                    if base_chars + sum(map(_group_size, fitted)) > max_chars:
+                        flush_capsule()
+                        fitted = candidate
+                    groups[:] = fitted
+                    continue
             record = f"{number:>6} | {line}"
             if _append_context_record(groups, input_index, item, number, record, base_chars, max_chars):
                 continue
@@ -493,6 +531,47 @@ def _write_segments(
             part["boundary_sha256"] = sha256_file(boundary)
     return manifest_parts, split_line_coverage
 
+
+
+def _combine_segment_group(groups: list[dict[str, Any]], incoming: dict[str, Any]) -> list[dict[str, Any]]:
+    if not groups or groups[-1]["input_index"] != incoming["input_index"]:
+        return [*groups, incoming]
+    tail = groups[-1]
+    return [*groups[:-1], {
+        **tail,
+        "end_line": incoming["end_line"],
+        "records": tail["records"] + incoming["records"],
+        "content_chars": tail["content_chars"] + incoming["content_chars"],
+        "max_backticks": max(tail["max_backticks"], incoming["max_backticks"]),
+        "ends_with_newline": incoming["ends_with_newline"],
+    }]
+
+
+def _syntax_manifest(
+    parts: list[dict[str, Any]],
+    syntax_by_path: dict[str, tuple[tuple[PhpFunction, ...], str]],
+) -> dict[str, Any]:
+    by_path: dict[str, list[tuple[int, int, int]]] = {}
+    for part in parts:
+        for source in part["sources"]:
+            by_path.setdefault(source["path"], []).append(
+                (source["start_line"], source["end_line"], part["index"]),
+            )
+    return {
+        path: {
+            "scanner": "php-lexical-functions-v1",
+            "status": status,
+            "functions": [
+                {"name": fn.name, "start_line": fn.start_line, "end_line": fn.end_line, "capsules": capsules}
+                for fn in functions
+                if (capsules := sorted({
+                    index for start, end, index in by_path.get(path, ())
+                    if start <= fn.end_line and end >= fn.start_line
+                }))
+            ],
+        }
+        for path, (functions, status) in syntax_by_path.items()
+    }
 
 def load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
     """Runに属し、番号が連続したカプセルのmanifestを読み込む。"""

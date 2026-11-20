@@ -7,6 +7,8 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   const options = find("#unit-options");
   const rows = find("#run-rows");
   const feedback = find("#workspace-run-feedback");
+  const dryRunCancel = find("#dry-run-cancel");
+  let dryRunId;
   const search = find("#run-search");
   const summary = find("#run-summary");
   const selectedUnits = new Set();
@@ -239,12 +241,49 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     } catch (error) { feedback.textContent = error.message; }
     finally { pending = false; sync(); }
   }
+  dryRunCancel?.addEventListener("click", async () => {
+    if (!dryRunId) return;
+    dryRunCancel.disabled = true;
+    try {
+      await execute("dry-run-cancel", {request_id: dryRunId});
+    } catch (error) {
+      feedback.textContent = error.message;
+      dryRunCancel.disabled = false;
+    }
+  });
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (pending || !canAct() || !selectedUnits.size) return;
     pending = true;
     sync();
     try {
+      if (event.submitter.value === "dry-run") {
+        if (selectedUnits.size !== 1) {
+          feedback.textContent = "設定を検証する移行単位を1つ選んでください。";
+          return;
+        }
+        feedback.textContent = "実行せずに設定を検証しています。";
+        dryRunId = crypto.randomUUID();
+        dryRunCancel.hidden = false;
+        dryRunCancel.disabled = false;
+        const result = await execute("dry-run", {unit_id: [...selectedUnits][0], request_id: dryRunId});
+        if (result.cancelled) {
+          feedback.textContent = "設定の検証を中止しました。";
+          return;
+        }
+        const states = {confirmed: "確認", unchecked: "未確認", error: "不備", skipped: "対象外"};
+        feedback.textContent = [
+          result.configuration_ok ? "確認範囲に設定上の不備はありません。実移行は未実行です。" : "設定を確認してください。",
+          `移行単位: ${result.unit_id}／基準: ${result.commit ?? result.base_ref}`,
+          ...result.checks.map(check => `[${states[check.state]}] ${check.phase}: ${check.detail}`
+            + (check.command ? `
+  ${check.command}
+  cwd: ${check.cwd}` : "")
+            + (check.path ? `
+  ${check.path}` : "")),
+        ].join("\n");
+        return;
+      }
       await execute(event.submitter.value, {unit_ids: [...selectedUnits]});
       selectedUnits.clear();
       optionKey = undefined;
@@ -252,7 +291,12 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
       feedback.textContent = `実行待ちに追加しました。最大${data.parallel_limit}件ずつ処理します。`;
       await refresh();
     } catch (error) { feedback.textContent = error.message; }
-    finally { pending = false; sync(); }
+    finally {
+      dryRunId = undefined;
+      if (dryRunCancel) dryRunCancel.hidden = true;
+      pending = false;
+      sync();
+    }
   });
   search.addEventListener("input", render);
   workspaceTabs.addEventListener("harnesstab", refresh);
