@@ -155,6 +155,17 @@ def validate_run_id(run_id: str) -> None:
         raise ValueError("run ID must use its canonical UUID format")
 
 
+def _read_run_record(path: Path) -> Any:
+    for attempt in range(11):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError as exc:
+            # Windows can refuse a reader during replacement; do not retry ordinary permissions errors.
+            if getattr(exc, "winerror", None) not in {32, 33} or attempt == 10:
+                raise
+            sleep(.02)
+
+
 def _load_run_identity(
     config: dict[str, Any], run_id: str,
 ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
@@ -166,7 +177,7 @@ def _load_run_identity(
     record_path = run_path / "run.json"
     if record_path.is_symlink() or not record_path.is_file():
         raise ValueError("run record is missing or is a symlink")
-    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record = _read_run_record(record_path)
     if not isinstance(record, dict):
         raise ValueError("run record must contain a JSON object")
     if record.get("run_id") != run_id or record.get("project_root") != config["project_root"]:

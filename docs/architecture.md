@@ -321,7 +321,7 @@ sequenceDiagram
 
 実装は [junie_cli.py](../src/migration_harness/junie_cli.py)、子プロセスや Windows の Job Object は [junie_process.py](../src/migration_harness/junie_process.py) と [windows_job.py](../src/migration_harness/windows_job.py) を参照してください。
 
-`migration-complete-<token>.txt` の内容と全移行先の存在を照合してから完了数を増やします。終了コードは診断情報として記録します。トークン未発行や停止時も、対象外変更や版の照合を通過した下書きは保存される場合があります。オペレーターへの質問を保存する経路では、回答を待つチェックポイントに入ります。 [workflow.py](../src/migration_harness/workflow.py)
+`migration-complete-<token>.txt` の内容と全移行先の存在を照合してから完了数を増やします。終了コードは診断情報として記録します。トークン未発行や停止時も、対象外変更や版の照合を通過した下書きは保存される場合があります。終了確認済みで対象外を変更していない停止下書きには、原文と版を照合した任意メモを紐づけられます。再開で版が合う場合も未確認の手がかりとしてだけ渡し、進捗に数えません。オペレーターへの質問を保存する経路では、回答を待つチェックポイントに入ります。 [workflow.py](../src/migration_harness/workflow.py)
 
 `apply_agent_targets` は作業中に worktree が変更されていないかを確認し、Junie 出力を UTF-8 として検証して BOM 付きにそろえます。変更ファイルの旧・新 SHA-256 を `target_apply_pending` に先に保存し、同じディレクトリ内の一時ファイルから 1 ファイルずつ置換します。復旧時に worktree が新ハッシュなら適用済み、旧ハッシュかつ Junie 側が新ハッシュなら再適用できます。それ以外の外部変更があれば停止します。 [worktree_targets.py](../src/migration_harness/worktree_targets.py)
 
@@ -339,7 +339,7 @@ flowchart TD
     AfterMigration["反映途中のファイルを復旧し after_migration"]
     BeforeBuild["before_build → 対象ハッシュと検証設定を保存"]
     Build{"dotnet build が成功"}
-    AfterBuild["after_build"]
+    AfterBuild{"after_build を通過"}
     HasChecker{"今回チェッカーを実行"}
     RunChecker["before_checker → チェッカー<br/>終了コードがあれば after_checker"]
     Judge{"出力と既存のレビューを判定"}
@@ -349,7 +349,10 @@ flowchart TD
     Done["今回の検証結果を保存"]
 
     Start --> AfterMigration --> BeforeBuild --> Build
-    Build -->|成功| AfterBuild --> HasChecker
+    Build -->|成功| AfterBuild
+    AfterBuild -->|続行| HasChecker
+    AfterBuild -->|任意設定で対象内の診断を照合| Repair
+    AfterBuild -->|その他の失敗・確認待ち| Hold
     Build -->|失敗| Repair
     HasChecker -->|実行する| RunChecker --> Judge
     HasChecker -->|ビルドのみ| Done
@@ -362,10 +365,11 @@ flowchart TD
     Apply -->|失敗または停止| Hold
 ```
 
-- `_run_verification` は `after_migration` の後、ループのたびに `before_build` を実行して対象版を固定し、`dotnet build` を実行します。成功時だけ `after_build` へ進みます。フック失敗はその時点で止まり、`script_phase` とログを残します。チェッカーの優先順位は CLI の `--checker-command`、移行単位の設定、共通設定の順です。コマンドの `{worktree}`・`{build_project}`・`{target}` は該当する worktree のパスへ展開されます。 [workflow.py](../src/migration_harness/workflow.py) · [config.py](../src/migration_harness/config.py) · [command_paths.py](../src/migration_harness/command_paths.py)
+- `_run_verification` は `after_migration` の後、ループのたびに `before_build` を実行して対象版を固定し、`dotnet build` を実行します。成功時だけ `after_build` へ進みます。フック失敗は原則としてその時点で止まり、`script_phase` とログを残します。下記のオプションを有効にした通常の検証では、`after_build` に限り、照合した診断を修正候補にできます。チェッカーの優先順位は CLI の `--checker-command`、移行単位の設定、共通設定の順です。コマンドの `{worktree}`・`{build_project}`・`{target}` は該当する worktree のパスへ展開されます。 [workflow.py](../src/migration_harness/workflow.py) · [config.py](../src/migration_harness/config.py) · [command_paths.py](../src/migration_harness/command_paths.py)
 - 通常の検証ループでは、保留中の手修正と待機中の追加指示が両方ある場合、ビルド前に `followup_only` で編集処理へ戻ります。画面から明示的に検証を依頼する経路では、依頼にひも付けた移行先の版を照合して実行します。 [workflow.py](../src/migration_harness/workflow.py) · [junie_conversation.py](../src/migration_harness/junie_conversation.py)
 - チェッカーの成功は、終了コード 0 かつ無出力（UTF-8 として読んだ内容が BOM や空白のみの場合も含む）、または非負の終了コードで標準出力・標準エラーを連結した応答全体が `特に気になる点はありません。` の場合です。明示的な成功応答は UTF-8 の BOM と前後の空白を許容します。その他の出力は終了コードが 0 でも指摘の扱いを判定します。承認には指摘 ID、理由、該当ファイルのハッシュを保存し、再検証で有効な承認済み指摘だけが残ったとき `checker_accepted` になります。 [checker_output.py](../src/migration_harness/checker_output.py) · [workflow.py](../src/migration_harness/workflow.py)
-- ビルドとチェッカーの自動修正は Run 単位の `max_repair_attempts` を共有します。既定は 2、0 は無効です。対象外の指摘、修正後の診断の再発、回数や出力サイズの上限などで停止します。チェッカー出力は最大 65,536 バイト、抽出済み診断を渡す経路は合計 8,000 文字が上限です。形式が混在して全文を渡す場合は空白を正規化した全文で再発を判定します。Junie の起動失敗・モデル通信失敗・中断は自動修正回数を消費しません。ビルドは設定済み移行先にひも付くコンパイラ診断を修正に渡します。Razor の生成コードに同じモデル型エラーが出る場合は、条件を満たす重複だけを除外し、編集可能なページ側を修正します。修正前のログと履歴は Run に残ります。 [workflow.py](../src/migration_harness/workflow.py)
+- 形式未対応のチェッカーまたは工程スクリプトの Junie 判定は既定で無効です。判定だけを有効にしても合否を変えません。`[junie].apply_output_decisions = true` で反映する場合も、続行には終了コード 0、出力全体を根拠とする合格判定、機械的に照合できる明示的な成功表現と版の一致が必要です。曖昧さ、判定不能、変更を検出した場合は確認待ちです。通常の検証でチェッカーまたは `after_build` の問題を対象内の構造化診断として照合できるときだけ、修正後にビルドと後続検証をやり直します。明示検証では自動修正しません。 [workflow.py](../src/migration_harness/workflow.py)
+- ビルド、チェッカー、条件を満たす `after_build` の自動修正は Run 単位の `max_repair_attempts` を共有します。既定は 2、0 は無効です。対象外の指摘、修正後の診断の再発、回数や出力サイズの上限などで停止します。チェッカー出力は最大 65,536 バイト、抽出済み診断を渡す経路は合計 8,000 文字が上限です。形式が混在して全文を渡す場合は空白を正規化した全文で再発を判定します。Junie の起動失敗・モデル通信失敗・中断は自動修正回数を消費しません。ビルドは設定済み移行先にひも付くコンパイラ診断を修正に渡します。Razor の生成コードに同じモデル型エラーが出る場合は、条件を満たす重複だけを除外し、編集可能なページ側を修正します。修正前のログと履歴は Run に残ります。 [workflow.py](../src/migration_harness/workflow.py)
 
 `workflow.py` はビルド前の対象版と設定を保存し、ビルド後に対象を再照合します。チェッカー診断は、対象と出力上限を確認してから修正用の指示と再発判定へ渡します。修正準備では必要な停止下書きを照合してから入力を同期し、完了記録と現物を確認した結果だけを採用します。
 

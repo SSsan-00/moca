@@ -230,6 +230,29 @@ roots = []
 
 規約を守ったかは独自チェッカーでも確認します。Junieは移行・自動修正時に、参考実装の関連箇所を読みます。参考用のPHPは移行台帳の対象外です。既存の移行単位に登録した共通資料は、設定画面に引き継がれます。
 
+### 保存された根拠と引き継ぎを確認する
+
+対象のRun IDを指定します。最初に一覧で実際の資料IDと範囲を調べ、以下のID・パス・行番号を置き換えてください。範囲指定は両端を含みます。
+
+```powershell
+php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID
+php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --feature "注文合計"
+php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --source-id php-0001 --start-line 10 --end-line 20 --max-chars 1000
+php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --last-plan
+php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --target-references
+php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --related-to "target:Pages/Shared/Example.cshtml"
+php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --source-id "target:Pages/Shared/Example.cshtml" --start-line 1 --end-line 10
+```
+
+移行中のPHPを調べるときは `--through-capsule N` で、当該カプセルまでの担当範囲と参照資料に絞れます。 `next_offset` が数値なら、同じ条件に `--offset` でその値を加えて取得します。 `--last-plan` の供給ルールと参照候補は「読んだ」「適用した」「検証した」の証拠ではありません。一意に照合できた診断の固定C#／Razorパスは候補に表示されますが、障害原因を断定しません。 `--target-references` には現在編集している移行先は含まれません。
+
+```powershell
+php-to-csharp-harness context-handoff --config harness.local.toml --run-id RUN_ID
+php-to-csharp-harness context-handoff --config harness.local.toml --run-id RUN_ID --source-id php-0001 --start-line 10 --end-line 20 --note "例外時の戻り値を確認"
+```
+
+引き継ぎの追記や、Junieが任意で出力した補助メモは、原文範囲と版が一致するときの手がかりです。進捗や検証結果はメモでは変わりません。必要なら出典を開き、人が確認・再検証してください。
+
 ### スキルで読み込み方を最適化する・原文を整理する
 
 [ルール整理スキル](../.junie/skills/harness-optimize-rules/SKILL.md) は原文を要約せず、全行を保持して必須事項と詳細へ分けます。ハーネスのフォルダで `junie` を起動し、`/skills` で `harness-optimize-rules` が有効なことを確認して、Junieの入力欄へ次を送ります。
@@ -242,7 +265,7 @@ roots = []
 
 内容を確認して必須／詳細を見直し、詳細の「読む場面・内容」も具体化します。整理済みのファイルは本文を変えず設定だけ更新し、必須と詳細が混在するファイルは全行を保持して分割します。変更理由と必須本文の文字数の前後も報告します。
 
-全ページを確認してから分類・設定反映します。確認記録は少量ずつ保存するため、未記録の読み飛ばしや引用の転記ミスをその場で検出できます。大量のルールを整理する場合は、`junie --max-steps 200` のように起動時のステップ数を増やせます。上限で止まった場合は、同じ対話で保存済みの確認記録から続きを依頼します。
+全ページを確認してから分類します。反映前に、固定原文と候補の両方を比べ、義務・条件・例外・優先関係・説明の根拠を記録します。古い候補の記録や未解決事項があれば反映しません。確認記録は少量ずつ保存するため、未記録の読み飛ばしや引用の転記ミスをその場で検出できます。大量のルールを整理する場合は、`junie --max-steps 200` のように起動時のステップ数を増やせます。上限で止まった場合は、同じ対話で保存済みの確認記録から続きを依頼します。
 
 **新たに原文を整理する場合:**
 
@@ -252,6 +275,8 @@ roots = []
 ```
 
 設定の反映も任せる場合は、最後を「TOMLへの反映もお願いします」に置き換えます。スキルは専用フォルダに原文のコピーを残し、空行・例・例外も含めて全行の対応を検証します。条件や優先順位も確認し、未解決の矛盾があれば設定反映を保留します。
+
+整理した原文を新規登録する場合も、既存登録と同じ意味レビューを先に行います。手動で反映する場合は、スキルの [新規登録手順](../.junie/skills/harness-optimize-rules/references/register-new.md) に従い、`tools/rule_review.py meaning` と `apply` の両方に `--register-new` を指定します。このツールと、実行済みRunを確認する `php-to-csharp-harness rule-review` は別のものです。
 
 整理後は **プロジェクト共通の移行ルール** に次のように登録します。ファイル名だけでは必須扱いになりません。
 
@@ -425,9 +450,9 @@ worktreeは直接編集せず、手修正はダッシュボードのエディタ
 
 チェッカーの指摘を修正不要と判断した場合は、進捗画面の確認ダイアログで指摘を選び、理由を入力して **問題なしとして記録** します。**同じ実行を再開** し、承認済みの指摘だけが残る場合もチェッカーの条件を満たします。
 
-TOML の `[checker].review_free_output_with_junie = true` または `[junie].review_script_output = true` を有効にすると、未対応形式のチェッカー出力や、実行した各工程スクリプトの今回の出力に Junie の参考判定を表示できます。既定はどちらも無効です。最大 32 KiB の UTF-8 ログがモデルサービスに送信されるので、機密情報を含むログには使用しないでください。参考判定による合格・自動修正・再実行はありません。
+TOML の `[checker].review_free_output_with_junie = true` または `[junie].review_script_output = true` を有効にすると、未対応形式のチェッカー出力や、実行した各工程スクリプトの今回の出力に Junie の参考判定を表示できます。既定はどちらも無効です。最大 32 KiB の UTF-8 ログがモデルサービスに送信されるので、機密情報を含むログには使用しないでください。参考判定の設定だけを有効にした場合は、それによる合格・自動修正・再実行はありません。
 
-結果を工程に反映する場合はさらに `[junie].apply_output_decisions = true` を指定します（既定は無効）。終了コード 0 と明確な成功の根拠がそろったときに続行します。チェッカーと `after_build` の既存形式の診断のみ、移行対象への既存の修正・再検証を使います。曖昧な応答や他工程の問題はスクリプトログと判定を確認してください。一度だけ実行する処理は、停止後でもログと対象版が一致すれば、コマンドを再実行せず判定を再開します。
+結果を工程に反映する場合はさらに `[junie].apply_output_decisions = true` を指定します（既定は無効）。出力がある場合の続行には、終了コード 0、Junieの合格判定、全ての実質行に対する明確な成功根拠の照合が必要です。非0終了をそのまま成功にはしません。チェッカーと `after_build` の既存形式の診断のみ、移行対象への既存の修正・再検証を使います。曖昧な応答や他工程の問題はスクリプトログと判定を確認してください。一度だけ実行する処理は、停止後でもログと対象版が一致すれば、コマンドを再実行せず判定を再開します。
 
 Junieが作業フォルダーの信頼確認や操作の許可を求めると、同じダイアログに確認内容と選択肢が表示されます。閉じた場合は進捗画面の **Junie の確認を開く** から再表示できます。
 

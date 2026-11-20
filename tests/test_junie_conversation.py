@@ -519,6 +519,14 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual(self.wait_for(identifier, "done")["result_status"], "build_succeeded")
         self.assertEqual(calls, [["dotnet", "build"]])
 
+    def assert_checker_answer_replayed(self, answer):
+        try:
+            _, reply = self.send("チェッカーまで", answer)
+        except HTTPError as error:
+            with error:
+                self.fail(f"Replay returned HTTP {error.code}: {error.read().decode('utf-8', errors='replace')}")
+        self.assertEqual(reply["status"], "done")
+
     def test_full_conversation_runs_checker_once_after_reload_and_answer(self):
         identifier = self.fill_conversation()
         self.restart_server()
@@ -532,11 +540,33 @@ class JunieConversationTests(SavedRunFixture):
         with mocked:
             answer, _ = self.send("チェッカーまで")
             self.wait_for(answer, "done")
-            self.assertEqual(self.send("チェッカーまで", answer)[1]["status"], "done")
+            self.assert_checker_answer_replayed(answer)
             self.assertEqual(self.wait_for(identifier, "done")["result_status"], "checker_succeeded")
             self.wait_until_idle()
         self.assertEqual(calls, [["dotnet", "build"], ["fixture-checker"]])
         self.assertEqual(sum(row["status"] == "steering" for row in self.request("editor")[1]["conversation"]), 15)
+
+    def test_replayed_answer_survives_transient_windows_run_record_read(self):
+        identifier = self.fill_conversation()
+        self.restart_server()
+        self.manager.limit = 0
+        answer, _ = self.send("チェッカーまで")
+        self.wait_for(answer, "done")
+        self.wait_for(identifier, "waiting")
+        read_text = Path.read_text
+        attempts = []
+
+        def read_record(path, *args, **kwargs):
+            if path == self.record_path and not attempts:
+                attempts.append(path)
+                error = PermissionError("fixture: run record shared during replacement")
+                error.winerror = 32
+                raise error
+            return read_text(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", read_record):
+            self.assert_checker_answer_replayed(answer)
+        self.assertEqual(attempts, [self.record_path])
 
     def test_full_conversation_allows_cancellation_and_frees_one_slot(self):
         identifier = self.fill_conversation()
