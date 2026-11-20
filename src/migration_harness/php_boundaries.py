@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 import re
 
@@ -15,6 +16,7 @@ _TOKENS = re.compile(
     r"[a-zA-Z_\u0080-\U0010ffff][\w\u0080-\U0010ffff]*"
 )
 _LINE_END = re.compile(r"\r\n|\r|\n")
+_BYTE_LINE_END = re.compile(rb"\r\n|\r|\n")
 _IDENTIFIER = re.compile(r"[a-zA-Z_\u0080-\U0010ffff][\w\u0080-\U0010ffff]*")
 _DECLARATION_PREFIX = re.compile(
     r"[ \t]*(?:(?:public|protected|private|static|final|abstract)[ \t]+)*", re.IGNORECASE,
@@ -28,17 +30,31 @@ class PhpFunction:
     end_line: int
 
 
-def function_boundaries(path: Path, encoding: str) -> tuple[tuple[PhpFunction, ...], str]:
-    if path.stat().st_size > _MAX_BYTES:
-        return (), "static scan byte limit"
-    with path.open("r", encoding=encoding, errors="strict", newline="") as stream:
-        text = stream.read()
+def function_boundaries(
+    path: Path, encoding: str, *, through_line: int | None = None,
+) -> tuple[tuple[PhpFunction, ...], str]:
+    with path.open("rb") as stream:
+        data = stream.read(_MAX_BYTES)
+        bounded = bool(stream.read(1))
+    partial = False
+    if bounded:
+        if through_line is None:
+            return (), "static scan byte limit"
+        # Start at the file's opening tag, never from an unknown lexical state.
+        boundary = next(islice(_BYTE_LINE_END.finditer(data), through_line - 1, None), None)
+        if boundary is None or boundary.end() == len(data):
+            return (), "static scan byte limit before requested lines"
+        data = data[:boundary.end()]
+        partial = True
+    text = data.decode(encoding)
     opening = _OPEN.match(text, int(text.startswith("\ufeff")))
     if opening is None:
         return (), "not a standalone PHP document"
     try:
         tokens = _tokens(text, opening.end())
-        return _functions(text, tokens), "named functions, lexical boundaries only"
+        return _functions(text, tokens, partial=partial), (
+            "named functions, bounded source prefix only" if partial else "named functions, lexical boundaries only"
+        )
     except ValueError as exc:
         return (), str(exc)
 
@@ -84,7 +100,7 @@ def _tokens(text: str, offset: int) -> list[tuple[str, int, int]]:
     return tokens
 
 
-def _functions(text: str, tokens: list[tuple[str, int, int]]) -> tuple[PhpFunction, ...]:
+def _functions(text: str, tokens: list[tuple[str, int, int]], *, partial: bool = False) -> tuple[PhpFunction, ...]:
     pairs: dict[int, int] = {}
     stack: list[int] = []
     matching = {")": "(", "]": "[", "}": "{"}
@@ -95,7 +111,7 @@ def _functions(text: str, tokens: list[tuple[str, int, int]]) -> tuple[PhpFuncti
             if not stack or tokens[stack[-1]][0] != matching[token]:
                 raise ValueError("unbalanced PHP delimiters")
             pairs[stack.pop()] = index
-    if stack:
+    if stack and not partial:
         raise ValueError("unbalanced PHP delimiters")
     line_starts = [0, *(end.end() for end in _LINE_END.finditer(text))]
     functions = []
@@ -112,11 +128,15 @@ def _functions(text: str, tokens: list[tuple[str, int, int]]) -> tuple[PhpFuncti
         opening = index + 2
         if opening >= len(tokens) or tokens[opening][0] != "(":
             continue
+        if opening not in pairs:
+            break
         body = pairs[opening] + 1
         while body < len(tokens) and tokens[body][0] not in ("{", ";", "}", "function"):
             body += 1
         if body == len(tokens) or tokens[body][0] != "{":
             continue
+        if body not in pairs:
+            break
         _, closing, covered_until = tokens[pairs[body]]
         end_line = bisect_right(line_starts, closing)
         following = line_starts[end_line] if end_line < len(line_starts) else len(text)
