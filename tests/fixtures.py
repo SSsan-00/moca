@@ -13,7 +13,6 @@ from migration_harness.config import load_config
 
 
 class HarnessCase(unittest.TestCase):
-    """実行データを隔離できるGitフィクスチャを各テストに提供する。"""
 
     def setUp(self):
         """ユーザーの署名や改行設定に依存しないGitリポジトリを用意する。"""
@@ -29,7 +28,6 @@ class HarnessCase(unittest.TestCase):
         self.git("config", "commit.gpgsign", "false")
 
     def git(self, *args):
-        """すべてのGit操作をサンプルリポジトリに限定する。"""
         return subprocess.run(
             ["git", "-C", str(self.project), *args], check=True, capture_output=True,
         )
@@ -40,7 +38,6 @@ class HarnessCase(unittest.TestCase):
         self.git("commit", "-qm", "Create fixture")
 
     def config(self, target='target = "Page.cs"'):
-        """サンプルに閉じた最小の動作設定を、実際の設定パーサーに通す。"""
         path = self.root / "test.toml"
         path.write_text(
             f"""[project]
@@ -69,7 +66,6 @@ class SavedRunFixture(unittest.TestCase):
     """外部ツールを起動せずに再開やHTTPの操作を検証できるRunを用意する。"""
 
     def setUp(self):
-        """チェッカーが判断待ちになった直後のRunと移行先を作る。"""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -122,11 +118,9 @@ class SavedRunFixture(unittest.TestCase):
         })
 
     def save_record(self, record):
-        """シナリオの開始状態をRun記録に書き込む。"""
         self.record_path.write_text(json.dumps(record), encoding="utf-8")
 
     def record(self):
-        """見かけの戻り値とは別に、実際に保存されたRun記録を取得する。"""
         return json.loads(self.record_path.read_text(encoding="utf-8"))
 
     def mock_commands(self, *responses):
@@ -159,5 +153,4 @@ class SavedRunFixture(unittest.TestCase):
         return result
 
     def review(self, finding_id=None, reason=None):
-        """同じRunの一覧取得と指摘への承認を呼び分ける。"""
         return workflow.review_checker(self.config, self.run_id, finding_id, reason)

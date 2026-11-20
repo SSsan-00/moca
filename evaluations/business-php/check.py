@@ -56,7 +56,6 @@ def compare(expected, source, inspection):
 
 
 def check():
-    """評価用の移行先を静的に検査し、差異を終了コードに反映する。"""
     start = time.monotonic()
     # This executable is a Roslyn source parser, not the migrated application.
     result = subprocess.run(["dotnet", "run", "--project", str(DATA / "inspector/Inspect.csproj"),

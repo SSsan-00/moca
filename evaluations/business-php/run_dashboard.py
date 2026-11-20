@@ -12,14 +12,12 @@ import time
 
 
 def serve(root, run_id=None):
-    """評価用設定で、指定されたRunまたはダッシュボードを開く。"""
     from migration_harness.config import load_config
     from migration_harness.dashboard import run_dashboard
     run_dashboard(load_config(root / "harness.toml"), **({"run_id": run_id} if run_id else {"unit_id": "business-scale"}))
 
 
 def check(root, output):
-    """評価の実行状態を観測し、保存された結果を確認する。"""
     from playwright.sync_api import expect, sync_playwright
     output.mkdir(parents=True, exist_ok=True)
     existing = set((root / "runs").glob("*/run.json"))
@@ -36,7 +34,6 @@ def check(root, output):
         else:
             raise RuntimeError("dashboard did not start")
         def drain():
-            """ダッシュボードの標準出力を読み、実行中の出力を回収する。"""
             for line in process.stdout:
                 print(line, end="", flush=True)
         Thread(target=drain, daemon=True).start()

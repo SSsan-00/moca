@@ -23,7 +23,6 @@ def _parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def configured_command(name: str, help_text: str) -> argparse.ArgumentParser:
-        """設定ファイルを必須とするサブコマンドを定義する。"""
         command = subparsers.add_parser(name, help=help_text)
         command.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
         return command
@@ -31,6 +30,8 @@ def _parse_args() -> argparse.Namespace:
     configured_command("dashboard", "Open the local workspace for configuration and migration runs")
     preview = configured_command("preview-context", "List target reference sizes in the current application checkout")
     preview.add_argument("--unit", required=True, help="Migration unit ID from the config")
+    dry = configured_command("dry-run", "Check effective settings without executing the migration")
+    dry.add_argument("--unit", required=True, help="Migration unit ID from the config")
     prepare = configured_command("prepare", "Create a worktree and bounded context capsules")
     prepare.add_argument("--unit", required=True, help="Migration unit ID from the config")
     run = configured_command("run", "Migrate, build and run the configured checker")
@@ -48,6 +49,23 @@ def _parse_args() -> argparse.Namespace:
     draft.add_argument("--choose", action="append", metavar="PATH=SOURCE", help="Select draft or worktree for each path")
     junie_input = configured_command("junie-input", "Show the last measured Junie launch input for a saved run")
     junie_input.add_argument("--run-id", required=True)
+    evidence = configured_command("context-evidence", "Inspect fixed PHP evidence or read a bounded page")
+    evidence.add_argument("--run-id", required=True)
+    evidence.add_argument("--feature", help="Look up an exact declared symbol or named PHP function")
+    evidence.add_argument("--last-plan", action="store_true", help="Show the last migration, resume or repair navigation plan")
+    evidence.add_argument("--source-id")
+    evidence.add_argument("--start-line", type=int)
+    evidence.add_argument("--end-line", type=int)
+    evidence.add_argument("--through-capsule", type=int)
+    evidence.add_argument("--offset", type=int, default=0)
+    evidence.add_argument("--max-chars", type=int, default=16384)
+    handoff = configured_command("context-handoff", "List or record versioned unresolved source notes")
+    handoff.add_argument("--run-id", required=True)
+    handoff.add_argument("--note")
+    handoff.add_argument("--source-id")
+    handoff.add_argument("--start-line", type=int)
+    handoff.add_argument("--end-line", type=int)
+    handoff.add_argument("--supersedes", help="ID of an older note, kept for history")
     rule_review = configured_command("rule-review", "Inspect saved migration rules and record independent review evidence")
     rule_review.add_argument("--run-id", required=True)
     rule_review.add_argument("--rule")
@@ -74,7 +92,7 @@ def _parse_args() -> argparse.Namespace:
     anchors.add_argument("--reference", type=Path, action="append", help="Diff Viewer workspace JSON with manual anchors; repeat for multiple files")
     run.add_argument("--dashboard", action="store_true", help="Serve live progress and review on localhost")
     resume.add_argument("--dashboard", action="store_true", help="Open the saved run and resume from the dashboard")
-    for command in (run, resume, view):
+    for command in (run, resume, view, dry):
         command.add_argument(
             "--checker-command", nargs=argparse.REMAINDER, metavar="EXECUTABLE",
             help="Checker executable and its arguments. Put this option last.",
@@ -83,7 +101,6 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """利用者の操作を振り分け、途中停止や入力エラーを終了コードで伝える。"""
     args = _parse_args()
     try:
         try:
@@ -111,6 +128,17 @@ def main() -> None:
             config["toml_checker_command"] = config["checker_command"]
             config["checker_command"] = checker_command
             config["checker_from_cli"] = True
+        if args.command == "dry-run":
+            from migration_harness.dry_run import plan_dry_run
+            from migration_harness.execution import ExecutionControl, control_scope
+
+            progress = ExecutionControl(on_activity=lambda event: print(event["message"], file=sys.stderr, flush=True))
+            with control_scope(progress):
+                report = plan_dry_run(config, args.unit)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            if not report["configuration_ok"]:
+                raise SystemExit(2)
+            return
         if args.command == "preview-context":
             from migration_harness.execution import ExecutionControl, control_scope
             from migration_harness.source_context import preview_target_context
@@ -120,6 +148,44 @@ def main() -> None:
             with control_scope(progress):
                 preview = preview_target_context(Path(config["project_root"]), target_paths(unit), unit.get("target_context"))
             print(json.dumps(preview, ensure_ascii=False, indent=2))
+            return
+        if args.command == "context-handoff":
+            from migration_harness.context_handoff import context_handoff, record_handoff
+            from migration_harness.run_records import load_saved_run
+
+            run_path, worktree, record, unit = load_saved_run(config, args.run_id)
+            arguments = (run_path, worktree, target_paths(unit), record.get("detail_overrides", {}))
+            requested = (args.source_id, args.start_line, args.end_line, args.note)
+            if all(value is None for value in requested) and args.supersedes is None:
+                result = context_handoff(*arguments)
+            elif all(value is not None for value in requested):
+                result = record_handoff(*arguments, *requested, supersedes=args.supersedes)
+            else:
+                raise ValueError("provide --note, --source-id, --start-line and --end-line together")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        if args.command == "context-evidence":
+            from migration_harness.context_evidence import find_feature, inspect_context, read_context
+            from migration_harness.run_records import load_dashboard_record
+
+            run_path, record = load_dashboard_record(config, args.run_id)
+            requested = (args.source_id, args.start_line, args.end_line)
+            if args.last_plan:
+                if args.feature is not None or args.through_capsule is not None or any(value is not None for value in requested):
+                    raise ValueError("--last-plan cannot be combined with evidence selection")
+                result = {"plan": record.get("last_context_plan"), "supplied_rules": record.get("supplied_rules", [])}
+            elif args.feature is not None:
+                if any(value is not None for value in requested):
+                    raise ValueError("--feature cannot be combined with source range selection")
+                result = find_feature(run_path, args.feature, args.through_capsule)
+            elif all(value is None for value in requested):
+                result = inspect_context(run_path, args.through_capsule)
+            elif all(value is not None for value in requested):
+                result = read_context(run_path, *requested, through=args.through_capsule, offset=args.offset,
+                                      max_chars=args.max_chars)
+            else:
+                raise ValueError("provide --source-id, --start-line and --end-line together")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return
         if args.command == "junie-input":
             from migration_harness.run_records import load_dashboard_record
@@ -227,7 +293,6 @@ def main() -> None:
 
 
 def _print_migration_progress(completion: dict[str, Any]) -> None:
-    """コマンドの成功とは別に、現在の移行完了判定を伝える。"""
     status = "complete" if completion["complete"] else "incomplete"
     print(f"Migration: {status} ({completion['reviewed']}/{completion['total']} PHP ranges reviewed)")
     if not completion["verification_passed"]:
@@ -235,7 +300,6 @@ def _print_migration_progress(completion: dict[str, Any]) -> None:
 
 
 def _print_run_result(result: dict[str, Any], *, prepared: bool) -> None:
-    """Run ID、成果物の場所と、次の操作に必要な結果を伝える。"""
     print(f"Run:       {result['run_id']}")
     print(f"Worktree:  {result['worktree_path']}")
     print(f"Capsules:  {result['capsule_count']} (max {result['max_context_chars']} characters each)")

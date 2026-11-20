@@ -74,9 +74,28 @@ python tools/rule_review.py check rule-workspace/LegacyApp
 意味レビューと原文・出力の照合はスキル本文に従う。案内だけの場合も、分類案は全ページ確認後に示す。反映を依頼された場合は、`config.before.toml` を元にPACK内へ `config.proposed.toml` を作り、対象のルール登録だけを編集する。相対パスは元の設定ファイルの場所を基準にしたままにする。既存のコメントも維持する。分割した場合は先に `rule_pack.py verify` を実行して全行の対応を確認する。矛盾や未解決事項があれば反映を保留する。
 
 ```text
+python tools/rule_review.py meaning rule-workspace/LegacyApp rule-workspace/LegacyApp/config.proposed.toml > rule-workspace/LegacyApp/meaning-review.json
+# Fill the evidence and unresolved findings before invoking apply.
 python tools/rule_review.py apply rule-workspace/LegacyApp rule-workspace/LegacyApp/config.proposed.toml
 python tools/rule_usage.py harness.local.toml --output rule-workspace/LegacyApp/loading-after.json
 ```
+
+`meaning` は候補の版と原文→配置先の行対応を出力します。出力後、`meaning-review.json` の `entries` に、実際に照合した判断を次の形で記録してください。 `kind` は `obligation`（義務）、`condition`（適用条件）、`exception`（例外）、`priority`（優先関係）、`description`（読む場面）のいずれかです。読む場面には候補TOMLと同じ `description` も記録します。変更した配置先ごとに根拠を記録します。適用条件・例外・優先関係では `related` で結び付ける別の原文行と配置先を示します。ハーネスは参照が同じ資料内に実際に残る場合だけ反映します。同時提供の保証がない別資料への分割は保留し、見つかった矛盾・不足は `unresolved` に残します。確認のためだけにハッシュや引用を機械生成して済ませないでください。
+
+```json
+{
+  "kind": "exception",
+  "reason": "失敗時の例外は義務がある同じDB資料に残した",
+  "source": {"path": "原文の絶対パス", "line": 18, "quote": "原文の18行目"},
+  "destination": {"path": "生成ファイルの絶対パス", "line": 9, "quote": "原文の18行目"},
+  "related": {
+    "source": {"path": "原文の絶対パス", "line": 17, "quote": "原文の17行目"},
+    "destination": {"path": "生成ファイルの絶対パス", "line": 8, "quote": "原文の17行目"}
+  }
+}
+```
+
+`apply` はレビューがない、候補や原文の版が違う、引用と実際の配置が一致しない、未解決事項が残る場合は使用中のTOMLを変更しません。この確認は、記録されなかった矛盾まで見つけるものではありません。設定と原文の版に結び付いた人またはJunieの意味レビューは引き続き必要です。
 
 `apply` は全ページの確認を再検証し、確認記録にある必須行が必須登録に原文のまま残ること、対象外の設定が同じこと、設定案が読み込めることを確認してから反映する。分割時は、置換する原文と分割元の一致、生成ファイルの検証、必須・詳細の登録も照合する。失敗した場合は原因を解消するまで使用中のTOMLを直接編集しない。
 

@@ -39,7 +39,6 @@ _REFERENCE_TARGET_ROLES = ("reference_csharp", "reference_razor")
 
 
 def _settings_integer(value: Any, key: str) -> int:
-    """設定フォームの値を範囲付き整数へ変換する。"""
     minimum, label = _NUMERIC_FIELDS[key]
     if type(value) is not int and (not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value)):
         raise ValueError(f"{label}は{minimum}以上の整数で入力してください。")
@@ -50,7 +49,6 @@ def _settings_integer(value: Any, key: str) -> int:
 
 
 def _material_form_entry(item: Any, index: int, key: str) -> dict[str, Any]:
-    """ルール・参考実装のフォーム入力を構造化する。"""
     if isinstance(item, Mapping) and isinstance(item.get("path"), str):
         role = "migration_rules" if key == "migration_rules" else item.get("role")
         if key != "references" or role in REFERENCE_ROLES:
@@ -181,13 +179,11 @@ def _promote_legacy_materials(document: Any, units: list) -> bool:
 
 
 def _apply_table_edits(document: Any, changes: dict[str, Any]) -> None:
-    """設定フォームから変更された共通テーブル項目を反映する。"""
     for section, keys in _TABLE_FIELDS.items():
         _apply_table_fields(document, section, keys, changes.get(section, {}))
 
 
 def _table_field_value(section, key, value):
-    """フォームの値を検証し、TOMLに書く型へ変換する。"""
     if key == "command":
         if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
             raise ValueError("チェッカーのコマンドと引数を確認してください。")
@@ -210,7 +206,6 @@ def _table_field_value(section, key, value):
 
 
 def _apply_table_fields(document, section, keys, edits, *, preserve_empty=False):
-    """空欄で継承に戻す。rootsや単位別の空配列は明示的な上書きとして残す。"""
     if not isinstance(edits, dict) or edits.keys() - set(keys):
         raise ValueError("設定フォームの入力内容を確認してください。")
     for key, raw_value in edits.items():
@@ -224,7 +219,6 @@ def _apply_table_fields(document, section, keys, edits, *, preserve_empty=False)
 
 
 def _apply_unit_edits(document: Any, unit_changes: dict[str, Any]) -> None:
-    """移行単位の追加・変更・削除を設定へ適用する。"""
     units = document.setdefault("units", tomlkit.aot())
     for index_text, fields in unit_changes.items():
         if not index_text.isascii() or not index_text.isdecimal() or not isinstance(fields, dict):
@@ -276,7 +270,6 @@ def _apply_unit_edits(document: Any, unit_changes: dict[str, Any]) -> None:
 
 
 def _remove_empty_units(units: list, indices: Any) -> None:
-    """内容のない移行単位を設定から取り除く。"""
     if not isinstance(indices, list) or any(
         type(index) is not int or not 0 <= index < len(units) for index in indices
     ):
@@ -294,7 +287,6 @@ def _remove_empty_units(units: list, indices: Any) -> None:
 
 
 def _apply_script_edits(document: Any, edits: Any) -> None:
-    """工程スクリプトのフォーム編集を設定へ適用する。"""
     scripts = document.get("scripts", {})
     if not isinstance(edits, list):
         raise ValueError("スクリプトの工程とコマンドを確認してください。")
@@ -318,7 +310,6 @@ def _apply_script_edits(document: Any, edits: Any) -> None:
 
 
 def _settings_form(document: Any) -> dict[str, Any]:
-    """現在の設定から編集可能なフォーム値を作る。"""
     scripts = document.get("scripts", {})
     units = document.get("units", [])
     project = document.get("project", {})

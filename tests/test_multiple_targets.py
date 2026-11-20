@@ -33,7 +33,6 @@ class MultipleTargetsTest(HarnessCase):
     targets = ("Page.cshtml.cs", "Page.cshtml")
 
     def setUp(self):
-        """両方の移行先を同じworktreeに持つRunを準備する。"""
         super().setUp()
         (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
         for name in self.targets:
@@ -50,9 +49,7 @@ class MultipleTargetsTest(HarnessCase):
         return json.loads(self.record_path.read_bytes())
 
     def edit_with_junie(self, *, complete=True, outside=False, scratch=False):
-        """Junieの編集結果と完了記録を、テストの条件に合わせて用意する。"""
         def run(args, completion, token, targets, *, report_usage=None, prompts=None):
-            """Junieに相当する処理として、両方の移行先へ変更を保存する。"""
             self.assertEqual(tuple(path.name for path in targets), self.targets)
             self.assertIn("extract the exact ordered data mechanically from the assigned PHP lines", args[-1])
             self.assertIn("including both values and order", args[-1])

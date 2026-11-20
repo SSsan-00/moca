@@ -450,7 +450,6 @@ flowchart TB
     }
   }
 
-  // クリック後に切り替わるテーマをアイコンと読み上げ名で示す。
   function updateThemeButton(dark) {
     themeToggle.setAttribute('aria-label', `${dark ? 'ライト' : 'ダーク'}テーマに切り替え`);
     themeToggle.innerHTML = dark

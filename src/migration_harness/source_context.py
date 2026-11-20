@@ -69,7 +69,6 @@ def _copy(source: Path, destination: Path, expected: str | None = None) -> str:
 
 
 def _context_roots(targets, settings):
-    """移行先別の起点と任意のフォルダーを作業ツリー内で解決する。"""
     choices = set(settings.get("roots", TARGET_CONTEXT_ROOTS))
     roots = set(map(Path, settings.get("folders", [])))
     for path in targets:
@@ -85,7 +84,6 @@ def _excluded(relative, settings):
 
 
 def _context_entries(worktree, targets, settings, roots, progress):
-    """参照候補を検査し、実収集では各候補の処理後にも版を確かめる。"""
     visited = set()
 
     def visit(relative, *, root=False):

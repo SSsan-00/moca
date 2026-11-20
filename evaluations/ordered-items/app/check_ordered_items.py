@@ -18,17 +18,14 @@ class ListItems(HTMLParser):
         self.text = None
 
     def handle_starttag(self, tag, attrs):
-        """リスト項目の本文の収集を始める。"""
         if tag == "li":
             self.text = []
 
     def handle_data(self, data):
-        """収集中のリスト項目へデコード済みの本文を加える。"""
         if self.text is not None:
             self.text.append(data)
 
     def handle_endtag(self, tag):
-        """リスト項目を確定し、HTMLに出た順に結果を残す。"""
         if tag == "li" and self.text is not None:
             self.values.append("".join(self.text).strip())
             self.text = None

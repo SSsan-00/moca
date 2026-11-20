@@ -17,7 +17,6 @@ from migration_harness.worktree_targets import worktree_source_lock
 
 
 def _inside_file(root: Path, relative: str) -> Path:
-    """相対パスが指定ディレクトリ内の既存ファイルを指すことを確認する。"""
     path = (root / relative).resolve()
     if not path.is_relative_to(root) or not path.is_file():
         raise ValueError(f"比較に必要なファイルを参照できません: {relative}")
@@ -25,7 +24,6 @@ def _inside_file(root: Path, relative: str) -> Path:
 
 
 def _file_version(path: Path) -> tuple[Any, ...] | None:
-    """未作成ファイルと参照先の切替も、取得前後の比較に含める。"""
     try:
         info = path.stat()
     except FileNotFoundError:
@@ -165,7 +163,6 @@ def capture_workspace(
         if isinstance(name, str) and type(line) is int:
             for segment in right_segments:
                 if Path(segment["fileName"]) == Path(name) and 1 <= line <= segment["lineCount"]:
-                    # ファイル内の行番号を連結した右ペインの座標へ変換する。
                     payload["workspace"]["rightActiveFile"] = segment["fileName"]
                     payload["workspace"]["rightCursor"] = {
                         "lineNumber": segment["startLine"] + line - 1, "column": 1,
@@ -187,7 +184,6 @@ def save_workspace(run_path: Path, payload: dict[str, Any]) -> str:
 
 
 def create_snapshot(config: dict[str, Any], run_id: str, *, focus: dict[str, Any] | None = None) -> str:
-    """アンカー生成を伴わない通常比較用のワークスペースを保存する。"""
     return save_workspace(*capture_workspace(config, run_id, focus=focus, include_draft=True))
 
 

@@ -85,11 +85,9 @@ class WindowsJob:
             self._close(snapshot)
 
     def stop(self, deadline):
-        """Job内の子プロセスを終了し空になるまで待つ。"""
         accounting = _JobAccounting()
 
         def active():
-            """Job内に実行中のプロセスが残っているか調べる。"""
             if not self._query(self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
                 raise ctypes.WinError(ctypes.get_last_error())
             return accounting.active_processes
@@ -102,5 +100,4 @@ class WindowsJob:
             time.sleep(.025)
 
     def close(self):
-        """Job Objectのハンドルを閉じる。"""
         self._close(self.handle)

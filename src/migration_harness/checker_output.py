@@ -25,7 +25,6 @@ _CHECKER_FIELD = re.compile(
 
 
 def checker_response_status(log_path: Path) -> str | None:
-    """無出力以外は応答を判定し、成功文言の引用や未知の形式も確認に回す。"""
     with log_path.open("rb") as stream:
         raw = stream.read(65_537)
     if len(raw) > 65_536:
@@ -68,7 +67,6 @@ def _checker_diagnostics(log_path: Path) -> Iterator[str]:
 
 
 def _prefixed_checker_fields(diagnostic: str) -> dict[str, str] | None:
-    """指摘フィールド名にチェッカーの接頭辞を付ける。"""
     fields = {}
     current = None
     for line in diagnostic.splitlines():
@@ -102,7 +100,6 @@ class CheckerFinding:
 
 
 def checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFinding], bool]:
-    """対応形式の指摘を抽出し、読み取れない出力が混じっているかも返す。"""
     worktree = worktree.resolve()
     findings = []
     unrecognized = False

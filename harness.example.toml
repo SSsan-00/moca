@@ -30,6 +30,7 @@ max_context_chars = 500000
 # path = "docs/examples/menu/Menu.cs"
 
 [junie]
+# review_script_output = true # 工程スクリプトの出力をJunieに送り、参考判定を保存する。
 # 設定タブでも選択可能。省略するとJunieの既定モデルを使う。
 # model = "sonnet"
 # モデルを指定した場合のみ使用。省略すると選択モデルの既定値を使う。
@@ -59,6 +60,7 @@ max_context_chars = 500000
 # project = "src/Application/Application.csproj"
 
 [checker]
+# review_free_output_with_junie = true # 形式未対応の出力をJunieに送り、自動修正せず人が確認する。
 # 実行ファイル名と引数を個別に並べる。相対パスの基準はworktreeのルート。
 # command = ["py", "-3", "tools/check_migration.py"]
 # 引数の別名は実行時にworktree内の絶対パスへ展開する。

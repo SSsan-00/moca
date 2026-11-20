@@ -69,7 +69,6 @@ PHASES = {
 
 
 def _answer_kind(text):
-    """利用者の文面から回答種別を判定する。"""
     value = unicodedata.normalize("NFKC", text).lower()
     if re.fullmatch(r"\s*(?:チェッカー(?:まで|も)?|チェックまで|checker)[。.!！\s]*", value):
         return "checker"
@@ -81,17 +80,14 @@ def _answer_kind(text):
 
 
 def _clarification(history):
-    """確認質問への回答内容を抽出する。"""
     return next((entry for entry in reversed(history) if entry["status"] == "clarification"), None)
 
 
 def _junie_option(request, text):
-    """Junieの確認選択肢に対応する回答を抽出する。"""
     return next((choice for choice in request["options"] if text in (choice["label"], choice["id"])), None)
 
 
 def _conditional_verification(value):
-    """先行ビルド完了を条件とする検証依頼を判定する。"""
     match = CONDITIONAL_VERIFICATION.search(value)
     if match and re.search(rf"{BUILD_TERM}|{CHECKER_TERM}", match[0]):
         return match
@@ -99,7 +95,6 @@ def _conditional_verification(value):
 
 
 def _status_intent(value):
-    """保存済み状態の照会依頼か判定する。"""
     if (_conditional_verification(value) or STOP_REQUEST.fullmatch(value)
             or re.search(VERIFICATION_REQUEST, value)):
         return None
@@ -141,7 +136,6 @@ def _stage_resume_options(text):
 
 
 def _intent(text, phase):
-    """会話文を処理可能な操作意図へ分類する。"""
     value = unicodedata.normalize("NFKC", text).lower()
     if status := _status_intent(value):
         return status
@@ -203,23 +197,19 @@ def _intent(text, phase):
 
 
 def target_versions(worktree, unit):
-    """編集依頼が対象としたファイル版を返す。"""
     return {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}
 
 
 def saved_edits(queue):
-    """保存済みの利用者編集を対象別にまとめる。"""
     return {name: edit["id"] for name, edit in queue["edits"].items()}
 
 
 def _finish(entry, status, message):
-    """会話依頼の結果を履歴へ確定する。"""
     entry.update(status=status, message=message)
     entry["finished_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def _queue_steering(queue, entry, timing):
-    """保存した会話を同じトランザクションでJunieへの配信待ちにする。"""
     queue["prompts"].append({"id": entry["id"], "text": entry["text"], "status": "queued"})
     message = {
         "immediate": "実行中の Junie に追加指示を渡します。",
@@ -231,7 +221,6 @@ def _queue_steering(queue, entry, timing):
 
 
 def _phase_message(state, phase):
-    """工程状態に対応する利用者向け説明を返す。"""
     current = "実行待ち" if state.get("queued") else PHASES.get(phase, "状況を確認中")
     if phase == "script_running" and state.get("script_phase") == "before_prepare":
         current = "準備中（準備前スクリプトを実行中）"
@@ -239,7 +228,6 @@ def _phase_message(state, phase):
 
 
 def _preparation_reply(entry):
-    """準備中に受け付けた照会へ返信する。"""
     phase = entry["phase"]
     intent = _intent(entry["text"], phase)
     if intent not in QUERY_INTENTS:
@@ -262,7 +250,6 @@ def invalidate_queued_steering(queue):
 
 
 def _diagnostic(run_path, kind):
-    """工程結果から会話表示用の診断を作る。"""
     from .workflow import _review_log
 
     text, truncated = _review_log(run_path, f"{kind}.log")
@@ -282,7 +269,6 @@ def _existing_receipt(history, identifier, text):
 
 class JunieConversations:
     def __init__(self, manager):
-        """RunManagerに結び付く会話履歴とスレッド状態を初期化する。"""
         self.manager = manager
         self.wake = Event()
         self.runs = set()
@@ -290,7 +276,6 @@ class JunieConversations:
         self.thread = None
 
     def start(self):
-        """会話履歴の監視・処理スレッドを開始する。"""
         root = self.manager.root
         if root and self.thread is None:
             self.scan()
@@ -298,14 +283,12 @@ class JunieConversations:
             self.thread.start()
 
     def scan(self):
-        """保存済み履歴から未処理依頼を見つける。"""
         self.runs.update(path.parent.name for path in self.manager.queue_path.parent.glob("*/editor.json"))
         self.runs.update(self.manager.blocked_conversations)
         self.wake.set()
 
     @contextmanager
     def _preparation_history(self, run_id, state, *, create=False):
-        """作業ディレクトリを準備する処理から独立して、工程照会の履歴を保存する。"""
         validate_run_id(run_id)
         root = Path(self.manager.config["run_root"]).resolve()
         path = safe_target(root, Path(".preparation-conversations") / (run_id + ".json"))
@@ -324,7 +307,6 @@ class JunieConversations:
                 queue.update(owner=owner, conversation=history)
 
     def preparation_replies(self, run_id, state):
-        """準備中に保存した照会の回答を読み出す。"""
         with self.manager.condition, self._preparation_history(run_id, state) as history:
             return [_preparation_reply(entry) for entry in history]
 
@@ -456,7 +438,6 @@ class JunieConversations:
             self.wake.set()
 
     def dispatch(self):
-        """保留依頼の保存とRunManagerへの登録を行う。"""
         while not self.manager.closing:
             self.wake.wait(.2)
             self.wake.clear()
@@ -527,7 +508,6 @@ class JunieConversations:
             return self._advance_waiting_entry(config, run_path, worktree, unit, queue, history, view, state, record, job)
 
     def _reconcile_dispatched_entries(self, queue, history, job, state):
-        """既に配信・開始した指示を、ジョブと保存済みプロンプトの状態に合わせる。"""
         for entry in history:
             status = entry["status"]
             if status == "running" and job.get("conversation_id") != entry["id"]:
@@ -543,7 +523,6 @@ class JunieConversations:
                         entry["message"] = "指示は保留中です。同じ Run を再開したときに Junie に渡します。"
 
     def _interpret_received_entries(self, run_path, history, view, state, record):
-        """受け付けた指示の照会・確認回答を処理し、未着手の実行を待機状態にする。"""
         phase = record["status"]
         for entry in history:
             if entry["status"] != "received":
@@ -599,7 +578,6 @@ class JunieConversations:
                     _finish(clarification_entry, "cancelled", "指示を取り消しました。")
                     _finish(entry, "done", "確認待ちの指示を取り消しました。")
                 else:
-                    # 回答時点で選んだ保存版を使う。
                     clarification_entry.update(intent=answer, status="waiting", answer=entry["text"],
                                     edit_revision=entry["edit_revision"], edits=entry["edits"], targets=entry["targets"])
                     _finish(entry, "done", "確認への回答を受け付けました。")
@@ -635,7 +613,6 @@ class JunieConversations:
                     _finish(waiting, "failed", UNCONFIRMED_BUILD)
 
     def _advance_waiting_entry(self, config, run_path, worktree, unit, queue, history, view, state, record, job):
-        """最初の待機依頼を評価し、必要ならRunManagerのキューへ登録・保存する。"""
         from .dashboard import _prompt_timing
 
         phase = record["status"]
@@ -706,7 +683,6 @@ class JunieConversations:
 
 
 def run_instruction(config, run_id, identifier):
-    """保存済み検証依頼をworkflowへ渡して結果を記録する。"""
     from .workflow import resume_with_junie
 
     run_path, _, _, _ = load_saved_run(config, run_id)
@@ -727,7 +703,6 @@ def run_instruction(config, run_id, identifier):
 
 
 def fail_pending_after_unconfirmed_stop(config, run_id, message):
-    """終了未確認時の同一Runの待機依頼を失敗として保存する。"""
     validate_run_id(run_id)
     try:
         (Path(config["run_root"]).resolve() / run_id / "editor.json").lstat()
@@ -742,7 +717,6 @@ def fail_pending_after_unconfirmed_stop(config, run_id, message):
 
 
 def finish_instruction(config, run_id, identifier, result, error=None):
-    """検証依頼の結果と対象版を履歴へ確定する。"""
     run_path, _, record, _ = load_saved_run(config, run_id)
     with editor_queue(run_path) as queue:
         entry = next((item for item in queue.get("conversation", []) if item["id"] == identifier), None)

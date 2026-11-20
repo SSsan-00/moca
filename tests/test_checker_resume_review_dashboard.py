@@ -1288,6 +1288,54 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertTrue(self.record()["repair_history"][0]["raw_checker_output"])
         self.assertEqual((self.run_path / "checker-before-repair-1.log").read_bytes(), log)
 
+    def test_opt_in_junie_advisory_neither_repairs_nor_passes_free_output(self):
+        self.config.update(max_repair_attempts=2, checker_review_free_output=True)
+        log = b"Read-only result: expected 42, actual 0\n"
+        before = self.target.read_bytes()
+        (self.run_path / "checker.log").write_text("previous attempt only", encoding="utf-8")
+        with (
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"informational","evidence_lines":[1]}') as agent,
+        ):
+            result = self.resume(self.build, ("fixture-checker", 2, log))
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertEqual(self.record()["checker_advisory"]["evidence_lines"], [1])
+        self.assertEqual(self.record()["checker_review_reason"], "free_output_advisory")
+        self.assertEqual(self.record()["repair_history"], [])
+        repair.assert_not_called()
+        agent.assert_called_once()
+        self.assertIn("expected 42", agent.call_args.args[0])
+        self.assertNotIn("previous attempt", agent.call_args.args[0])
+
+    def test_opt_in_advisory_preserves_nonzero_exit_even_with_canonical_success_text(self):
+        self.config.update(max_repair_attempts=2, checker_review_free_output=True)
+        with (
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"informational","evidence_lines":[1]}'),
+        ):
+            result = self.resume(self.build, ("fixture-checker", 9, "特に気になる点はありません。".encode()))
+        self.assertEqual(result["status"], "checker_needs_review")
+        self.assertEqual(self.record()["checker_exit_code"], 9)
+        repair.assert_not_called()
+
+    def test_opt_in_advisory_cancel_stays_a_review_and_skips_repair(self):
+        self.config.update(max_repair_attempts=2, checker_review_free_output=True)
+        with (
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
+            self.assertRaises(workflow.RunInterrupted),
+        ):
+            self.resume(self.build, ("fixture-checker", 1, b"an unknown result\n"))
+        self.assertEqual(self.record()["status"], "checker_needs_review")
+        self.assertEqual(self.record()["checker_review_reason"], "free_output_advisory_interrupted")
+        repair.assert_not_called()
+
     def test_repeated_free_form_checker_output_stops_before_another_repair(self):
         self.config["max_repair_attempts"] = 2
         with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
@@ -1424,20 +1472,17 @@ class SavedDashboardTests(SavedRunFixture):
 
     @staticmethod
     def post(url, endpoint, payload):
-        """同じオリジンからブラウザー相当の操作を送る。"""
         origin = urlsplit(url)
         headers = {"Origin": f"{origin.scheme}://{origin.netloc}", "Content-Type": "application/json"}
         return urlopen(Request(url + endpoint, json.dumps(payload).encode(), headers), timeout=3)
 
     def open_dashboard(self, inspect, *, resume=False):
-        """HTTPが待ち受けている間に、一時サーバーで確認処理を実行する。"""
         terminal = io.StringIO()
         view = dashboard.Dashboard()
         dequeue = view.actions.get
         inspected = False
 
         def interact(*, timeout):
-            """操作待ちのタイミングでブラウザー側の確認処理を呼び出す。"""
             nonlocal inspected
             if inspected:
                 raise KeyboardInterrupt
@@ -1532,7 +1577,6 @@ class SavedDashboardTests(SavedRunFixture):
                 before = self.record_path.read_bytes()
 
                 def inspect(url):
-                    """サーバーが動いている間に、今回のシナリオのHTTP操作を確認する。"""
                     revision, state = self.get_ready_event(url)
                     self.assertEqual(state["status"], status)
                     self.assertEqual(state["build_exit_code"], 0)
@@ -1857,7 +1901,6 @@ target = "Search.cs"
         before = self.record_path.read_bytes()
 
         def inspect(url):
-            """サーバーが動いている間に、今回のシナリオのHTTP操作を確認する。"""
             revision, state = self.get_ready_event(url)
             self.assertTrue(state["resumable"])
             self.assertEqual(state["status"], "checker_needs_review")

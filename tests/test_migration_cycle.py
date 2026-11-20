@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -140,6 +141,52 @@ class CycleRecoveryTests(SavedRunFixture):
         self.assertEqual(calls, [["dotnet", "build"], ["run-tests"]])
         self.assertEqual(self.record()["status"], "script_failed")
         self.assertIn("assertion failed", (self.run_path / "after_build.log").read_text())
+
+    def test_configured_scripts_send_only_the_current_child_response_and_keep_exit_gate(self):
+        self.config["junie_review_script_output"] = True
+        self.config["scripts"] = {"after_build": [
+            [sys.executable, "-c", "print('fresh first response')"],
+            [sys.executable, "-c", "import sys; print('fresh second response'); sys.exit(2)"],
+            [sys.executable, "-c", "print('never run')"],
+        ]}
+        path = self.run_path / "after_build.log"
+        path.write_text("old output from an earlier attempt\n", encoding="utf-8")
+        record = self.record()
+        with (
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"informational","evidence_lines":[1]}') as agent,
+            self.assertRaises(workflow.RunScriptError),
+        ):
+            workflow._run_script_phase(self.config, "after_build", self.run_path, self.run_path, record, once=True)
+        first, second = [json.loads(call.args[0].split("\n", 1)[1]) for call in agent.call_args_list]
+        self.assertEqual(first["untrusted_lines"], ["fresh first response"])
+        self.assertEqual(second["untrusted_lines"], ["fresh second response"])
+        self.assertEqual([first["exit_code"], second["exit_code"]], [0, 2])
+        self.assertNotIn("never run", path.read_text(encoding="utf-8"))
+        saved = self.record()
+        self.assertEqual(saved["status"], "script_failed")
+        self.assertEqual(len(saved["script_command_progress"]["after_build"]), 1)
+        self.assertEqual([entry["command_number"] for entry in saved["script_advisories"]], [1, 2])
+
+    def test_advisory_cancellation_does_not_reexecute_a_successful_once_hook(self):
+        self.config["junie_review_script_output"] = True
+        self.config["scripts"] = {"after_prepare": [[sys.executable, "-c",
+            "from pathlib import Path; p = Path('counter.txt'); p.write_text(p.read_text() + 'x'); print('response')"]]}
+        counter = self.run_path / "counter.txt"
+        counter.write_text("", encoding="utf-8")
+        with (
+            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
+            self.assertRaises(workflow.RunScriptError),
+        ):
+            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
+        saved = self.record()
+        self.assertEqual(len(saved["script_command_progress"]["after_prepare"]), 1)
+        self.assertEqual(saved["script_advisories"][-1]["status"], "interrupted")
+        with patch("migration_harness.checker_advisory.run_text_advisory") as agent:
+            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
+        agent.assert_not_called()
+        self.assertEqual(counter.read_text(encoding="utf-8"), "x")
+        self.assertIn("after_prepare", self.record()["completed_script_phases"])
 
     def test_operator_repair_gets_original_output_source_and_instruction_together(self):
         self.save_record({**self.record(), "junie_model": "sonnet", "junie_effort": "high"})

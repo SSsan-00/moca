@@ -31,7 +31,6 @@ def write_rule_files(directory: Path, sources: list[tuple[dict, str]]) -> list[d
 
 
 def _target_mentions(targets: tuple[Path, ...]) -> re.Pattern[str] | None:
-    """詳細ルールに移行先ファイルの記載があるか判定する。"""
     mentions = []
     for target in targets:
         path = r"[\\/]".join(re.escape(part) for part in target.parts)
@@ -44,15 +43,16 @@ def _target_mentions(targets: tuple[Path, ...]) -> re.Pattern[str] | None:
 
 
 def detail_index(manifest: dict) -> list[dict]:
-    """詳細ルールの索引と用途説明を作成する。"""
     return [
         {"file": entry["file"], "source": entry["path"], "when_to_read": entry["description"]}
         for entry in manifest.get("rule_files", ()) if entry.get("usage") == "reference"
     ]
 
 
-def selected_details(index: list[dict], decisions: object, line_counts: dict[str, int] | None = None) -> frozenset[str]:
-    """確認漏れや不明な資料のIDがあれば、移行に進めない。"""
+def selected_details(
+    index: list[dict], decisions: object, line_counts: dict[str, int] | None = None,
+    evidence_inventory: dict[str, dict] | None = None,
+) -> frozenset[str]:
     if not isinstance(decisions, dict) or decisions.keys() != {item["file"] for item in index}:
         raise ValueError("detail review must contain exactly one decision for every saved detail")
     selected = set()
@@ -70,6 +70,19 @@ def selected_details(index: list[dict], decisions: object, line_counts: dict[str
             or not 1 <= evidence[0] <= evidence[1] <= (line_counts[name] if line_counts is not None else evidence[1])
         ):
             raise ValueError(f"invalid applicability evidence lines for saved detail: {name}")
+        insufficient = decision.get("insufficient_context", False)
+        if type(insufficient) is not bool or insufficient and not decision["applies"]:
+            raise ValueError(f"insufficient context cannot justify excluding saved detail: {name}")
+        reference = decision.get("context_evidence")
+        if reference is not None:
+            file = reference.get("file") if isinstance(reference, dict) else None
+            lines = reference.get("lines") if isinstance(reference, dict) else None
+            if (not isinstance(file, str) or not file.startswith("evidence/")
+                    or not isinstance(lines, list) or len(lines) != 2
+                    or any(type(line) is not int for line in lines) or not 1 <= lines[0] <= lines[1]
+                    or evidence_inventory is not None and (
+                        file not in evidence_inventory or lines[1] > evidence_inventory[file]["file_lines"])):
+                raise ValueError(f"invalid review context evidence for saved detail: {name}")
         if decision["applies"]:
             selected.add(name)
     return frozenset(selected)
@@ -77,7 +90,9 @@ def selected_details(index: list[dict], decisions: object, line_counts: dict[str
 
 def effective_details(manifest: dict, record: dict) -> frozenset[str]:
     """保存済みルールの版を照合し、利用者が上書きした採否を反映する。"""
-    selected = set(selected_details(detail_index(manifest), record["detail_applicability"]))
+    selected = set(selected_details(
+        detail_index(manifest), record["detail_applicability"], evidence_inventory=record.get("detail_review_evidence"),
+    ))
     reference_hashes = {item["file"]: item["sha256"] for item in manifest.get("rule_files", [])
                         if item.get("usage") == "reference"}
     for name, decision in record.get("detail_overrides", {}).items():
