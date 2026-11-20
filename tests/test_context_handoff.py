@@ -131,3 +131,41 @@ class JunieMemoLifecycleTests(HarnessCase):
         saved = json.loads(completed.read_bytes())
         self.assertEqual(saved["completed_capsules"], 1)
         self.assertEqual([row["note"] for row in saved["junie_memos"]], ["pending review 1"])
+
+    def test_stopped_draft_memo_is_used_after_reloading_run(self):
+        (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        note = "Check the pending return branch."
+        prompts = []
+
+        def junie(command, completion, token, targets, **kwargs):
+            prompts.append(command[-1])
+            if len(prompts) == 1:
+                targets[0].write_text("class Provisional {}", encoding="utf-8")
+                (completion.parent / f"handoff-{token}.json").write_text(json.dumps([{
+                    "kind": "pending", "note": note, "source_id": "php-0001", "start_line": 1, "end_line": 1,
+                }]), encoding="utf-8")
+                workflow.junie_cli.session_closed_observer.get()()
+                raise KeyboardInterrupt()
+            return 1
+
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=junie), redirect_stdout(io.StringIO())):
+            with self.assertRaises(workflow.RunInterrupted):
+                workflow.run_with_junie(config, "sample")
+            saved, = Path(config["run_root"]).glob("*/run.json")
+            record = json.loads(saved.read_bytes())
+            draft = record["stopped_migration_draft"]
+            self.assertNotIn("junie_memos", record)
+            self.assertEqual(record["completed_capsules"], 0)
+            self.assertEqual(draft["junie_memos"][0]["draft_snapshot"], draft["snapshot"])
+            agent = saved.parent / "agent-workspace"
+            initial_memo, = agent.glob("handoff-*.json")
+            initial_memo.write_bytes(b"changed after stop")
+            workflow.resume_with_junie(config, record["run_id"])
+
+        self.assertIn("unfinished Junie draft", prompts[1])
+        self.assertIn(note, prompts[1])
+        changed = {**record, "detail_overrides": {"different": True}}
+        self.assertNotIn(note, handoff_prompt(saved.parent, agent, (Path("Page.cs"),), changed, through=1, draft=draft))

@@ -268,6 +268,14 @@ class Dashboard:
             elif usage != self.state.get("token_usage", []):
                 self.publish({**self.state, "token_usage": usage})
 
+    @staticmethod
+    def available_actions(config: dict[str, Any], record: dict[str, Any]) -> dict[str, bool]:
+        return {
+            "resumable": can_resume_run(config, record),
+            "build_resumable": can_resume_build(record),
+            "diff_viewer_enabled": bool(config.get("diff_viewer_html")),
+        }
+
     def ready(self, config: dict[str, Any], result: dict[str, Any], message: str = "") -> None:
         stopped = result.get("last_stop") or {}
         if not message and stopped.get("saved_status") == result["status"]:
@@ -275,9 +283,7 @@ class Dashboard:
         state = {
             **self.state, "ready": True, "status": result["status"], "message": message,
             "error_details": "",
-            "resumable": can_resume_run(config, result),
-            "build_resumable": can_resume_build(result),
-            "diff_viewer_enabled": bool(config.get("diff_viewer_html")),
+            **self.available_actions(config, result),
             "cancellable": False, "stop_requested": False, "operation_id": None, "generating_anchors": False,
             "stage_timings": freeze_timings(self.state), "active_stage": None,
         }

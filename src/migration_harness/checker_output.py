@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 import hashlib
 import json
@@ -100,10 +100,14 @@ class CheckerFinding:
 
 
 def checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFinding], bool]:
+    return parse_checker_diagnostics(_checker_diagnostics(log_path), worktree)
+
+
+def parse_checker_diagnostics(diagnostics: Iterable[str], worktree: Path) -> tuple[list[CheckerFinding], bool]:
     worktree = worktree.resolve()
     findings = []
     unrecognized = False
-    for diagnostic in _checker_diagnostics(log_path):
+    for diagnostic in diagnostics:
         match = _CHECKER_FINDING.fullmatch(diagnostic)
         fields = None if match else _prefixed_checker_fields(diagnostic)
         if match:

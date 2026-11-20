@@ -1068,6 +1068,10 @@ class _AcpSession:
             self.process.stdout.close()
 
 
+def acp_command(command: list[str]) -> list[str]:
+    return [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
+
+
 def _launch_session_process(command, *, headless, dashboard, thought_path):
     streams = {"stderr": subprocess.PIPE} if thought_path is not None else {}
     if headless:
@@ -1076,8 +1080,7 @@ def _launch_session_process(command, *, headless, dashboard, thought_path):
         # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
         return _launch_process(command, owned=True, terminal=True)
     # ACPの指示は初期化後に送るため、起動時の引数から外す。
-    acp_command = [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
-    return _launch_process(acp_command, owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
+    return _launch_process(acp_command(command), owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
 
 
 def _run_session(

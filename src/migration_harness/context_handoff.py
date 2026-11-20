@@ -106,9 +106,10 @@ def context_handoff(
 
 
 def handoff_prompt(
-    run_path: Path, target_root: Path, targets: tuple[Path, ...], record: dict[str, Any], *, through: int | None = None,
+    run_path: Path, target_root: Path, targets: tuple[Path, ...], record: dict[str, Any], *, through: int | None = None, draft=None,
 ) -> str:
     junie = _junie_memo_prompt(run_path, target_root, targets, record, through)
+    junie += stopped_memo_prompt(run_path, target_root, record, through, draft)
     try:
         rows = context_handoff(run_path, target_root, targets, record.get("detail_overrides", {}),
                                through=through, verify_limit=3)
@@ -144,9 +145,11 @@ def _junie_rule_state(record):
     return {key: record.get(key, {}) for key in ("detail_overrides", "detail_applicability")}
 
 
-def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *, phase: str, through: int | None = None) -> None:
+def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *,
+                    phase: str, through: int | None = None, draft=None) -> None:
     if not path.exists() and not path.is_symlink():
         return
+    output = record if draft is None else draft
     try:
         staged = safe_target(path.parent, Path(path.name))
         with staged.open("rb") as stream:
@@ -156,8 +159,10 @@ def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *, phase
         entries = json.loads(raw)
         if not isinstance(entries, list) or not 1 <= len(entries) <= 3:
             raise ValueError("expected 1–3 handoff items")
-        previous = record.get("junie_memos", [])
+        previous = output.get("junie_memos", [])
         known = {r["id"] for r in previous}
+        resumable = record.get("stopped_migration_draft") or (record.get("repair_pending") or {}).get("draft") or {}
+        replaceable = known | {r["id"] for r in record.get("junie_memos", []) + resumable.get("junie_memos", [])}
         prepared = []
         source_paths = None
         for entry in entries:
@@ -177,16 +182,18 @@ def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *, phase
             if (kind not in ("decision", "hypothesis", "pending") or not isinstance(note, str)
                     or not 1 <= len(note.strip()) <= _MAX_NOTE or not isinstance(source_id, str)
                     or type(start) is not int or type(end) is not int or end - start > 100
-                    or replaces is not None and (not isinstance(replaces, str) or replaces not in known)):
+                    or replaces is not None and (not isinstance(replaces, str) or replaces not in replaceable)):
                 raise ValueError("invalid handoff item or superseded ID")
             evidence = read_context(run_path, source_id, start, end, through=through, max_chars=1)
             row = {
                 "kind": kind, "note": note.strip(), "source_id": source_id,
                 "start_line": start, "end_line": end, "source_sha256": evidence["sha256"],
                 "supersedes": replaces, "phase": phase, "capsule": through,
-                "target_hashes": dict(record["target_hashes"]),
+                "target_hashes": dict(record["target_hashes"] if draft is None else draft["targets"]),
                 "rule_decisions_sha256": _rule_decisions_hash(_junie_rule_state(record)),
             }
+            if draft is not None:
+                row["draft_snapshot"] = draft["snapshot"]
             identity = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
             if identity not in known:
                 prepared.append({**row, "id": identity})
@@ -194,10 +201,10 @@ def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *, phase
         if len(previous) + len(prepared) > _MAX_NOTES:
             raise ValueError("Junie handoff note limit reached")
         if prepared:
-            record["junie_memos"] = [*previous, *prepared]
-        record.pop("junie_memo_warning", None)
+            output["junie_memos"] = [*previous, *prepared]
+        output.pop("junie_memo_warning", None)
     except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
-        record["junie_memo_warning"] = f"{phase}: optional handoff was not saved ({type(exc).__name__})"
+        output["junie_memo_warning"] = f"{phase}: optional handoff was not saved ({type(exc).__name__})"
 
 
 def _junie_memo_prompt(run_path, target_root, targets, record, through):
@@ -241,3 +248,36 @@ def _junie_memo_prompt(run_path, target_root, targets, record, through):
                       for row in stale[:3]], ensure_ascii=False) + ". Recheck these against the current source. "
         + json.dumps(pending, ensure_ascii=False) + " "
     )
+
+
+def stopped_memo_prompt(run_path, target_root, record, through, draft):
+    if not draft or not draft.get("workspace_unchanged") or not draft.get("junie_memos"):
+        return ""
+    try:
+        rows = draft["junie_memos"]
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 3:
+            raise ValueError("invalid stopped memo")
+        names = draft["targets"]
+        if not names or not names.keys() <= record["target_hashes"].keys():
+            raise ValueError("unrecognized stopped target")
+        version = _version(target_root, tuple(Path(name) for name in names), _junie_rule_state(record))
+        if version["target_hashes"] != names:
+            raise ValueError("stopped targets differ from memo")
+        notes = []
+        for row in rows:
+            payload = {key: value for key, value in row.items() if key != "id"}
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+            if (row["id"] != digest or row["draft_snapshot"] != draft["snapshot"] or row["capsule"] != through
+                    or any(row[key] != value for key, value in version.items())
+                    or not isinstance(row["note"], str) or not 1 <= len(row["note"]) <= _MAX_NOTE):
+                raise ValueError("stopped memo version differs")
+            evidence = read_context(run_path, row["source_id"], row["start_line"], row["end_line"],
+                                    through=through, max_chars=1)
+            if evidence["sha256"] != row["source_sha256"]:
+                raise ValueError("stopped memo evidence differs")
+            notes.append({key: row[key] for key in ("id", "kind", "note", "source_id", "start_line", "end_line")})
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, RecursionError):
+        return "A stopped draft memo did not match this checkpoint. Review the draft and fixed source independently. "
+    return ("These notes came from an unfinished Junie draft, not an adopted checkpoint or proof of progress. "
+            "Recheck them against the source and current operator instructions: "
+            + json.dumps(notes, ensure_ascii=False) + " ")

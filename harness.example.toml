@@ -30,8 +30,13 @@ max_context_chars = 500000
 # path = "docs/examples/menu/Menu.cs"
 
 [junie]
-# review_script_output = true # 工程スクリプトの出力をJunieに送り、参考判定を保存する。
-# 設定タブでも選択可能。省略するとJunieの既定モデルを使う。
+# 既定はfalse。下記のスクリプト判定、または [checker] の出力判定を別途有効化すること。
+# apply_output_decisions = true # 終了コードと根拠の照合に成功したときだけ工程に反映する。
+# 既定はfalse。有効にすると工程スクリプトの今回のUTF-8出力（最大32 KiB）をモデルへ送信する。
+# review_script_output = true
+# 既定はfalse。工程への反映に加え、自由文の指摘の照合に固定PHPと現行C#の限られた抜粋を送信する。
+# ground_output_repairs = true
+# 設定タブでも選択可能。ログ判定・ソース照合もRunのモデル指定を使う。省略時はJunieの既定。
 # model = "sonnet"
 # モデルを指定した場合のみ使用。省略すると選択モデルの既定値を使う。
 # effort = "high"
@@ -60,7 +65,9 @@ max_context_chars = 500000
 # project = "src/Application/Application.csproj"
 
 [checker]
-# review_free_output_with_junie = true # 形式未対応の出力をJunieに送り、自動修正せず人が確認する。
+# 既定はfalse。有効にすると未対応形式のUTF-8出力（最大32 KiB）をモデルへ送信する。
+# 機密ログには使わない。判定だけを有効にしても合格・修正には進まない。
+# review_free_output_with_junie = true
 # 実行ファイル名と引数を個別に並べる。相対パスの基準はworktreeのルート。
 # command = ["py", "-3", "tools/check_migration.py"]
 # 引数の別名は実行時にworktree内の絶対パスへ展開する。

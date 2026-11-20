@@ -479,6 +479,8 @@ class RunManager:
                 view.ready(self.config, record)
                 if unchanged and notice:
                     view.publish({**view.state, **notice})
+            elif view.state.get("ready"):
+                view.publish({**view.state, **view.available_actions(self.config, record)})
 
     def row(self, view):
         keys = ("run_id", "unit_id", "created_at", "status", "ready", "resumable", "build_resumable", "worktree_path", "queued",

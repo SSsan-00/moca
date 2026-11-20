@@ -110,3 +110,38 @@ class CheckerAdvisoryTests(unittest.TestCase):
             with patch.object(advisory, 'run_text_advisory', side_effect=junie_cli.JunieStopError("unconfirmed")):
                 with self.assertRaises(junie_cli.JunieStopError):
                     advisory.checker_advisory(run_path, 1)
+
+    def test_pass_needs_exit_zero_all_lines_and_local_corroboration(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "checker.log"
+            for output, code, lines, result in (
+                ("問題ありません", 0, [1], True),
+                ("20件の確認が完了しました。すべて正常です。", 0, [1], True),
+                ("問題ありません", 1, [1], False),
+                ("問題ありません\n送料の加算がありません", 0, [1], False),
+                ("問題ありません\n送料の加算がありません", 0, [1, 2], False),
+                ("All tests passed, but the checker did not execute", 0, [1], False),
+                ("0 tests passed", 0, [1], False),
+            ):
+                with self.subTest(output=output, code=code):
+                    log.write_text(output, encoding="utf-8")
+                    answer = json.dumps({"verdict":"passed","evidence_lines": lines})
+                    with patch.object(advisory, "run_text_advisory", return_value=answer):
+                        decision = advisory.checker_advisory(root, code, allow_pass=True)
+                    self.assertEqual(decision["corroborated"], result)
+
+    def test_acp_launcher_receives_model_and_effort_without_prompt_or_brave(self):
+        launched = []
+
+        def launch(command, *, owned, cwd, **streams):
+            self.assertTrue(owned)
+            self.assertEqual(command, ["junie", "--project", str(cwd),
+                                       "--model", "fixture-model", "--effort", "high", "--acp=true"])
+            process = subprocess.Popen([sys.executable, "-c", FAKE_ACP, "complete"], cwd=cwd, **streams)
+            launched.append(process)
+            return process
+
+        with patch.object(junie_cli, "_launch_process", side_effect=launch):
+            advisory.run_text_advisory("sample only", model="fixture-model", effort="high", timeout=5)
+        self.assertIsNotNone(launched[0].poll())

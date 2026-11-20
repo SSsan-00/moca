@@ -59,3 +59,16 @@ Junieの自己申告だけでなく、外から `rule_pack.py verify`、元フ�
 追加後のローカル回帰テストは **201件、失敗なし（環境条件で2件スキップ）**。実効設定の集計、旧登録の重複、UTF-8 BOM・CRLF・EUC-JP、報告の上書き防止と読めない資料での失敗も確認した。
 
 これは小さい固定ケースでの挙動確認であり、意味上の分類や矛盾検出を完全に保証するものではない。全行の機械照合に加え、適用条件・例外・優先順位のレビューを行う。大量ルールの整理時間やトークン削減率は今回測定していない。
+
+## 未調整ケースで再評価する
+
+`holdout.py` でコピーごとに独立した合成ケースを作り、モデルには採点用コードを見せない。たとえば以下を実行する（ハーネス導入済みPythonを使用）。
+
+```console
+python evaluations/rule-optimization/holdout.py prepare /tmp/rule-opt-trial-01 --scenario conditional
+python evaluations/rule-optimization/holdout.py score /tmp/rule-opt-trial-01 --scenario conditional --transcript /tmp/trial-01.jsonl --signals /tmp/trial-01-usage.json
+```
+
+作成先でJunieを新規起動し、`/skills` を確認した上で、`/harness-optimize-rules` に「固定原文と既存登録を照合し、根拠が揃う場合だけ候補を反映してください。矛盾時は反映せず理由を記録し、準備・移行・フックは実行しないでください」と依頼する。各版・各ケースにつき同じモデル・推論条件かつ別の新規パスで最低3回実行する。候補・ログを調整に使った場合は、そのケースを未調整扱いにしない。
+
+`conditional` はページ末尾の必須事項・紛らわしい参考資料・CSVの条件／例外／明記された優先順。採点は実際のガイドライン生成で、未選択・CSV選択を別々に比較する。`conflict` は別ファイルの矛盾がある版で、元TOMLが変わらないことを確認する。出力は正しい反映・誤反映・妥当な保留・不要な保留と、スキル読込の観測値を分ける。ログ未提供・読込未確認はモデル試行の成功に数えない。ログは実際のセッションのものを使い、保留理由の正しさはレビュー記録で別途確認する。`--signals` の `elapsed_seconds`、`input_tokens`、`cached_input_tokens` は実測値が得られた場合にだけ指定する。この採点CLI自体はモデルを起動せず、精度向上を証明しない。

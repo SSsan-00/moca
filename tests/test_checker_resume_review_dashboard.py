@@ -1310,6 +1310,95 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertIn("expected 42", agent.call_args.args[0])
         self.assertNotIn("previous attempt", agent.call_args.args[0])
 
+    def test_apply_confirmed_free_success_without_edit_or_attempt(self):
+        self.config.update(junie_apply_output_decisions=True, checker_review_free_output=True)
+        for code, message, expected in (
+            (0, "20件の確認が完了しました。すべて正常です。", "checker_succeeded"),
+            (0, "問題ありません。\n送料が誤っています", "checker_needs_review"),
+            (2, "問題ありません。", "checker_needs_review"),
+        ):
+            with (
+                self.subTest(code=code, message=message),
+                patch.object(workflow, "_repair_target") as repair,
+                patch.object(junie_cli, "require_interactive_cli"),
+                patch("migration_harness.checker_advisory.run_text_advisory",
+                      return_value='{"verdict":"passed","evidence_lines":[1]}'),
+            ):
+                result = self.resume(self.build, ("fixture-checker", code, message.encode()))
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(self.record()["repair_history"], [])
+                repair.assert_not_called()
+
+    def test_advisory_repairs_only_matching_target_with_fresh_build_and_check(self):
+        self.config.update(junie_apply_output_decisions=True, checker_review_free_output=True, max_repair_attempts=2)
+        diagnostic = b"A Example.cs:1 warning: wrong total\n"
+        mixed = diagnostic + b"Do not send this unrecognized line to repair.\n"
+        with (
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"problem","evidence_lines":[1]}'),
+        ):
+            result = self.resume(self.build, ("fixture-checker", 2, mixed), self.build, ("fixture-checker", 0, b""))
+        self.assertEqual(result["status"], "checker_succeeded")
+        repair.assert_called_once()
+        self.assertEqual(repair.call_args.args[2], (Path("Example.cs"),))
+        self.assertEqual(repair.call_args.args[5], diagnostic.decode().strip())
+        attempt, = self.record()["repair_history"]
+        self.assertEqual(attempt["advisory_evidence"]["applied"], "repair_requested")
+
+    def test_grounded_free_form_checker_is_allowed_only_by_separate_opt_in(self):
+        self.config.update(junie_apply_output_decisions=True, checker_review_free_output=True, max_repair_attempts=2)
+        log = b"Shipping charge is not added in the migrated result.\n"
+        with (
+            patch.object(workflow, "grounded_diagnostic") as grounded,
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"problem","evidence_lines":[1]}'),
+        ):
+            result = self.resume(self.build, ("fixture-checker", 2, log))
+        self.assertEqual(result["status"], "checker_needs_review")
+        grounded.assert_not_called()
+        repair.assert_not_called()
+
+    def test_grounded_free_form_checker_repair_rechecks_and_uses_saved_model(self):
+        self.config.update(junie_apply_output_decisions=True, checker_review_free_output=True,
+                           junie_ground_output_repairs=True, max_repair_attempts=2,
+                           junie_model="configured-model", junie_effort="low")
+        self.save_record({**self.record(), "junie_model": "saved-model", "junie_effort": "high"})
+        log = b"Shipping charge is not added in the migrated result.\n"
+        citation = {"target": "Example.cs", "source_id": "php-source", "source_sha256": "example"}
+        with (
+            patch.object(workflow, "grounded_diagnostic", return_value={"status": "grounded", "citations": [citation]}) as grounded,
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"problem","evidence_lines":[1]}') as agent,
+        ):
+            result = self.resume(self.build, ("fixture-checker", 2, log), self.build, ("fixture-checker", 0, b""))
+        self.assertEqual(result["status"], "checker_succeeded")
+        repair.assert_called_once()
+        self.assertEqual(repair.call_args.args[2], (Path("Example.cs"),))
+        self.assertEqual(grounded.call_args.kwargs["model_options"], {"model": "saved-model", "effort": "high"})
+        self.assertEqual(agent.call_args.kwargs, {"model": "saved-model", "effort": "high"})
+
+    def test_environment_failure_omitted_from_citations_blocks_even_structured_repair(self):
+        self.config.update(junie_apply_output_decisions=True, checker_review_free_output=True,
+                           junie_ground_output_repairs=True, max_repair_attempts=2)
+        log = b"A Example.cs:1 warning: wrong total\nAuthentication failed: result incomplete\n"
+        with (
+            patch.object(workflow, "grounded_diagnostic") as grounded,
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"problem","evidence_lines":[1]}'),
+        ):
+            result = self.resume(self.build, ("fixture-checker", 2, log))
+        self.assertEqual(result["status"], "checker_needs_review")
+        grounded.assert_not_called()
+        repair.assert_not_called()
+
     def test_opt_in_advisory_preserves_nonzero_exit_even_with_canonical_success_text(self):
         self.config.update(max_repair_attempts=2, checker_review_free_output=True)
         with (

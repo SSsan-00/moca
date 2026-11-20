@@ -53,6 +53,8 @@ def _parse_args() -> argparse.Namespace:
     evidence.add_argument("--run-id", required=True)
     evidence.add_argument("--feature", help="Look up an exact declared symbol or named PHP function")
     evidence.add_argument("--last-plan", action="store_true", help="Show the last migration, resume or repair navigation plan")
+    evidence.add_argument("--target-references", action="store_true", help="List pinned C# and Razor reference IDs")
+    evidence.add_argument("--related-to", metavar="TARGET_ID", help="Find a pinned Razor companion by exact path")
     evidence.add_argument("--source-id")
     evidence.add_argument("--start-line", type=int)
     evidence.add_argument("--end-line", type=int)
@@ -165,12 +167,28 @@ def main() -> None:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return
         if args.command == "context-evidence":
+            from migration_harness.capsules import load_capsule_manifest
             from migration_harness.context_evidence import find_feature, inspect_context, read_context
+            from migration_harness.target_evidence import read_target_reference, related_target_references, target_references
             from migration_harness.run_records import load_dashboard_record
 
             run_path, record = load_dashboard_record(config, args.run_id)
             requested = (args.source_id, args.start_line, args.end_line)
-            if args.last_plan:
+            if args.related_to is not None or args.target_references:
+                if (args.related_to is not None and args.target_references or args.last_plan or args.feature is not None
+                        or args.through_capsule is not None or any(value is not None for value in requested)):
+                    raise ValueError("target reference modes cannot be combined with other evidence selection")
+                capsule, _ = load_capsule_manifest(run_path)
+                if args.target_references:
+                    if args.offset < 0:
+                        raise ValueError("reference offset cannot be negative")
+                    references = list(target_references(capsule).values())
+                    end = args.offset + 50
+                    result = {"references": references[args.offset:end],
+                              "next_offset": end if end < len(references) else None}
+                else:
+                    result = related_target_references(capsule, args.related_to)
+            elif args.last_plan:
                 if args.feature is not None or args.through_capsule is not None or any(value is not None for value in requested):
                     raise ValueError("--last-plan cannot be combined with evidence selection")
                 result = {"plan": record.get("last_context_plan"), "supplied_rules": record.get("supplied_rules", [])}
@@ -180,6 +198,11 @@ def main() -> None:
                 result = find_feature(run_path, args.feature, args.through_capsule)
             elif all(value is None for value in requested):
                 result = inspect_context(run_path, args.through_capsule)
+            elif all(value is not None for value in requested) and args.source_id.startswith("target:"):
+                if args.through_capsule is not None:
+                    raise ValueError("target references do not belong to a migration capsule")
+                capsule, _ = load_capsule_manifest(run_path)
+                result = read_target_reference(capsule, *requested, offset=args.offset, max_chars=args.max_chars)
             elif all(value is not None for value in requested):
                 result = read_context(run_path, *requested, through=args.through_capsule, offset=args.offset,
                                       max_chars=args.max_chars)

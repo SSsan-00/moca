@@ -25,15 +25,19 @@ from typing import Any
 from . import junie_cli
 from .build_receipt import build_artifacts, build_inputs
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
-from .checker_advisory import checker_advisory, output_advisory
+from .checker_advisory import LOG_LIMIT, bounded_advisory_text, checker_advisory, matching_evidence, output_advisory
 from .checker_output import (
     CHECKER_SUCCESS_MESSAGE, CheckerFinding, accepted_findings, checker_findings, checker_response_status,
+    parse_checker_diagnostics,
 )
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
 from .context_evidence import boundary_hints
 from .context_handoff import handoff_prompt, junie_memo_request, save_junie_memo
 from .context_plan import navigation_plan
+from .target_evidence import diagnostic_references
 from .config import checker_command_for_unit, find_unit, target_paths
+from .grounded_evidence import grounded_diagnostic, has_environment_diagnostic
+from .script_handoff import make_script_handoff, script_handoff_context
 from .editor_queue import (
     EDITOR_TARGET_SUFFIXES, LivePrompts, dispatch_prompts, editor_queue, editor_target, finish_prompts, merge_edit,
     record_operator_edit,
@@ -67,11 +71,16 @@ class RunInterrupted(KeyboardInterrupt):
         self.run_id = run_id
 
 
+_HANDOFF_PHASES = frozenset({"before_prepare", "after_prepare", "before_migration"})
+_REPAIRABLE_SCRIPT_PHASES = frozenset({"before_build", "after_build", "before_checker", "after_checker"})
+
+
 class RunScriptError(RuntimeError):
-    def __init__(self, message: str, run_id: str | None) -> None:
+    def __init__(self, message: str, run_id: str | None, *, interrupted: bool = False) -> None:
         """工程スクリプトの失敗情報を保持する。"""
         super().__init__(message)
         self.run_id = run_id
+        self.interrupted = interrupted
 
 
 def _validate_inputs(root: Path, unit: dict[str, Any]) -> None:
@@ -205,6 +214,7 @@ def _run_script_phase(
     previous_stage = record.get("active_stage") if record is not None else None
     command_ids = []
     start = 0
+    apply_decisions = bool(config.get("junie_apply_output_decisions") and config.get("junie_review_script_output"))
     if record is not None and once:
         command_ids = [hashlib.sha256(json.dumps(command).encode("utf-8")).hexdigest() for command in commands]
         completed_ids = record.get("script_command_progress", {}).get(phase, [])
@@ -221,8 +231,24 @@ def _run_script_phase(
     number = start + 1
     invocation = commands[start] if start < len(commands) else []
     try:
+        pending = record.get("script_decisions_pending", {}).get(phase) if record is not None else None
+        if once and apply_decisions and pending:
+            number = pending["command_number"]
+            if not 1 <= number <= start or command_ids[number - 1] != pending["command_sha256"]:
+                raise ValueError("The configured script changed while its response was pending")
+            _resolve_script_decision(config, run_path, cwd, record, pending)
+            if previous_status == "script_failed":
+                previous_status = pending["previous_status"]
+                previous_stage = pending["previous_stage"]
+                record.pop("error", None)
         with log_path.open("ab") as log:
             for number, command in enumerate(commands[start:], start + 1):
+                if record is not None and record.get("script_handoffs"):
+                    remaining_receipts = [item for item in record["script_handoffs"]
+                                          if (item["phase"], item["command_number"]) != (phase, number)]
+                    if len(remaining_receipts) != len(record["script_handoffs"]):
+                        record["script_handoffs"] = remaining_receipts
+                        write_run_record(record_path, record)
                 log.write(f"\n[{phase} {number}] {command[0]}\n".encode("utf-8"))
                 log.flush()
                 invocation = command
@@ -233,21 +259,42 @@ def _run_script_phase(
                                      and number <= len(configured) and not command[0].startswith("@"))
                 start_output = os.fstat(log.fileno()).st_size if review_output else 0
                 completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
-                if completed.returncode == 0 and record is not None and once:
+                settled_once = completed.returncode == 0 and record is not None and once
+                if settled_once:
                     record.setdefault("script_command_progress", {})[phase] = command_ids[:number]
-                    write_run_record(record_path, record)
+                length = 0
                 if review_output and completed.returncode >= 0:
                     log.flush()
                     length = os.fstat(log.fileno()).st_size - start_output
-                    if length > 0:
-                        _review_script_output(run_path, record, phase, command, number, completed.returncode, start_output, length)
+                if length > 0:
+                    decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
+                    if apply_decisions and settled_once:
+                        decision["previous_status"], decision["previous_stage"] = previous_status, previous_stage
+                        record.setdefault("script_decisions_pending", {})[phase] = decision
+                        with log_path.open("rb") as current:
+                            current.seek(start_output)
+                            content = current.read(min(length, LOG_LIMIT + 1))
+                        decision["log_sha256"] = hashlib.sha256(content).hexdigest()
+                        decision["target_versions"] = _script_decision_versions(cwd, record)
+                        write_run_record(record_path, record)
+                        _resolve_script_decision(config, run_path, cwd, record, decision)
+                    else:
+                        _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
+                        if apply_decisions and completed.returncode == 0:
+                            _save_script_handoff(run_path, cwd, record, decision)
+                        if apply_decisions and completed.returncode == 0 and decision.get("applied") not in {"continued", "handed_off"}:
+                            raise ValueError("The script response needs operator review; see the script log and advisory")
+                elif settled_once:
+                    write_run_record(record_path, record)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
     except (KeyboardInterrupt, OSError, ValueError) as exc:
         reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else format_error(exc, command=invocation, cwd=cwd)
         message = f"スクリプト {phase} の {number} 番目で停止しました。ログ {log_path}\n{reason}"
         if not isinstance(exc, KeyboardInterrupt) and log_path.is_file():
-            message += "\n" + log_path.read_text(encoding="utf-8", errors="replace")
+            with log_path.open("rb") as stream:
+                stream.seek(max(0, os.fstat(stream.fileno()).st_size - 65_536))
+                message += "\n" + stream.read(65_536).decode("utf-8", errors="replace")
         run_id = None
         if record is not None:
             run_id = record["run_id"]
@@ -255,7 +302,7 @@ def _run_script_phase(
             write_run_record(record_path, record)
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
             raise
-        raise RunScriptError(message, run_id) from None
+        raise RunScriptError(message, run_id, interrupted=isinstance(exc, KeyboardInterrupt)) from None
     if record is not None:
         if once:
             record.setdefault("completed_script_phases", []).append(phase)
@@ -265,28 +312,87 @@ def _run_script_phase(
         write_run_record(record_path, record, timing_stage=previous_stage)
 
 
-def _review_script_output(run_path, record, phase, command, number, exit_code, offset, length):
-    item = {
+def _advisory_model_options(config, record):
+    model = record.get("junie_model", config.get("junie_model"))
+    if not model:
+        return {}
+    options = {"model": model}
+    effort = record.get("junie_effort", config.get("junie_effort"))
+    if effort:
+        options["effort"] = effort
+    return options
+
+
+def _script_decision_item(phase, command, number, exit_code, offset, length):
+    return {
         "phase": phase, "command_number": number, "exit_code": exit_code, "log": f"{phase}.log",
         "byte_offset": offset, "byte_length": length,
         "command_sha256": hashlib.sha256(json.dumps(command).encode("utf-8")).hexdigest(),
-        "status": "pending",
     }
+
+
+def _script_decision_versions(cwd, record):
+    return {path: review_target_hash(cwd, Path(path)) for path in record.get("targets", [record["target"]])}
+
+
+def _resolve_script_decision(config, run_path, cwd, record, decision):
+    expected = decision.get("target_versions")
+    if not decision.get("log_sha256") or expected != _script_decision_versions(cwd, record):
+        raise ValueError("Target files changed since the script response was recorded")
+    item = {key: value for key, value in decision.items() if key not in {"target_versions", "previous_status", "previous_stage"}}
+    _review_script_output(config, run_path, record, item, apply_decisions=True)
+    if expected == _script_decision_versions(cwd, record):
+        _save_script_handoff(run_path, cwd, record, item)
+    if item.get("applied") not in {"continued", "handed_off"} or expected != _script_decision_versions(cwd, record):
+        raise ValueError("The saved script response needs operator review; the command was not repeated")
+    record["script_decisions_pending"].pop(decision["phase"])
+    write_run_record(run_path / "run.json", record)
+
+
+def _review_script_output(config, run_path, record, item, *, apply_decisions):
+    item["status"] = "pending"
     history = record.setdefault("script_advisories", [])
     history.append(item)
     del history[:-100]
     path = run_path / "run.json"
     write_run_record(path, record)
+    phase, number = item["phase"], item["command_number"]
     try:
         report_activity(f"Junie に {phase} の {number} 番目の出力の参考判定を依頼しています。", kind="phase")
-        advisory = output_advisory(run_path, item["log"], exit_code, phase=phase, byte_offset=offset, byte_length=length)
+        advisory = output_advisory(
+            run_path, item["log"], item["exit_code"], phase=phase, byte_offset=item["byte_offset"],
+            byte_length=item["byte_length"], expected_hash=item.get("log_sha256"), allow_pass=apply_decisions,
+            allow_handoff=apply_decisions and item["exit_code"] == 0 and phase in _HANDOFF_PHASES,
+            model_options=_advisory_model_options(config, record),
+        )
         check_cancelled()
         item.update(advisory)
+        if apply_decisions:
+            item["applied"] = "continued" if advisory.get("corroborated") else "review_required"
     except KeyboardInterrupt:
         item["status"] = "interrupted"
         raise
     finally:
         write_run_record(path, record)
+
+
+def _save_script_handoff(run_path, cwd, record, item):
+    if item["phase"] not in _HANDOFF_PHASES or item.get("verdict") != "handoff":
+        return
+    captured = bounded_advisory_text(run_path, item)
+    if captured is None or has_environment_diagnostic(captured):
+        return
+    versions = _script_decision_versions(cwd, record)
+    receipt = make_script_handoff(run_path, record, item, versions)
+    if receipt is None:
+        return
+    existing = record.setdefault("script_handoffs", [])
+    if receipt not in existing:
+        if len(existing) >= 8:
+            return
+        existing.append(receipt)
+    item["applied"] = "handed_off"
+    write_run_record(run_path / "run.json", record)
 
 
 def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]:
@@ -953,7 +1059,8 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
         junie_cli.launch_input_observer.reset(token)
 
 
-def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targets, allowed, other_files, before):
+def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targets, allowed, other_files, before,
+                                *, memo=None, phase="migration", through=None):
     """対象外と基準版が一致するときだけ、移行中の最新下書きを記録する。"""
     with worktree_source_lock:
         try:
@@ -967,13 +1074,14 @@ def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targe
             record["stopped_migration_save_error"] = True
             write_run_record(record_path, record)
             raise
-        if not safe or hashes != before:
-            _save_stopped_migration(record_path, record, agent_root, targets, workspace_unchanged=safe)
+        if not safe or hashes != before or (memo is not None and memo.is_file()):
+            _save_stopped_migration(record_path, record, agent_root, targets, workspace_unchanged=safe,
+                                    memo=memo, phase=phase, through=through)
 
 
 def _run_migration_junie(
     config, record_path, record, phase, guidelines, agent_root, inputs, command, completion, token,
-    agent_targets, *, worktree, targets, allowed, other_files, resumed_draft=None, **kwargs,
+    agent_targets, *, worktree, targets, allowed, other_files, resumed_draft=None, memo=None, through=None, **kwargs,
 ):
     before = {name.as_posix(): target_hash(file) for name, file in zip(targets, agent_targets, strict=True)}
     if resumed_draft and before != resumed_draft["targets"]:
@@ -998,6 +1106,7 @@ def _run_migration_junie(
         elif closed:
             _checkpoint_migration_draft(
                 record_path, record, worktree, agent_root, targets, allowed, other_files, before,
+                memo=memo, phase=phase, through=through,
             )
         raise
     finally:
@@ -1027,7 +1136,8 @@ def _run_editor_followup(
     inputs = [Path(instructions)]
     context, report = _operator_edit_context(record_path.parent, agent_root, token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
-    prompt = context + handoff_prompt(record_path.parent, agent_root, targets, record) + memo_request + prompt
+    prompt = context + handoff_prompt(record_path.parent, agent_root, targets, record,
+                           draft=record.get("stopped_migration_draft")) + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
                                       guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -1038,7 +1148,7 @@ def _run_editor_followup(
         _run_migration_junie(
             config, record_path, record, "editor_followup", guidelines, agent_root, inputs,
             command, completion, token, tuple(safe_target(agent_root, target) for target in targets),
-            worktree=worktree, targets=targets, allowed=allowed, other_files=other_files, resumed_draft=prior,
+            worktree=worktree, targets=targets, allowed=allowed, other_files=other_files, resumed_draft=prior, memo=memo,
             report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
             prompts=LivePrompts(record_path.parent),
         )
@@ -1340,7 +1450,13 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         manifest, record, "resume" if resuming else "migration", relative_targets, current=index,
     )
     record["last_context_plan"] = plan
-    prompt = context + plan_hint + handoff_prompt(run_path, agent_root, relative_targets, record, through=index) + memo_request + prompt
+    scripted_handoff = ""
+    if index == 1 and config.get("junie_apply_output_decisions") and config.get("junie_review_script_output") and record.get("script_handoffs"):
+        scripted_handoff = script_handoff_context(
+            run_path, record, config.get("scripts", {}), _script_decision_versions(worktree_root, record),
+        )
+    prompt = context + plan_hint + scripted_handoff + handoff_prompt(run_path, agent_root, relative_targets, record, through=index,
+                       draft=record.get("stopped_migration_draft")) + memo_request + prompt
     other_files = _unlisted_workspace_files(agent_root, allowed)
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
@@ -1351,7 +1467,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
                 config, record_path, record, "migration", guidelines, agent_root, inputs,
                 command, completion_path, completion_token, agent_targets,
                 worktree=worktree_root, targets=relative_targets, allowed=allowed, other_files=other_files,
-                report_usage=junie_usage_recorder(run_path, "migration", index),
+                memo=memo, through=index, report_usage=junie_usage_recorder(run_path, "migration", index),
                 prompts=LivePrompts(run_path),
             )
         except KeyboardInterrupt as exc:
@@ -1674,7 +1790,10 @@ def _review_free_checker_output(config, checked, record):
     exit_code = record["checker_exit_code"]
     try:
         report_activity("Junie にチェッカー出力の読み取り専用判定を依頼しています。", kind="phase")
-        advisory = checker_advisory(run_path, exit_code)
+        advisory = checker_advisory(
+            run_path, exit_code, allow_pass=bool(config.get("junie_apply_output_decisions")),
+            model_options=_advisory_model_options(config, record),
+        )
         check_cancelled()
     except KeyboardInterrupt:
         record.pop("checker_advisory", None)
@@ -1685,6 +1804,26 @@ def _review_free_checker_output(config, checked, record):
                   error="Free-form checker output requires operator review; inspect checker.log and run.json.")
     write_run_record(record_path, record)
     return {**checked, "checker_advisory": advisory, "error": record["error"]}
+
+
+def _apply_checker_pass(run_path, checked, record):
+    advisory = record.get("checker_advisory", {})
+    if not advisory.get("corroborated") or record["checker_exit_code"] != 0:
+        return checked
+    if not matching_evidence(run_path, advisory):
+        return checked
+    advisory["applied"] = "continued"
+    record["status"] = "checker_succeeded"
+    record.pop("checker_review_reason", None)
+    record.pop("error", None)
+    return {**checked, "status": record["status"], "error": None}
+
+
+def _repairable_checker_advice(run_path, advisory, remaining, targets):
+    if advisory.get("verdict") != "problem" or not remaining:
+        return False
+    evidence = matching_evidence(run_path, advisory)
+    return all(Path(finding.path) in targets and finding.diagnostic in evidence for finding in remaining)
 
 
 def _charge_repair(record: dict[str, Any]) -> None:
@@ -1803,7 +1942,8 @@ def _archive_stopped_migration(record):
         record.setdefault("stopped_migration_history", []).append(draft)
 
 
-def _save_stopped_migration(record_path, record, agent_root, targets, *, workspace_unchanged):
+def _save_stopped_migration(record_path, record, agent_root, targets, *, workspace_unchanged,
+                            memo=None, phase="migration", through=None):
     # Run 記録の書き込みまで成功してから旧下書きの参照を更新する。
     """最新の下書きと旧参照をRun記録へ一緒に保存し、失敗時は再開を保留する。"""
     updated = {**record}
@@ -1812,6 +1952,8 @@ def _save_stopped_migration(record_path, record, agent_root, targets, *, workspa
     try:
         draft = _snapshot_stopped_repair(record_path.parent, agent_root, targets, record["target_hashes"],
                                         workspace_unchanged=workspace_unchanged)
+        if workspace_unchanged and memo is not None:
+            save_junie_memo(memo, record_path.parent, record, phase=phase, through=through, draft=draft)
         _archive_stopped_migration(updated)
         updated["stopped_migration_draft"] = draft
         write_run_record(record_path, updated)
@@ -1857,7 +1999,8 @@ def _verified_target_snapshot(run_path, draft):
     if not re.fullmatch(r"stopped-repair-[0-9a-f]{32}", snapshot):
         raise ValueError("停止時の snapshot の名前が無効です。")
     manifest = safe_target(run_path, Path(snapshot) / "draft.json")
-    if not manifest.is_file() or json.loads(manifest.read_bytes()) != draft:
+    draft_files = {key: value for key, value in draft.items() if key not in {"junie_memos", "junie_memo_warning"}}
+    if not manifest.is_file() or json.loads(manifest.read_bytes()) != draft_files:
         raise ValueError("停止時の snapshot の記録が一致しません。")
     files = {name: safe_target(run_path, Path(snapshot) / f"{index}.draft")
              for index, name in enumerate(draft["targets"])}
@@ -2178,8 +2321,18 @@ def _repair_target(
     plan, plan_hint = navigation_plan(
         manifest, record, "repair", repair_targets, diagnostic=findings_path,
     )
+    references = diagnostic_references(capsule, findings)
+    plan["diagnostic_references"] = references
+    if references:
+        plan_hint += (
+            "The diagnostic names pinned read-only paths; use them as navigation hints, not proof of causation: "
+            + "; ".join(repr(item["path"][:150]) + (f" line {item['line']}" if item["line"] is not None else "")
+                        for item in references)
+            + ". "
+        )
     record["last_context_plan"] = plan
-    prompt = context + plan_hint + handoff_prompt(run_path, agent_root, targets, record) + memo_request + prompt
+    prompt = context + plan_hint + handoff_prompt(run_path, agent_root, targets, record,
+                       draft=stopped_draft if resume_draft else None) + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -2211,6 +2364,8 @@ def _repair_target(
                     "stopped_draft",
                     "停止時の下書きを保存できませんでした。再開前に Junie 作業領域を確認してください。",
                 ) from error
+            if saved["workspace_unchanged"]:
+                save_junie_memo(memo, run_path, record, phase=phase, draft=saved)
             _remember_repair_draft(record, attempt.get("draft"))
             attempt["draft"] = saved
             attempt.pop("selection", None)
@@ -2633,7 +2788,6 @@ def _checker_provenance(config, unit):
 def _execute_verification_build(config, unit, result, record, run_path, worktree, targets, *,
                                 expected_targets, previous_receipt, configured_checker, command, scripts, request):
     """ビルド前の対象版・設定を記録し、ビルドと実行中の対象版を照合する。"""
-    _run_script_phase(config, "before_build", worktree, run_path, record)
     hashes = {path.as_posix(): review_target_hash(worktree, path) for path in targets}
     if expected_targets is not None and hashes != expected_targets:
         raise ValueError("ビルドの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
@@ -2693,6 +2847,96 @@ def _checker_repair_inputs(run_path, remaining, targets, use_raw_output):
     return log, repair_targets, diagnostic, fingerprints, legacy_fingerprints
 
 
+def _grounded_repair_inputs(config, run_path, worktree, targets, hashes, advisory, evidence, record):
+    if not config.get("junie_ground_output_repairs"):
+        return (), "", set()
+    grounding = grounded_diagnostic(
+        run_path, worktree, targets, expected_target_hashes=hashes,
+        evidence_lines=evidence, phase=advisory["phase"], through=record.get("completed_capsules") or None,
+        model_options=_advisory_model_options(config, record),
+    )
+    advisory["grounding"] = grounding
+    write_run_record(run_path / "run.json", record)
+    check_cancelled()
+    if grounding.get("status") != "grounded" or any(review_target_hash(worktree, Path(name)) != digest
+                                                  for name, digest in hashes.items()):
+        return (), "", set()
+    if sorted(matching_evidence(run_path, advisory)) != evidence:
+        return (), "", set()
+    citations = grounding["citations"]
+    if not citations:
+        return (), "", set()
+    reported = {Path(citation["target"]) for citation in citations}
+    if not reported.issubset(targets):
+        return (), "", set()
+    diagnostic = json.dumps({"verified_citations": citations, "untrusted_diagnostic_lines": evidence}, ensure_ascii=False)
+    if len(diagnostic.encode("utf-8")) > 16_384:
+        return (), "", set()
+    fingerprints = {hashlib.sha256(json.dumps(
+        [advisory["phase"], citation["target"], citation["source_id"], " ".join(" ".join(evidence).split())],
+        ensure_ascii=False,
+    ).encode("utf-8")).hexdigest() for citation in citations}
+    return tuple(path for path in targets if path in reported), diagnostic, fingerprints
+
+
+def _repair_script_advice(config, run_path, worktree, record, advisory, targets, hashes):
+    if advisory.get("phase") not in _REPAIRABLE_SCRIPT_PHASES or advisory.get("verdict") != "problem":
+        return False
+    history = record["repair_history"]
+    if sum("instruction" not in entry for entry in history) >= config["max_repair_attempts"]:
+        return False
+    full_diagnostic = bounded_advisory_text(run_path, advisory)
+    if full_diagnostic is None or has_environment_diagnostic(full_diagnostic):
+        return False
+    evidence = sorted(matching_evidence(run_path, advisory))
+    if not evidence or sum(len(line) + 1 for line in evidence) > 8_000:
+        return False
+    if any(review_target_hash(worktree, Path(name)) != digest for name, digest in hashes.items()):
+        return False
+    findings, unrecognized = parse_checker_diagnostics(evidence, worktree)
+    paths = {Path(finding.path) for finding in findings}
+    if not paths.issubset(targets):
+        return False
+    if unrecognized:
+        repair_targets, diagnostic, fingerprints = _grounded_repair_inputs(
+            config, run_path, worktree, targets, hashes, advisory, evidence, record,
+        )
+        if not paths.issubset(repair_targets):
+            return False
+    else:
+        repair_targets = tuple(path for path in targets if path in paths)
+        diagnostic = "\n".join(evidence)
+        fingerprints = {finding.finding_id for finding in findings}
+    if not repair_targets or _repair_stalled(fingerprints, history, kind="script"):
+        return False
+    check_cancelled()
+    junie_cli.require_interactive_cli()
+    advisory["applied"] = "repair_requested"
+    details = {"kind": "script", "findings": sorted(fingerprints), "advisory_evidence": dict(advisory)}
+    _attempt_repair(config, targets, repair_targets, worktree, run_path, diagnostic, record, details)
+    return True
+
+
+def _verification_script(config, phase, worktree, run_path, record, targets, hashes, request):
+    previous = (record.get("script_advisories") or [None])[-1]
+    try:
+        _run_script_phase(config, phase, worktree, run_path, record)
+    except RunScriptError as exc:
+        advice = (record.get("script_advisories") or [None])[-1]
+        if (exc.interrupted or request or not config.get("junie_apply_output_decisions") or advice is None
+                or advice is previous or advice.get("applied") != "review_required"):
+            raise
+        try:
+            if not _repair_script_advice(config, run_path, worktree, record, advice, targets, hashes):
+                raise exc from None
+        except KeyboardInterrupt:
+            record.update(status="script_failed", error="repair interrupted; inspect Junie's workspace", script_phase=phase)
+            write_run_record(run_path / "run.json", record)
+            raise RunInterrupted(record["run_id"]) from None
+        return True
+    return False
+
+
 def _run_verification(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
     *, request: dict[str, Any] | None = None,
@@ -2745,6 +2989,12 @@ def _run_verification(
             except KeyboardInterrupt:
                 raise RunInterrupted(record["run_id"]) from None
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
+        before_build_hashes = (
+            _script_decision_versions(worktree, record) if config.get("junie_apply_output_decisions")
+            and config.get("junie_review_script_output") and config.get("scripts", {}).get("before_build") else {}
+        )
+        if _verification_script(config, "before_build", worktree, run_path, record, targets, before_build_hashes, request):
+            continue
         verified, hashes, inputs = _execute_verification_build(
             config, unit, result, record, run_path, worktree, targets, expected_targets=expected_targets,
             previous_receipt=previous_receipt, configured_checker=configured_checker, command=command,
@@ -2770,7 +3020,8 @@ def _run_verification(
                 raise RunInterrupted(record["run_id"]) from None
             return verified
         check_cancelled()
-        _run_script_phase(config, "after_build", worktree, run_path, record)
+        if _verification_script(config, "after_build", worktree, run_path, record, targets, hashes, request):
+            continue
         if inputs and inputs == build_inputs(worktree, config["build_project"]):
             if artifacts := build_artifacts(worktree, inputs):
                 record["checker_build"] = {"inputs": inputs, "artifacts": artifacts}
@@ -2786,7 +3037,8 @@ def _run_verification(
             save_verification()
             return verified
         write_run_record(record_path, record, timing_stage=5)
-        _run_script_phase(config, "before_checker", worktree, run_path, record)
+        if _verification_script(config, "before_checker", worktree, run_path, record, targets, hashes, request):
+            continue
         if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
             raise ValueError("チェッカーの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
         review_free_output = bool(config.get("checker_review_free_output"))
@@ -2798,9 +3050,15 @@ def _run_verification(
             raise ValueError("チェッカー実行中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
         if use_raw_output and review_free_output:
             checked = _review_free_checker_output(config, checked, record)
-        if record.get("checker_exit_code") is not None:
-            _run_script_phase(config, "after_checker", worktree, run_path, record)
+        if (record.get("checker_exit_code") is not None
+                and _verification_script(config, "after_checker", worktree, run_path, record, targets, hashes, request)):
+            continue
         try:
+            apply_decision = use_raw_output and review_free_output and config.get("junie_apply_output_decisions")
+            if apply_decision:
+                if any(review_target_hash(worktree, Path(name)) != digest for name, digest in hashes.items()):
+                    raise CheckerRepairBlocked("verification_inputs_changed", "Migration targets changed after the build; verify again")
+                checked = _apply_checker_pass(run_path, checked, record)
             if checked["status"] == "checker_succeeded":
                 _check_selected_repair_targets(record, ())
                 _finish_repair_attempt(record)
@@ -2815,25 +3073,55 @@ def _run_verification(
                 _finish_repair_attempt(record)
                 save_verification()
                 return {**checked, "status": record["status"]}
-            if request or (use_raw_output and review_free_output):
+            if request:
                 return checked
+            advisory_path = use_raw_output and review_free_output
+            if advisory_path and (not apply_decision or record["checker_advisory"].get("verdict") != "problem"):
+                return checked
+            advised_repair = False
+            grounded = False
             if not limit:
                 record["checker_review_reason"] = "repair_disabled"
                 write_run_record(record_path, record, timing_stage=5)
                 return checked
-            log, repair_targets, diagnostic, fingerprints, legacy_fingerprints = _checker_repair_inputs(
-                run_path, remaining, targets, use_raw_output,
-            )
-            if _repair_stalled(fingerprints, history, kind="checker", legacy=legacy_fingerprints, raw=use_raw_output):
-                raise CheckerRepairBlocked("finding_repeated", "a previous checker finding is still present")
             if sum("instruction" not in attempt for attempt in history) >= limit:
                 raise CheckerRepairBlocked("repair_limit", f"automatic repair limit reached ({limit})")
+            if advisory_path:
+                advisory = record["checker_advisory"]
+                full_diagnostic = bounded_advisory_text(run_path, advisory)
+                if full_diagnostic is None or has_environment_diagnostic(full_diagnostic):
+                    return checked
+                advised_repair = True
+                use_raw_output = False
+                if not _repairable_checker_advice(run_path, advisory, remaining, targets):
+                    if any(Path(finding.path) not in targets for finding in remaining):
+                        return checked
+                    evidence = sorted(matching_evidence(run_path, advisory))
+                    if not evidence or sum(len(line) + 1 for line in evidence) > 8_000:
+                        return checked
+                    repair_targets, diagnostic, fingerprints = _grounded_repair_inputs(
+                        config, run_path, worktree, targets, hashes, advisory, evidence, record,
+                    )
+                    if not repair_targets or any(Path(finding.path) not in repair_targets for finding in remaining):
+                        return checked
+                    log = safe_target(run_path, Path("checker.log"))
+                    legacy_fingerprints = set()
+                    grounded = True
+            if not grounded:
+                log, repair_targets, diagnostic, fingerprints, legacy_fingerprints = _checker_repair_inputs(
+                    run_path, remaining, targets, use_raw_output,
+                )
+            if _repair_stalled(fingerprints, history, kind="checker", legacy=legacy_fingerprints, raw=use_raw_output):
+                raise CheckerRepairBlocked("finding_repeated", "a previous checker finding is still present")
             junie_cli.require_interactive_cli()
             attempt = len(history) + 1
             checker_log = safe_target(run_path, Path(f"checker-before-repair-{attempt}.log"))
             shutil.copyfile(log, checker_log)
             _print_progress(f"Junie repair {attempt}/{limit} for {', '.join(path.as_posix() for path in repair_targets)}")
             details = {"findings": sorted(fingerprints), "checker_log_path": str(checker_log)}
+            if advised_repair:
+                record["checker_advisory"]["applied"] = "repair_requested"
+                details["advisory_evidence"] = dict(record["checker_advisory"])
             if use_raw_output:
                 details["raw_checker_output"] = True
             _attempt_repair(config, targets, repair_targets, worktree, run_path, diagnostic, record, details)
@@ -3422,7 +3710,15 @@ def _resume_checker(config, unit, result, record, plan, request_id):
     verification["scripts_passed"] = True
     write_run_record(record_path, record)
     if use_raw_output:
-        return _review_free_checker_output(config, checked, record)
+        checked = _review_free_checker_output(config, checked, record)
+        if config.get("checker_review_free_output") and config.get("junie_apply_output_decisions"):
+            try:
+                _check_build_receipt(config, worktree, record)
+                checked = _apply_checker_pass(run_path, checked, record)
+            except (OSError, ValueError) as exc:
+                record.update(status="checker_failed", checker_exit_code=None, error=str(exc))
+                checked = {**checked, "status": record["status"], "checker_exit_code": None, "error": str(exc)}
+            write_run_record(record_path, record)
     return checked
 
 
