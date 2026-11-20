@@ -139,28 +139,31 @@ def read_context(
         raise ValueError("unknown evidence ID or range outside the saved source selection")
     data = read_pinned_php(capsule, source)
     split_lines = {item["line"] for row in source["ranges"] for item in row.get("character_slices", [])}
+    count = 0
+    chunks = []
+    number = 0
     with io.StringIO(data.decode(source["encoding"], errors="strict"), newline="") as stream:
-        lines = []
-        number = 0
         for number, line in enumerate(stream, 1):
             if number >= start:
                 if number in split_lines and not _whole_line_assigned(source["ranges"], number, len(line.rstrip("\r\n"))):
                     raise ValueError("line has unassigned character slices in the selected capsule scope")
-                lines.append(line)
+                begin, finish = max(0, offset - count), min(len(line), offset + max_chars - count)
+                if begin < finish:
+                    chunks.append(line[begin:finish])
+                count += len(line)
             if number == end:
                 break
-        if number < end:
-            raise ValueError("evidence range exceeds the fixed source length")
-    text = "".join(lines)
-    if offset > len(text):
+    if number < end:
+        raise ValueError("evidence range exceeds the fixed source length")
+    if offset > count:
         raise ValueError("offset exceeds the selected evidence range")
-    page = text[offset:offset + max_chars]
-    next_offset = offset + len(page)
+    page = "".join(chunks)
+    next_offset = offset + max_chars
     return {
         "id": source_id, "path": source["path"], "sha256": source["sha256"], "encoding": source["encoding"],
         "start_line": start, "end_line": end, "offset": offset,
         "chars": len(page), "utf8_bytes": len(page.encode("utf-8")),
-        "next_offset": next_offset if next_offset < len(text) else None,
+        "next_offset": next_offset if next_offset < count else None,
         "text": page,
         "ranges": [row for row in source["ranges"] if row["start_line"] <= end and start <= row["end_line"]],
     }

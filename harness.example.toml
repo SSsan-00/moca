@@ -30,6 +30,7 @@ max_context_chars = 500000
 # path = "docs/examples/menu/Menu.cs"
 
 [junie]
+# apply_output_decisions = true # 参考判定を終了コードと根拠照合の上で工程へ反映する。
 # review_script_output = true # 工程スクリプトの出力をJunieに送り、参考判定を保存する。
 # 設定タブでも選択可能。省略するとJunieの既定モデルを使う。
 # model = "sonnet"

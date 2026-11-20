@@ -95,3 +95,26 @@ class WorkspaceListCacheTests(TestCase):
         self.assertEqual(len(self.manager.workspace()["runs"]), 1)
         self.config["units"] = [{"id": "one", "source": "source.php", "target": "Other.cs"}]
         self.assertEqual(self.manager.workspace()["runs"], [])
+
+    def test_resume_actions_follow_saved_gates_without_progress_change(self):
+        self.config["checker_command"] = None
+        self.replace(status="build_succeeded", completed_capsules=1, context_capsules=1, stage_timings={}, active_stage=None)
+        initial = self.manager.workspace()["runs"][0]
+        self.assertTrue(initial["resumable"])
+        self.assertTrue(initial["build_resumable"])
+
+        self.replace(checker_required=True, target_apply_pending={"state": "pending"})
+        blocked = self.manager.workspace()["runs"][0]
+        self.assertFalse(blocked["resumable"])
+        self.assertFalse(blocked["build_resumable"])
+
+        self.config["checker_command"] = ["checker"]
+        configured = self.manager.workspace()["runs"][0]
+        self.assertTrue(configured["resumable"])
+        self.assertFalse(configured["build_resumable"])
+
+        self.replace(target_apply_pending=None)
+        restored = self.manager.workspace()["runs"][0]
+        self.assertTrue(restored["resumable"])
+        self.assertTrue(restored["build_resumable"])
+        self.assertEqual(self.manager.workspace()["runs"][0]["revision"], restored["revision"])

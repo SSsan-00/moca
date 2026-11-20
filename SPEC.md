@@ -14,7 +14,7 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 | `[[project.references]]` | 参考実装。 `role` に `reference_php`・`reference_csharp`・`reference_razor` を指定し、元PHPと対応する移行済みファイルを順に並べる。 |
 | `[junie]` | 任意の `model` と `effort` を `--model`・`--effort` に渡す。`effort` は `none`・`minimal`・`low`・`medium`・`high`・`xhigh`・`max` のいずれかで、`model` の指定が必要。空欄・省略時はCLIへ渡さない。`max_steps` は任意の正の整数。 |
 | `[build]` | 任意の `project` にアプリ内の `.csproj`、`.sln`、`.slnx` を指定する。省略時はworktree直下で `dotnet build` を実行する。 |
-| `[checker]` | 任意の `command` を実行ファイルと個別の引数で指定する。 `max_repair_attempts` はビルド・チェッカーで共有し、既定はRunごとに2回。0で自動修正を無効にする。`review_free_output_with_junie` は既定で無効。有効時は形式未対応の出力を最大32 KiBのテキスト専用ACP判定へ送り、根拠行とハッシュを保存して確認待ちとする。判定だけで修正や合格には進まない。`[junie].review_script_output` による工程スクリプトの参考判定も、終了コードの続行・停止条件は変更しない。 |
+| `[checker]` | 任意の `command` を実行ファイルと個別の引数で指定する。 `max_repair_attempts` はビルド・チェッカーで共有し、既定はRunごとに2回。0で自動修正を無効にする。`review_free_output_with_junie` は既定で無効。有効時は形式未対応の出力を最大32 KiBのテキスト専用ACP判定へ送り、根拠行とハッシュを保存して確認待ちとする。判定だけで修正や合格には進まない。`[junie].review_script_output` による工程スクリプトの参考判定も、既定では終了コードの続行・停止条件は変更しない。 |
 | `[[units]].checker_command` | 単位ごとのチェッカー。共通の `[checker].command` より優先する。CLIの `--checker-command` を指定した場合はCLIを優先する。 |
 | `[scripts]` | 各工程にコマンドの配列を指定する。詳細は下記の実行順序を参照。 |
 | `[diff_viewer]` | `html` が指定され有効な場合に比較・アンカー生成を提供する。 `anchor_reference` はTOMLを基準とした相対パスまたは絶対パスの配列。従来の単一パスも受け付ける。 |
@@ -139,3 +139,5 @@ Junieには資料と書き戻すファイルを限定します。プロセス自
 ### 設定の事前検証
 
 `dry-run` と実行タブの「設定を検証」は、同じ計画処理から、選択単位・基準コミット・工程順の実行場所とコマンドを表示する。PHP等の入力は現在の作業コピーから、ビルド対象や判定可能な相対スクリプトはGit基準コミットから検査する。Git照合にはタイムアウト、入力のデコードには合計読み取り上限32 MiBを設定し、調べ切れないものは未確認とする。通常Runの作成、記録更新、カプセル分割、任意コマンドの実行は行わない。
+
+`[junie].apply_output_decisions` は既定で無効。有効時の続行は終了コード0かつ全根拠行の明確な成功を照合できる場合に限る。既存構造化診断で根拠と移行先を照合できるチェッカー・`after_build` のみ既存の修正と再検証を使う。非0終了をそのまま成功にしない。初回限定のスクリプトは保存済み出力を再判定する。曖昧な判定や不一致は確認待ちとし、未認識の文からコマンドを生成しない。

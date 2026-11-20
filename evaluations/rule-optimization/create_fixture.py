@@ -15,7 +15,7 @@ harness, app = root / "harness", root / "app"
 (app / "docs").mkdir(parents=True)
 shutil.copytree(repository / ".junie/skills/harness-optimize-rules", harness / ".junie/skills/harness-optimize-rules")
 shutil.copyfile(repository / "tools/rule_pack.py", harness / "tools/rule_pack.py")
-for name in ("rule_usage.py", "rule_review.py"):
+for name in ("rule_usage.py", "rule_review.py", "rule_meaning.py"):
     shutil.copyfile(repository / "tools" / name, harness / "tools" / name)
 mixed = """# 散らばったメモ
 [G01] 全移行で原文の値・順序・重複を維持する。推測で数値を補わない。

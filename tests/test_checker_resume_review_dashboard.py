@@ -1310,6 +1310,43 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertIn("expected 42", agent.call_args.args[0])
         self.assertNotIn("previous attempt", agent.call_args.args[0])
 
+    def test_apply_confirmed_free_success_without_edit_or_attempt(self):
+        self.config.update(junie_apply_output_decisions=True, checker_review_free_output=True)
+        for code, message, expected in (
+            (0, "20件の確認が完了しました。すべて正常です。", "checker_succeeded"),
+            (0, "問題ありません。\n送料が誤っています", "checker_needs_review"),
+            (2, "問題ありません。", "checker_needs_review"),
+        ):
+            with (
+                self.subTest(code=code, message=message),
+                patch.object(workflow, "_repair_target") as repair,
+                patch.object(junie_cli, "require_interactive_cli"),
+                patch("migration_harness.checker_advisory.run_text_advisory",
+                      return_value='{"verdict":"passed","evidence_lines":[1]}'),
+            ):
+                result = self.resume(self.build, ("fixture-checker", code, message.encode()))
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(self.record()["repair_history"], [])
+                repair.assert_not_called()
+
+    def test_advisory_repairs_only_matching_target_with_fresh_build_and_check(self):
+        self.config.update(junie_apply_output_decisions=True, checker_review_free_output=True, max_repair_attempts=2)
+        diagnostic = b"A Example.cs:1 warning: wrong total\n"
+        mixed = diagnostic + b"Do not send this unrecognized line to repair.\n"
+        with (
+            patch.object(workflow, "_repair_target") as repair,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory",
+                  return_value='{"verdict":"problem","evidence_lines":[1]}'),
+        ):
+            result = self.resume(self.build, ("fixture-checker", 2, mixed), self.build, ("fixture-checker", 0, b""))
+        self.assertEqual(result["status"], "checker_succeeded")
+        repair.assert_called_once()
+        self.assertEqual(repair.call_args.args[2], (Path("Example.cs"),))
+        self.assertEqual(repair.call_args.args[5], diagnostic.decode().strip())
+        attempt, = self.record()["repair_history"]
+        self.assertEqual(attempt["advisory_evidence"]["applied"], "repair_requested")
+
     def test_opt_in_advisory_preserves_nonzero_exit_even_with_canonical_success_text(self):
         self.config.update(max_repair_attempts=2, checker_review_free_output=True)
         with (

@@ -239,6 +239,11 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     review_script_output = junie.get("review_script_output", False)
     if type(review_script_output) is not bool:
         raise ValueError("[junie].review_script_output must be a boolean")
+    apply_output_decisions = junie.get("apply_output_decisions", False)
+    if type(apply_output_decisions) is not bool:
+        raise ValueError("[junie].apply_output_decisions must be a boolean")
+    if apply_output_decisions and not (review_script_output or review_free_output):
+        raise ValueError("[junie].apply_output_decisions requires a checker or script advisory to be enabled")
     junie_model = junie.get("model")
     if junie_model is not None:
         if not isinstance(junie_model, str) or any(character.isspace() or ord(character) < 32 or ord(character) == 127
@@ -274,6 +279,7 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         "junie_input_limits": input_limits,
         "junie_model": junie_model,
         "junie_review_script_output": review_script_output,
+        "junie_apply_output_decisions": apply_output_decisions,
         "junie_effort": junie_effort,
     }
 

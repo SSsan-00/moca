@@ -188,6 +188,64 @@ class CycleRecoveryTests(SavedRunFixture):
         self.assertEqual(counter.read_text(encoding="utf-8"), "x")
         self.assertIn("after_prepare", self.record()["completed_script_phases"])
 
+    def test_once_script_rereads_saved_response_after_stop_without_reexecuting(self):
+        self.config.update(junie_apply_output_decisions=True, junie_review_script_output=True)
+        self.config["scripts"] = {"after_prepare": [[sys.executable, "-c",
+            "from pathlib import Path; p = Path('counter.txt'); p.write_text(p.read_text() + 'x'); print('1 test passed')"]]}
+        counter = self.run_path / "counter.txt"
+        counter.write_text("", encoding="utf-8")
+        with (
+            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
+            self.assertRaises(workflow.RunScriptError),
+        ):
+            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
+        saved = self.record()
+        self.assertEqual(saved["script_decisions_pending"]["after_prepare"]["command_number"], 1)
+        with patch("migration_harness.checker_advisory.run_text_advisory",
+                   return_value='{"verdict":"passed","evidence_lines":[1]}') as agent:
+            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
+        agent.assert_called_once()
+        self.assertEqual(counter.read_text(encoding="utf-8"), "x")
+        self.assertEqual(self.record()["script_decisions_pending"], {})
+        self.assertEqual(self.record()["script_advisories"][-1]["applied"], "continued")
+
+    def test_after_build_child_advisory_repairs_scope_then_rebuilds_and_rechecks(self):
+        self.config.update(max_repair_attempts=2, junie_apply_output_decisions=True, junie_review_script_output=True)
+        self.config["scripts"] = {"after_build": [[sys.executable, "-c", (
+            "from pathlib import Path; import sys; "
+            "fixed = 'Fixed' in Path('Example.cs').read_text(); "
+            "print('1 test passed' if fixed else 'R Example.cs:1 warning: wrong total'); "
+            "sys.exit(0 if fixed else 2)"
+        )]]}
+        def repair(_config, _targets, allowed, _worktree, _run_path, diagnostic, _record):
+            self.assertEqual(allowed, (Path("Example.cs"),))
+            self.assertEqual(diagnostic, "R Example.cs:1 warning: wrong total")
+            self.target.write_text("class Fixed {}", encoding="utf-8")
+
+        commands = []
+        actual = workflow.run_process
+
+        def process(command, **kwargs):
+            commands.append(command[0])
+            if command[0] in {"dotnet", "fixture-checker"}:
+                return subprocess.CompletedProcess(command, 0)
+            return actual(command, **kwargs)
+
+        responses = ['{"verdict":"problem","evidence_lines":[1]}', '{"verdict":"passed","evidence_lines":[1]}']
+        with (
+            patch.object(workflow, "run_process", side_effect=process),
+            patch.object(workflow, "_repair_target", side_effect=repair) as repair_call,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=responses),
+        ):
+            result = workflow.resume_with_junie(self.config, self.run_id)
+        self.assertEqual(result["status"], "checker_succeeded")
+        self.assertEqual(commands, ["dotnet", sys.executable, "dotnet", sys.executable, "fixture-checker"])
+        repair_call.assert_called_once()
+        attempt, = self.record()["repair_history"]
+        self.assertEqual(attempt["kind"], "script")
+        self.assertTrue(self.record()["verification"]["scripts_passed"])
+
     def test_operator_repair_gets_original_output_source_and_instruction_together(self):
         self.save_record({**self.record(), "junie_model": "sonnet", "junie_effort": "high"})
         self.config["junie_model"] = "opus"
