@@ -1589,6 +1589,24 @@ class SavedDashboardTests(SavedRunFixture):
         ):
             return dashboard.run_dashboard(self.config, run_id=self.run_id)
 
+    def test_recovery_reads_selected_saved_run_and_rejects_a_different_run(self):
+        self.save_record({**self.record(), "status": "script_failed", "script_phase": "before_migration",
+                          "script_inflight": {"phase": "before_migration", "number": 2}})
+
+        def inspect(url):
+            _, state = self.get_ready_event(url)
+            self.assertFalse(state["resumable"])
+            with urlopen(f"{url}recovery?run_id={self.run_id}", timeout=3) as response:
+                data = json.load(response)
+            self.assertEqual(data["run_id"], self.run_id)
+            self.assertEqual(data["unknown_script"], {"phase": "before_migration", "number": 2,
+                                                      "log": "before_migration.log"})
+            with self.assertRaises(HTTPError) as rejected:
+                urlopen(f"{url}recovery?run_id=00000000-0000-4000-8000-000000000001", timeout=3)
+            self.assertEqual(rejected.exception.code, 409)
+
+        self.open_dashboard(inspect)
+
     def test_checker_dashboard_displays_raw_output_and_resumes_with_instruction(self):
         raw = b'{"expected": 42, "actual": 0}\n'
         self.checker_log.write_bytes(raw)

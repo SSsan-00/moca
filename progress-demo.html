@@ -475,6 +475,9 @@
     .step-elapsed { font: 10px/1.15 var(--mono); font-variant-numeric: tabular-nums; }
     .step.is-active .step-status { color: var(--blue); font-weight: 750; }
     .step.is-active .step-status::before { content: "● "; font-size: 9px; }
+    #recovery-summary:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
+    #recovery-summary[hidden] { display: none; }
+    #recovery-summary p { margin: 6px 0; overflow-wrap: anywhere; }
     .work-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 0 18px 16px; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--line); }
     .metric { padding: 11px 12px; background: var(--surface-soft); }
     .metric-label { color: var(--muted); font-size: 11px; }
@@ -833,6 +836,17 @@
         <article class="step" data-step="5"><div class="node" aria-hidden="true">6</div><div class="step-copy"><h3 class="step-title">独自チェッカー</h3></div><div class="step-meta"><span class="step-status">待機中</span><time class="step-elapsed" aria-live="off">--:--:--</time></div></article>
         <article class="step" data-step="6"><div class="node" aria-hidden="true">7</div><div class="step-copy"><h3 class="step-title">差分レビュー</h3></div><div class="step-meta"><span class="step-status">待機中</span><time class="step-elapsed" aria-live="off">--:--:--</time></div></article>
       </div>
+      <section id="recovery-summary" class="work-summary" aria-labelledby="recovery-title" hidden>
+        <div class="metric">
+          <h3 id="recovery-title">復旧の確認</h3>
+          <p id="recovery-checkpoint"></p>
+          <p id="recovery-pending"></p>
+          <p id="recovery-reason"></p>
+          <p id="recovery-next" role="status"></p>
+          <button id="recovery-editor" class="button" type="button" hidden>エディタを開く</button>
+          <button id="recovery-refresh" class="button" type="button">復旧情報を更新</button>
+        </div>
+      </section>
       <div class="work-summary" aria-label="対象範囲の状況">
         <div class="metric"><div class="metric-label">対象単位</div><div class="metric-value">12 <span>件</span></div></div>
         <div class="metric"><div class="metric-label">確認済み</div><div class="metric-value" id="checked-count">4 <span>/ 12</span></div></div>
