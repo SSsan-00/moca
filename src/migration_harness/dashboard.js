@@ -138,23 +138,6 @@ const connection = document.createElement("span");
 connection.setAttribute("role", "status");
 element("#activity-title").after(connection);
 const reviewTitle = element("#review-title");
-const checkerReviewBody = document.createElement("div");
-const modalHeading = dialog.querySelector(".review-heading");
-checkerReviewBody.append(...Array.from(modalHeading.parentElement.children).slice(1));
-modalHeading.after(checkerReviewBody);
-const junieReviewBody = document.createElement("div");
-const junieDetail = document.createElement("pre");
-junieDetail.className = "review-code";
-const junieChoices = document.createElement("div");
-junieChoices.className = "review-actions junie-choices";
-const junieNotice = document.createElement("p");
-junieNotice.className = "review-caveat";
-junieNotice.setAttribute("role", "status");
-junieReviewBody.append(junieDetail, junieNotice, junieChoices);
-checkerReviewBody.after(junieReviewBody);
-junieReviewBody.hidden = true;
-let junieRequestId;
-let junieSubmitting;
 const buildDialog = element("#build-review-dialog");
 const buildTarget = element("#build-review-target");
 const buildSource = element("#build-review-source");
@@ -201,9 +184,6 @@ function syncActions() {
     : "指示を送ると、Junie が出力と指示を確認してから再ビルドします。";
   reviewButton.disabled = snapshot.junie_request ? !connected
     : !canAct || !(canReview || snapshot.resumable || snapshot.status === "build_failed");
-  for (const button of junieChoices.children) {
-    button.disabled = !connected || junieSubmitting === junieRequestId || !!snapshot.stop_requested;
-  }
   const stopping = snapshot.stop_requested || (stopPendingOperation !== undefined && stopPendingOperation === snapshot.operation_id);
   stopButton.hidden = !snapshot.cancellable && !stopping;
   stopButton.disabled = !connected || submitting || !snapshot.cancellable || stopping;
@@ -428,62 +408,222 @@ async function loadCheckerOutput() {
 }
 
 function openJunieReview() {
-  if (!dialog.open) dialog.showModal();
-  reviewTitle.focus();
+  junieConfirmation.openRun(snapshot.run_id);
 }
 
-// 確認IDが変わったときだけ選択肢を作り直す。
-function renderJunieReview(request) {
-  if (request?.id === junieRequestId) return;
-  junieRequestId = request?.id;
-  checkerReviewBody.hidden = !!request;
-  junieReviewBody.hidden = !request;
-  reviewTitle.textContent = request?.title || "チェッカーの指摘を確認";
-  junieNotice.textContent = "";
-  junieChoices.replaceChildren();
-  if (!request) {
-    if (dialog.open) dialog.close();
-    return;
-  }
-  junieDetail.textContent = request.detail;
-  const labels = {
-    allow_once: "今回のみ許可", reject_once: "今回のみ拒否",
-    allow_always: "今後も許可", reject_always: "今後も拒否",
-  };
-  for (const choice of request.options) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "review-action";
-    button.textContent = request.title === "Junie の操作を確認" && labels[choice.kind]
-      ? `${labels[choice.kind]}（${choice.label}）` : choice.label;
-    button.addEventListener("click", () => answerJunie(request.id, choice.id));
-    junieChoices.append(button);
-  }
-  if (!progressPrompt.dialog.open) openJunieReview();
-}
+function bindJunieConfirmation() {
+  const header = document.createElement("button");
+  header.type = "button";
+  header.id = "junie-confirmation-pending";
+  header.className = "button";
+  header.hidden = true;
+  header.setAttribute("aria-haspopup", "dialog");
+  header.setAttribute("aria-controls", "junie-confirmation");
+  element(".top-actions").prepend(header);
+  const popup = document.createElement("dialog");
+  popup.className = "review-dialog";
+  popup.id = "junie-confirmation";
+  popup.setAttribute("aria-labelledby", "junie-confirmation-title");
+  popup.innerHTML = `
+    <div class="review-dialog-inner">
+      <header class="review-heading">
+        <div>
+          <h2 id="junie-confirmation-title" tabindex="-1">Junie の確認待ち</h2>
+          <p id="junie-confirmation-run"></p>
+        </div>
+        <button class="review-close" type="button" aria-label="あとで確認">×</button>
+      </header>
+      <pre class="review-code" id="junie-confirmation-detail"></pre>
+      <p class="review-caveat" id="junie-confirmation-status" role="status"></p>
+      <div class="review-actions junie-choices"></div>
+      <div class="review-actions">
+        <button type="button" class="button" data-confirmation-list>確認待ち一覧</button>
+        <button type="button" class="button" data-confirmation-later>あとで</button>
+      </div>
+    </div>`;
+  document.body.append(popup);
+  const title = popup.querySelector("h2");
+  const run = popup.querySelector("#junie-confirmation-run");
+  const detail = popup.querySelector("#junie-confirmation-detail");
+  const status = popup.querySelector("#junie-confirmation-status");
+  const choices = popup.querySelector(".junie-choices");
+  const list = popup.querySelector("[data-confirmation-list]");
+  const labels = {allow_once: "今回のみ許可", reject_once: "今回のみ拒否", allow_always: "今後も許可", reject_always: "今後も拒否"};
+  const query = new URLSearchParams(location.search);
+  const linked = query.get("junie_request") && query.get("junie_operation") && query.get("run") ? {
+    id: query.get("junie_request"), operation_id: query.get("junie_operation"), run_id: query.get("run"),
+  } : null;
+  const key = request => JSON.stringify([request.run_id, request.operation_id, request.id]);
+  let pending = [];
+  let deferred = new Set();
+  let selected = null;
+  let submitting = false;
+  let loading = null;
+  let initial = true;
+  let mode = "";
+  let focusBefore;
 
-// 表示済みの確認IDと実行操作IDを使って回答し、古い応答を切り離す。
-async function answerJunie(requestId, optionId) {
-  if (!connected || snapshot.junie_request?.id !== requestId || junieSubmitting === requestId) return;
-  junieSubmitting = requestId;
-  junieNotice.textContent = "回答を送信しています。";
-  syncActions();
-  try {
-    const response = await runFetch("control", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({action: "junie-answer", revision: dashboardRevision,
-        operation_id: snapshot.operation_id, request_id: requestId, option_id: optionId}),
-    });
-    if (!response.ok) throw await responseError(response);
-    if (junieRequestId === requestId) junieNotice.textContent = "回答を送信しました。";
-  } catch (error) {
-    if (junieRequestId === requestId) {
-      junieNotice.textContent = `回答を送信できませんでした。接続を確認して、もう一度お試しください。\n${error.message}`;
+  function open(nextMode) {
+    mode = nextMode;
+    if (!popup.open) {
+      focusBefore = document.activeElement;
+      popup.showModal();
     }
-    if (junieSubmitting === requestId) junieSubmitting = undefined;
-    syncActions();
+    title.focus();
   }
+
+  function button(label, click) {
+    const control = document.createElement("button");
+    control.type = "button";
+    control.className = "review-action";
+    control.textContent = label;
+    control.addEventListener("click", click);
+    choices.append(control);
+  }
+
+  function showList() {
+    selected = null;
+    title.textContent = "Junie の確認待ち";
+    run.textContent = "";
+    detail.hidden = true;
+    status.textContent = pending.length ? "" : "現在、回答を待っている確認はありません。";
+    choices.replaceChildren();
+    list.hidden = true;
+    for (const request of pending) {
+      button(`${request.unit_id || request.run_id} · Run ${request.run_id}：${request.title}`, () => show(request));
+    }
+    open("list");
+  }
+
+  function show(request) {
+    selected = request;
+    title.textContent = request.title;
+    run.textContent = `${request.unit_id || "移行"} · Run ${request.run_id}`;
+    detail.hidden = false;
+    detail.textContent = request.detail || "";
+    status.textContent = "";
+    choices.replaceChildren();
+    list.hidden = false;
+    for (const option of request.options) {
+      const label = request.title === "Junie の操作を確認" && labels[option.kind]
+        ? `${labels[option.kind]}（${option.label}）` : option.label;
+      button(label, () => answer(request, option.id));
+    }
+    open("request");
+  }
+
+  async function answer(request, option) {
+    if (submitting || !selected || key(request) !== key(selected)) return;
+    submitting = true;
+    const controls = [...popup.querySelectorAll("button")];
+    controls.forEach(control => { control.disabled = true; });
+    status.textContent = "回答を送信しています。";
+    try {
+      const response = await fetch("junie-requests", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({run_id: request.run_id, operation_id: request.operation_id,
+          request_id: request.id, option_id: option}),
+      });
+      if (response.status === 409) {
+        await refresh();
+        if (selected && key(selected) === key(request)) status.textContent = "確認が更新されました。一覧から選び直してください。";
+      } else if (!response.ok) {
+        throw await responseError(response);
+      } else {
+        status.textContent = "回答を送信しました。";
+        await refresh();
+      }
+    } catch {
+      status.textContent = "回答を確認できませんでした。接続を確認して再度お試しください。";
+    } finally {
+      submitting = false;
+      controls.forEach(control => { control.disabled = false; });
+    }
+  }
+
+  function defer() {
+    if (submitting) return;
+    if (mode === "request" && selected) deferred.add(key(selected));
+    if (mode === "list") pending.forEach(request => deferred.add(key(request)));
+    selected = null;
+    mode = "";
+    popup.close();
+  }
+
+  function showResolved(request) {
+    selected = null;
+    title.textContent = "この確認は終了しました";
+    run.textContent = `Run ${request.run_id}`;
+    detail.hidden = true;
+    status.textContent = "回答済み、取り消し済み、または実行が終了しています。";
+    choices.replaceChildren();
+    list.hidden = !pending.length;
+    open("resolved");
+  }
+
+  function refresh() {
+    if (loading) return loading;
+    loading = (async () => {
+      const response = await fetch("junie-requests", {cache: "no-store"});
+      if (!response.ok) throw await responseError(response);
+      const next = await response.json();
+      const previous = JSON.stringify(pending);
+      pending = next;
+      const currentKeys = new Set(next.map(key));
+      deferred = new Set([...deferred].filter(id => currentKeys.has(id)));
+      header.hidden = !pending.length;
+      header.textContent = `Junie の確認待ち ${pending.length}件`;
+      if (initial && linked) {
+        const request = pending.find(item => key(item) === key(linked));
+        if (request) show(request);
+        else showResolved(linked);
+      } else if (mode === "request" && selected && !currentKeys.has(key(selected))) {
+        // A notification always remains tied to the exact request it opened.
+        if (linked && key(selected) === key(linked)) showResolved(selected);
+        else {
+          selected = null;
+          mode = "";
+          popup.close();
+        }
+      } else if (mode === "list" && previous !== JSON.stringify(next)) showList();
+      if (!popup.open && document.visibilityState === "visible") {
+        const request = pending.find(item => !deferred.has(key(item)));
+        if (request) show(request);
+      }
+      initial = false;
+    })().finally(() => { loading = null; });
+    return loading;
+  }
+
+  async function poll() {
+    try { await refresh(); } catch {}
+    window.setTimeout(poll, 1000);
+  }
+  header.addEventListener("click", showList);
+  popup.querySelector(".review-close").addEventListener("click", defer);
+  popup.querySelector("[data-confirmation-later]").addEventListener("click", defer);
+  list.addEventListener("click", showList);
+  popup.addEventListener("cancel", event => { event.preventDefault(); defer(); });
+  popup.addEventListener("close", () => {
+    if (!popup.open && focusBefore?.isConnected) focusBefore.focus({preventScroll: true});
+  });
+  document.addEventListener("visibilitychange", () => refresh().catch(() => {}));
+  poll();
+  return {
+    async openRun(runId) {
+      try {
+        await refresh();
+        const request = pending.find(item => item.run_id === runId);
+        if (request) show(request);
+      } catch {
+        showList();
+        status.textContent = "確認待ちを取得できませんでした。";
+      }
+    },
+  };
 }
+
+const junieConfirmation = bindJunieConfirmation();
 
 function applyFindingFilter() {
   allFilter.setAttribute("aria-pressed", String(!pendingOnly));
@@ -995,7 +1135,9 @@ function render() {
     : showReview ? "チェッカー出力を確認" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
   if (showReview || showBuildReview || waitingForJunie) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");
-  if (showReview && data.status === "checker_needs_review" && !waitingForJunie && !data.stop_requested) {
+  if (waitingForJunie) {
+    reviewButton.setAttribute("aria-controls", "junie-confirmation");
+  } else if (showReview && data.status === "checker_needs_review" && !data.stop_requested) {
     reviewButton.setAttribute("aria-controls", "review-dialog");
   } else {
     reviewButton.removeAttribute("aria-controls");
@@ -1019,7 +1161,6 @@ function render() {
   });
   renderCapsuleProgress(data, total, completed);
   renderRecovery(data);
-  renderJunieReview(data.junie_request);
   renderCheckerReview(data, showReview);
   syncActions();
   renderElapsed();

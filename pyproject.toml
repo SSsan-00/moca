@@ -11,6 +11,9 @@ dependencies = [
   "tomlkit>=0.13,<1",
 ]
 
+[project.optional-dependencies]
+rule-search = ["numpy>=1.26,<3", "onnxruntime>=1.20,<2", "tokenizers>=0.20,<1"]
+
 [project.scripts]
 php-to-csharp-harness = "migration_harness.cli:main"
 
@@ -19,9 +22,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # ダッシュボードのJavaScriptは、インストール後もPythonモジュールから配信する。
-migration_harness = ["dashboard.js", "dashboard_editor.js", "dashboard_runs.js", "dashboard_settings.js", "monaco/*.js", "monaco/*.css", "monaco/LICENSE", "monaco/ThirdPartyNotices.txt"]
+migration_harness = ["dashboard.js", "dashboard_editor.js", "dashboard_runs.js", "dashboard_settings.js", "dashboard_rule_workspace.js", "monaco/*.js", "monaco/*.css", "monaco/LICENSE", "monaco/ThirdPartyNotices.txt"]
 
 [tool.setuptools.data-files]
 # 本番とデモが共用するHTMLを、作業ツリーの外からも読み込める場所に置く。
 "share/php-to-csharp-harness" = ["progress-demo.html", "harness.example.toml"]
 "share/php-to-csharp-harness/tools" = ["tools/copy_migration_draft.py"]
+
+"share/php-to-csharp-harness/.junie/skills/harness-optimize-rules" = [".junie/skills/harness-optimize-rules/SKILL.md"]
+"share/php-to-csharp-harness/.junie/skills/harness-optimize-rules/references" = [".junie/skills/harness-optimize-rules/references/plan-format.md", ".junie/skills/harness-optimize-rules/references/loading-policy.md", ".junie/skills/harness-optimize-rules/references/register-new.md"]

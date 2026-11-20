@@ -28,6 +28,8 @@ def _parse_args() -> argparse.Namespace:
         return command
 
     configured_command("dashboard", "Open the local workspace for configuration and migration runs")
+    search_index = configured_command("rule-search-index", "Rebuild the local semantic rule index after editing Markdown")
+    search_index.add_argument("--unit", required=True, help="Migration unit ID with an explicit local search scope")
     preview = configured_command("preview-context", "List target reference sizes in the current application checkout")
     preview.add_argument("--unit", required=True, help="Migration unit ID from the config")
     dry = configured_command("dry-run", "Check effective settings without executing the migration")
@@ -121,6 +123,17 @@ def main() -> None:
                 {"config_path": str(args.config.expanduser().resolve())},
                 config_error=None if first_setup else format_error(exc),
             )
+            return
+        if args.command == "rule-search-index":
+            from migration_harness.capsules import configured_search_rules
+            from migration_harness.rule_search import build_rule_index
+
+            unit = find_unit(config, args.unit)
+            try:
+                _, rows = build_rule_index(config, unit, configured_search_rules(config, unit))
+            except ImportError as exc:
+                raise ValueError("ローカル検索には pip install -e '.[rule-search]' が必要です。") from exc
+            print(f"移行単位 {args.unit}: 詳細ルールのローカル索引を更新しました（{rows}窓）。")
             return
         if args.command == "dashboard":
             from migration_harness.dashboard import run_dashboard
@@ -221,6 +234,7 @@ def main() -> None:
                 "run_id": args.run_id,
                 "last_junie_input": record.get("last_junie_input"),
                 "last_junie_steering_input": record.get("last_junie_steering_input"),
+                "junie_permission_counts": record.get("junie_permission_counts", {}),
             }, ensure_ascii=False, indent=2))
             return
         if args.command == "rule-review":

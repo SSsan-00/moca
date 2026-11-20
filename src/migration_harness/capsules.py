@@ -16,7 +16,8 @@ from .config import REFERENCE_ROLES, target_paths
 from .execution import check_cancelled, report_activity
 from .files import safe_target, sha256_file
 from .php_boundaries import PhpFunction, function_boundaries
-from .rule_materials import write_rule_files
+from .rule_materials import COMPACT_RULE_GUIDELINES, write_rule_files
+from .rule_search import prepare_rule_hint
 
 
 def is_php_input(source: dict[str, Any]) -> bool:
@@ -248,6 +249,28 @@ def _prepare_inputs(
     return prepared, list(php_sources.values())
 
 
+def _rule_groups(index, item, source):
+    groups = []
+    lines = _selected_lines(source, item["start_line"], item["end_line"], item["resolved_encoding"])
+    for number, line in lines:
+        _append_context_record(groups, index, item, number, f"{number:>6} | {line}", 0, sys.maxsize)
+    return groups
+
+
+def configured_search_rules(config, unit):
+    root = Path(config["project_root"])
+    scope = config.get("rule_search", {}).get("scopes", {}).get(unit["id"], {})
+    paths = set(scope.get("references", ()))
+    outputs = []
+    for index, item in enumerate(unit["inputs"]):
+        if item["role"] != "migration_rules" or item["path"] not in paths:
+            continue
+        source = root / item["path"]
+        scoped = {**item, "resolved_encoding": input_encoding(source, item["encoding"])}
+        outputs.extend((group["item"], _render_groups([group])) for group in _rule_groups(index, scoped, source))
+    return outputs
+
+
 def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path) -> dict[str, Any]:
     """共通資料の予算を先に取り、残りに移行対象を詰める。"""
     root = Path(config["project_root"])
@@ -289,19 +312,16 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
         if item["role"] != "migration_rules" and not item.get("shared", False):
             segment_inputs.append((input_index, item, source_path))
             continue
-        lines = _selected_lines(source_path, item["start_line"], item["end_line"], item["resolved_encoding"])
-        # ルールはファイル単位で保存する。既に読んだ全資料のサイズを毎行数え直さない。
-        rule_groups: list[dict[str, Any]] = []
-        for number, line in lines:
-            if item["role"] == "migration_rules":
-                _append_context_record(rule_groups, input_index, item, number, f"{number:>6} | {line}", 0, sys.maxsize)
-                continue
+        if item["role"] == "migration_rules":
+            rule_groups = _rule_groups(input_index, item, source_path)
+            rule_sources.extend((group["item"], _render_groups([group])) for group in rule_groups)
+            rule_ranges.extend(_manifest_source(group) for group in rule_groups)
+            continue
+        for number, line in _selected_lines(source_path, item["start_line"], item["end_line"], item["resolved_encoding"]):
             if not _append_context_record(
                 shared_groups, input_index, item, number, f"{number:>6} | {line}", shared_base_chars, max_chars,
             ):
                 raise ValueError(f"shared context exceeds max_context_chars ({max_chars}): {item['path']}")
-        rule_sources.extend((group["item"], _render_groups([group])) for group in rule_groups)
-        rule_ranges.extend(_manifest_source(group) for group in rule_groups)
     if not segment_inputs:
         raise ValueError("migration unit requires at least one input outside shared context")
     rule_files = []
@@ -368,10 +388,14 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
         "segment_offset": len(prefix),
         "materials": materials,
         "rule_files": rule_files,
+        **({"rule_guidelines_format": COMPACT_RULE_GUIDELINES} if rule_files else {}),
         "reference_sources": reference_index,
         "php_sources": php_sources,
         "parts": manifest_parts,
     }
+    if hint := prepare_rule_hint(config, unit, rule_sources, rule_files):
+        manifest["semantic_rule_hint"] = hint
+        report_activity("固定した詳細ルールのローカル検索候補を保存しました。")
     (capsule / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return {
         "context_path": context_paths[0],

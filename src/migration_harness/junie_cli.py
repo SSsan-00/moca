@@ -26,6 +26,7 @@ from tempfile import TemporaryFile
 from threading import Event, Thread
 from typing import TYPE_CHECKING, Any
 
+from .acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
 from .errors import format_error, safe_command
 from .execution import (
     HEARTBEAT_SECONDS, ExecutionControl, OperationCancelled, check_cancelled, is_controlled,
@@ -769,6 +770,10 @@ class _SteeringRequest:
     new_turn: bool = False
 
 
+reference_read_scope: ContextVar[PinnedReferenceReads | None] = ContextVar("reference_read_scope", default=None)
+permission_observer: ContextVar[Callable[[str, str], None] | None] = ContextVar("permission_observer", default=None)
+
+
 class _AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
@@ -781,6 +786,8 @@ class _AcpSession:
         self.command = command
         self.project = project
         self.show_request = show_request
+        self.reference_reads = reference_read_scope.get()
+        self.observe_permission = permission_observer.get()
         self.messages: Queue[bytes] = Queue()
         self.closing = Event()
         self.outgoing: Queue[tuple[bytes, Future[None]] | None] = Queue()
@@ -927,6 +934,9 @@ class _AcpSession:
         if not options:
             self.send(id=request_id, error={"code": -32602, "message": "No permission options"})
             return
+        if self.observe_permission is not None:
+            kind = metrics_kind(details.get("kind"))
+            self.observe_permission(kind, "agent_owned_unverified" if kind == "read" else "operator_decision")
         reply = self.show_request({
             "title": "Junie の操作を確認",
             "detail": "\n\n".join([details.get("title") or "Junie が操作の許可を求めています。", *content]),
@@ -938,6 +948,24 @@ class _AcpSession:
         else:
             self.pending = request_id, reply
             self.permission_started = time.monotonic()
+
+    def initialize(self) -> None:
+        caps = {"fs": {"readTextFile": True}} if self.reference_reads and self.reference_reads.pins else {}
+        self.request(1, "initialize", protocolVersion=1, clientCapabilities=caps)
+
+    def read_reference(self, request_id: int | str, params: dict) -> None:
+        try:
+            if self.reference_reads is None:
+                raise ReadRefused("unavailable_reference")
+            content = self.reference_reads.read(params)
+        except ReadRefused as exc:
+            if self.observe_permission is not None:
+                self.observe_permission("read", str(exc))
+            self.send(id=request_id, error={"code": -32602, "message": "Only unchanged, pinned Run references are readable. Use a bounded line range."})
+        else:
+            if self.observe_permission is not None:
+                self.observe_permission("read", "pinned_reference_read")
+            self.send(id=request_id, result={"content": content})
 
     def _check_writes(self) -> None:
         while self.writes and self.writes[0][1].done():
@@ -1003,6 +1031,9 @@ class _AcpSession:
         elif method and request_id is not None:
             if method == "session/request_permission" and params.get("sessionId") == self.session_id:
                 self.permission(request_id, params)
+            elif (method == "fs/read_text_file" and self.session_id is not None
+                  and params.get("sessionId") == self.session_id and self.reference_reads and self.reference_reads.pins):
+                self.read_reference(request_id, params)
             else:
                 self.send(id=request_id, error={"code": -32601, "message": "Method not supported"})
         elif method == "session/update" and params.get("sessionId") == self.session_id:
@@ -1174,7 +1205,7 @@ def _run_session(
         if dashboard is not None and not headless:
             acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request,
                               completion_path, token, prompts)
-            acp.request(1, "initialize", protocolVersion=1, clientCapabilities={})
+            acp.initialize()
         if thought_path is not None:
             thoughts = JunieThoughts(process.stderr, events.logs, events.existing_logs, thought_path, token)
         started = time.monotonic()

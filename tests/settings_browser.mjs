@@ -115,8 +115,8 @@ try {
   assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
-  await cdp("Page.reload");
-  await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true"`);
+  await evaluate('(window.beforeRecoveryReload = true, setTimeout(() => location.reload(), 20), true)');
+  await wait(`!window.beforeRecoveryReload && document.readyState === "complete" && document.documentElement.dataset.liveReady === "true"`);
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
   console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reload");
@@ -149,6 +149,44 @@ try {
   assert.equal(await value("settings-anchor-reference"), "anchors.json");
   assert(!(await evaluate(`${field("settings-viewer-html")}.disabled`)));
   console.log("Browser settings: simplified controls, saved values and viewer path retention");
+  await evaluate(`(() => {
+    const original = window.fetch;
+    window.fixturePermissionQueue = [
+      {run_id: "different-run", unit_id: "Different unit", operation_id: "op-one", id: "one",
+        title: "Junie の操作を確認", detail: "Read a file", options: [{id: "allow", label: "読む", kind: "allow_once"}]},
+      {run_id: "third-run", unit_id: "Third unit", operation_id: "op-two", id: "two",
+        title: "Junie の操作を確認", detail: "Other request", options: [{id: "allow", label: "読む", kind: "allow_once"}]},
+    ];
+    window.fetch = (endpoint, options) => {
+      if (endpoint !== "junie-requests") return original(endpoint, options);
+      if (options?.method === "POST") {
+        window.fixturePermissionAnswer = JSON.parse(options.body);
+        window.fixturePermissionQueue = window.fixturePermissionQueue.filter(row => row.id !== window.fixturePermissionAnswer.request_id);
+        return Promise.resolve(Response.json({}, {status: 202}));
+      }
+      return Promise.resolve(Response.json(window.fixturePermissionQueue));
+    };
+    const input = ${field(folders)};
+    input.focus();
+    input.setSelectionRange(2, 4);
+  })()`);
+  const juniePopup = field("junie-confirmation");
+  await wait(`${juniePopup}.open && ${field("junie-confirmation-run")}.textContent.includes("different-run")`);
+  assert.equal(await evaluate(`${field("tab-settings")}.getAttribute("aria-selected")`), "true");
+  await evaluate(`${juniePopup}.querySelector("[data-confirmation-later]").click()`);
+  await wait(`${juniePopup}.open && ${field("junie-confirmation-run")}.textContent.includes("third-run")`);
+  await evaluate(`${juniePopup}.querySelector("[data-confirmation-later]").click()`);
+  await wait(`!${juniePopup}.open && document.activeElement === ${field(folders)}`);
+  assert.deepEqual(await evaluate(`[${field(folders)}.selectionStart, ${field(folders)}.selectionEnd]`), [2, 4]);
+  assert.equal(await value(folders), "Shared\nExtra");
+  await evaluate('document.querySelector("[aria-controls=junie-confirmation]").click()');
+  await evaluate(`${juniePopup}.querySelector(".junie-choices button").click()`);
+  await evaluate(`${juniePopup}.querySelector(".junie-choices button").click()`);
+  await wait(`window.fixturePermissionAnswer && !${juniePopup}.open`);
+  assert.deepEqual(await evaluate("window.fixturePermissionAnswer"), {
+    run_id: "different-run", operation_id: "op-one", request_id: "one", option_id: "allow",
+  });
+  console.log("Browser Junie checks: cross-Run queue, exact answer, active tab and editor selection retained");
   await cdp("Browser.close").catch(() => {});
 } finally {
   socket?.close();
