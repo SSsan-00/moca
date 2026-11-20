@@ -1,6 +1,7 @@
 """登録済み移行ルールの全範囲を確認してから、設定案を反映する。"""
 
 import argparse
+import hashlib
 import json
 import stat
 import sys
@@ -21,11 +22,14 @@ def save_new(path: Path, data: bytes) -> None:
         stream.write(data)
 
 
-def pages_for(report: dict) -> list:
+def pages_for(report: dict, *, verify_source: bool = False) -> list:
     pages = []
     for item in report["rules"]:
         source = Path(item["path"])
-        lines = source.read_bytes().decode(item["encoding"]).splitlines()
+        data = source.read_bytes()
+        if verify_source and _digest(data) != item["sha256"]:
+            raise ValueError(f"確認用ページ作成中に原文が変更されました: {source}")
+        lines = data.decode(item["encoding"]).splitlines()
         page = []
         size = 0
         for number, line in enumerate(lines, 1):
@@ -44,13 +48,92 @@ def pages_for(report: dict) -> list:
     return pages
 
 
-def inventory(pack: Path) -> tuple[Path, bytes, list]:
-    report = json.loads((pack / "loading-before.json").read_text(encoding="utf-8"))
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _encode(value) -> bytes:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _page_tail(page) -> str:
+    return next((text for _, text in reversed(page) if text.strip()), "")
+
+
+def _page_index(pages) -> list:
+    return [{
+        "source": str(source), "first": page[0][0], "last": page[-1][0],
+        "tail_sha256": _digest(_page_tail(page).encode("utf-8")), "sha256": _digest(_encode(page)),
+    } for source, page in pages]
+
+
+class ReviewPages:
+    def __init__(self, pack: Path, index: list, live_pages=None):
+        self.pack = pack
+        self.index = index
+        self.live_pages = live_pages
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def body(self, index: int):
+        if self.live_pages is not None:
+            return self.live_pages[index - 1][1]
+        data = (self.pack / "review-pages" / f"{index}.json").read_bytes()
+        if _digest(data) != self.index[index - 1]["sha256"]:
+            raise ValueError(f"確認用の固定ページ {index} が変更されました。")
+        return json.loads(data)
+
+
+def _snapshot_pages(pack: Path, report: dict) -> ReviewPages:
+    pages = pages_for(report, verify_source=True)
+    index = _page_index(pages)
+    root = pack / "review-pages"
+    root.mkdir()
+    for number, (_, page) in enumerate(pages, 1):
+        save_new(root / f"{number}.json", _encode(page))
+    save_new(pack / "review-pages.json", _encode({
+        "format_version": 1, "inventory_sha256": _digest((pack / "loading-before.json").read_bytes()),
+        "pages": index,
+    }))
+    return ReviewPages(pack, index)
+
+
+def inventory(pack: Path, *, final: bool = True) -> tuple[Path, bytes, ReviewPages]:
+    inventory_data = (pack / "loading-before.json").read_bytes()
+    report = json.loads(inventory_data)
     config = Path(report["config_path"])
     original = (pack / "config.before.toml").read_bytes()
-    if config.read_bytes() != original or inspect_rules(config) != report:
+    if config.read_bytes() != original:
         raise ValueError("設定か原文が確認開始後に変更されました。新しいPACKで確認してください。")
-    return config, original, pages_for(report)
+    saved = pack / "review-pages.json"
+    if not saved.exists() and (pack / "review-pages").exists():
+        raise ValueError("確認用ページの索引がありません。")
+    index = None
+    if saved.exists():
+        state = json.loads(saved.read_bytes())
+        if state.get("format_version") != 1 or state.get("inventory_sha256") != _digest(inventory_data):
+            raise ValueError("確認用ページの索引と元の棚卸しが一致しません。")
+        index = state["pages"]
+    if index is None or final:
+        if inspect_rules(config) != report:
+            raise ValueError("設定か原文が確認開始後に変更されました。新しいPACKで確認してください。")
+        pages = pages_for(report, verify_source=True)
+        fresh_index = _page_index(pages)
+        if index is not None and index != fresh_index:
+            raise ValueError("確認用ページの索引と設定・原文から再生成した索引が一致しません。")
+        return config, original, ReviewPages(pack, fresh_index, pages)
+    return config, original, ReviewPages(pack, index)
+
+
+def print_index(pages: ReviewPages, start: int, limit: int) -> None:
+    if start < 1 or start > max(1, len(pages)) or not 1 <= limit <= 20:
+        raise ValueError("索引は有効な開始ページと1〜20件の件数を指定してください。")
+    end = min(len(pages), start + limit - 1)
+    for number, item in enumerate(pages.index[start - 1:end], start):
+        print(f"{number}: {item['source']} ({item['first']}–{item['last']})")
+    suffix = f"。次は index --start {end + 1}" if end < len(pages) else ""
+    print(f"全 {len(pages)} ページ{suffix}")
 
 
 def review_records(pack: Path) -> dict:
@@ -61,7 +144,7 @@ def review_records(pack: Path) -> dict:
     return review
 
 
-def check_review(pack: Path, pages: list, *, records: dict | None = None,
+def check_review(pack: Path, pages: ReviewPages, *, records: dict | None = None,
                  numbers: set[int] | None = None) -> set[tuple[Path, int]]:
     review = review_records(pack) if records is None else records
     if set(review) - {str(i) for i in range(1, len(pages) + 1)}:
@@ -69,37 +152,39 @@ def check_review(pack: Path, pages: list, *, records: dict | None = None,
     mandatory = set()
     missing = []
     reasons = []
-    for i, (source, page) in enumerate(pages, 1):
+    for i, descriptor in enumerate(pages.index, 1):
         if numbers is not None and i not in numbers:
             continue
         entry = review.get(str(i), {})
-        last = next((text for _, text in reversed(page) if text.strip()), "")
+        end = entry.get("end") if isinstance(entry, dict) else None
+        end_matches = isinstance(end, str) and _digest(end.encode("utf-8")) == descriptor["tail_sha256"]
         if (
             not isinstance(entry, dict)
             or not (pack / "shown" / str(i)).is_file()
-            or entry.get("end") != last
+            or not end_matches
             or not isinstance(entry.get("note"), str)
             or not entry["note"].strip()
             or not isinstance(entry.get("required_lines"), list)
         ):
             missing.append(i)
-            if isinstance(entry, dict) and "end" in entry and entry["end"] != last:
+            if isinstance(entry, dict) and "end" in entry and not end_matches:
                 reasons.append(f"ページ {i}: 末尾の引用が原文と一致しません。該当ページを再読して訂正してください。")
             continue
         for number in entry["required_lines"]:
-            if type(number) != int or not any(n == number for n, _ in page):
+            if type(number) != int or not descriptor["first"] <= number <= descriptor["last"]:
                 raise ValueError(f"ページ {i} の必須行番号が範囲外です。")
-            mandatory.add((source, number))
+            mandatory.add((Path(descriptor["source"]), number))
     if missing:
         raise ValueError(f"未確認のページ: {', '.join(map(str, missing))}" +
                          ("\n" + "\n".join(reasons) if reasons else ""))
     return mandatory
 
 
-def show_pages(pack: Path, pages: list, numbers: list[int]) -> None:
+def show_pages(pack: Path, pages: ReviewPages, numbers: list[int]) -> None:
     # 全文を1回で出すとツール側で省略される。小さい束でも確認記録はページごとに残す。
     for index in numbers:
-        source, page = pages[index - 1]
+        page = pages.body(index)
+        source = pages.index[index - 1]["source"]
         print(f"ページ {index}/{len(pages)}: {source}")
         for number, text in page:
             print(f"{number:>6} | {text}")
@@ -197,11 +282,14 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    for name in ("start", "read", "record", "check", "meaning", "apply"):
+    for name in ("start", "index", "read", "record", "check", "meaning", "apply"):
         command = commands.add_parser(name)
         command.add_argument("pack", type=Path)
         if name == "start":
             command.add_argument("config", type=Path)
+        if name == "index":
+            command.add_argument("--start", type=int, default=1)
+            command.add_argument("--limit", type=int, default=10)
         if name == "read":
             command.add_argument("pages", type=int, nargs="+")
         if name == "record":
@@ -219,10 +307,12 @@ def main() -> None:
             (pack / "shown").mkdir()
             save_new(pack / "config.before.toml", Path(report["config_path"]).read_bytes())
             save_new(pack / "loading-before.json", json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"))
-            for i, (source, page) in enumerate(pages_for(report), 1):
-                print(f"{i}: {source} ({page[0][0]}–{page[-1][0]})")
+            print_index(_snapshot_pages(pack, report), 1, 10)
             return
-        config, original, pages = inventory(pack)
+        config, original, pages = inventory(pack, final=args.action in {"check", "meaning", "apply"})
+        if args.action == "index":
+            print_index(pages, args.start, args.limit)
+            return
         if args.action == "read":
             if not 1 <= len(args.pages) <= 2 or len(set(args.pages)) != len(args.pages):
                 raise ValueError("一度に指定できるのは重複のない1〜2ページです。")

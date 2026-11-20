@@ -395,9 +395,12 @@ def _save_script_handoff(run_path, cwd, record, item):
     write_run_record(run_path / "run.json", record)
 
 
-def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]:
+def _unlisted_workspace_files(
+    root: Path, allowed: set[Path], verified: dict[Path, str] | None = None,
+) -> dict[Path, str]:
     """編集対象外のファイルを記録し、Junie呼び出し前後で差分を検出できるようにする。"""
     files = {}
+    verified = verified or {}
     for path in root.rglob("*"):
         relative = path.relative_to(root)
         if relative in allowed:
@@ -409,13 +412,15 @@ def _unlisted_workspace_files(root: Path, allowed: set[Path]) -> dict[Path, str]
         if path.is_symlink():
             files[relative] = "symlink:" + os.readlink(path)
         elif path.is_file():
-            files[relative] = sha256_file(path)
+            files[relative] = verified[relative] if relative in verified else sha256_file(path)
+    if any(files.get(path) != digest for path, digest in verified.items()):
+        raise ValueError("staged verification source changed before migration")
     return files
 
 
 def _stage_source_excerpts(
     capsule: Path, manifest: dict[str, Any], agent_root: Path, *, through_capsule: int | None = None,
-) -> None:
+) -> dict[Path, str]:
     """処理済みの原文を照合用に残す。将来の区間や境界資料は混ぜない。"""
     directory = safe_target(agent_root, Path(".migration-materials/source-0001.md")).parent
     directory.mkdir(exist_ok=True)
@@ -424,6 +429,7 @@ def _stage_source_excerpts(
     for path in directory.glob("source-*.md"):
         if path.name not in names:
             safe_target(agent_root, path.relative_to(agent_root)).unlink()
+    verified = {}
     for part in parts:
         check_cancelled()
         source = Path(part["path"])
@@ -437,6 +443,7 @@ def _stage_source_excerpts(
         if part.get("segment_sha256") and part.get("sha256") and existing == part["segment_sha256"]:
             if sha256_file(source) != part["sha256"]:
                 raise ValueError(f"capsule {part['index']}: saved verification source changed")
+            verified[destination.relative_to(agent_root)] = existing
             continue
         data = source.read_bytes()
         if part.get("sha256") and hashlib.sha256(data).hexdigest() != part["sha256"]:
@@ -447,6 +454,8 @@ def _stage_source_excerpts(
             raise ValueError(f"capsule {part['index']}: saved verification excerpt changed")
         if existing != digest:
             destination.write_bytes(original)
+        verified[destination.relative_to(agent_root)] = digest
+    return verified
 
 
 def _stage_migration_materials(
@@ -1324,8 +1333,9 @@ def _stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targe
         raise ValueError(f"capsule {index}: saved context changed or is missing")
     shutil.copyfile(context_path, safe_target(agent_root, Path(agent_context.name)))
     source_instruction = ""
+    verified_sources = {}
     if len(manifest["parts"]) > 1:
-        _stage_source_excerpts(capsule, manifest, agent_root, through_capsule=index)
+        verified_sources = _stage_source_excerpts(capsule, manifest, agent_root, through_capsule=index)
         source_instruction = (
             "For checking accumulated data, `.migration-materials/source-*.md` contains the exact assigned "
             "excerpts from segment 1 through this segment, in filename order. Use only the assigned source "
@@ -1408,12 +1418,13 @@ def _stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targe
         "If interrupted, preserve the edits and report what remains. "
         "Claim the entire migration is complete only after the final capsule."
     )
-    return prompt, completion_path, completion_token, boundary_digest
+    return prompt, completion_path, completion_token, boundary_digest, verified_sources
 
 
 def _execute_migration_capsule(config, run_path, record, worktree_root, agent_root, relative_targets,
                                agent_targets, index, capsule_count, through_capsule,
-                               prompt, completion_path, completion_token, boundary_digest, exit_code, *, manifest, resuming=False):
+                               prompt, completion_path, completion_token, boundary_digest, exit_code, *, manifest,
+                               verified_sources, resuming=False):
     record_path = run_path / "run.json"
     agent_context = agent_root / ".migration-context.md"
     boundary = agent_root / ".migration-boundary.md"
@@ -1457,7 +1468,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         )
     prompt = context + plan_hint + scripted_handoff + handoff_prompt(run_path, agent_root, relative_targets, record, through=index,
                        draft=record.get("stopped_migration_draft")) + memo_request + prompt
-    other_files = _unlisted_workspace_files(agent_root, allowed)
+    other_files = _unlisted_workspace_files(agent_root, allowed, verified_sources)
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -1597,7 +1608,7 @@ def _run_prepared_with_junie(
     # 未完了のカプセルから再開する。保存済みの下書きがあっても完了数は先に進めない。
     start_index = record["completed_capsules"] + 1
     for index, context_path in enumerate(result["context_paths"][start_index - 1 : through_capsule], start=start_index):
-        prompt, completion_path, completion_token, boundary_digest = _stage_migration_capsule(
+        prompt, completion_path, completion_token, boundary_digest, verified_sources = _stage_migration_capsule(
             unit, capsule, manifest, agent_root, relative_targets, index, context_path, result["capsule_count"],
             material_instructions, resume_first_capsule=resuming and index == start_index,
             expected_capsule_hashes=expected_capsule_hashes,
@@ -1605,7 +1616,8 @@ def _run_prepared_with_junie(
         exit_code, completed = _execute_migration_capsule(
             config, run_path, record, worktree_root, agent_root, relative_targets, agent_targets,
             index, result["capsule_count"], through_capsule, prompt, completion_path, completion_token,
-            boundary_digest, exit_code, manifest=manifest, resuming=resuming and index == start_index,
+            boundary_digest, exit_code, manifest=manifest, verified_sources=verified_sources,
+            resuming=resuming and index == start_index,
         )
         if not completed:
             break

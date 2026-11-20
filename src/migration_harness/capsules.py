@@ -328,10 +328,22 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
         "max_context_chars is too small for a segment input after including shared context"
         if shared_groups else "max_context_chars is too small for the context headers"
     )
+    scan_lines: dict[str, int | None] = {}
+    for _, item, _ in segment_inputs:
+        if not is_php_input(item):
+            continue
+        name, end = item["path"], item["end_line"]
+        if scan_lines.get(name, 0) is not None:
+            scan_lines[name] = None if end is None else max(scan_lines.get(name, 0), end)
     syntax_by_path = {
-        pin["path"]: function_boundaries(capsule / pin["snapshot"], pin["encoding"])
+        pin["path"]: function_boundaries(
+            capsule / pin["snapshot"], pin["encoding"], through_line=scan_lines.get(pin["path"]),
+        )
         for pin in php_sources
     }
+    for name, (_, status) in syntax_by_path.items():
+        if status != "named functions, lexical boundaries only":
+            report_activity(f"PHP 構文境界: {name} — {status}")
     manifest_parts, split_line_coverage = _write_segments(
         capsule, segment_inputs, prefix, max_chars, overlap_chars, budget_error, syntax_by_path,
     )
@@ -446,11 +458,9 @@ def _write_segments(
                         break
                 else:
                     group = candidate[0]
-                    fitted = _combine_segment_group(groups, group)
-                    if base_chars + sum(map(_group_size, fitted)) > max_chars:
+                    if not _append_segment_group(groups, group, base_chars, max_chars):
                         flush_capsule()
-                        fitted = candidate
-                    groups[:] = fitted
+                        groups.append(group)
                     continue
             record = f"{number:>6} | {line}"
             if _append_context_record(groups, input_index, item, number, record, base_chars, max_chars):
@@ -526,18 +536,27 @@ def _write_segments(
 
 
 
-def _combine_segment_group(groups: list[dict[str, Any]], incoming: dict[str, Any]) -> list[dict[str, Any]]:
-    if not groups or groups[-1]["input_index"] != incoming["input_index"]:
-        return [*groups, incoming]
-    tail = groups[-1]
-    return [*groups[:-1], {
+def _append_segment_group(
+    groups: list[dict[str, Any]], incoming: dict[str, Any], base_chars: int, max_chars: int,
+) -> bool:
+    tail = groups[-1] if groups and groups[-1]["input_index"] == incoming["input_index"] else None
+    if tail is None:
+        if base_chars + sum(map(_group_size, groups)) + _group_size(incoming) > max_chars:
+            return False
+        groups.append(incoming)
+        return True
+    merged = {
         **tail,
         "end_line": incoming["end_line"],
-        "records": tail["records"] + incoming["records"],
         "content_chars": tail["content_chars"] + incoming["content_chars"],
         "max_backticks": max(tail["max_backticks"], incoming["max_backticks"]),
         "ends_with_newline": incoming["ends_with_newline"],
-    }]
+    }
+    if base_chars + sum(map(_group_size, groups[:-1])) + _group_size(merged) > max_chars:
+        return False
+    merged["records"].extend(incoming["records"])
+    groups[-1] = merged
+    return True
 
 
 def _syntax_manifest(

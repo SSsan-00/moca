@@ -40,6 +40,47 @@ class RuleReviewTests(HarnessCase):
         self.assertEqual(run("check").returncode, 0)
         self.assertEqual(json.loads((pack / "reading-review.json").read_text()), first | tail)
 
+    def test_large_pack_reads_fixed_pages_and_revalidates_current_originals(self):
+        self.config()
+        config = self.root / "test.toml"
+        with config.open("a", encoding="utf-8") as stream:
+            stream.write('\n[[project.migration_rules]]\npath = "rules.md"\nencoding = "utf-8-sig"\n')
+        source = self.project / "rules.md"
+        source.write_bytes(("\ufeff" + ("日本語" * 1100 + "\r\n" + "末尾" + "x" * 2740 + "\r\n") * 24).encode("utf-8"))
+        pack = self.root / "review"
+        tool = Path(__file__).resolve().parents[1] / "tools/rule_review.py"
+
+        def run(action, *arguments):
+            return subprocess.run(
+                [sys.executable, str(tool), action, str(pack), *map(str, arguments)],
+                capture_output=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            )
+
+        started = run("start", config)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertIn("index --start 11", started.stdout)
+        self.assertNotIn("11: ", started.stdout)
+        index = run("index", "--start", 11, "--limit", 2)
+        self.assertIn("11:", index.stdout)
+        self.assertIn("12:", index.stdout)
+        self.assertNotIn("13:", index.stdout)
+        self.assertNotEqual(run("index", "--limit", 21).returncode, 0)
+        result = run("read", 1, 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("日本語", result.stdout)
+        page = pack / "review-pages" / "1.json"
+        saved = page.read_bytes()
+        page.write_bytes(saved + b" ")
+        self.assertIn("固定ページ 1 が変更されました", run("read", 1).stderr)
+        page.write_bytes(saved)
+        original = source.read_bytes()
+        source.unlink()
+        self.assertEqual(run("read", 1, 2).stdout, result.stdout)
+        self.assertNotEqual(run("check").returncode, 0)
+        source.write_bytes(original + b"Changed")
+        self.assertIn("変更されました", run("check").stderr)
+        self.assertEqual(run("read", 1, 2).stdout, result.stdout)
+
     def test_read_batches_require_meaning_notes_before_advancing(self):
         self.config()
         config = self.root / "test.toml"
