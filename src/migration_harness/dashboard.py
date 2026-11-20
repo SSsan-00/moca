@@ -43,7 +43,9 @@ from migration_harness.junie_thoughts import FILENAME as JUNIE_THOUGHTS_FILENAME
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.run_records import edit_run_record, load_saved_run, run_observer, validate_run_id
 from migration_harness.recovery_status import recovery_status
+from migration_harness.rule_workspace import RuleWorkspace
 from migration_harness.settings_form import build_settings_draft
+from migration_harness.junie_notifications import JunieNotifications, answer_pending, notification_settings, pending_requests
 from migration_harness.source_context import preview_target_context
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
@@ -160,6 +162,7 @@ class Dashboard:
         self.closed = False
         self.control: ExecutionControl | None = None
         self.junie_reply: Future[str] | None = None
+        self.junie_requested_at = 0
         self.trusted_junie_workspaces: set[str] = set()
         self.activity_sequence = 0
 
@@ -201,6 +204,7 @@ class Dashboard:
             if request is not None and self.control and not self.control.cancelled.is_set():
                 state["junie_request"] = {**request, "id": secrets.token_hex(16)}
                 self.junie_reply = Future()
+                self.junie_requested_at = time.monotonic_ns()
             self.publish(state)
             return self.junie_reply
 
@@ -344,6 +348,23 @@ class Dashboard:
         handler = _dashboard_handler(self, config, html, script, prefix)
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         host = f"127.0.0.1:{server.server_port}"
+        manager = getattr(self, "manager", None)
+        notifications = JunieNotifications(
+            lambda: pending_requests(self, manager),
+            lambda: config.get("junie_notifications") or notification_settings({}),
+            f"http://{host}", prefix,
+        )
+        server.junie_notifications = notifications
+        close = server.server_close
+
+        def close_server():
+            try:
+                notifications.close()
+            finally:
+                close()
+
+        server.server_close = close_server
+        notifications.start()
         print(f"Progress dashboard: http://{host}{prefix}", flush=True)
         print("Press Ctrl+C in this terminal to close the dashboard.", flush=True)
         return server
@@ -354,6 +375,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
     preview_lock = Lock()
     reference_previews: dict[str, ExecutionControl] = {}
     dry_run_controls: dict[str, ExecutionControl] = {}
+    rules = getattr(dashboard, "rule_workspace", None) or RuleWorkspace(config)
 
     class Handler(BaseHTTPRequestHandler):
 
@@ -389,8 +411,25 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            if self.headers.get("Host") != self.expected_host or not self.path.startswith(prefix):
+            if self.headers.get("Host") != self.expected_host:
                 self.send_error(403)
+                return
+            if self.path.startswith("/junie-open/"):
+                token = self.path.removeprefix("/junie-open/")
+                if re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+                    location = self.server.junie_notifications.location(token)
+                    if location:
+                        self.send_body(303, "text/plain; charset=utf-8", b"", {"Location": location})
+                        return
+                self.send_body(410, "text/plain; charset=utf-8",
+                               "この通知は期限切れです。ダッシュボードを開き直してください。".encode())
+                return
+            if not self.path.startswith(prefix):
+                self.send_error(403)
+                return
+            if self.path == prefix + "junie-requests":
+                waiting = list(pending_requests(dashboard, manager).values())
+                self.send_body(200, "application/json", json.dumps(waiting, ensure_ascii=False).encode())
                 return
             if not self.bind_view():
                 return
@@ -401,7 +440,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_body(200, "text/html; charset=utf-8", html)
             elif self.path == prefix + "dashboard.js":
                 self.send_body(200, "text/javascript; charset=utf-8", script)
-            elif self.path.removeprefix(prefix) in ("dashboard_runs.js", "dashboard_settings.js", "dashboard_editor.js"):
+            elif self.path.removeprefix(prefix) in ("dashboard_runs.js", "dashboard_settings.js", "dashboard_editor.js", "dashboard_rule_workspace.js"):
                 asset = Path(__file__).with_name(self.path.removeprefix(prefix))
                 self.send_body(200, "text/javascript; charset=utf-8", asset.read_bytes())
             elif self.path.startswith(prefix + "monaco/"):
@@ -460,6 +499,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_workspace()
             elif self.path.partition("?")[0] == prefix + "token-runs":
                 self.send_workspace(include_usage=True)
+            elif self.path.partition("?")[0] == prefix + "rule-workspace":
+                query = parse_qs(urlsplit(self.path).query)
+                self.send_rule_workspace(query=query)
             elif self.path.partition("?")[0] == prefix + "settings":
                 self.send_settings()
             elif self.path.partition("?")[0] == prefix + "junie-models":
@@ -841,6 +883,38 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 return
             self.send_body(200, "application/json", body)
 
+        def send_rule_workspace(self, *, action=None, query=None):
+            def apply_config(content, version):
+                condition = manager.condition if manager else dashboard.condition
+                with condition:
+                    if manager and manager.busy:
+                        raise ValueError("実行中の処理が終わってから反映してください。")
+                    path = Path(config["config_path"])
+                    updated = _save_settings(path, content, version, before_replace=manager.configure if manager else None)
+                    config.update(updated)
+                    if manager:
+                        manager.start_pending()
+                with dashboard.condition:
+                    dashboard.publish({**dashboard.state, "settings_revision": dashboard.revision + 1})
+
+            try:
+                if action is not None:
+                    value = rules.action(action, apply_config)
+                else:
+                    identifier = query.get("id", [None])[0]
+                    source = query.get("source", [None])[0]
+                    if source is not None:
+                        value = rules.file_text(identifier, source)
+                    elif query.get("archive") == ["1"]:
+                        with rules.lock:
+                            value = {"archives": rules._archives()}
+                    else:
+                        value = rules.snapshot(identifier)
+            except _ERRORS as exc:
+                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+            else:
+                self.send_body(200, "application/json", json.dumps(value, ensure_ascii=False).encode())
+
         def send_settings(self) -> None:
             try:
                 path = Path(config["config_path"])
@@ -913,7 +987,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
 
         def do_POST(self) -> None:
             if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
-                                  prefix + "build-response", prefix + "editor", prefix + "prompts"):
+                                  prefix + "build-response", prefix + "editor", prefix + "prompts",
+                                  prefix + "rule-workspace", prefix + "junie-requests"):
                 self.send_error(404)
                 return
             if self.headers.get("Host") != self.expected_host or self.headers.get("Origin") != "http://" + self.expected_host:
@@ -927,6 +1002,15 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 return
             if route == "control" and action.get("action") in ("dry-run", "dry-run-cancel"):
                 self.send_dry_run(action)
+                return
+            if route == "rule-workspace":
+                self.send_rule_workspace(action=action)
+                return
+            if route == "junie-requests":
+                if answer_pending(dashboard, manager, action):
+                    self.send_body(202, "application/json", b"{}")
+                else:
+                    self.send_error(409)
                 return
             if not self.bind_post_view(route, action):
                 return
@@ -983,8 +1067,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
         def read_post_action(self, route: str) -> dict[str, Any]:
             """ルートごとの上限とJSONの共通条件を確認して本文を読む。"""
             limit = 16_384
-            if route == "settings":
-                limit = 8 * 1024 * 1024
+            if route in {"settings", "rule-workspace"}:
+                limit = 13 * 1024 * 1024
             elif route == "build-response":
                 # JSON エスケープはソースの 1 バイトを最大 6 バイトに展開する。
                 limit = 6 * EDIT_BYTES + 256 * 1024
@@ -1377,7 +1461,7 @@ def render_dashboard_html(options: str) -> bytes:
     for asset in ("dashboard_runs.js", "dashboard_settings.js"):
         html = html.replace(f"./src/migration_harness/{asset}", asset)
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
-    html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script></body></html>'
+    html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script><script src="dashboard_rule_workspace.js" defer></script></body></html>'
     return html.encode("utf-8")
 
 
@@ -1389,6 +1473,7 @@ def run_dashboard(
         raise ValueError("choose a migration unit or a saved Run ID")
     package_dir = Path(__file__).resolve().parent
     view = Dashboard()
+    view.rule_workspace = RuleWorkspace(config)
     options = " data-live"
     saved = None
     if config_error is not None:
@@ -1442,6 +1527,7 @@ def run_dashboard(
             except KeyboardInterrupt:
                 pass
             finally:
+                view.rule_workspace.close()
                 manager.close()
                 server.shutdown()
                 thread.join()

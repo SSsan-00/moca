@@ -23,6 +23,7 @@ from time import monotonic
 from typing import Any
 
 from . import junie_cli
+from .acp_permissions import PinnedReferenceReads
 from .build_receipt import build_artifacts, build_inputs
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
 from .checker_advisory import LOG_LIMIT, bounded_advisory_text, checker_advisory, matching_evidence, output_advisory
@@ -43,10 +44,11 @@ from .editor_queue import (
     record_operator_edit,
 )
 from .errors import format_error
-from .execution import build_process_scope, check_cancelled, current_operation_id, report_activity, run_process
+from .execution import build_process_scope, check_cancelled, current_operation_id, junie_dashboard_control, report_activity, run_process
 from .detail_review_evidence import stage_review_evidence
 from .files import harness_asset, safe_target, sha256_file
 from .rule_materials import detail_index, effective_details, render_guidelines, selected_details
+from .rule_search import review_hint
 from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, validate_run_id, write_run_record
 from .source_context import stage_target_context
 from .timings import freeze_timings
@@ -855,6 +857,11 @@ def _review_detail_applicability(
             + result_instruction
             + "Use only files in this workspace."
         )
+        hint = review_hint(manifest, line_counts)
+        budget = (config or {}).get("junie_input_limits", {}).get("max_input_bytes")
+        if hint and (budget is None or len((prompt + hint).encode("utf-8"))
+                     + (guidelines.stat().st_size if guidelines else 0) <= budget):
+            prompt += hint
         command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines, model=model, effort=effort)
         _run_budgeted_junie(
             config or {}, run_path / "run.json", record, "rule_review", guidelines, review_root,
@@ -1137,6 +1144,23 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
         report_activity(message)
         return not blocked
 
+    reads = None
+    dashboard = junie_dashboard_control()
+    if dashboard is not None and config.get("junie_pinned_reference_reads") and root == record_path.parent / "agent-workspace":
+        _, manifest = load_capsule_manifest(record_path.parent)
+        reads = PinnedReferenceReads(
+            root, manifest.get("materials", {}),
+            {item["file"] for item in record.get("supplied_rules", [])},
+        )
+    initial_counts = record.get("junie_permission_counts", {})
+    counts = {kind: values.copy() for kind, values in initial_counts.items()}
+
+    def observe_permission(kind, reason):
+        bucket = counts.setdefault(kind, {})
+        bucket[reason] = bucket.get(reason, 0) + 1
+
+    permission_token = junie_cli.permission_observer.set(observe_permission if dashboard else None)
+    reference_token = junie_cli.reference_read_scope.set(reads)
     token = junie_cli.launch_input_observer.set(observe)
     steering_token = junie_cli.steering_input_observer.set(observe_steering)
     try:
@@ -1144,6 +1168,15 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
     finally:
         junie_cli.steering_input_observer.reset(steering_token)
         junie_cli.launch_input_observer.reset(token)
+        junie_cli.reference_read_scope.reset(reference_token)
+        junie_cli.permission_observer.reset(permission_token)
+        if counts != initial_counts:
+            record["junie_permission_counts"] = counts
+            write_run_record(record_path, record, timing_stage=record.get("active_stage"))
+            reads = counts.get("read", {}).get("pinned_reference_read", 0)
+            prompts = sum(bucket.get("agent_owned_unverified", 0) + bucket.get("operator_decision", 0)
+                          for bucket in counts.values())
+            report_activity(f"Junie確認の累計: 固定参照の自動読み取り {reads} 件、操作確認 {prompts} 件。")
 
 
 def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targets, allowed, other_files, before,

@@ -99,7 +99,7 @@ class RuleMaterialsTests(HarnessCase):
             "path": "rules.md", "role": "migration_rules", "encoding": "utf-8",
             "start_line": 1, "end_line": None, "shared": True,
         })
-        self.original = "FIRST RULE\r\n" + "保持する😀" * 1600 + "\r\nLAST RULE\r\n"
+        self.original = "FIRST RULE\r\n" + "保持する😀" * 1600 + "\r\nA RULE\r\nB RULE\r\nLAST RULE\r\n"
         (self.project / "rules.md").write_bytes(self.original.encode())
         result = workflow.prepare_run(config, "sample")
         capsule = Path(result["capsule_path"])
@@ -114,9 +114,14 @@ class RuleMaterialsTests(HarnessCase):
         entries = manifest["rule_files"]
         self.assertEqual(len(entries), 1)
         content = (capsule / "materials" / entries[0]["file"]).read_bytes()
-        self.assertIn(self.original.replace("\r\n", "\r\n     2 | ", 1).split("LAST RULE")[0].encode(), content)
+        expected = "".join(f"{number:>6} | {line}" for number, line in enumerate(self.original.splitlines(keepends=True), 1))
+        self.assertTrue(expected.encode() in content)
         self.assertIn(b"LAST RULE", content)
-        self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
+        inline = (agent / ".migration-materials/guidelines.md").read_bytes()
+        self.assertIn(self.original.encode(), inline)
+        self.assertNotIn(content, inline)
+        self.assertIn(b"lines 1-5 (.migration-materials/rule-0001.txt)", inline)
+        self.assertEqual((agent / ".migration-materials" / entries[0]["file"]).read_bytes(), content)
         self.assertEqual(len(manifest["parts"]), 1)
         self.assertFalse((agent / "migration-read-rules.py").exists())
         command = junie_cli.build_command(agent, "migrate", 7, guidelines=agent / ".migration-materials/guidelines.md")
@@ -126,7 +131,8 @@ class RuleMaterialsTests(HarnessCase):
         (self.project / "rules.md").unlink()
         (agent / ".migration-materials/guidelines.md").write_text("changed")
         workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
-        self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
+        self.assertEqual((agent / ".migration-materials/guidelines.md").read_bytes(), inline)
+        self.assertEqual((capsule / "materials" / entries[0]["file"]).read_bytes(), content)
 
     def test_input_budget_blocks_launch_and_keeps_complete_rules_for_resume(self):
         capsule, manifest, agent = self.prepare()
@@ -146,8 +152,82 @@ class RuleMaterialsTests(HarnessCase):
         self.assertTrue(usage["blocked"])
         self.assertEqual(usage["bytes"], usage["prompt"]["bytes"] + usage["guidelines"]["bytes"])
         content = (capsule / "materials" / manifest["rule_files"][0]["file"]).read_bytes()
-        self.assertEqual(usage["rules"][0]["bytes"], len(content))
-        self.assertIn(content, (agent / ".migration-materials/guidelines.md").read_bytes())
+        inline = (agent / ".migration-materials/guidelines.md").read_bytes()
+        start = inline.index(b"## migration_rules")
+        self.assertEqual(usage["rules"][0]["bytes"], len(inline[start:]))
+        self.assertEqual(usage["rules"][0]["characters"], len(inline[start:].decode("utf-8")))
+        self.assertIn(self.original.encode(), inline)
+        self.assertIn(b"     1 | FIRST RULE", content)
+        self.assertNotIn(content, inline)
+
+    def test_new_guidelines_keep_original_lines_and_old_runs_keep_numbered_form(self):
+        (self.project / "source.php").write_bytes(b"<?php echo 42;\n")
+        config = self.config()
+        originals = [
+            "keep whole\r\n\r\n     2 | original prefix\r\nkeep this too\r\n例外 😀",
+            "selected detail\n```md\nNested fence\n```\nfinal detail\n",
+            "unselected detail\rcompatibility\r",
+        ]
+        for index, source in enumerate(originals):
+            name = f"rule-{index}.md"
+            (self.project / name).write_bytes(source.encode())
+            config["units"][0]["inputs"].append({
+                "path": name, "role": "migration_rules", "encoding": "utf-8",
+                "start_line": 1, "end_line": None, "shared": True,
+                "usage": "reference" if index else "required",
+                "description": "Razor example only" if index else "",
+            })
+        self.commit_project()
+        result = workflow.prepare_run(config, "sample")
+        capsule, manifest = workflow.load_capsule_manifest(Path(result["run_path"]))
+        records = manifest["rule_files"]
+        selected = frozenset({records[1]["file"]})
+        agent = Path(result["run_path"]) / "agent-workspace"
+        agent.mkdir()
+        workflow._stage_migration_materials(capsule, manifest, agent, selected=selected)
+        inline = (agent / ".migration-materials/guidelines.md").read_bytes().decode()
+        self.assertIn(originals[0], inline)
+        self.assertIn(originals[1], inline)
+        self.assertNotIn(originals[2], inline)
+        self.assertIn("lines 1-5 (.migration-materials/rule-0001.txt)", inline)
+        self.assertIn("lines 1-5 (.migration-materials/rule-0002.txt)", inline)
+        self.assertLess(inline.index(originals[0]), inline.index(originals[1]))
+        self.assertIn("\n例外 😀\n```\n", inline)
+        self.assertNotIn("     1 | keep whole", inline)
+        numbered = (capsule / "materials" / records[0]["file"]).read_bytes()
+        self.assertIn(b"     3 |      2 | original prefix\r\n", numbered)
+        self.assertEqual(hashlib.sha256(numbered).hexdigest(), records[0]["sha256"])
+        self.assertEqual((agent / ".migration-materials" / records[0]["file"]).read_bytes(), numbered)
+        before = {key: value for key, value in manifest.items() if key != "rule_guidelines_format"}
+        for old in (before, {**before, "rule_guidelines_format": "unknown-future-format"}):
+            rendered = rule_materials.render_guidelines(capsule / "materials", old, selected=selected)
+            self.assertIn(numbered.decode(), rendered)
+            self.assertNotIn("lines 1-5 (.migration-materials/rule-0001.txt)", rendered)
+        workflow._stage_migration_materials(capsule, manifest, agent, repair=True, selected=selected)
+        self.assertEqual((agent / ".migration-materials/guidelines.md").read_bytes().decode(), inline)
+
+    def test_compact_format_does_not_increase_short_rule_input(self):
+        material = self.root / "materials"
+        short = "## migration_rules — `rules.md` lines 1-1\n\n```text\n     1 | 最初で最後\n```\n\n"
+        entries = rule_materials.write_rule_files(material, [({"path": "rules.md"}, short)])
+        self.assertEqual(
+            rule_materials.render_guidelines(material, {
+                "rule_files": entries, "rule_guidelines_format": rule_materials.COMPACT_RULE_GUIDELINES,
+            }),
+            rule_materials.render_guidelines(material, {"rule_files": entries}),
+        )
+
+    def test_new_manifest_leaves_unrecognized_rule_frames_intact(self):
+        material = self.root / "materials"
+        incorrect = "## migration_rules — `rules.md` lines 5-7\n\n```text\n     5 | valid\n     7 | missing line\n```\n\n"
+        opaque = "     1 | This is actual content\r\n123 | retain this too"
+        entries = rule_materials.write_rule_files(material, [
+            ({"path": "rules.md"}, incorrect), ({"path": "old.md"}, opaque),
+        ])
+        manifest = {"rule_files": entries, "rule_guidelines_format": rule_materials.COMPACT_RULE_GUIDELINES}
+        guidelines = rule_materials.render_guidelines(material, manifest)
+        self.assertIn(incorrect, guidelines)
+        self.assertIn(opaque, guidelines)
 
     def test_final_input_is_measured_again_before_communication_retry(self):
         root = self.root

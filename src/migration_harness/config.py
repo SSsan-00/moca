@@ -5,6 +5,8 @@ import tomllib
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from .junie_notifications import notification_settings
+
 _INPUT_ENCODINGS = {"auto", "utf-8", "utf-8-sig", "euc-jp"}
 SCRIPT_PHASES = (
     "before_prepare", "after_prepare", "before_migration", "after_migration",
@@ -125,6 +127,9 @@ def load_config(path: Path) -> dict[str, Any]:
     execution["diff_viewer_anchor_reference"] = [
         _config_relative_path(config_path, reference) for reference in execution["diff_viewer_anchor_reference"]
     ]
+    from .rule_search import normalize_rule_search
+
+    execution["rule_search"] = normalize_rule_search(raw.get("rule_search"), config_path, project_settings, units)
     return {"config_path": str(config_path), **project_settings, **execution, "units": units}
 
 
@@ -236,6 +241,9 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
         raise ValueError("[junie] must be a table")
+    pinned_reference_reads = junie.get("pinned_reference_reads", False)
+    if type(pinned_reference_reads) is not bool:
+        raise ValueError("[junie].pinned_reference_reads must be a boolean")
     review_script_output = junie.get("review_script_output", False)
     if type(review_script_output) is not bool:
         raise ValueError("[junie].review_script_output must be a boolean")
@@ -280,7 +288,9 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         "diff_viewer_anchor_reference": anchor_references,
         "max_repair_attempts": max_repair_attempts,
         "checker_review_free_output": review_free_output,
+        "junie_notifications": notification_settings(raw.get("junie_notifications", {})),
         "junie_max_steps": junie_max_steps,
+        "junie_pinned_reference_reads": pinned_reference_reads,
         "junie_input_limits": input_limits,
         "junie_model": junie_model,
         "junie_review_script_output": review_script_output,

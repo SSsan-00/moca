@@ -5,7 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from io import StringIO
 from pathlib import Path
+
+from .execution import check_cancelled
+
+
+COMPACT_RULE_GUIDELINES = "compact-numbered-v1"
+_NUMBERED_RULE_FRAME = re.compile(r"([1-9][0-9]{0,11})-([1-9][0-9]{0,11})\n\n(`{3,})text\n")
 
 
 def write_rule_files(directory: Path, sources: list[tuple[dict, str]]) -> list[dict]:
@@ -105,6 +112,39 @@ def effective_details(manifest: dict, record: dict) -> frozenset[str]:
     return frozenset(selected)
 
 
+def _inline_rule(entry: dict, body: str) -> str:
+    if not isinstance(source_path := entry.get("path"), str):
+        return body
+    opening = f"## migration_rules — `{source_path}` lines "
+    if not body.startswith(opening):
+        return body
+    frame = _NUMBERED_RULE_FRAME.match(body, len(opening))
+    if not frame:
+        return body
+    first, last = int(frame[1]), int(frame[2])
+    end_frame = f"{frame[3]}\n\n"
+    if last < first or not body.endswith(end_frame):
+        return body
+    start = frame.end()
+    end = len(body) - len(end_frame)
+    content = []
+    number = first - 1
+    for number, line in enumerate(StringIO(body[start:end], newline=""), first):
+        if number % 256 == 0:
+            check_cancelled()
+        prefix = f"{number:>6} | "
+        if number > last or not line.startswith(prefix) or not line.endswith(("\r", "\n")):
+            return body
+        content.append(line[len(prefix):])
+    if number != last:
+        return body
+    inline = (
+        f"{opening}{first}-{last} (.migration-materials/{entry['file']})\n\n{frame[3]}text\n"
+        + "".join(content) + end_frame
+    )
+    return inline if len(inline) < len(body) else body
+
+
 def render_guidelines(
     directory: Path, manifest: dict, *, targets: tuple[Path, ...] = (), selected: frozenset[str] | None = None,
     supplied_rules: list[dict] | None = None, excluded: frozenset[str] = frozenset(),
@@ -112,6 +152,7 @@ def render_guidelines(
     """照合済みの保存資料だけを使う。旧Runの断片も順に結合し省略しない。"""
     required, matched, details = [], [], []
     mentions = _target_mentions(targets)
+    compact = manifest.get("rule_guidelines_format") == COMPACT_RULE_GUIDELINES
     if "rule_files" in manifest:
         entries = json.loads((directory / "rules.json").read_text(encoding="utf-8")) if manifest["rule_files"] else []
         if entries != manifest["rule_files"]:
@@ -128,14 +169,14 @@ def render_guidelines(
         usage = entry.get("usage", "required")
         if usage == "required":
             body = content.decode("utf-8")
-            required.append(body)
+            destination = required
         elif usage == "reference" and isinstance(entry.get("description"), str) and entry["description"].strip():
             body = content.decode("utf-8")
             if name not in excluded and (
                 (selected is not None and name in selected)
                 or (mentions and (mentions.search(entry["description"]) or mentions.search(body)))
             ):
-                matched.append(body)
+                destination = matched
             else:
                 if selected is None and name not in excluded:
                     details.append(json.dumps({
@@ -145,9 +186,12 @@ def render_guidelines(
                 continue
         else:
             raise ValueError(f"invalid saved rule usage or description: {name}")
+        inline = _inline_rule(entry, body) if compact else body
+        destination.append(inline)
         if supplied_rules is not None:
             supplied_rules.append({"file": name, "path": entry.get("path", name), "usage": usage,
-                                   "bytes": len(content), "characters": len(body)})
+                                   "bytes": len(inline.encode("utf-8")) if inline is not body else len(content),
+                                   "characters": len(inline)})
     # 断片方式より前のRunのshared.mdには必須ルールが混在するため全文を渡す。
     legacy_shared = "rule_files" not in manifest and "rule_chunks" not in manifest and "shared.md" in manifest.get("materials", {})
     if legacy_shared:

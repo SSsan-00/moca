@@ -40,6 +40,7 @@ class Element {
     this.children.push(...children);
     for (const child of children) if (child.src) queueMicrotask(() => child.emit("load"));
   }
+  prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
   querySelector(selector) { return find(selector); }
   contains() { return false; }
@@ -123,7 +124,7 @@ async function checkDashboard() {
   const page = new Element();
   Object.assign(page, {
     querySelector: dashboardElement,
-    createElement: () => new Element(), documentElement: new Element(), dispatchEvent() {},
+    createElement: () => new Element(), documentElement: new Element(), body: new Element(), dispatchEvent() {},
   });
   let actions;
   let proposeAnchors;
@@ -135,7 +136,7 @@ async function checkDashboard() {
     document: page, Event, URL, URLSearchParams, Headers, TextEncoder, location,
     history: {replaceState(_, __, url) { location.href = url.href; }},
     window: {
-      addEventListener() {},
+      addEventListener() {}, setTimeout() {},
       open() {
         const popup = {
           closed: false, close() { this.closed = true; },
@@ -158,6 +159,7 @@ async function checkDashboard() {
     workspaceTabs: new Element(), workspaceControls() {}, setInterval() {},
     renderRunTokenSummary() {}, updateMigrationLedgerStatuses() {},
     fetch(path, options) {
+      if (path === "junie-requests") return Promise.resolve({ok: true, json: async () => []});
       const body = options.body ? JSON.parse(options.body) : {};
       const request = {path, headers: options.headers, body};
       requests.push(request);

@@ -30,6 +30,8 @@ max_context_chars = 500000
 # path = "docs/examples/menu/Menu.cs"
 
 [junie]
+# ACPの直接読み取りに利用中のJunieが対応する場合のみ有効にします。既定は変更しません。
+# pinned_reference_reads = true
 # 既定はfalse。下記のスクリプト判定、または [checker] の出力判定を別途有効化すること。
 # apply_output_decisions = true # 終了コードと根拠の照合に成功したときだけ工程に反映する。
 # 既定はfalse。有効にすると工程スクリプトの今回のUTF-8出力（最大32 KiB）をモデルへ送信する。
@@ -114,3 +116,9 @@ targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
 # [units.target_context]
 # 共通設定の指定項目だけ上書き。配列は置き換え、省略した項目は継承。
 # roots = []
+
+[junie_notifications]
+# Windows実機のローカル通知。無効でも画面の確認は利用できます。
+enabled = true
+interval_seconds = 300
+repeats = 2
