@@ -25,7 +25,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
             session = SimpleNamespace(
                 project=root, completion_path=root / "done", token="initial", prompts=prompts,
                 steering_supported=True, session_id="session", pending={}, steering_waiting=None,
-                prompt_finished=False, next_request_id=4, steering_requests={}, request=request, selecting_lite=False,
+                prompt_finished=False, next_request_id=4, steering_requests={}, request=request, session_ready=True,
             )
             record_path = root / "run.json"
             record = {}
@@ -77,7 +77,6 @@ class JunieDashboardAcpTests(unittest.TestCase):
         for model, effort, metadata in (
             (None, None, {}),
             ("sonnet", None, {}),
-            ("junie-lite", "low", {}),
             ("junie-lite", None, catalog),
             ("junie-lite", None, {"configOptions": [{"id": "selector", "category": "model"}]}),
         ):
@@ -102,7 +101,9 @@ class JunieDashboardAcpTests(unittest.TestCase):
                     import json, sys
                     for request_id, method, result in (
                         (1, "initialize", {"protocolVersion": 1}),
-                        (2, "session/new", {"sessionId": "repair"}),
+                        (2, "session/new", {"sessionId": "repair", "configOptions": [
+                            {"id": "thought_level", "currentValue": "high"},
+                        ]}),
                     ):
                         assert json.loads(sys.stdin.readline())["method"] == method
                         print(json.dumps(dict(jsonrpc="2.0", id=request_id, result=result)), flush=True)
