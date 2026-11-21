@@ -194,7 +194,6 @@ class DashboardEditorTests(HarnessCase):
                     script = f"import os; os.chdir({str(root)!r})\nsupported = {supported!r}\nhanding_off = {handing_off!r}\n" + textwrap.dedent("""
                         import json, re, sys
                         from pathlib import Path
-from select import select
                         def read():
                             return json.loads(sys.stdin.readline())
                         def send(**message):
@@ -423,7 +422,6 @@ from select import select
             script = f"import os; os.chdir({str(root)!r})\n" + textwrap.dedent("""
                 import json, re, sys, time
                 from pathlib import Path
-from select import select
                 def read():
                     return json.loads(sys.stdin.readline())
                 def send(**message):
