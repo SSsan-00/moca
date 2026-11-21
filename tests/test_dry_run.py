@@ -55,6 +55,9 @@ class DryRunTests(unittest.TestCase):
 
         config = self.config
         root = Path(config["project_root"])
+        alias_component = root.parent / "ordinary"
+        alias_component.mkdir()
+        config["worktree_root"] = str(alias_component / ".." / "worktrees")
         script = Path("検証 scripts") / "確認 script.py"
         (root / script.parent).mkdir()
         (root / script).write_text("raise RuntimeError('dry run must not launch')", encoding="utf-8")
@@ -72,7 +75,7 @@ class DryRunTests(unittest.TestCase):
                                   if item["phase"] == "checker"]
                     self.assertTrue(any("command" in item and item["state"] == "confirmed" for item in checks))
                     self.assertEqual([(item["path"], item["state"]) for item in checks if "path" in item],
-                                     [(str(requested), expected)])
+                                     [(str(requested), expected)], checks)
 
     def test_does_not_treat_python_inline_module_stdin_or_unknown_options_as_script_paths(self):
         from unittest.mock import patch
