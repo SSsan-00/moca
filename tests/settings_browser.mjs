@@ -254,11 +254,18 @@ try {
   await evaluate('document.querySelector("#settings-project-details > summary").click()');
   for (const [id, title, options] of [
     ["settings-junie-log-language", "言語", ["日本語", "英語"]],
-    ["settings-junie-log-tone", "口調", ["標準", "丁寧"]],
+    ["settings-junie-log-tone", "口調", ["標準", "丁寧", "簡潔", "フレンドリー", "カスタム"]],
   ]) {
     assert.equal(await evaluate(field(id) + ".labels[0].textContent"), title);
     assert.deepEqual(await evaluate("Array.from(" + field(id) + ".options, option => option.text)"), options);
   }
+  assert(await evaluate(field("settings-junie-log-custom") + ".hidden"));
+  await change("settings-junie-log-tone", "custom", "input");
+  assert(!(await evaluate(field("settings-junie-log-custom") + ".hidden")));
+  await change("settings-junie-log-instruction", "関西弁で短く", "input");
+  await wait(toml + ".value.includes('関西弁で短く')");
+  await change("settings-junie-log-tone", "friendly", "input");
+  assert(await evaluate(field("settings-junie-log-custom") + ".hidden"));
   const model = "settings-junie-model";
   const effort = "settings-junie-effort";
   const effortStatus = "settings-junie-effort-status";
@@ -379,8 +386,9 @@ try {
   assert.equal(await evaluate("getComputedStyle(" + instructionExample + ".firstElementChild).animationName"), "prompt-type");
   await cdp("Emulation.setEmulatedMedia", {features: [{name: "prefers-reduced-motion", value: "reduce"}]});
   assert.equal(await evaluate("getComputedStyle(" + instructionExample + ".firstElementChild).animationName"), "none");
-  await change("rules-instruction", "確認テスト", "input");
-  assert.equal(await evaluate("getComputedStyle(" + instructionExample + ").visibility"), "hidden");
+  const ruleInstruction = field("rules-instruction");
+  await evaluate(ruleInstruction + ".value = '確認テスト'");
+  await wait("getComputedStyle(" + instructionExample + ").visibility === 'hidden'");
   await click("rules-optimize");
   await wait("!" + field("rules-proposal") + ".hidden");
   await click("rules-preview");

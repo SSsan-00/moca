@@ -1204,6 +1204,14 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
         bucket = counts.setdefault(kind, {})
         bucket[reason] = bucket.get(reason, 0) + 1
 
+    if dashboard and phase in {"migration", "editor_followup", "build_repair", "checker_repair"}:
+        language = config.get("junie_log_language", "ja")
+        tone = config.get("junie_log_tone", "neutral")
+        if (language, tone) != ("ja", "neutral"):
+            kwargs["progress_style"] = junie_cli.dashboard_progress_style(
+                language, tone, config.get("junie_log_tone_instruction", ""),
+            )
+
     permission_token = junie_cli.permission_observer.set(observe_permission if dashboard else None)
     reference_token = junie_cli.reference_read_scope.set(reads)
     token = junie_cli.launch_input_observer.set(observe)
