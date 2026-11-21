@@ -12,7 +12,7 @@ from migration_harness.capsules import (
     input_encoding, load_capsule_manifest, migration_php_encodings, pinned_php_sources, read_pinned_php,
 )
 from migration_harness.files import sha256_file
-from migration_harness.run_records import load_saved_run
+from migration_harness.run_records import load_saved_run, validate_run_id
 from migration_harness.worktree_targets import worktree_source_lock
 
 
@@ -55,7 +55,8 @@ def capture_workspace(
     target_hashes: dict[str, str] | None = None, include_draft: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     """Runの参照PHPと移行先をそろえて読み、比較時点の内容を固定する。"""
-    with worktree_source_lock:
+    validate_run_id(run_id)
+    with worktree_source_lock(Path(config["worktree_root"]) / run_id):
         run_path, worktree, record, unit = load_saved_run(config, run_id)
         if record.get("target_apply_pending"):
             raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")

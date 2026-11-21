@@ -67,7 +67,7 @@ def _latest_evidence(entries, targets, decision, kinds):
 def review_rules(config, run_id, *, rule=None, kind=None, version=None, start=None, end=None, reason=None, reference=None):
     """出典の範囲を照合し、採否または利用者自身が確認した根拠を履歴へ加える。"""
     validate_run_id(run_id)
-    with execution_lock(config, run_id), worktree_source_lock:
+    with execution_lock(config, run_id), worktree_source_lock(Path(config["worktree_root"]) / run_id):
         run_path, report = _review_state(config, run_id)
         if kind is None:
             if any(value is not None for value in (rule, version, start, end, reason, reference)):

@@ -304,7 +304,8 @@ class LedgerReviewTest(HarnessCase):
         self.settings.pop("checker_from_cli")
         self.settings["checker_command"] = default
         checker.write_text("# changed checker\n", encoding="utf-8")
-        self.assertTrue(self.completion()["verification_passed"])
+        self.assertFalse(self.completion()["verification_passed"])
+        self.assertEqual(self.completion()["verification_input_status"], "changed")
 
     def test_hooks_run_without_scanning_non_target_build_inputs(self):
         change = [sys.executable, "-c", "open('Dependency.cs', 'w').write('class HookEdit {}')"]
