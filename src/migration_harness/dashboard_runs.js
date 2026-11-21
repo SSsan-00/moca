@@ -75,7 +75,6 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
       button.disabled = button === dryRunButton && dryRunId
         ? dryRunCancelling : !available || !selectedUnits.size;
     }
-    dryRunButton.type = dryRunId ? "button" : "submit";
     dryRunButton.textContent = dryRunId ? "検証を中止" : "設定を検証";
     find("#run-selected").textContent = selectedUnits.size ? `選択した${selectedUnits.size}件を実行` : "選択した単位を実行";
     find("#unit-selection-label").textContent = selectedUnits.size ? [...selectedUnits].join("・") : "移行単位を選択";
@@ -247,7 +246,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     } catch (error) { feedback.textContent = error.message; }
     finally { pending = false; sync(); }
   }
-  dryRunButton.addEventListener("click", async () => {
+  async function cancelDryRun() {
     if (!dryRunId || dryRunCancelling) return;
     const requestId = dryRunId;
     dryRunCancelling = true;
@@ -260,10 +259,14 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
       dryRunCancelling = false;
       sync();
     }
-  });
+  }
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (pending || !canAct() || !selectedUnits.size) return;
+    if (dryRunId && event.submitter === dryRunButton) {
+      await cancelDryRun();
+      return;
+    }
+    if (pending || !canAct() || !selectedUnits.size || !event.submitter) return;
     const action = event.submitter.value;
     pending = true;
     try {

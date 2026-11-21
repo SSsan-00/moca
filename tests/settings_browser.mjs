@@ -223,13 +223,16 @@ try {
     window.harnessRuns.refresh();
   })()`);
   await wait("Boolean(document.querySelector('#unit-options input:not(:disabled)'))");
-  await evaluate("document.querySelector('#unit-options input:not(:disabled)').click(); validationButton.focus()");
+  await evaluate("document.querySelector('#unit-options input:not(:disabled)').click()");
   const validationIdle = "validationButton.type === 'submit' && validationButton.textContent === '設定を検証' && !validationButton.disabled";
-  const validationRunning = "validationButton.type === 'button' && validationButton.textContent === '検証を中止'";
-  assert(await evaluate(validationIdle));
-  await click("dry-run-selected");
+  const validationRunning = "validationButton.type === 'submit' && validationButton.textContent === '検証を中止'";
+  await wait(validationIdle);
+  const focusStayed = await evaluate("validationButton.focus(); "
+    + "document.activeElement === validationButton && (validationButton.click(), document.activeElement === validationButton)");
+  assert(focusStayed, "the validation button must keep keyboard focus when it becomes the cancel action");
   await wait(validationRunning + " && !validationButton.disabled && dryRunRequests.length === 1");
-  assert(await evaluate("validationButton === document.activeElement && document.querySelector('#run-selected').disabled"));
+  assert(await evaluate("validationButton === document.querySelector('#dry-run-selected')"), "the same button stays in place");
+  assert(await evaluate("document.querySelector('#run-selected').disabled"), "migration must be disabled during validation");
   assert(await evaluate("document.querySelector('#dry-run-cancel') === null"));
   await click("dry-run-selected");
   await wait(validationRunning + " && validationButton.disabled && dryRunRequests.length === 2");
