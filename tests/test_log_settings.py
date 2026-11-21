@@ -65,6 +65,41 @@ class DetailLogSettingsTests(HarnessCase):
             junie_cli.run_interactive(*args, progress_style=style, accept_result=lambda _: None)
             self.assertEqual(launch.call_args.args[0][-1], "task")
 
+    def test_default_tone_records_visible_reply_but_structured_result_does_not(self):
+        from io import BytesIO
+        from subprocess import TimeoutExpired
+        from unittest.mock import Mock, patch
+        from migration_harness import junie_cli
+        from migration_harness.junie_thoughts import FILENAME, read_junie_thoughts
+
+        root = self.path.parent.resolve()
+        for identifier, accept_result in (("default", None), ("structured", lambda _: None)):
+            with self.subTest(identifier=identifier):
+                run_dir = root / identifier
+                run_dir.mkdir()
+                dashboard = Mock(junie_thoughts_path=run_dir / FILENAME,
+                                 trusted_junie_workspaces={str(run_dir)})
+                process = Mock(stderr=BytesIO(), wait=Mock(side_effect=TimeoutExpired("junie", 1)))
+                acp = Mock(progress_sink=None, pending=None, steering_requests={})
+                events = Mock(logs=run_dir, existing_logs=set(), read_new_events=Mock(return_value=False))
+
+                def flush():
+                    if acp.progress_sink is not None:
+                        acp.progress_sink("標準の回答")
+
+                acp.flush_progress.side_effect = flush
+                with (patch.object(junie_cli, "junie_dashboard_control", return_value=dashboard),
+                      patch.object(junie_cli, "_launch_session_process", return_value=process),
+                      patch.object(junie_cli, "_AcpSession", return_value=acp),
+                      patch.object(junie_cli, "_JunieSessionEvents", return_value=events),
+                      patch.object(junie_cli, "_close_junie", return_value=0)):
+                    self.assertEqual(junie_cli.run_interactive(
+                        ["junie", "--prompt", "task"], run_dir / "complete", "token", (),
+                        accept_result=accept_result,
+                    ), 0)
+                rows = read_junie_thoughts(root, identifier, 0)["entries"]
+                self.assertEqual([row["thought"] for row in rows], ["標準の回答"] if accept_result is None else [])
+
     def test_acp_visible_progress_is_recorded_without_thought_chunks(self):
         from migration_harness.junie_cli import _AcpSession
         from migration_harness.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
