@@ -691,7 +691,7 @@ def run_interactive(
     prefer_task: bool = False,
     prompts: LivePrompts | None = None,
 ) -> int:
-    if junie_dashboard_control() is not None:
+    if junie_dashboard_control() is not None and accept_result is None:
         command = [*command[:-1], f"{command[-1]}\n\n{DASHBOARD_PROGRESS_INSTRUCTION}"]
     # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
     task_supported = None

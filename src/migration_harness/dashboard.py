@@ -446,7 +446,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             if self.path.startswith("/junie-open/"):
                 token = self.path.removeprefix("/junie-open/")
                 if re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
-                    location = self.server.junie_notifications.location(token)
+                    location = self.server.junie_notifications.location(token, activate=True)
                     if location:
                         self.send_body(303, "text/plain; charset=utf-8", b"", {"Location": location})
                         return

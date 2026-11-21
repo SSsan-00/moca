@@ -692,6 +692,10 @@ def _razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> s
     )
 
 
+class _MalformedDetailReviewReply(ValueError):
+    pass
+
+
 def _review_detail_applicability(
     run_path: Path, capsule: Path, manifest: dict[str, Any], targets: tuple[Path, ...],
     record: dict[str, Any], max_steps: int | None, *, model: str | None = None, effort: str | None = None,
@@ -803,7 +807,10 @@ def _review_detail_applicability(
             lines = answer.strip().splitlines()
             if len(lines) >= 2 and lines[0] in {"```", "```json"} and lines[-1] == "```":
                 answer = "\n".join(lines[1:-1])
-            response = json.loads(answer)
+            try:
+                response = json.loads(answer)
+            except json.JSONDecodeError:
+                raise _MalformedDetailReviewReply("Junieの詳細ルール選別の応答がJSON形式ではありません。") from None
             if not isinstance(response, dict) or response.get("review_token") != token:
                 raise ValueError("detail review result does not match this invocation")
             selected_details(index, response.get("decisions"), line_counts, evidence)
@@ -865,13 +872,26 @@ def _review_detail_applicability(
                      + (guidelines.stat().st_size if guidelines else 0) <= budget):
             prompt += hint
         command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines, model=model, effort=effort)
-        _run_budgeted_junie(
-            config or {}, run_path / "run.json", record, "rule_review", guidelines, review_root,
-            [path.relative_to(review_root) for path in review_root.rglob("*") if path.is_file() and path != guidelines and path != output],
-            command, completion, token, (output,), report_usage=junie_usage_recorder(run_path, "rule_review"),
-            accept_result=save_decisions if context is not None else None,
-            embedded_input=embedded_sources if context is not None else (),
-        )
+        inputs = [path.relative_to(review_root) for path in review_root.rglob("*")
+                  if path.is_file() and path != guidelines and path != output]
+        report_usage = junie_usage_recorder(run_path, "rule_review")
+        for attempt in range(2):
+            try:
+                _run_budgeted_junie(
+                    config or {}, run_path / "run.json", record, "rule_review", guidelines, review_root, inputs,
+                    command, completion, token, (output,), report_usage=report_usage,
+                    accept_result=save_decisions if context is not None else None,
+                    embedded_input=embedded_sources if context is not None else (),
+                )
+                break
+            except _MalformedDetailReviewReply:
+                if attempt:
+                    raise
+                report_activity("詳細ルール選別の応答がJSON形式ではなかったため、1回だけ再試行します。")
+                command = [*command[:-1], command[-1] + (
+                    " The previous reply was not valid JSON. Return one complete JSON object with the "
+                    "requested keys, no prose, no progress updates in the final response, and no Markdown fences."
+                )]
         if not junie_cli.has_completion_record(completion, token) or output.is_symlink() or not output.is_file():
             raise ValueError("Junie did not complete the detail applicability review")
         decisions = json.loads(output.read_text(encoding="utf-8-sig"))

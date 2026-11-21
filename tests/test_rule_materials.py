@@ -353,6 +353,52 @@ class RuleMaterialsTests(HarnessCase):
                 workflow._review_detail_applicability(self.root, capsule, manifest, targets, {}, None)
             junie.assert_not_called()
 
+    def test_structured_final_answer_has_no_conflicting_dashboard_progress_instruction(self):
+        command = ["fixture-junie", "Return only a JSON object."]
+        completion = self.root / "review-complete.txt"
+        with patch.object(junie_cli, "junie_dashboard_control", return_value=object()), \
+                patch.object(junie_cli, "_run_session", return_value=0) as launch:
+            junie_cli.run_interactive(command, completion, "token", (), accept_result=lambda _: None)
+        self.assertEqual(launch.call_args.args[0], command)
+
+    def test_malformed_detail_reply_retries_once_without_adopting_partial_data(self):
+        capsule = self.root / "capsule"
+        capsule.mkdir()
+        entries = rule_materials.write_rule_files(capsule / "materials", [
+            ({"path": "orders.md", "usage": "reference", "description": "Order output"}, "Preserve order IDs.\n"),
+        ])
+        source = capsule / "context.md"
+        source.write_text("<?php echo $orderId;", encoding="utf-8")
+        manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": entries}
+        rule = entries[0]["file"]
+        for should_complete in (True, False):
+            with self.subTest(should_complete=should_complete):
+                record = {"status": "junie_running"}
+                attempts = []
+
+                def reply(command, completion, token, outputs, **kwargs):
+                    attempts.append(command[-1])
+                    self.assertFalse(outputs[0].exists())
+                    self.assertFalse(completion.exists())
+                    self.assertNotIn("detail_applicability", record)
+                    if len(attempts) == 1 or not should_complete:
+                        kwargs["accept_result"]("Partial reply followed by {")
+                    else:
+                        kwargs["accept_result"](json.dumps({"review_token": token, "decisions": {
+                            rule: {"applies": True, "reason": "Outputs orders"},
+                        }}))
+
+                with patch.object(junie_cli, "run_interactive", side_effect=reply):
+                    args = self.root, capsule, manifest, (Path("Page.cs"),), record, None
+                    if should_complete:
+                        self.assertEqual(workflow._review_detail_applicability(*args), {rule})
+                    else:
+                        with self.assertRaisesRegex(ValueError, "JSON形式"):
+                            workflow._review_detail_applicability(*args)
+                        self.assertNotIn("detail_applicability", record)
+                self.assertEqual(len(attempts), 2)
+                self.assertIn("previous reply was not valid JSON", attempts[1])
+
     def test_large_review_uses_complete_files_instead_of_inlining_only_a_prefix(self):
         capsule = self.root / "capsule"
         capsule.mkdir()
