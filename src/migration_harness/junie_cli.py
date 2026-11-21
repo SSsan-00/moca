@@ -709,8 +709,6 @@ def run_interactive(
     prompts: LivePrompts | None = None,
     progress_style: str = DASHBOARD_PROGRESS_INSTRUCTION,
 ) -> int:
-    publish_progress = progress_style != DASHBOARD_PROGRESS_INSTRUCTION and accept_result is None
-    progress = {"publish_progress": True} if publish_progress else {}
     if junie_dashboard_control() is not None and accept_result is None:
         command = [*command[:-1], f"{command[-1]}\n\n{progress_style}"]
     # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
@@ -740,7 +738,7 @@ def run_interactive(
                 observe(invocation[-1])
             try:
                 return _run_session(invocation, completion_path, token, targets,
-                                    report_usage=report_usage, accept_result=accept_result, prompts=prompts, **progress)
+                                    report_usage=report_usage, accept_result=accept_result, prompts=prompts)
             except JunieAcpModelUnavailable as exc:
                 if unconfirmed_junie_stop(exc) is not None:
                     raise
@@ -763,7 +761,7 @@ def run_interactive(
             if observe is not None:
                 observe(invocation[-1])
             return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets,
-                                report_usage=report_usage, accept_result=accept_result, prompts=prompts, **progress)
+                                report_usage=report_usage, accept_result=accept_result, prompts=prompts)
         except JunieConnectionError as exc:
             if unconfirmed_junie_stop(exc) is not None:
                 raise
@@ -1260,7 +1258,6 @@ def _run_session(
     *, report_usage: Callable[[list[int]], None] | None = None,
     accept_result: Callable[[str], None] | None = None,
     prompts: LivePrompts | None = None,
-    publish_progress: bool = False,
 ) -> int:
     """起動から子プロセスの終了確認、使用量回収、端末の復元までを担当する。
 
@@ -1350,7 +1347,7 @@ def _run_session(
             acp.initialize()
         if thought_path is not None:
             thoughts = JunieThoughts(process.stderr, events.logs, events.existing_logs, thought_path, token)
-            if publish_progress and acp is not None and accept_result is None:
+            if acp is not None and accept_result is None:
                 def write_progress(message: str) -> None:
                     if thoughts is not None:
                         collect_thoughts(lambda: thoughts.append_progress(message))
@@ -1451,7 +1448,7 @@ def _run_session(
         raise
     finally:
         try:
-            if acp is not None and publish_progress:
+            if acp is not None:
                 acp.flush_progress()
             if thoughts is not None:
                 collect_thoughts(thoughts.finish)
