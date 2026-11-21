@@ -281,6 +281,13 @@ if ($data.action -eq 'remove') {
 """
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         payload = json.dumps({"action": action, "tag": tag, "xml": toast_xml(url, kind) if url else ""}).encode("ascii")
-        subprocess.run([str(command), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                       input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=5)
+        args = [str(command), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+        for attempt in range(2):
+            try:
+                subprocess.run(args, input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=15 if attempt else 5)
+                return
+            except subprocess.TimeoutExpired:
+                # Reuse the tag so a completed first Show is replaced, not duplicated.
+                if action != "show" or attempt:
+                    raise
