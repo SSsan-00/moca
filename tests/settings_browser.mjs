@@ -134,7 +134,6 @@ try {
   const save = 'document.querySelector("#workspace-config-form button[type=submit]")';
   const toml = field("workspace-config");
   console.log("Browser:", (await cdp("Browser.getVersion")).product);
-  await cdp("Runtime.enable");
   await cdp("Page.enable");
   await cdp("Page.addScriptToEvaluateOnNewDocument", {source: "(" + function () {
     if (!new URL(location.href).searchParams.has("notice")) return;
@@ -157,10 +156,23 @@ try {
     };
   }.toString() + ")()"});
   await navigate("Page.navigate", {url: notificationUrl});
-  await wait(`document.activeElement.id === "run-state"`);
-  assert(await evaluate(`new URL(location.href).searchParams.get("run") === ${JSON.stringify(expectedRun)}
-    && ${field("tab-progress")}.getAttribute("aria-selected") === "true"`));
-  console.log("Browser notification: opaque activation opened and focused the failed Run");
+  const notificationState = `({
+    progressSelected: ${field("tab-progress")}?.getAttribute("aria-selected") === "true",
+    run: document.querySelector(".run-detail")?.innerText ?? "",
+    state: ${field("state-label")}?.innerText ?? "",
+    feedback: ${field("workspace-run-feedback")}?.textContent ?? "",
+  })`;
+  let observed;
+  try {
+    await eventually(async () => {
+      observed = await evaluate(notificationState);
+      return observed.progressSelected && observed.run.includes(expectedRun) && observed.run.includes("Example.cs")
+        && observed.state.includes("スクリプトで停止");
+    }, "notification opens the failed Run in Progress");
+  } catch (error) {
+    throw new Error(`${error.message}; last dashboard state: ${JSON.stringify(observed)}`, {cause: error});
+  }
+  console.log("Browser notification: opaque activation showed the failed Run in Progress");
   await navigate("Page.navigate", {url});
   await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true" && typeof window.harnessEditorCanSwitch === "function" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);
   await click("tab-progress");
