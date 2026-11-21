@@ -9,6 +9,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from threading import Event, Lock, Thread
 from urllib.parse import urlencode
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -50,8 +51,8 @@ def answer_pending(dashboard, manager, action):
 
 
 def notification_settings(raw):
-    if not isinstance(raw, dict) or raw.keys() - {"enabled", "interval_seconds", "repeats"}:
-        raise ValueError("[junie_notifications] must contain enabled, interval_seconds or repeats")
+    if not isinstance(raw, dict) or raw.keys() - {"enabled", "interval_seconds", "repeats", "milestone_after_seconds"}:
+        raise ValueError("[junie_notifications] must contain enabled, interval_seconds, repeats or milestone_after_seconds")
     enabled = raw.get("enabled", True)
     interval = raw.get("interval_seconds", 300)
     repeats = raw.get("repeats", 2)
@@ -59,7 +60,49 @@ def notification_settings(raw):
         raise ValueError("[junie_notifications] expects a boolean enabled and 1–86400 interval_seconds")
     if type(repeats) is not int or not 0 <= repeats <= 10:
         raise ValueError("[junie_notifications].repeats must be between 0 and 10")
-    return {"enabled": enabled, "interval_seconds": interval, "repeats": repeats}
+    milestone = raw.get("milestone_after_seconds", 0)
+    if type(milestone) is not int or not 0 <= milestone <= 86400:
+        raise ValueError("[junie_notifications].milestone_after_seconds must be between 0 and 86400")
+    return {"enabled": enabled, "interval_seconds": interval, "repeats": repeats,
+            "milestone_after_seconds": milestone}
+
+
+@dataclass(frozen=True)
+class RunNotice:
+    run_id: str
+    status: str
+    kind: str
+
+
+def run_notice(run_id, action, result, *, failed=False):
+    if action == "anchors":
+        return None
+    status = result.get("status", "")
+    if failed:
+        kind = "failed"
+    elif (result.get("last_stop") or {}).get("saved_status") == status:
+        return None
+    elif status == "checker_needs_review" or (status == "editor_checkpoint" and result.get("operator_question")):
+        kind = "review"
+    elif status in {"build_failed", "checker_failed", "junie_failed", "script_failed", "preparation_failed"}:
+        kind = "failed"
+    elif status in {"interrupted", "preparation_interrupted", "cancelled"}:
+        return None
+    elif result.get("requested_range_complete"):
+        kind = "migrated"
+    elif result.get("error") or result.get("error_details"):
+        kind = "failed"
+    elif status in {"checker_succeeded", "checker_accepted"}:
+        verification = result.get("verification") or {}
+        kind = "recheck" if verification.get("inputs_changed_during_verification") else "verified"
+    elif status == "build_succeeded":
+        verification = result.get("verification") or {}
+        kind = "recheck" if verification.get("inputs_changed_during_verification") else "built"
+    elif status == "junie_finished":
+        kind = "migrated"
+    else:
+        return None
+    return RunNotice(run_id, status, kind)
 
 
 @dataclass
@@ -79,6 +122,10 @@ class JunieNotifications:
         self.now = now
         self.active = {}
         self.links = {}
+        self.run_queue = SimpleQueue()
+        self.completed = set()
+        self.milestones = set()
+        self.visible_at = None
         self.link_lock = Lock()
         self.stop = Event()
         self.thread = None
@@ -106,6 +153,22 @@ class JunieNotifications:
     def tag(toast):
         return hashlib.sha256(toast.token.encode("ascii")).hexdigest()[:16]
 
+    def post(self, notice):
+        if notice and self.backend is not None and not self.stop.is_set():
+            self.run_queue.put(notice)
+
+    def mark_visible(self):
+        self.visible_at = self.now()
+
+    def remember(self, token, key):
+        with self.link_lock:
+            self.links[token] = key
+            if len(self.links) > 256:
+                active_tokens = {entry.token for entry in self.active.values()}
+                expired = next((item for item in self.links if item not in active_tokens), None)
+                if expired:
+                    del self.links[expired]
+
     def tick(self):
         policy = self.settings()
         visible = set(self.pending()) if policy["enabled"] else set()
@@ -118,13 +181,7 @@ class JunieNotifications:
             toast = self.active.get(key)
             if toast is None:
                 toast = self.active[key] = PendingToast(secrets.token_urlsafe(24), now)
-                with self.link_lock:
-                    self.links[toast.token] = key
-                    if len(self.links) > 256:
-                        active_tokens = {entry.token for entry in self.active.values()}
-                        expired = next((token for token in self.links if token not in active_tokens), None)
-                        if expired:
-                            del self.links[expired]
+                self.remember(toast.token, key)
             if toast.emitted <= policy["repeats"] and toast.next_at <= now and key in self.pending():
                 if self.stop.is_set():
                     return
@@ -132,9 +189,34 @@ class JunieNotifications:
                 toast.next_at = now + policy["interval_seconds"]
                 self.try_backend("show", self.tag(toast), f"{self.origin}/junie-open/{toast.token}")
 
-    def try_backend(self, action, tag, url):
+        notices = []
+        while not self.stop.is_set():
+            try:
+                notices.append(self.run_queue.get_nowait())
+            except Empty:
+                break
+        if not policy["enabled"]:
+            return
+        terminal = {notice.run_id for notice in notices if notice.kind != "milestone"}
+        for notice in notices:
+            if self.stop.is_set():
+                return
+            if notice.kind == "milestone":
+                if (notice.run_id in terminal or notice.run_id in self.milestones
+                        or self.visible_at is not None and self.now() - self.visible_at < 3):
+                    continue
+                self.milestones.add(notice.run_id)
+            if notice.kind in {"migrated", "built", "verified"}:
+                if notice.run_id in self.completed:
+                    continue
+                self.completed.add(notice.run_id)
+            toast = PendingToast(secrets.token_urlsafe(24), now)
+            self.remember(toast.token, notice)
+            self.try_backend("show", self.tag(toast), f"{self.origin}/junie-open/{toast.token}", notice.kind)
+
+    def try_backend(self, action, tag, url, kind=None):
         try:
-            self.backend(action, tag, url)
+            self.backend(action, tag, url, kind) if kind else self.backend(action, tag, url)
         except (OSError, subprocess.SubprocessError):
             # A disabled or unavailable Windows notifier must not interrupt the dashboard.
             pass
@@ -144,20 +226,34 @@ class JunieNotifications:
             key = self.links.get(token)
         if key is None:
             return None
+        if isinstance(key, RunNotice):
+            return self.prefix + "?" + urlencode({"run": key.run_id, "notice": key.kind, "status": key.status})
         return self.prefix + "?" + urlencode({"run": key.run_id, "junie_request": key.request_id,
                                                "junie_operation": key.operation_id})
 
 
-def toast_xml(url):
+_RUN_MESSAGES = {
+    "review": ("確認待ち", "処理が確認待ちです。対象の Run を開きます。"),
+    "failed": ("処理停止", "処理が停止しました。対象の Run で工程と理由を確認できます。"),
+    "migrated": ("移行処理完了", "指定の移行処理が終わりました。今回のビルド・チェッカーは未実施です。"),
+    "built": ("ビルド完了", "ビルドが終わりました。チェッカーは未実施です。"),
+    "verified": ("ビルド・チェック完了", "検証処理が終わりました。移行台帳や判断結果は対象の Run で確認できます。"),
+    "recheck": ("再確認が必要", "検証中に入力が変わりました。対象の Run で再検証してください。"),
+    "milestone": ("進捗", "移行処理が終わり、ビルド・検証に進みました。"),
+}
+
+
+def toast_xml(url, kind=None):
     toast = Element("toast", activationType="protocol", launch=url)
     binding = SubElement(SubElement(toast, "visual"), "binding", template="ToastGeneric")
-    SubElement(binding, "text").text = "移行ハーネス"
-    SubElement(binding, "text").text = "Junie が操作の確認を待っています。クリックして確認を開きます。"
+    heading, text = _RUN_MESSAGES.get(kind, ("確認待ち", "Junie が操作の確認を待っています。クリックして確認を開きます。"))
+    SubElement(binding, "text").text = f"移行ハーネス: {heading}"
+    SubElement(binding, "text").text = text
     return tostring(toast, encoding="unicode")
 
 
 class WindowsToast:
-    def __call__(self, action, tag, url):
+    def __call__(self, action, tag, url, kind=None):
         command = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
         script = r"""
 $ErrorActionPreference = 'Stop'
@@ -184,7 +280,7 @@ if ($data.action -eq 'remove') {
 }
 """
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        payload = json.dumps({"action": action, "tag": tag, "xml": toast_xml(url) if url else ""}).encode("ascii")
+        payload = json.dumps({"action": action, "tag": tag, "xml": toast_xml(url, kind) if url else ""}).encode("ascii")
         subprocess.run([str(command), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                        input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=5)

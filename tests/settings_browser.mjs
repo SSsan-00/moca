@@ -4,7 +4,7 @@ import path from "node:path";
 import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
 
-const [executable, profile, url] = process.argv.slice(2);
+const [executable, profile, url, notificationUrl, expectedRun] = process.argv.slice(2);
 let socket, sequence = 0;
 const pending = new Map();
 async function eventually(read, label) {
@@ -136,6 +136,11 @@ try {
   console.log("Browser:", (await cdp("Browser.getVersion")).product);
   await cdp("Runtime.enable");
   await cdp("Page.enable");
+  await navigate("Page.navigate", {url: notificationUrl});
+  await wait(`document.activeElement.id === "run-state"`);
+  assert(await evaluate(`new URL(location.href).searchParams.get("run") === ${JSON.stringify(expectedRun)}
+    && ${field("tab-progress")}.getAttribute("aria-selected") === "true"`));
+  console.log("Browser notification: opaque activation opened and focused the failed Run");
   await navigate("Page.navigate", {url});
   await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true" && typeof window.harnessEditorCanSwitch === "function" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);
   await click("tab-progress");
