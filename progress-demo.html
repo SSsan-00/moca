@@ -610,7 +610,7 @@
       position: absolute; inset: 10px 12px auto; width: max-content; max-width: calc(100% - 24px);
       color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; pointer-events: none; visibility: hidden;
     }
-    .prompt-field:has(> textarea:placeholder-shown:enabled:not([readonly])) .prompt-example { visibility: visible; }
+    .prompt-field:has(> :is(input, textarea):placeholder-shown:enabled:not([readonly])) .prompt-example { visibility: visible; }
     /* Typewriter #006: https://showheyohtaki.github.io/motion-prompt/#006 */
     @media (prefers-reduced-motion: no-preference) {
       .prompt-example { --typing-time: calc(var(--characters) * 55ms); }
@@ -1151,8 +1151,11 @@
                   </select>
                   <div id="settings-junie-log-custom" hidden>
                     <label for="settings-junie-log-instruction">Junieへの口調指示</label>
-                    <input id="settings-junie-log-instruction" data-section="junie" data-setting="log_tone_instruction" maxlength="300"
-                      placeholder="例：関西弁で、専門用語は短く補足して">
+                    <div class="prompt-field">
+                      <input id="settings-junie-log-instruction" data-section="junie" data-setting="log_tone_instruction" maxlength="300"
+                        placeholder=" " aria-describedby="settings-junie-log-example">
+                      <span class="prompt-example" id="settings-junie-log-example" style="--characters: 18" aria-hidden="true"><span>例：関西弁で、専門用語は短く補足して</span></span>
+                    </div>
                   </div>
                   <p id="settings-junie-log-help" class="settings-material-range">Junieが人向けに書く進捗説明と報告に適用します。生成コード、ビルド・チェッカー出力は対象外です。<span data-demo-only>デモでは指示をJunieに送信しません。</span></p>
                 </fieldset>

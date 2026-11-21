@@ -268,7 +268,19 @@ try {
   assert(await evaluate(field("settings-junie-log-custom") + ".hidden"));
   await change("settings-junie-log-tone", "custom", "input");
   assert(!(await evaluate(field("settings-junie-log-custom") + ".hidden")));
+  const toneExample = field("settings-junie-log-example");
+  const exampleAnimation = `getComputedStyle(${toneExample}.firstElementChild).animationName`;
+  const exampleVisibility = `getComputedStyle(${toneExample}).visibility`;
+  const motion = value => cdp("Emulation.setEmulatedMedia", {features: [{name: "prefers-reduced-motion", value}]});
+  await motion("no-preference");
+  assert.equal(await evaluate(exampleAnimation), "prompt-type");
+  await wait(exampleVisibility + " === 'visible'");
+  await motion("reduce");
+  assert.equal(await evaluate(exampleAnimation), "none");
+  assert.equal(await evaluate(exampleVisibility), "visible");
+  await motion("no-preference");
   await change("settings-junie-log-instruction", "関西弁で短く", "input");
+  await wait(exampleVisibility + " === 'hidden'");
   await wait(toml + ".value.includes('関西弁で短く')");
   await change("settings-junie-log-tone", "friendly", "input");
   assert(await evaluate(field("settings-junie-log-custom") + ".hidden"));
@@ -382,6 +394,11 @@ try {
   await click("demo-notice-answer");
   assert.match(await evaluate(`${field("demo-notice-state")}.textContent`), /回答を記録/);
   console.log("Browser demo: opening suppresses reminders without answering the confirmation");
+  await click("tab-settings");
+  await evaluate('document.querySelector("#settings-project-details").open = true');
+  await change("settings-junie-log-tone", "custom", "input");
+  await wait(`${toneExample}.offsetWidth > 0 && ${exampleVisibility} === 'visible'`);
+  assert.equal(await evaluate(exampleAnimation), "prompt-type");
 
   await showRuleWorkspace();
   await click("rules-start");
