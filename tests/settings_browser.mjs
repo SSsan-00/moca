@@ -92,6 +92,24 @@ try {
       socket.send(JSON.stringify({id, method, params}));
     });
   }
+  function pageLoaded() {
+    return new Promise((resolve, reject) => {
+      const receive = event => {
+        if (JSON.parse(event.data).method !== "Page.loadEventFired") return;
+        clearTimeout(timer);
+        socket.removeEventListener("message", receive);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        socket.removeEventListener("message", receive);
+        reject(new Error("Browser page did not finish loading"));
+      }, 15_000);
+      socket.addEventListener("message", receive);
+    });
+  }
+  async function navigate(method, params) {
+    await Promise.all([pageLoaded(), cdp(method, params)]);
+  }
   async function evaluate(expression) {
     const result = await cdp("Runtime.evaluate", {expression, returnByValue: true, awaitPromise: true});
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
@@ -102,7 +120,7 @@ try {
       return await evaluate(expression);
     } catch (error) {
       // Chrome may replace the JavaScript context during a real navigation.
-      if (!/Execution context was destroyed|Cannot find context/.test(error.message)) throw error;
+      if (!/Execution context was destroyed|Cannot find context|Inspected target navigated or closed/.test(error.message)) throw error;
       return false;
     }
   }, expression);
@@ -117,7 +135,8 @@ try {
   const toml = field("workspace-config");
   console.log("Browser:", (await cdp("Browser.getVersion")).product);
   await cdp("Runtime.enable");
-  await cdp("Page.navigate", {url});
+  await cdp("Page.enable");
+  await navigate("Page.navigate", {url});
   await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true" && typeof window.harnessEditorCanSwitch === "function" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
@@ -127,7 +146,7 @@ try {
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
   await evaluate("window.beforeRecoveryReload = true");
-  await cdp("Page.reload");
+  await navigate("Page.reload");
   await wait(`!window.beforeRecoveryReload && document.readyState === "complete" && document.documentElement.dataset.liveReady === "true"`);
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
