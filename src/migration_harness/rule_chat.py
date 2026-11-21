@@ -11,6 +11,9 @@ from . import junie_cli
 
 
 class RuleChat(junie_cli._AcpSession):
+    def _connection_timeout(self) -> float:
+        return 60
+
     def __init__(self, project, model, effort):
         self.response = []
         self.size = 0
@@ -66,7 +69,7 @@ class RuleChat(junie_cli._AcpSession):
             error = message.get("error")
             if (isinstance(error, dict) and error.get("code") == -32002
                     and str(error.get("message", "")).strip().lower() == "no models are currently available for submission"):
-                raise ValueError("Junieで利用できるモデルがありません。同じWindowsユーザーでJunieにサインインし、モデルを確認してください。")
+                raise ValueError("Junieで利用できるモデルがありません。選択したモデルと通常のJunie CLIでの利用可否を確認してください。")
             if (message.get("result") or {}).get("stopReason") != "end_turn":
                 raise ValueError("Junieが整理の応答を完了しませんでした。")
             self.prompt_finished = True
@@ -89,7 +92,7 @@ class RuleChat(junie_cli._AcpSession):
         return super()._receive_message(message)
 
     def wait(self, *, ready=False, cancelled, publish):
-        deadline = monotonic() + (30 if ready else 600)
+        deadline = monotonic() + 600
         waiting = None
         while not cancelled.is_set():
             complete = self.advance()
@@ -106,7 +109,7 @@ class RuleChat(junie_cli._AcpSession):
             elif waiting is not None:
                 deadline += now - waiting
                 waiting = None
-            if (waiting is None and now >= deadline) or self.process.poll() is not None:
+            if (not ready and waiting is None and now >= deadline) or self.process.poll() is not None:
                 raise ValueError("Junieの整理セッションが応答しません。")
             sleep(0.05)
         self.cancel()
