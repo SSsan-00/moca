@@ -201,6 +201,50 @@ try {
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
   console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reopen");
+  await click("tab-runs");
+  await evaluate(`(() => {
+    const original = window.fetch;
+    window.restoreDryRunFetch = () => { window.fetch = original; };
+    window.dryRunRequests = [];
+    window.validationButton = document.querySelector("#dry-run-selected");
+    window.fetch = (endpoint, options) => {
+      if (endpoint === "workspace") return Promise.resolve(Response.json({units: ["例"], runs: [], parallel_limit: 5}));
+      const request = endpoint === "control" && options?.body && JSON.parse(options.body);
+      if (request?.action === "dry-run") {
+        window.dryRunRequests.push(request);
+        return new Promise(resolve => { window.finishDryRun = result => resolve(Response.json(result)); });
+      }
+      if (request?.action === "dry-run-cancel") {
+        window.dryRunRequests.push(request);
+        return Promise.resolve(Response.json({}));
+      }
+      return original(endpoint, options);
+    };
+    window.harnessRuns.refresh();
+  })()`);
+  await wait("Boolean(document.querySelector('#unit-options input:not(:disabled)'))");
+  await evaluate("document.querySelector('#unit-options input:not(:disabled)').click(); validationButton.focus()");
+  const validationIdle = "validationButton.type === 'submit' && validationButton.textContent === '設定を検証' && !validationButton.disabled";
+  const validationRunning = "validationButton.type === 'button' && validationButton.textContent === '検証を中止'";
+  assert(await evaluate(validationIdle));
+  await click("dry-run-selected");
+  await wait(validationRunning + " && !validationButton.disabled && dryRunRequests.length === 1");
+  assert(await evaluate("validationButton === document.activeElement && document.querySelector('#run-selected').disabled"));
+  assert(await evaluate("document.querySelector('#dry-run-cancel') === null"));
+  await click("dry-run-selected");
+  await wait(validationRunning + " && validationButton.disabled && dryRunRequests.length === 2");
+  assert(await evaluate("dryRunRequests[1].action === 'dry-run-cancel' && dryRunRequests[1].request_id === dryRunRequests[0].request_id"));
+  await evaluate("finishDryRun({cancelled: true})");
+  await wait(validationIdle);
+  assert(await evaluate("document.querySelector('#workspace-run-feedback').textContent.includes('検証を中止しました')"));
+  await click("dry-run-selected");
+  await wait(validationRunning + " && dryRunRequests.length === 3");
+  await evaluate("finishDryRun({configuration_ok: true, unit_id: '例', base_ref: 'HEAD', checks: []})");
+  await wait(validationIdle);
+  assert(await evaluate("document.querySelector('#workspace-run-feedback').textContent.includes('実移行は未実行')"));
+  await evaluate("restoreDryRunFetch()");
+  console.log("Browser validation: one button starts, cancels and resets; migration is not started");
+
   await click("tab-settings");
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
   assert(await evaluate("!document.querySelector('#settings-unit-checker-command') && !!document.querySelector('#settings-checker-command')"));

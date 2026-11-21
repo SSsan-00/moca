@@ -262,7 +262,7 @@ flowchart TD
 ```
 
 1. `prepare_run` と `run_with_junie` は、Run 単位のロックを取ってから同じ `run_root` の共有準備ロックを取ります。準備が終わると共有ロックを解放し、`run_with_junie` は Run ロックを保持して移行と検証へ進みます。新規 `run` は準備前に Junie を起動できる条件も確認します。 [workflow.py](../src/migration_harness/workflow.py) · [run_records.py](../src/migration_harness/run_records.py)
-2. `prepare_context` は PHP のコピーを `capsule/php-sources/` に保存し、以降の分割と比較の基準にします。文字コードの `auto` は UTF-8 BOM を優先し、UTF-8 と EUC-JP で厳密に検査します。異なる解釈が成立する場合は明示指定が必要です。原文の改行を保った行番号付き Markdown を作り、見出しと共通入力も含む `max_context_chars`（既定 500,000、最小 1,000）を適用します。 [capsules.py](../src/migration_harness/capsules.py)
+2. `prepare_context` は PHP のコピーを `capsule/php-sources/` に保存し、以降の分割と比較の基準にします。文字コードの `auto` は UTF-8 BOM を優先し、UTF-8 と EUC-JP で厳密に検査します。異なる解釈が成立する場合は明示指定が必要です。原文の改行を保った行番号付き Markdown を作り、見出しと共通入力も含む `max_context_chars`（既定 250,000、最小 1,000）を適用します。 [capsules.py](../src/migration_harness/capsules.py)
 3. 分割位置は原文の行と文字位置で決まります。1 行が上限に収まらない場合は、移行を担当する文字範囲と、その前後の参照範囲を記録します。同じ入力の隣接カプセルは各方向最大 12 行の境界抜粋を別ファイルに持ちます。 `manifest.json` にファイル・行範囲・文字範囲および保存物のハッシュを記録します。必須ルール・詳細ルール・共通の参考実装はカプセル本文と別に保存します。 [capsules.py](../src/migration_harness/capsules.py) · [rule_materials.py](../src/migration_harness/rule_materials.py)
 4. worktree の作成に成功すると移行先、カプセル数、Junie のモデル・推論の強さ・最大ステップ数を Run に保存します。`after_prepare` の中断・失敗は worktree があるため同じ Run で再試行できます。中断した対象フックは、成功済みコマンドのうち先頭から一致する分を省略します。 [workflow.py](../src/migration_harness/workflow.py)
 

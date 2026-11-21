@@ -166,7 +166,7 @@ def _project_settings(project: Any, config_path: Path) -> dict[str, Any]:
     if worktree_root == run_root or worktree_root.is_relative_to(run_root) or run_root.is_relative_to(worktree_root):
         raise ValueError("worktree_root and run_root must be separate directories")
 
-    max_context_chars = project.get("max_context_chars", 500000)
+    max_context_chars = project.get("max_context_chars", 250_000)
     if not isinstance(max_context_chars, int) or max_context_chars < 1000:
         raise ValueError("[project].max_context_chars must be an integer of at least 1000")
     return {
@@ -247,6 +247,12 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     junie = raw.get("junie", {})
     if not isinstance(junie, dict):
         raise ValueError("[junie] must be a table")
+    log_language = junie.get("log_language", "ja")
+    log_tone = junie.get("log_tone", "neutral")
+    if log_language not in ("ja", "en"):
+        raise ValueError("詳細ログの表示言語は ja または en を指定してください。")
+    if log_tone not in ("neutral", "polite"):
+        raise ValueError("詳細ログの口調は neutral または polite を指定してください。")
     pinned_reference_reads = junie.get("pinned_reference_reads", False)
     if type(pinned_reference_reads) is not bool:
         raise ValueError("[junie].pinned_reference_reads must be a boolean")
@@ -300,6 +306,8 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         "junie_pinned_reference_reads": pinned_reference_reads,
         "junie_input_limits": input_limits,
         "junie_model": junie_model,
+        "junie_log_language": log_language,
+        "junie_log_tone": log_tone,
         "junie_review_script_output": review_script_output,
         "junie_apply_output_decisions": apply_output_decisions,
         "junie_ground_output_repairs": ground_output_repairs,
