@@ -42,7 +42,7 @@ class RuleChat(junie_cli._AcpSession):
         self.request_info = None
 
     def begin(self, prompt):
-        if not self.session_id or self.selecting_lite or self.turn_id is not None:
+        if not self.session_ready or self.turn_id is not None:
             raise RuntimeError("Junieの新しい入力を受け付けられません。")
         self.prompt_finished = False
         self.response = []
@@ -51,19 +51,10 @@ class RuleChat(junie_cli._AcpSession):
         self.next_turn += 1
         self.request(self.turn_id, "session/prompt", sessionId=self.session_id, prompt=[{"type": "text", "text": prompt}])
 
+    def _on_session_ready(self) -> None:
+        pass
+
     def _receive_message(self, message):
-        if message.get("id") == 2 and "method" not in message:
-            result = message.get("result") or {}
-            session = result.get("sessionId")
-            if "error" in message or not isinstance(session, str) or not session:
-                raise ValueError("Junieの整理セッションを開始できません。")
-            self.session_id = session
-            self._select_lite_if_missing(result)
-            return False
-        if (message.get("id") == junie_cli._ACP_SELECT_LITE_REQUEST and "method" not in message
-                and self.selecting_lite):
-            self._complete_lite_selection(message)
-            return False
         if self.turn_id is not None and message.get("id") == self.turn_id and "method" not in message:
             self.turn_id = None
             error = message.get("error")
@@ -97,7 +88,7 @@ class RuleChat(junie_cli._AcpSession):
         while not cancelled.is_set():
             complete = self.advance()
             publish(self.request_info, "".join(self.response))
-            arrived = self.session_id is not None and not self.selecting_lite if ready else complete
+            arrived = self.session_ready if ready else complete
             if arrived:
                 if ready:
                     # 接続成立と同時に届くコマンド一覧も取り込む。

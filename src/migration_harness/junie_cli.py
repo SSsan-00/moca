@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
 ACP_TIMEOUT = 30
 _ACP_SELECT_LITE_REQUEST = -1
+_ACP_SET_EFFORT_REQUEST = -2
 MODEL_LIST_TIMEOUT = 10
 DASHBOARD_PROGRESS_INSTRUCTION = (
     "進捗と最終回答は日本語で書いてください。重要な確認や変更に進むときは、"
@@ -801,6 +802,8 @@ class _AcpSession:
         self.pending: tuple[int | str, Future[str]] | None = None
         self.startup_deadline = time.monotonic() + self._connection_timeout()
         self.selecting_lite = False
+        self.pending_effort: str | None = None
+        self.session_ready = False
         self.permission_started = 0.0
         self.prompts = prompts
         self.completion_path = completion_path
@@ -861,7 +864,7 @@ class _AcpSession:
                 or self.pending or self.steering_waiting is not None or self.prompt_finished
                 or has_completion_record(self.completion_path, self.token)):
             return
-        if self.selecting_lite:
+        if not self.session_ready:
             return
         token = uuid.uuid4().hex
         receipt = safe_target(self.project, Path(".migration-scratch") / f"steering-{token}.txt")
@@ -1000,16 +1003,8 @@ class _AcpSession:
             report_activity("追加指示を送信待ちに戻しました。画面に表示されたタイミングで渡します。")
 
     def _select_lite_if_missing(self, session: dict) -> bool:
-        flags = self.command[:-2]
-        if "--model" not in flags:
+        if self._requested_option("--model") != "junie-lite" or self._requested_option("--effort") not in (None, "none"):
             return False
-        model_index = flags.index("--model")
-        if flags[model_index + 1:model_index + 2] != ["junie-lite"]:
-            return False
-        if "--effort" in flags:
-            effort_index = flags.index("--effort")
-            if flags[effort_index + 1:effort_index + 2] != ["none"]:
-                return False
         models = session.get("models") or {}
         if models.get("availableModels") or models.get("currentModelId"):
             return False
@@ -1030,7 +1025,54 @@ class _AcpSession:
             return
         raise JunieSessionError(self.command, 1, "Junie ACP で指定した Junie Lite を選択できませんでした。")
 
-    def _send_initial_prompt(self) -> None:
+    def _requested_option(self, flag: str) -> str | None:
+        flags = self.command[:-2]
+        return flags[flags.index(flag) + 1] if flag in flags else None
+
+    @staticmethod
+    def _effort_option(session: dict) -> dict | None:
+        return next((option for option in (session.get("configOptions") or [])
+                     if isinstance(option, dict)
+                     and (option.get("category") == "thought_level" or option.get("id") == "thought_level")), None)
+
+    def _effort_not_confirmed(self, effort: str) -> JunieSessionError:
+        return JunieSessionError(
+            self.command, 1,
+            f"Junie ACP で推論レベル {effort} を確認できなかったため、指示を送信していません。"
+            "Junie CLI の更新、またはモデルと推論レベルの設定を確認してください。",
+        )
+
+    def _configure_effort(self, session: dict) -> None:
+        effort = self._requested_option("--effort")
+        if effort is None:
+            self._mark_session_ready()
+            return
+        option = self._effort_option(session)
+        if (option is not None and option.get("currentValue") == effort
+                or option is None and effort == "none" and self._requested_option("--model") == "junie-lite"):
+            self._mark_session_ready()
+            return
+        if option is None or not isinstance(option.get("id"), str) or not option["id"]:
+            raise self._effort_not_confirmed(effort)
+        self.pending_effort = effort
+        self.startup_deadline = time.monotonic() + self._connection_timeout()
+        self.request(_ACP_SET_EFFORT_REQUEST, "session/set_config_option",
+                     sessionId=self.session_id, configId=option["id"], value=effort)
+
+    def _complete_effort_configuration(self, message: dict) -> None:
+        effort = self.pending_effort
+        result = message.get("result")
+        option = self._effort_option(result) if isinstance(result, dict) else None
+        if "error" in message or option is None or option.get("currentValue") != effort:
+            raise self._effort_not_confirmed(effort)
+        self.pending_effort = None
+        self._mark_session_ready()
+
+    def _mark_session_ready(self) -> None:
+        self.session_ready = True
+        self._on_session_ready()
+
+    def _on_session_ready(self) -> None:
         self.request(3, "session/prompt", sessionId=self.session_id,
                      prompt=[{"type": "text", "text": self.command[-1]}])
 
@@ -1054,7 +1096,7 @@ class _AcpSession:
         elif request_id == 2 and result.get("sessionId"):
             self.session_id = result["sessionId"]
             if not self._select_lite_if_missing(result):
-                self._send_initial_prompt()
+                self._configure_effort(result)
         elif request_id == 3:
             self.prompt_finished = True
             if self.steering_waiting is None and not self.steering_new_turn:
@@ -1084,7 +1126,9 @@ class _AcpSession:
                 self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
         elif not method and request_id == _ACP_SELECT_LITE_REQUEST and self.selecting_lite:
             self._complete_lite_selection(message)
-            self._send_initial_prompt()
+            self._configure_effort(message.get("result") or {})
+        elif not method and request_id == _ACP_SET_EFFORT_REQUEST and self.pending_effort is not None:
+            self._complete_effort_configuration(message)
         elif not method and request_id in (1, 2, 3):
             return self._advance_prompt(request_id, message)
         return False
@@ -1121,7 +1165,7 @@ class _AcpSession:
                 return True
             if self.pending:
                 return False
-        if (self.session_id is None or self.selecting_lite) and time.monotonic() >= self.startup_deadline:
+        if not self.session_ready and time.monotonic() >= self.startup_deadline:
             raise JunieSessionError(self.command, 1, "JunieのACP接続がタイムアウトしました。Junie CLIのバージョンとログを確認してください。")
         if self.steering_waiting is not None and time.monotonic() >= self.steering_deadline:
             raise JunieSessionError(self.command, 1, "追加指示の受信を確認できませんでした。指示を送信待ちに戻します。実行を再開してください。")
