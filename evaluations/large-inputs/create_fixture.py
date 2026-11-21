@@ -147,7 +147,7 @@ for key, value in (("user.name", "Harness validation"), ("user.email", "harness@
     subprocess.run(["git", "-C", str(app), "config", key, value], check=True)
 subprocess.run(["git", "-C", str(app), "add", "."], check=True)
 subprocess.run(["git", "-C", str(app), "commit", "-qm", "20k PHP lines and 200 rule documents"], check=True)
-config = '[project]\nroot="app"\nrun_root="runs"\nworktree_root="trees"\n'
+config = '[project]\nroot="app"\nrun_root="runs"\nworktree_root="trees"\nmax_context_chars=500000\n'
 for name, usage, description, _ in rules:
     config += '\n[[project.migration_rules]]\npath=' + json.dumps("rules/" + name) + '\nusage=' + json.dumps(usage) + '\n'
     if description:

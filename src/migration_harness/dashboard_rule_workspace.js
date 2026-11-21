@@ -1,10 +1,17 @@
 (() => {
   const node = id => document.querySelector(`#rules-${id}`);
   const tab = document.querySelector("#tab-rule-workspace");
-  if (!tab || tab.hidden) return;
+  const live = document.documentElement.hasAttribute("data-live");
+  const demo = live ? null : window.harnessRuleWorkspaceDemo;
+  if (!tab || tab.hidden || (!live && !demo)) return;
+  if (demo) {
+    node("demo-note").hidden = false;
+    node("archive").hidden = true;
+  }
   let draft, source = "new", busy = false, timer, token, uploadedBytes;
   const status = text => { node("status").textContent = text; };
   const request = async (query, action) => {
+    if (demo) return demo(query, action);
     const response = await fetch("rule-workspace" + (query ? "?" + new URLSearchParams(query) : ""), action ? {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(action),
@@ -107,7 +114,8 @@
       display(result);
       if (action === "start" || was !== result.id || action === "accept") await loadSource();
       if (["start", "apply"].includes(action)) await refresh();
-      if (action === "apply") status("TOMLに反映しました。次のRunから適用されます。");
+      if (action === "apply") status(demo ? "デモの反映が完了しました。実際のTOMLは変わりません。" :
+        "TOMLに反映しました。次のRunから適用されます。");
       if (action === "message" || action === "optimize") node("instruction").value = "";
     } catch (error) {
       status(error.message);

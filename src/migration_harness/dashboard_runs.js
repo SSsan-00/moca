@@ -7,8 +7,9 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   const options = find("#unit-options");
   const rows = find("#run-rows");
   const feedback = find("#workspace-run-feedback");
-  const dryRunCancel = find("#dry-run-cancel");
+  const dryRunButton = find("#dry-run-selected");
   let dryRunId;
+  let dryRunCancelling = false;
   const search = find("#run-search");
   const summary = find("#run-summary");
   const selectedUnits = new Set();
@@ -70,7 +71,12 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   // 接続状態と送信中の操作から、実行・再開ボタンを更新する。
   function sync() {
     const available = canAct() && !pending;
-    for (const button of form.querySelectorAll("button")) button.disabled = !available || !selectedUnits.size;
+    for (const button of form.querySelectorAll("button")) {
+      button.disabled = button === dryRunButton && dryRunId
+        ? dryRunCancelling : !available || !selectedUnits.size;
+    }
+    dryRunButton.type = dryRunId ? "button" : "submit";
+    dryRunButton.textContent = dryRunId ? "検証を中止" : "設定を検証";
     find("#run-selected").textContent = selectedUnits.size ? `選択した${selectedUnits.size}件を実行` : "選択した単位を実行";
     find("#unit-selection-label").textContent = selectedUnits.size ? [...selectedUnits].join("・") : "移行単位を選択";
     for (const input of options.querySelectorAll("input")) input.disabled = !available || input.dataset.busy === "true";
@@ -241,31 +247,34 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     } catch (error) { feedback.textContent = error.message; }
     finally { pending = false; sync(); }
   }
-  dryRunCancel?.addEventListener("click", async () => {
-    if (!dryRunId) return;
-    dryRunCancel.disabled = true;
+  dryRunButton.addEventListener("click", async () => {
+    if (!dryRunId || dryRunCancelling) return;
+    const requestId = dryRunId;
+    dryRunCancelling = true;
+    sync();
     try {
-      await execute("dry-run-cancel", {request_id: dryRunId});
+      await execute("dry-run-cancel", {request_id: requestId});
     } catch (error) {
+      if (dryRunId !== requestId) return;
       feedback.textContent = error.message;
-      dryRunCancel.disabled = false;
+      dryRunCancelling = false;
+      sync();
     }
   });
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (pending || !canAct() || !selectedUnits.size) return;
+    const action = event.submitter.value;
     pending = true;
-    sync();
     try {
-      if (event.submitter.value === "dry-run") {
+      if (action === "dry-run") {
         if (selectedUnits.size !== 1) {
           feedback.textContent = "設定を検証する移行単位を1つ選んでください。";
           return;
         }
         feedback.textContent = "実行せずに設定を検証しています。";
         dryRunId = crypto.randomUUID();
-        dryRunCancel.hidden = false;
-        dryRunCancel.disabled = false;
+        sync();
         const result = await execute("dry-run", {unit_id: [...selectedUnits][0], request_id: dryRunId});
         if (result.cancelled) {
           feedback.textContent = "設定の検証を中止しました。";
@@ -284,7 +293,8 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         ].join("\n");
         return;
       }
-      await execute(event.submitter.value, {unit_ids: [...selectedUnits]});
+      sync();
+      await execute(action, {unit_ids: [...selectedUnits]});
       selectedUnits.clear();
       optionKey = undefined;
       find("#unit-picker").open = false;
@@ -293,7 +303,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     } catch (error) { feedback.textContent = error.message; }
     finally {
       dryRunId = undefined;
-      if (dryRunCancel) dryRunCancel.hidden = true;
+      dryRunCancelling = false;
       pending = false;
       sync();
     }

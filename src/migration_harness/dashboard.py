@@ -471,7 +471,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_body(200, "text/html; charset=utf-8", html)
             elif self.path == prefix + "dashboard.js":
                 self.send_body(200, "text/javascript; charset=utf-8", script)
-            elif self.path.removeprefix(prefix) in ("dashboard_runs.js", "dashboard_settings.js", "dashboard_editor.js", "dashboard_rule_workspace.js"):
+            elif self.path.removeprefix(prefix) in ("dashboard_runs.js", "dashboard_settings.js", "dashboard_editor.js", "dashboard_rule_workspace.js",
+                                                        "dashboard_log_presentation.js"):
                 asset = Path(__file__).with_name(self.path.removeprefix(prefix))
                 self.send_body(200, "text/javascript; charset=utf-8", asset.read_bytes())
             elif self.path.startswith(prefix + "monaco/"):
@@ -580,13 +581,18 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_error(400)
                 return
             try:
-                run_root = Path((manager.config if manager else config)["run_root"]).resolve()
+                settings = manager.config if manager else config
+                run_root = Path(settings["run_root"]).resolve()
                 batch = read_junie_thoughts(run_root, run_id, cursor)
             except (KeyError, OSError, ValueError):
                 self.send_error(409)
                 return
             live = bool(state.get("operation_id") and not state.get("ready") and not state.get("queued"))
-            self.send_body(200, "application/json", json.dumps({**batch, "live": live}, ensure_ascii=False).encode("utf-8"))
+            self.send_body(200, "application/json", json.dumps({
+                **batch, "live": live,
+                "log_language": settings.get("junie_log_language", "ja"),
+                "log_tone": settings.get("junie_log_tone", "neutral"),
+            }, ensure_ascii=False).encode("utf-8"))
 
         def send_prompts(self, action: dict[str, Any] | None = None) -> None:
             state = self.dashboard.state
@@ -1509,7 +1515,7 @@ def render_dashboard_html(options: str) -> bytes:
     html, marker, _ = demo.read_text(encoding="utf-8").partition("<!-- dashboard-script -->")
     if not marker:
         raise ValueError("progress dashboard template is missing its script marker")
-    for asset in ("dashboard_runs.js", "dashboard_settings.js"):
+    for asset in ("dashboard_runs.js", "dashboard_settings.js", "dashboard_log_presentation.js"):
         html = html.replace(f"./src/migration_harness/{asset}", asset)
     html = html.replace('<html lang="ja">', f'<html lang="ja"{options}>')
     html += '<script src="dashboard.js" defer></script><script src="dashboard_editor.js" defer></script><script src="dashboard_rule_workspace.js" defer></script></body></html>'

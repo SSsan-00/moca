@@ -16,10 +16,11 @@ _TABLE_FIELDS = {
     "project": ("root", "worktree_root", "run_root", "base_ref", "max_context_chars"),
     "build": ("project",),
     "checker": ("command", "max_repair_attempts"),
-    "junie": ("max_steps", "model", "effort", "warn_input_bytes", "max_input_bytes"),
+    "junie": ("max_steps", "model", "effort", "warn_input_bytes", "max_input_bytes", "log_language", "log_tone"),
     "diff_viewer": ("html", "enabled", "anchor_reference"),
     "target_context": ("roots", "folders", "exclude", "recursive", "max_files", "max_bytes", "max_file_bytes"),
 }
+_DEFAULT_FIELDS = {"command": [], "log_language": "ja", "log_tone": "neutral"}
 _NUMERIC_FIELDS = {
     "max_repair_attempts": (0, "自動修正回数"),
     "max_context_chars": (1000, "カプセルの文字数上限"),
@@ -315,7 +316,7 @@ def _settings_form(document: Any) -> dict[str, Any]:
                     ("true" if value is True else "false" if value is False else "") if key == "recursive" else value
                 )
                 for key in keys
-                if (value := document.get(section, {}).get(key, [] if key == "command" else "")) is not None
+                if (value := document.get(section, {}).get(key, _DEFAULT_FIELDS.get(key, ""))) is not None
             }
             for section, keys in _TABLE_FIELDS.items()
         },

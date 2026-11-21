@@ -707,12 +707,12 @@ function tailJunieLog(view) {
       if (!response.ok) throw new Error("Junie thought log is unavailable");
       const batch = await response.json();
       if (view.popup.closed) return;
-      const status = batch.live ? "追記を待機中" : "現在は追記なし";
-      renderJunieLog(view, {...batch, status: batch.live && (cursor || batch.entries.length) ? "追記を受信中" : status});
+      renderJunieLog(view, batch);
       cursor = batch.cursor;
       if (batch.more) delay = 0;
     } catch {
-      renderJunieLog(view, {status: "ログを読み込めませんでした。接続を再試行しています。"});
+      renderJunieLog(view, {status: view.logLanguage === "en" ? "Could not load the log. Retrying the connection." :
+        "ログを読み込めませんでした。接続を再試行しています。"});
     }
     if (!view.popup.closed) view.popup.setTimeout(poll, delay);
   }
