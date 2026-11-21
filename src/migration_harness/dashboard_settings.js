@@ -533,6 +533,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
         else if (field !== effortSelect) field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
       }
       settingsForm.target_context ??= {};
+      document.querySelector("#settings-junie-log-custom").hidden = settingsForm.junie.log_tone !== "custom";
       showViewerState();
       showEfforts(settingsForm.junie.effort ?? "");
       showMaterials(settingsForm.migrationRules, "migrationRules");
@@ -652,6 +653,8 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       settingsChanges.junie.effort = settingsForm.junie.effort = effortSelect.value;
     } else if (field === effortSelect) {
       showEfforts(value);
+    } else if (setting === "log_tone") {
+      document.querySelector("#settings-junie-log-custom").hidden = value !== "custom";
     }
     schedulePreview();
   });

@@ -52,6 +52,23 @@ DASHBOARD_PROGRESS_INSTRUCTION = (
 )
 
 
+def dashboard_progress_style(language, tone, instruction):
+    if (language, tone) == ("ja", "neutral"):
+        return DASHBOARD_PROGRESS_INSTRUCTION
+    lang = "英語" if language == "en" else "日本語"
+    style = {
+        "neutral": "標準的に",
+        "polite": "丁寧に",
+        "concise": "要点だけ簡潔に",
+        "friendly": "フレンドリーで読みやすく",
+        "custom": "次の文体設定に沿って：" + json.dumps(instruction, ensure_ascii=False),
+    }[tone]
+    return (
+        f"利用者向けの進捗説明と最終報告だけを{lang}で、{style}、1〜2文にまとめてください。"
+        "コード、検証、入力資料、完了記録、構造化データには文体設定を適用しないでください。"
+    )
+
+
 class JunieEditHandoff(KeyboardInterrupt):
     """修正セッションを閉じ、保存した編集と指示を自動で引き継ぐ。"""
 
@@ -690,9 +707,10 @@ def run_interactive(
     accept_result: Callable[[str], None] | None = None,
     prefer_task: bool = False,
     prompts: LivePrompts | None = None,
+    progress_style: str = DASHBOARD_PROGRESS_INSTRUCTION,
 ) -> int:
     if junie_dashboard_control() is not None and accept_result is None:
-        command = [*command[:-1], f"{command[-1]}\n\n{DASHBOARD_PROGRESS_INSTRUCTION}"]
+        command = [*command[:-1], f"{command[-1]}\n\n{progress_style}"]
     # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
     task_supported = None
     if prompts is not None:
