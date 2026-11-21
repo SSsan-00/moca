@@ -36,6 +36,7 @@ from .command_paths import build_command_for_worktree, expand_command_paths, scr
 from .context_evidence import boundary_hints
 from .context_handoff import handoff_prompt, junie_memo_request, save_junie_memo
 from .context_plan import navigation_plan
+from .repair_context import diagnostic_php_ranges
 from .target_evidence import diagnostic_references
 from .config import checker_command_for_unit, find_unit, target_paths
 from .grounded_evidence import grounded_diagnostic, has_environment_diagnostic
@@ -2447,6 +2448,18 @@ def _repair_target(
     )
     references = diagnostic_references(capsule, findings)
     plan["diagnostic_references"] = references
+    if not resume_draft and not attempt["details"].get("raw_checker_output"):
+        source_ranges = diagnostic_php_ranges(
+            capsule, manifest, record, worktree, repair_targets, before, findings, attempt["details"].get("kind"),
+        )
+        if source_ranges:
+            plan["diagnostic_php_ranges"] = source_ranges
+            plan_hint += (
+                "Start navigation at these fixed PHP ranges linked by an operator-confirmed mapping for this target version: "
+                + "; ".join(f"{item['file']} {item['path'][:120]!r}:{item['start_line']}-{item['end_line']}"
+                            for item in source_ranges)
+                + ". They are starting points, not proof of causation or limits on the saved source ranges to review. "
+            )
     if references:
         plan_hint += (
             "The diagnostic names pinned read-only paths; use them as navigation hints, not proof of causation: "

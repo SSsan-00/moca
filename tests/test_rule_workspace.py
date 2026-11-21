@@ -130,6 +130,37 @@ end_line = 1
             }})
         self.assertIsNone(chat.turn_id)
 
+    def test_ready_wait_uses_the_acp_connection_deadline(self):
+        from threading import Event
+        from unittest.mock import Mock
+
+        from migration_harness import junie_cli
+
+        chat = RuleChat.__new__(RuleChat)
+        chat.response = []
+        chat.request_info = None
+        chat.session_id = None
+        chat.selecting_lite = False
+        chat.pending = None
+        chat.process = Mock()
+        chat.process.poll.return_value = None
+        advances = 0
+
+        def receive_connection():
+            nonlocal advances
+            advances += 1
+            if advances == 2:
+                chat.session_id = "slow-connection"
+            return False
+
+        chat.advance = receive_connection
+        with patch("migration_harness.rule_chat.monotonic", side_effect=[0, 40]), patch(
+            "migration_harness.rule_chat.sleep"
+        ):
+            self.assertEqual(chat.wait(ready=True, cancelled=Event(), publish=lambda *_: None), "")
+        self.assertEqual(chat.session_id, "slow-connection")
+        self.assertGreater(chat._connection_timeout(), junie_cli.ACP_TIMEOUT)
+
     def test_chat_proposals_are_not_written_until_accepted(self):
         class FakeChat:
             offered_skill = False
