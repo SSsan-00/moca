@@ -64,3 +64,34 @@ class DetailLogSettingsTests(HarnessCase):
             self.assertEqual(launch.call_args.args[0][-1], "task\n\n" + style)
             junie_cli.run_interactive(*args, progress_style=style, accept_result=lambda _: None)
             self.assertEqual(launch.call_args.args[0][-1], "task")
+
+    def test_acp_visible_progress_is_recorded_without_thought_chunks(self):
+        from migration_harness.junie_cli import _AcpSession
+        from migration_harness.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
+
+        run_dir = self.path.parent / "fixture"
+        run_dir.mkdir()
+        log = JunieThoughts.__new__(JunieThoughts)
+        log.target = run_dir / FILENAME
+        log.token = "completion-secret"
+        acp = _AcpSession.__new__(_AcpSession)
+        acp.session_id = "current"
+        acp.progress_sink = log.append_progress
+        acp.progress_text = ""
+        acp.tool_calls = {}
+
+        def update(session, kind, **fields):
+            acp._receive_message({"method": "session/update", "params": {
+                "sessionId": session, "update": {"sessionUpdate": kind, **fields},
+            }})
+
+        update("another", "agent_message_chunk", content={"type": "text", "text": "other run"})
+        update("current", "agent_thought_chunk", content={"type": "text", "text": "not a progress message"})
+        update("current", "agent_message_chunk", content={"type": "text", "text": "ええ感じで"})
+        update("current", "agent_message_chunk", content={"type": "text", "text": "進んでます completion-secret"})
+        update("current", "tool_call", toolCallId="one")
+        acp.flush_progress()
+        entries = read_junie_thoughts(self.path.parent, "fixture", 0)["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["title"], "Junie")
+        self.assertEqual(entries[0]["thought"], "ええ感じで進んでます [REDACTED]")

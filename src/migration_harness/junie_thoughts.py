@@ -98,18 +98,29 @@ class JunieThoughts:
         lines = complete.split(b"\n")
         rows = [entry for line in lines[int(self.discarding):] if (entry := _entry(line, self.token))]
         if rows:
-            target = safe_target(self.target.parent.parent, Path(self.target.parent.name, FILENAME))
-            flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-            with os.fdopen(os.open(target, flags, 0o600), "ab+") as stream:
-                # 強制終了で書きかけの行があっても、再開後の最初のメモを独立した行にする。
-                if stream.seek(0, 2):
-                    stream.seek(-1, 2)
-                    if stream.read(1) != b"\n":
-                        stream.write(b"\n")
-                for row in rows:
-                    stream.write(json.dumps(row, ensure_ascii=False).encode("utf-8") + b"\n")
+            self.append(rows)
         self.offset += len(complete) + 1
         self.discarding = False
+
+    def append_progress(self, message: str) -> None:
+        message = safe_command(message.strip())
+        if self.token:
+            message = message.replace(self.token, "[REDACTED]")
+        if message:
+            self.append([{"at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                          "title": "Junie", "thought": message}])
+
+    def append(self, rows: list[dict]) -> None:
+        target = safe_target(self.target.parent.parent, Path(self.target.parent.name, FILENAME))
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(target, flags, 0o600), "ab+") as stream:
+            # 強制終了で書きかけの行があっても、再開後の最初のメモを独立した行にする。
+            if stream.seek(0, 2):
+                stream.seek(-1, 2)
+                if stream.read(1) != b"\n":
+                    stream.write(b"\n")
+            for row in rows:
+                stream.write(json.dumps(row, ensure_ascii=False).encode("utf-8") + b"\n")
 
     def finish(self) -> None:
         self.reader.join(timeout=1)
@@ -140,6 +151,9 @@ def read_junie_thoughts(run_root: Path, run_id: str, cursor: int) -> dict:
         except ValueError:
             continue
         if isinstance(row, dict) and isinstance(row.get("at"), str) and isinstance(row.get("thought"), str):
-            entries.append({"at": row["at"], "thought": row["thought"]})
+            entry = {"at": row["at"], "thought": row["thought"]}
+            if row.get("title") == "Junie":
+                entry["title"] = "Junie"
+            entries.append(entry)
     end = start + len(complete) + 1
     return {"cursor": end, "entries": entries, "reset": reset, "more": len(chunk) == _RESPONSE_CHUNK and end < size}

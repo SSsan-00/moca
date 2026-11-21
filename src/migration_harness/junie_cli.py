@@ -709,6 +709,8 @@ def run_interactive(
     prompts: LivePrompts | None = None,
     progress_style: str = DASHBOARD_PROGRESS_INSTRUCTION,
 ) -> int:
+    publish_progress = progress_style != DASHBOARD_PROGRESS_INSTRUCTION and accept_result is None
+    progress = {"publish_progress": True} if publish_progress else {}
     if junie_dashboard_control() is not None and accept_result is None:
         command = [*command[:-1], f"{command[-1]}\n\n{progress_style}"]
     # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
@@ -738,7 +740,7 @@ def run_interactive(
                 observe(invocation[-1])
             try:
                 return _run_session(invocation, completion_path, token, targets,
-                                    report_usage=report_usage, accept_result=accept_result, prompts=prompts)
+                                    report_usage=report_usage, accept_result=accept_result, prompts=prompts, **progress)
             except JunieAcpModelUnavailable as exc:
                 if unconfirmed_junie_stop(exc) is not None:
                     raise
@@ -761,7 +763,7 @@ def run_interactive(
             if observe is not None:
                 observe(invocation[-1])
             return _run_session([*command[:-1], invocation[-1]], completion_path, token, targets,
-                                report_usage=report_usage, accept_result=accept_result, prompts=prompts)
+                                report_usage=report_usage, accept_result=accept_result, prompts=prompts, **progress)
         except JunieConnectionError as exc:
             if unconfirmed_junie_stop(exc) is not None:
                 raise
@@ -834,6 +836,8 @@ class _AcpSession:
         self.next_request_id = 4
         self.prompt_finished = False
         self.steering_new_turn = False
+        self.progress_sink: Callable[[str], None] | None = None
+        self.progress_text = ""
         # stdoutの行待ちを別スレッドに任せ、監視側は停止要求や許可への回答を確認し続ける。
         self.reader = Thread(target=self._read, daemon=True)
         self.writer = Thread(target=self._write, daemon=True)
@@ -1154,8 +1158,16 @@ class _AcpSession:
                 self.send(id=request_id, error={"code": -32601, "message": "Method not supported"})
         elif method == "session/update" and params.get("sessionId") == self.session_id:
             update = params.get("update", {})
-            if update.get("sessionUpdate") in ("tool_call", "tool_call_update") and "toolCallId" in update:
+            kind = update.get("sessionUpdate")
+            if kind in ("tool_call", "tool_call_update") and "toolCallId" in update:
+                self.flush_progress()
                 self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
+            elif self.progress_sink is not None and kind == "agent_message_chunk":
+                content = update.get("content")
+                if isinstance(content, dict) and content.get("type") == "text" and isinstance(content.get("text"), str):
+                    room = 2000 - len(self.progress_text)
+                    if room > 0:
+                        self.progress_text += content["text"][:room]
         elif not method and request_id == _ACP_SELECT_LITE_REQUEST and self.selecting_lite:
             self._complete_lite_selection(message)
             self._configure_effort(message.get("result") or {})
@@ -1164,6 +1176,11 @@ class _AcpSession:
         elif not method and request_id in (1, 2, 3):
             return self._advance_prompt(request_id, message)
         return False
+
+    def flush_progress(self) -> None:
+        if self.progress_sink is not None and self.progress_text:
+            text, self.progress_text = self.progress_text, ""
+            self.progress_sink(text)
 
     def advance(self) -> bool:
         self._check_writes()
@@ -1243,6 +1260,7 @@ def _run_session(
     *, report_usage: Callable[[list[int]], None] | None = None,
     accept_result: Callable[[str], None] | None = None,
     prompts: LivePrompts | None = None,
+    publish_progress: bool = False,
 ) -> int:
     """起動から子プロセスの終了確認、使用量回収、端末の復元までを担当する。
 
@@ -1332,6 +1350,12 @@ def _run_session(
             acp.initialize()
         if thought_path is not None:
             thoughts = JunieThoughts(process.stderr, events.logs, events.existing_logs, thought_path, token)
+            if publish_progress and acp is not None and accept_result is None:
+                def write_progress(message: str) -> None:
+                    if thoughts is not None:
+                        collect_thoughts(lambda: thoughts.append_progress(message))
+
+                acp.progress_sink = write_progress
         started = time.monotonic()
         report_activity("Junieのプロセスを起動しました。")
         next_heartbeat = started + HEARTBEAT_SECONDS
@@ -1427,6 +1451,8 @@ def _run_session(
         raise
     finally:
         try:
+            if acp is not None and publish_progress:
+                acp.flush_progress()
             if thoughts is not None:
                 collect_thoughts(thoughts.finish)
             if dashboard is not None:
