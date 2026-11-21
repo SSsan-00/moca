@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Thread
 
 from migration_harness import dashboard
+from migration_harness.junie_notifications import RunNotice
 from ui_dependencies import node_executable, require_ui_dependency
 
 
@@ -96,11 +97,14 @@ max_bytes = 9007199254740993 # preserve this value
                 server = view.server(config, dashboard.render_dashboard_html(" data-live data-workspace"),
                                      (package / "dashboard.js").read_bytes())
             url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+            token = "T" * 32
+            server.junie_notifications.links[token] = RunNotice(run_id, "script_failed", "failed")
+            notification_url = f"http://127.0.0.1:{server.server_port}/junie-open/{token}"
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
                 helper = Path(__file__).with_name("settings_browser.mjs")
-                result = subprocess.run([*node_args, str(helper), chrome, str(root / "browser"), url],
+                result = subprocess.run([*node_args, str(helper), chrome, str(root / "browser"), url, notification_url, run_id],
                                         capture_output=True, text=True, encoding="utf-8", timeout=110)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 print(result.stdout, end="", flush=True)

@@ -122,3 +122,5 @@ targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
 enabled = true
 interval_seconds = 300
 repeats = 2
+# 長時間の移行からビルドに進んだときだけ追加通知（0で無効、単位は秒）。
+milestone_after_seconds = 0

@@ -42,11 +42,13 @@ from migration_harness.junie_conversation import (
 )
 from migration_harness.junie_thoughts import FILENAME as JUNIE_THOUGHTS_FILENAME, read_junie_thoughts
 from migration_harness.review_anchors import generate_anchors
-from migration_harness.run_records import edit_run_record, load_saved_run, run_observer, validate_run_id
+from migration_harness.run_records import edit_run_record, load_dashboard_record, load_saved_run, run_observer, validate_run_id
 from migration_harness.recovery_status import recovery_status
 from migration_harness.rule_workspace import RuleWorkspace
 from migration_harness.settings_form import build_settings_draft
-from migration_harness.junie_notifications import JunieNotifications, answer_pending, notification_settings, pending_requests
+from migration_harness.junie_notifications import (
+    JunieNotifications, RunNotice, answer_pending, notification_settings, pending_requests, run_notice,
+)
 from migration_harness.source_context import preview_target_context
 from migration_harness.timings import freeze_timings
 from migration_harness.workflow import (
@@ -169,11 +171,21 @@ class Dashboard:
         self.junie_request_sequence = 0
         self.trusted_junie_workspaces: set[str] = set()
         self.activity_sequence = 0
+        self.notifications = None
+        self.operation_started_at = None
+        self.migration_milestone = False
+        self.saw_migration = False
+
+    def run_notifications(self):
+        return self.notifications or getattr(getattr(self, "manager", None), "notifications", None)
 
     def begin_operation(self, operation_id: str | None = None) -> None:
         """停止要求は実行ごとのIDに結び付け、別のRunに持ち越さない。"""
         with self.condition:
             self.stop_phase = None
+            self.operation_started_at = time.monotonic()
+            self.migration_milestone = False
+            self.saw_migration = False
             self.control = ExecutionControl(
                 self.activity, on_junie_request=self.show_junie_request,
                 operation_id=operation_id or secrets.token_hex(16),
@@ -263,6 +275,16 @@ class Dashboard:
             record.get("status") == "repairing" and "repair_pending" in record
         )
         with self.condition:
+            notices = self.run_notifications()
+            if notices and self.operation_started_at is not None and self.control and not self.control.cancelled.is_set():
+                if state.get("status") in {"junie_running", "junie_finished"}:
+                    self.saw_migration = True
+                threshold = notices.settings().get("milestone_after_seconds", 0)
+                if (self.saw_migration and not self.migration_milestone and threshold
+                        and state.get("status") in {"building", "checking"}):
+                    self.migration_milestone = True
+                    if time.monotonic() - self.operation_started_at >= threshold:
+                        notices.post(RunNotice(state["run_id"], state["status"], "milestone"))
             fields = (*PROGRESS_FIELDS, "repair_count")
             usage = [row.copy() for row in record.get("token_usage", [])]
             if state != {key: self.state[key] for key in fields if key in self.state}:
@@ -358,7 +380,9 @@ class Dashboard:
             lambda: config.get("junie_notifications") or notification_settings({}),
             f"http://{host}", prefix,
         )
-        server.junie_notifications = notifications
+        server.junie_notifications = self.notifications = notifications
+        if manager:
+            manager.notifications = notifications
         close = server.server_close
 
         def close_server():
@@ -433,6 +457,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_error(403)
                 return
             if self.path == prefix + "junie-requests":
+                if self.headers.get("X-Dashboard-Visible") == "1":
+                    self.server.junie_notifications.mark_visible()
                 waiting = list(pending_requests(dashboard, manager).values())
                 self.send_body(200, "application/json", json.dumps(waiting, ensure_ascii=False).encode())
                 return
@@ -1359,6 +1385,8 @@ def execute_dashboard_action(view, config, action):
     """1つのRunだけの状態・入力待ち・停止要求をワーカースレッドに結び付ける。"""
     token = run_observer.set(view.observe)
     result = None
+    notice = None
+    notices = view.run_notifications()
     run_id = action["run_id"]
     conversation_id = action.get("conversation_id")
     try:
@@ -1396,6 +1424,12 @@ def execute_dashboard_action(view, config, action):
                 result = resume_with_junie(config, run_id, **kwargs)
             view.observe(result)
             view.ready(config, result, "判断理由を記録しました。" if kind == "accept" else "")
+            if notices and kind != "anchors":
+                saved_record = {}
+                if result["status"] in {"build_succeeded", "checker_succeeded", "checker_accepted", "editor_checkpoint"}:
+                    with suppress(*_ERRORS):
+                        _, saved_record = load_dashboard_record(config, run_id)
+                notice = run_notice(run_id, kind, {**view.state, **saved_record, **result})
     except (*_ERRORS, KeyboardInterrupt) as exc:
         if conversation_id:
             try:
@@ -1447,6 +1481,7 @@ def execute_dashboard_action(view, config, action):
                                      + (f" 停止記録を保存できませんでした。{pending_save_error}" if pending_save_error else "")})
         else:
             view.failed(exc)
+            notice = run_notice(run_id, action["action"], view.state, failed=True)
             if pending_save_error:
                 view.publish({**view.state, "message": view.state["message"] +
                               "\n保留中の指示の停止を保存できません。残存プロセスと保存先を確認してください。\n" +
@@ -1455,6 +1490,8 @@ def execute_dashboard_action(view, config, action):
             action["reply"].set_exception(ValueError("処理を停止しました。" if stopped else format_error(exc)))
     finally:
         run_observer.reset(token)
+        if notices:
+            notices.post(notice)
     return result
 
 
@@ -1512,11 +1549,11 @@ def run_dashboard(
     manager = RunManager(config, view)
     view.manager = manager
     try:
-        if unit_id is not None and config_error is None:
-            submitted = manager.submit({"action": "run", "unit_id": unit_id})
-            run_id = submitted["run_id"]
-            manager.default = manager.get(run_id)
         with view.server(config, html, (package_dir / "dashboard.js").read_bytes()) as server:
+            if unit_id is not None and config_error is None:
+                submitted = manager.submit({"action": "run", "unit_id": unit_id})
+                run_id = submitted["run_id"]
+                manager.default = manager.get(run_id)
             thread = Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
