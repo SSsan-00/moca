@@ -201,6 +201,8 @@ try {
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
   console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reopen");
+  await navigate("Page.navigate", {url});
+  await wait("document.documentElement.dataset.liveReady === 'true' && !!window.harnessRuns");
   await click("tab-runs");
   await evaluate(`(() => {
     const original = window.fetch;
@@ -226,11 +228,15 @@ try {
   await evaluate("document.querySelector('#unit-options input:not(:disabled)').click()");
   const validationIdle = "validationButton.type === 'submit' && validationButton.textContent === '設定を検証' && !validationButton.disabled";
   const validationRunning = "validationButton.type === 'submit' && validationButton.textContent === '検証を中止'";
-  await wait(validationIdle);
-  const focusStayed = await evaluate("validationButton.focus(); "
-    + "document.activeElement === validationButton && (validationButton.click(), document.activeElement === validationButton)");
-  assert(focusStayed, "the validation button must keep keyboard focus when it becomes the cancel action");
+  await cdp("Page.bringToFront");
+  await wait(validationIdle + " && validationButton.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})"
+    + " && !validationButton.closest('[inert]')");
+  await evaluate("validationButton.focus()");
+  assert(await evaluate("document.activeElement === validationButton"), "the visible validation button must accept keyboard focus");
+  await click("dry-run-selected");
   await wait(validationRunning + " && !validationButton.disabled && dryRunRequests.length === 1");
+  assert(await evaluate("document.activeElement === validationButton"),
+    "the validation button must keep keyboard focus when it becomes the cancel action");
   assert(await evaluate("validationButton === document.querySelector('#dry-run-selected')"), "the same button stays in place");
   assert(await evaluate("document.querySelector('#run-selected').disabled"), "migration must be disabled during validation");
   assert(await evaluate("document.querySelector('#dry-run-cancel') === null"));
