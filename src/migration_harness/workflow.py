@@ -49,7 +49,9 @@ from .errors import format_error
 from .execution import build_process_scope, check_cancelled, current_operation_id, junie_dashboard_control, report_activity, run_process
 from .detail_review_evidence import stage_review_evidence
 from .files import harness_asset, safe_target, sha256_file
-from .rule_materials import detail_index, effective_details, render_guidelines, selected_details
+from .rule_materials import (
+    InvalidDetailContextEvidence, detail_index, effective_details, render_guidelines, selected_details,
+)
 from .rule_search import review_hint
 from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, validate_run_id, write_run_record
 from .source_context import stage_target_context
@@ -842,6 +844,8 @@ def _review_detail_applicability(
             "before deciding conditions they control. Apply mandatory selection criteria to these decisions. "
             "When citing this material, add optional context_evidence with the exact inventory file and "
             "one-based physical lines, as {\"file\": \"evidence/…\", \"lines\": [start, end]}. "
+            "Only files listed in evidence.json are valid for context_evidence; do not cite source-*.md or "
+            "details/* there. Use the reason field for PHP evidence and rule_lines for detail passages. "
         ) if evidence else ""
         prompt = (
             f"Review detail applicability before migrating {manifest['unit_id']} to {names}. "
@@ -883,19 +887,34 @@ def _review_detail_applicability(
                     accept_result=save_decisions if context is not None else None,
                     embedded_input=embedded_sources if context is not None else (),
                 )
+                if not junie_cli.has_completion_record(completion, token) or output.is_symlink() or not output.is_file():
+                    raise ValueError("Junie did not complete the detail applicability review")
+                decisions = json.loads(output.read_text(encoding="utf-8-sig"))
+                selected_details(index, decisions, line_counts, evidence)
                 break
-            except _MalformedDetailReviewReply:
+            except (_MalformedDetailReviewReply, InvalidDetailContextEvidence) as exc:
                 if attempt:
                     raise
-                report_activity("詳細ルール選別の応答がJSON形式ではなかったため、1回だけ再試行します。")
-                command = [*command[:-1], command[-1] + (
-                    " The previous reply was not valid JSON. Return one complete JSON object with the "
-                    "requested keys, no prose, no progress updates in the final response, and no Markdown fences."
-                )]
-        if not junie_cli.has_completion_record(completion, token) or output.is_symlink() or not output.is_file():
-            raise ValueError("Junie did not complete the detail applicability review")
-        decisions = json.loads(output.read_text(encoding="utf-8-sig"))
-        selected_details(index, decisions, line_counts, evidence)
+                if isinstance(exc, _MalformedDetailReviewReply):
+                    report_activity("詳細ルール選別の応答がJSON形式ではなかったため、1回だけ再試行します。")
+                    correction = (
+                        "The previous reply was not valid JSON. Return one complete JSON object with the "
+                        "requested keys, no prose, no progress updates in the final response, and no Markdown fences."
+                    )
+                else:
+                    report_activity("詳細ルール選別の根拠が保存資料と一致しないため、1回だけ再試行します。")
+                    correction = (
+                        f"The previous result was rejected: {exc}. Check every context_evidence against the exact "
+                        "workspace file paths and physical line bounds in evidence.json. Saved PHP source-*.md "
+                        "files and details/* files are not context_evidence. Fix invalid references or omit "
+                        "optional citations you cannot verify. Keep all decisions and nonempty reasons; "
+                        "if applicability cannot be established, follow the insufficient_context rule."
+                    )
+                completion.unlink(missing_ok=True)
+                previous_token = token
+                token = uuid.uuid4().hex
+                completion = review_root / f"review-complete-{token}.txt"
+                command = [*command[:-1], command[-1].replace(previous_token, token) + " " + correction]
     if evidence:
         record["detail_review_evidence"] = evidence
     record["detail_applicability"] = decisions
