@@ -400,11 +400,10 @@ def _normalize_unit(unit, root, project_context, common_rules, common_references
     if "draft_imports" in unit:
         normalized["draft_import_commands"] = _draft_import_commands(unit, target_files, root)
     if "checker_command" in unit:
-        try:
-            validate_checker_command(unit["checker_command"])
-        except ValueError as exc:
-            raise ValueError(f"unit {unit['id']}: {exc}") from exc
-        normalized["checker_command"] = unit["checker_command"]
+        raise ValueError(
+            f"unit {unit['id']}: [[units]].checker_command は廃止されました。"
+            "該当行を削除し、必要に応じて [checker].command または --checker-command を使用してください。"
+        )
     if "targets" in unit:
         normalized["targets"] = [target.as_posix() for target in target_files]
         normalized["target"] = normalized["targets"][0]
@@ -489,11 +488,6 @@ def find_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
             return unit
     raise ValueError(f"unknown migration unit: {unit_id}")
 
-
-def checker_command_for_unit(config: dict[str, Any], unit: dict[str, Any]) -> list[str] | None:
-    if config.get("checker_from_cli"):
-        return config["checker_command"]
-    return unit.get("checker_command", config["checker_command"])
 
 
 def target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:

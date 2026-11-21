@@ -316,14 +316,10 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     const cleanup = {};
     const removeEmptyUnits = [];
     for (const [index, entry] of settingsForm.units.entries()) {
-      const checker = entry.checker_command;
-      if (Array.isArray(checker) && checker.length && !checker[0]?.trim()) {
-        throw new Error(`移行単位 ${index + 1} のチェッカーの1行目に実行ファイルを入力してください。`);
-      }
       if (!added.has(entry)) continue;
       const {id, source, targets, draft_imports} = entry;
       const hasContext = Object.values(entry.target_context ?? {}).some(value => value !== "");
-      if (!id.trim() && !source.trim() && !targets.length && !checker?.length && !draft_imports.length && !hasContext) removeEmptyUnits.push(index);
+      if (!id.trim() && !source.trim() && !targets.length && !draft_imports.length && !hasContext) removeEmptyUnits.push(index);
       else if (!id.trim() || !source.trim() || !targets.length) {
         throw new Error(`移行単位 ${index + 1} の機能名、移行元PHP、移行先を指定してください。`);
       }
@@ -649,7 +645,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     const index = Number(unit.value);
     const key = field.dataset.setting;
     const value = key === "targets" || key === "draft_imports" ? field.value.split("\n").map(path => path.trim()).filter(Boolean)
-      : key === "checker_command" ? (field.value.trim() ? commandLines(field.value) : []) : field.value;
+      : field.value;
     settingsChanges.units[index] ??= {};
     settingsChanges.units[index][key] = settingsForm.units[index][key] = value;
     if (key === "id") {
@@ -660,7 +656,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   unit.addEventListener("change", showUnit);
   document.querySelector("#settings-unit-add").addEventListener("click", () => {
     const index = settingsForm.units.length;
-    const draft = newDraft({id: "", source: "", targets: [], checker_command: [], draft_imports: []});
+    const draft = newDraft({id: "", source: "", targets: [], draft_imports: []});
     settingsChanges.units[index] = {...draft};
     settingsForm.units.push(draft);
     showUnitOptions(index);

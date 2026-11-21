@@ -63,14 +63,11 @@ class CommandPathsTests(HarnessCase):
             return workflow.resume_with_junie(self.settings, result["run_id"])
 
     def test_commands_expand_for_each_run_and_resume_without_changing_settings(self):
-        for source in ("shared", "unit", "cli"):
+        for source in ("shared", "cli"):
             with self.subTest(source=source):
-                if source == "unit":
-                    self.settings["checker_command"] = ["must-not-run"]
-                    self.settings["units"][0]["checker_command"] = self.command
-                elif source == "cli":
-                    self.settings.update(checker_from_cli=True, checker_command=self.command)
-                    self.settings["units"][0]["checker_command"] = ["must-not-run"]
+                if source == "cli":
+                    self.settings.update(checker_from_cli=True, checker_command=self.command,
+                                         toml_checker_command=["must-not-run"])
                 result = self.prepare_verification()
                 root = Path(result["worktree_path"])
                 expected = [str(root / "App.csproj"), str(root / "First.cs"), str(root)]

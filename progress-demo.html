@@ -1158,8 +1158,6 @@
                 <textarea id="settings-unit-targets" data-setting="targets" rows="3" spellcheck="false" placeholder="Pages/Orders/Index.cshtml.cs&#10;Pages/Orders/Index.cshtml"></textarea>
                 <label for="settings-unit-draft-imports">仮C#のコピー元（任意・1行に1ファイル）</label>
                 <textarea id="settings-unit-draft-imports" data-setting="draft_imports" rows="2" spellcheck="false" autocomplete="off" placeholder="C:/migration/draft/Orders.cshtml.cs&#10;C:/migration/draft/Orders.cshtml"></textarea>
-                <label for="settings-unit-checker-command">この移行単位のチェッカー（任意）</label>
-                <textarea id="settings-unit-checker-command" class="settings-command" data-setting="checker_command" spellcheck="false" placeholder="py&#10;-3&#10;tools/check_orders.py"></textarea>
               </div>
             </fieldset>
           </div>
@@ -2451,10 +2449,9 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
             : patchBlock(blocks[position], {[key]: value});
         }
       }
-      for (const key of ["checker_command", "draft_imports"]) {
-        if (edited[key]?.length !== 0) continue;
-        blocks[units[index]] = blocks[units[index]].replace(fieldPattern(key), "");
-        delete edited[key];
+      if (edited.draft_imports?.length === 0) {
+        blocks[units[index]] = blocks[units[index]].replace(fieldPattern("draft_imports"), "");
+        delete edited.draft_imports;
       }
       blocks[units[index]] = patchBlock(blocks[units[index]], edited);
     }
@@ -2516,7 +2513,6 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
         references: readMaterials(materialBlocks("references")),
         scripts: Object.keys(scriptPhases).flatMap(phase => (read(scripts, phase) || []).map(command => ({phase, command}))),
         units: unitBlocks().map(index => ({id: read(index, "id"), source: read(index, "source"),
-          checker_command: read(index, "checker_command") ?? [],
           draft_imports: read(index, "draft_imports") ?? [],
           target_context: readContext(unitContext(index)),
           targets: read(index, "targets") || [read(index, "target")].filter(Boolean)})),
