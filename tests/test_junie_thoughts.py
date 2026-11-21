@@ -9,7 +9,7 @@ from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from migration_harness.dashboard import Dashboard
+from migration_harness.dashboard import Dashboard, render_dashboard_html
 from migration_harness.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
 
 
@@ -73,15 +73,23 @@ class JunieThoughtTests(unittest.TestCase):
             dashboard.publish({"run_id": run_id, "ready": False, "operation_id": "running"})
             terminal = io.StringIO()
             with redirect_stdout(terminal):
-                server = dashboard.server({"run_root": str(root)}, b"", b"")
+                server = dashboard.server({
+                    "run_root": str(root), "junie_log_language": "en", "junie_log_tone": "polite",
+                }, render_dashboard_html(""), b"")
             thread = Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            base = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ") + "junie-thoughts"
+            home = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+            base = home + "junie-thoughts"
             try:
                 def get(identifier, cursor=0):
                     with urlopen(f"{base}?run_id={identifier}&cursor={cursor}", timeout=2) as response:
                         return json.load(response)
+                with urlopen(home, timeout=2) as response:
+                    self.assertIn(b'src="dashboard_log_presentation.js"', response.read())
+                with urlopen(home + "dashboard_log_presentation.js", timeout=2) as response:
+                    self.assertIn(b"harnessLogPresentation", response.read())
                 first = get(run_id)
+                self.assertEqual((first["log_language"], first["log_tone"]), ("en", "polite"))
                 self.assertEqual(first["entries"], [{"at": "2026-11-17T20:56:48+09:00", "thought": "公開対象"}])
                 self.assertTrue(first["live"])
                 self.assertEqual(get(run_id, first["cursor"])["entries"], [])

@@ -844,8 +844,10 @@ def _review_detail_applicability(
             "before deciding conditions they control. Apply mandatory selection criteria to these decisions. "
             "When citing this material, add optional context_evidence with the exact inventory file and "
             "one-based physical lines, as {\"file\": \"evidence/…\", \"lines\": [start, end]}. "
-            "Only files listed in evidence.json are valid for context_evidence; do not cite source-*.md or "
-            "details/* there. Use the reason field for PHP evidence and rule_lines for detail passages. "
+            "For each decision inspected against a pinned policy, example or target file, context_evidence "
+            "may be ONE object, never an array. Copy its file key verbatim from evidence.json and verify the "
+            "one-based physical line range against file_lines. Omit context_evidence for decisions based only "
+            "on legacy PHP. Summarize PHP evidence in reason, and use rule_lines for details/<file> passages. "
         ) if evidence else ""
         prompt = (
             f"Review detail applicability before migrating {manifest['unit_id']} to {names}. "
@@ -904,11 +906,13 @@ def _review_detail_applicability(
                 else:
                     report_activity("詳細ルール選別の根拠が保存資料と一致しないため、1回だけ再試行します。")
                     correction = (
-                        f"The previous result was rejected: {exc}. Check every context_evidence against the exact "
-                        "workspace file paths and physical line bounds in evidence.json. Saved PHP source-*.md "
-                        "files and details/* files are not context_evidence. Fix invalid references or omit "
-                        "optional citations you cannot verify. Keep all decisions and nonempty reasons; "
-                        "if applicability cannot be established, follow the insufficient_context rule."
+                        f"The previous result was rejected: {exc}. Check every context_evidence field, not only "
+                        "the first invalid rule reported. A citation must be exactly one object with a file key "
+                        "from evidence.json and lines: [start, end] within that file's physical line count. "
+                        "A list, source-*.md citation, or details/* citation in this field is invalid. For those "
+                        "citations, put PHP evidence in reason and detail passages in rule_lines instead. "
+                        "Keep valid citations and preserve all decisions and nonempty reasons. If applicability "
+                        "cannot be established from verified evidence, follow the insufficient_context rule."
                     )
                 completion.unlink(missing_ok=True)
                 previous_token = token

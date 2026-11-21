@@ -47,7 +47,7 @@ class ConfigFilePathTests(HarnessCase):
 
     def test_absolute_and_relative_paths_have_the_same_worktree_destinations(self):
         relative = self.load()
-        self.assertEqual(relative["max_context_chars"], 500000)
+        self.assertEqual(relative["max_context_chars"], 250_000)
         self.raw["project"].update(root=str(self.project), worktree_root=str(self.root / "trees"), run_root=str(self.root / "runs"))
         self.raw["units"][0].update(source=str(self.source), target=str(self.project / "Page.cs"))
         self.raw["build"]["project"] = str(self.project / "App.csproj")

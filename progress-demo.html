@@ -901,8 +901,8 @@
               <p id="run-token-status">初回の使用量を待っています。</p>
             </div>
           </div>
-          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">カプセル本文の文字数</h2><span id="capsule-call">カプセル 1 / 3 · OrderHistoryPage</span></div><span>上限 500,000文字</span></div>
-          <div class="meter" id="capsule-meter" role="meter" aria-labelledby="capsule-title" aria-valuemin="0" aria-valuemax="500000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
+          <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">カプセル本文の文字数</h2><span id="capsule-call">カプセル 1 / 3 · OrderHistoryPage</span></div><span>上限 250,000文字</span></div>
+          <div class="meter" id="capsule-meter" role="meter" aria-labelledby="capsule-title" aria-valuemin="0" aria-valuemax="250000" aria-valuenow="67240"><div class="meter-fill" id="meter-fill"></div></div>
           <div class="meter-label"><span><strong id="char-count">67,240</strong> 文字</span><span id="capsule-percent">上限の13%</span></div>
         </div>
       </section>
@@ -997,7 +997,6 @@
     </form>
     <section class="runs-list" aria-labelledby="runs-title">
       <div class="runs-toolbar"><h2 id="runs-title">実行一覧 <span id="run-count"></span></h2><div class="run-filters" id="run-filters" role="group" aria-label="実行状態で絞り込み"></div><input id="run-search" type="search" aria-label="移行単位・Run IDで検索" placeholder="移行単位・Run IDで検索"></div>
-      <button class="button" type="button" id="dry-run-cancel" hidden>設定の検証を中止</button>
       <p class="workspace-feedback" id="workspace-run-feedback" role="status"></p>
       <div class="panel runs-table-wrap" role="region" aria-labelledby="runs-title" tabindex="0"><table class="runs-table"><thead><tr><th scope="col">移行単位 / Run ID</th><th scope="col">状態</th><th scope="col">現在の処理</th><th scope="col">経過時間</th><th scope="col">操作</th></tr></thead><tbody id="run-rows"></tbody></table><p id="runs-empty" class="runs-empty" role="status">実行一覧を読み込んでいます。</p></div>
       <div class="runs-footer"><span>実行枠が空くと、待機中のRunを順に開始します。</span><span>詳細は「進捗」、編集は「エディタ」で行えます。</span></div>
@@ -1008,6 +1007,7 @@
       <header><h2>次の移行ルールを整理</h2><p>現在の設定は、差分を確認して反映するまで変わりません。</p>
         <button type="button" id="rules-start">新しい下書き</button>
         <label>下書きを開く <select id="rules-drafts"><option value="">選択してください</option></select></label>
+        <p id="rules-demo-note" hidden>デモ：Junieの返答はサンプルです。操作しても実際のファイルやTOMLは変更されません。</p>
         <p id="rules-status" role="status" aria-live="polite"></p>
       </header>
       <div id="rules-draft" hidden>
@@ -1100,10 +1100,22 @@
                   <option value="">モデルを選択してください</option>
                 </select>
                 <p class="settings-material-range" id="settings-junie-effort-status" role="status" hidden></p>
+                <fieldset class="settings-fields" aria-describedby="settings-junie-log-help">
+                  <legend>Junieの詳細ログ</legend>
+                  <label for="settings-junie-log-language">案内の言語</label>
+                  <select id="settings-junie-log-language" class="workspace-select" data-section="junie" data-setting="log_language">
+                    <option value="ja">日本語（既定）</option><option value="en">英語</option>
+                  </select>
+                  <label for="settings-junie-log-tone">案内の口調</label>
+                  <select id="settings-junie-log-tone" class="workspace-select" data-section="junie" data-setting="log_tone">
+                    <option value="neutral">標準（既定）</option><option value="polite">丁寧</option>
+                  </select>
+                  <p id="settings-junie-log-help" class="settings-material-range">詳細ログ画面の案内に適用します。Junie・ビルド・チェッカーの原文は変えません。</p>
+                </fieldset>
                 <div class="settings-pair">
                   <div>
                     <label for="settings-context-limit">カプセルの文字数上限</label>
-                    <input id="settings-context-limit" data-section="project" data-setting="max_context_chars" inputmode="numeric" placeholder="500000（既定）">
+                    <input id="settings-context-limit" data-section="project" data-setting="max_context_chars" inputmode="numeric" placeholder="250000（既定）">
                   </div>
                   <div>
                     <label for="settings-junie-steps">Junieのステップ数上限</label>
@@ -1632,7 +1644,7 @@ function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
 
 const workspaceTabs = document.querySelector(".workspace-tabs");
 document.querySelector("#tab-editor").hidden = false;
-document.querySelector("#tab-rule-workspace").hidden = !document.documentElement.hasAttribute("data-live");
+document.querySelector("#tab-rule-workspace").hidden = false;
 const harnessTabs = [...workspaceTabs.querySelectorAll('[role="tab"]:not([hidden])')];
 const tabIndicator = workspaceTabs.querySelector(".workspace-tab-indicator");
 const harnessPanes = harnessTabs.map(tab => document.getElementById(tab.getAttribute("aria-controls")));
@@ -1954,6 +1966,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
 </script>
 <script src="./src/migration_harness/dashboard_runs.js"></script>
 <script src="./src/migration_harness/dashboard_settings.js"></script>
+<script src="./src/migration_harness/dashboard_log_presentation.js"></script>
 <template id="junie-log">
   <main class="junie-log" aria-labelledby="junie-log-title">
     <header class="junie-log-head">
@@ -1961,6 +1974,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
       <div class="junie-log-heading">
         <h1 id="junie-log-title">Junie の詳細ログ</h1>
         <p><span data-log-run></span><code>.log / thought</code><span data-log-demo hidden>模擬データ</span></p>
+        <p data-log-description></p>
       </div>
       <div class="junie-log-actions">
         <button type="button" data-log-close>閉じる</button>
@@ -2072,9 +2086,12 @@ function showMigrationLedger(ledger, snapshot, compare) {
   .junie-log-body:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 </style>
 <script>
-function renderJunieLog({body, list, statusLabel, empty}, {entries = [], status, live = false, reset = false}) {
+function renderJunieLog(view, {entries = [], status, live = false, reset = false, log_language, log_tone}) {
+  const {body, list, statusLabel, empty} = view;
+  view.logLanguage = log_language || view.logLanguage || "ja";
+  view.logTone = log_tone || view.logTone || "neutral";
+  const english = view.logLanguage === "en";
   const follow = reset || body.scrollHeight - body.scrollTop - body.clientHeight < 24;
-  if (statusLabel.textContent !== status) statusLabel.textContent = status;
   statusLabel.toggleAttribute("data-live", live);
   if (reset) list.replaceChildren();
   for (const {title, at, thought} of entries) {
@@ -2082,7 +2099,7 @@ function renderJunieLog({body, list, statusLabel, empty}, {entries = [], status,
     row.innerHTML = "<time></time><div><h2></h2><p></p></div>";
     const timestamp = new Date(at);
     if (Number.isFinite(timestamp.getTime())) {
-      row.querySelector("time").textContent = timestamp.toLocaleTimeString("ja-JP", {hour12: false});
+      row.querySelector("time").textContent = timestamp.toLocaleTimeString(english ? "en-GB" : "ja-JP", {hour12: false});
       row.querySelector("time").dateTime = timestamp.toISOString();
     }
     const heading = row.querySelector("h2");
@@ -2091,6 +2108,20 @@ function renderJunieLog({body, list, statusLabel, empty}, {entries = [], status,
     row.querySelector("p").textContent = thought;
     list.append(row);
   }
+  const summary = harnessLogPresentation(view.logLanguage, view.logTone, list.childElementCount, live);
+  const child = body.ownerDocument;
+  const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };
+  child.documentElement.lang = view.logLanguage;
+  child.title = (view.run.unit_id || view.run.run_id) + " | " + summary.title;
+  setText(child.querySelector("#junie-log-title"), summary.title);
+  setText(child.querySelector("[data-log-description]"), summary.description);
+  setText(child.querySelector("[data-log-close]"), english ? "Close" : "閉じる");
+  setText(child.querySelector("[data-log-tail]"), english ? "Latest ↓" : "最新へ ↓");
+  setText(child.querySelector("[data-log-demo]"), english ? "Sample data" : "模擬データ");
+  body.setAttribute("aria-label", summary.rawLabel);
+  list.setAttribute("aria-label", summary.rawLabel);
+  setText(statusLabel, status || summary.summary);
+  setText(empty, summary.empty);
   empty.hidden = list.childElementCount > 0;
   if (follow && (entries.length || reset)) body.scrollTop = body.scrollHeight;
 }
@@ -2239,7 +2270,7 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
     const {run, list} = view;
     const live = !run.ready && !run.queued && !run.prepareOnly && run.tick < lastJunieLogTick;
     renderJunieLog(view, {
-      live, status: live ? "追記を受信中" : "現在は追記なし",
+      live, ...demoLogOptions,
       entries: sampleJunieLog(run).slice(list.childElementCount),
     });
   }
@@ -2350,6 +2381,7 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
       token_usage: rows, running,
     });
   }
+  let demoLogOptions = {};
   let demoSettings = `[project]
 root = "C:/apps/orders"
 worktree_root = "C:/migration/worktrees"
@@ -2541,7 +2573,11 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
           command: read(checker, "command") ?? [],
           max_repair_attempts: read(checker, "max_repair_attempts") ?? "",
         },
-        junie: Object.fromEntries(["max_steps", "model", "effort"].map(key => [key, read(findTable("junie"), key)])),
+        junie: {
+          ...Object.fromEntries(["max_steps", "model", "effort"].map(key => [key, read(findTable("junie"), key)])),
+          log_language: read(findTable("junie"), "log_language") ?? "ja",
+          log_tone: read(findTable("junie"), "log_tone") ?? "neutral",
+        },
         diff_viewer: {
           html: read(findTable("diff_viewer"), "html"),
           anchor_reference: read(findTable("diff_viewer"), "anchor_reference"),
@@ -2623,7 +2659,13 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
         throw new Error("推論の強さは none・minimal・low・medium・high・xhigh・max のいずれかを指定してください。");
       }
       if (effort && !model) throw new Error("推論の強さを指定する場合は、Junieで使うモデルも選択してください。");
+      const {log_language = "", log_tone = ""} = form.junie;
+      if (!["", "ja", "en"].includes(log_language) || !["", "neutral", "polite"].includes(log_tone)) {
+        throw new Error("詳細ログの案内には指定できる言語と口調を選んでください。");
+      }
       demoSettings = content;
+      demoLogOptions = {log_language: log_language || "ja", log_tone: log_tone || "neutral"};
+      for (const view of demoLog.windows.values()) if (!view.popup.closed) renderDemoLog(view);
       const viewer = form.diff_viewer;
       document.documentElement.toggleAttribute("data-viewer-enabled", !!viewer?.html?.trim() && viewer.enabled !== "false");
       return {version: "demo"};
@@ -3259,6 +3301,8 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
 
 </script>
 <script src="./src/migration_harness/dashboard_editor_demo.js" defer></script>
+<script src="./src/migration_harness/dashboard_rule_workspace_demo.js" defer></script>
+<script src="./src/migration_harness/dashboard_rule_workspace.js" defer></script>
 <script src="./src/migration_harness/dashboard_editor.js" defer></script>
 </body>
 </html>

@@ -430,9 +430,12 @@ class RuleMaterialsTests(HarnessCase):
                             if large:
                                 retained = json.loads(outputs[0].read_text(encoding="utf-8"))
                                 self.assertEqual(retained[rule]["reason"], "Outputs orders")
-                        decisions = {rule: {"applies": True, "reason": "Outputs orders", "context_evidence": {
-                            "file": context_file if repair and attempts else "source-0001.md", "lines": [1, 2],
-                        }}}
+                        citation = {"file": context_file if repair and attempts else "source-0001.md",
+                                    "lines": [1, 2]}
+                        if large and not (repair and attempts):
+                            citation = [citation, {"file": "source-0002.md", "lines": [1, 2]}]
+                        decisions = {rule: {"applies": True, "reason": "Outputs orders",
+                                            "context_evidence": citation}}
                         attempts.append((completion, token))
                         if large:
                             outputs[0].write_text(json.dumps(decisions), encoding="utf-8")
