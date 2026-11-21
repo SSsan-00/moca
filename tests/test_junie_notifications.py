@@ -12,7 +12,8 @@ from xml.etree.ElementTree import fromstring
 
 from migration_harness.dashboard import Dashboard
 from migration_harness.junie_notifications import (
-    JunieNotifications, RequestKey, WindowsToast, answer_pending, notification_settings, pending_requests, toast_xml,
+    JunieNotifications, RequestKey, RunNotice, WindowsToast, answer_pending, notification_settings, pending_requests,
+    run_notice, toast_xml,
 )
 
 
@@ -106,6 +107,12 @@ class JunieRequestTests(unittest.TestCase):
             self.assertEqual(deep_link.path, origin.path)
             self.assertEqual(parse_qs(deep_link.query), {"run": ["run-b"], "junie_operation": ["operation-run-b"],
                                                        "junie_request": [answer["request_id"]]})
+            result_token = "R" * 32
+            server.junie_notifications.links[result_token] = RunNotice("run-c", "build_failed", "failed")
+            with urlopen(activation + result_token, timeout=3) as response:
+                result_link = urlsplit(response.geturl())
+            self.assertEqual(parse_qs(result_link.query), {"run": ["run-c"], "notice": ["failed"],
+                                                            "status": ["build_failed"]})
             with self.assertRaises(HTTPError) as expired:
                 urlopen(activation + ("X" * 32), timeout=3)
             self.assertEqual(expired.exception.code, 410)
@@ -187,8 +194,71 @@ class JunieNotificationTests(unittest.TestCase):
         self.assertNotIn("/secret/", kwargs["input"].decode("ascii"))
         self.assertNotIn("shell", kwargs)
 
+    def test_run_outcomes_are_distinct_and_manual_stop_or_intermediate_status_is_silent(self):
+        outcomes = [
+            ({"status": "build_failed"}, "failed"),
+            ({"status": "checker_needs_review"}, "review"),
+            ({"status": "editor_checkpoint", "operator_question": "private question"}, "review"),
+            ({"status": "build_succeeded"}, "built"),
+            ({"status": "checker_accepted"}, "verified"),
+            ({"status": "checker_succeeded", "verification": {"inputs_changed_during_verification": True}}, "recheck"),
+            ({"status": "junie_finished"}, "migrated"),
+            ({"status": "editor_checkpoint", "requested_range_complete": True}, "migrated"),
+            ({"status": "build_failed", "last_stop": {"saved_status": "build_failed"}}, None),
+            ({"status": "building"}, None), ({"status": "repairing"}, None), ({"status": "cancelled"}, None),
+        ]
+        for data, kind in outcomes:
+            with self.subTest(data=data):
+                notice = run_notice("run-c", "run", data)
+                self.assertEqual(notice.kind if notice else None, kind)
+        self.assertIsNone(run_notice("run-c", "anchors", {"status": "build_succeeded"}))
+
+    def test_run_completion_not_repeated_and_links_are_specific_and_opaque(self):
+        self.requests.clear()
+        for notice in (RunNotice("run-a", "build_failed", "failed"),
+                       RunNotice("run-b", "checker_needs_review", "review"),
+                       RunNotice("run-c", "build_succeeded", "built"),
+                       RunNotice("run-c", "checker_succeeded", "verified"),
+                       RunNotice("run-d", "checker_succeeded", "verified")):
+            self.notifier.post(notice)
+        self.notifier.tick()
+        self.moment = 999
+        self.notifier.tick()
+        self.assertEqual([event[-1] for event in self.events], ["failed", "review", "built", "verified"])
+        for (_, _, url, kind), run_id in zip(self.events, ("run-a", "run-b", "run-c", "run-d")):
+            self.assertNotIn(run_id, url)
+            self.assertNotIn("/secret/", url)
+            location = self.notifier.location(url.rsplit("/", 1)[1])
+            query = parse_qs(urlsplit(location).query)
+            self.assertEqual(query["run"], [run_id])
+            self.assertEqual(query["notice"], [kind])
+        copy = "".join(fromstring(toast_xml("http://test", "built")).itertext())
+        self.assertIn("チェッカーは未実施", copy)
+
+    def test_milestone_is_suppressed_in_foreground_or_if_final_result_is_already_available(self):
+        self.requests.clear()
+        milestone = RunNotice("run-c", "building", "milestone")
+        self.notifier.mark_visible()
+        self.notifier.post(milestone)
+        self.notifier.tick()
+        self.assertEqual(self.events, [])
+        self.moment = 4
+        self.notifier.post(milestone)
+        self.notifier.post(RunNotice("run-c", "build_failed", "failed"))
+        self.notifier.tick()
+        self.assertEqual([event[-1] for event in self.events], ["failed"])
+        self.notifier.post(milestone)
+        self.notifier.tick()
+        self.notifier.post(milestone)
+        self.notifier.tick()
+        self.assertEqual([event[-1] for event in self.events], ["failed", "milestone"])
+        self.test_policy["enabled"] = False
+        self.notifier.post(RunNotice("run-d", "checker_succeeded", "verified"))
+        self.notifier.tick()
+        self.assertEqual(len(self.events), 2)
+
     def test_settings_reject_unbounded_or_unexpected_values(self):
         for value in ({"enabled": 1}, {"interval_seconds": 0}, {"interval_seconds": True}, {"repeats": -1},
-                      {"repeats": 11}, {"unknown": True}):
+                      {"repeats": 11}, {"milestone_after_seconds": True}, {"milestone_after_seconds": -1}, {"unknown": True}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 notification_settings(value)

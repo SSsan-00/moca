@@ -564,7 +564,8 @@ function bindJunieConfirmation() {
   function refresh() {
     if (loading) return loading;
     loading = (async () => {
-      const response = await fetch("junie-requests", {cache: "no-store"});
+      const response = await fetch("junie-requests", {cache: "no-store",
+        headers: {"X-Dashboard-Visible": document.visibilityState === "visible" && document.hasFocus() ? "1" : "0"}});
       if (!response.ok) throw await responseError(response);
       const next = await response.json();
       const previous = JSON.stringify(pending);
@@ -1574,6 +1575,24 @@ function receiveProgress(event) {
 setInterval(renderElapsed, 1000);
 setInterval(refreshProgressPrompts, 1000);
 if (document.documentElement.hasAttribute("data-workspace")) switchHarnessTab(harnessTabs.indexOf(element("#tab-runs")));
-connectRun(selectedRunId).catch(error => { element("#workspace-run-feedback").textContent = error.message; });
+const notificationLink = new URLSearchParams(location.search);
+const notificationRun = selectedRunId;
+connectRun(selectedRunId).then(() => {
+  const notice = notificationLink.get("notice");
+  if (!["review", "failed", "migrated", "built", "verified", "recheck", "milestone"].includes(notice)
+      || !notificationRun || snapshot.run_id !== notificationRun) return;
+  switchHarnessTab(harnessTabs.indexOf(element("#tab-progress")));
+  if (snapshot.status === notificationLink.get("status") && snapshot.ready && !snapshot.queued) {
+    if (snapshot.status === "build_failed") { openBuildReview(); return; }
+    if (checkerReviewStatuses.has(snapshot.status)) { openReview(); return; }
+    if (snapshot.status === "editor_checkpoint" && notice === "review" && !element("#tab-editor").hidden) {
+      switchHarnessTab(harnessTabs.indexOf(element("#tab-editor")), true);
+      return;
+    }
+  }
+  const destination = element("#run-state");
+  destination.tabIndex = -1;
+  destination.focus();
+}).catch(error => { element("#workspace-run-feedback").textContent = error.message; });
 render();
 document.documentElement.dataset.liveReady = "true";
