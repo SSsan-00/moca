@@ -8,7 +8,8 @@ import os
 import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from threading import RLock
+from threading import Lock, RLock
+from weakref import WeakValueDictionary
 from typing import Any
 
 from .files import has_symlink_component, safe_target, sha256_file
@@ -17,7 +18,18 @@ from .run_records import write_run_record
 EDIT_BYTES = 8 * 1024 * 1024
 
 # 同じプロセスの比較・手修正・Junie出力の反映を直列化する。
-worktree_source_lock = RLock()
+_source_locks = WeakValueDictionary()
+_source_locks_guard = Lock()
+
+
+def worktree_source_lock(worktree: Path):
+    key = worktree.resolve()
+    with _source_locks_guard:
+        lock = _source_locks.get(key)
+        if lock is None:
+            lock = RLock()
+            _source_locks[key] = lock
+        return lock
 
 
 def target_hash(path: Path) -> str | None:
@@ -63,7 +75,7 @@ def target_newline(data: bytes) -> str:
 
 def save_target_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, Any]) -> None:
     """編集元の版を照合し、改行を保ってBOM付きUTF-8のファイルへ置き換える。"""
-    with worktree_source_lock:
+    with worktree_source_lock(worktree):
         if edit["target"] not in {target.as_posix() for target in targets}:
             raise ValueError("設定された移行対象ファイルを選んでください。")
         path = safe_target(worktree, Path(edit["target"]))
@@ -135,7 +147,7 @@ def finish_pending_targets(
     relative = {path.as_posix(): path for path in targets}
     if not isinstance(pending, dict) or pending.keys() - relative.keys():
         raise ValueError("saved target application contains a path outside the configured targets")
-    with worktree_source_lock:
+    with worktree_source_lock(worktree):
         remaining = []
         for name, version in pending.items():
             source = safe_target(agent_root, relative[name])
@@ -174,7 +186,7 @@ def apply_agent_targets(
     before: dict[str, str | None], record: dict[str, Any], record_path: Path,
 ) -> None:
     """外部編集を検出し、複数ファイルを反映する前に復旧用の記録を残す。"""
-    with worktree_source_lock:
+    with worktree_source_lock(worktree):
         for name, digest in before.items():
             if target_hash(safe_target(worktree, Path(name))) != digest:
                 raise ValueError(f"worktree target changed during Junie execution: {name}")

@@ -88,7 +88,7 @@ class LiveComparisonTests(HarnessCase):
             run_records.write_run_record(run_path / "run.json", record)
             yield
 
-        with patch.object(diff_viewer, "worktree_source_lock", application_failed_while_waiting()):
+        with patch.object(diff_viewer, "worktree_source_lock", side_effect=lambda _: application_failed_while_waiting()):
             with self.assertRaisesRegex(ValueError, "反映が途中"):
                 create_snapshot(config, result["run_id"])
         self.assertFalse((run_path / "review-snapshots").exists())

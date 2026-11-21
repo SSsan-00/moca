@@ -734,7 +734,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         if action.get("edit_id") != (edit["id"] if edit else None):
                             raise ValueError("保存済みの編集が別の画面で変更されました。")
                         # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
-                        with worktree_source_lock, self.dashboard.condition:
+                        with worktree_source_lock(worktree), self.dashboard.condition:
                             state = self.dashboard.state
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
