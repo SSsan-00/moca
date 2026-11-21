@@ -11,6 +11,7 @@ import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 from threading import Thread
+from unittest.mock import patch
 
 from migration_harness import dashboard
 from migration_harness.junie_notifications import RunNotice
@@ -104,8 +105,16 @@ max_bytes = 9007199254740993 # preserve this value
             worker.start()
             try:
                 helper = Path(__file__).with_name("settings_browser.mjs")
-                result = subprocess.run([*node_args, str(helper), chrome, str(root / "browser"), url, notification_url, run_id],
-                                        capture_output=True, text=True, encoding="utf-8", timeout=110)
+                catalog = [
+                    {"id": "fixture-luna", "name": "Fixture Luna", "efforts": ["low", "medium"]},
+                    {"id": "fixture-lite", "name": "Fixture Lite", "efforts": ["none"]},
+                    {"id": "fixture-unknown", "name": "Fixture Unknown"},
+                ]
+                with patch.object(dashboard, "list_models", return_value=catalog):
+                    result = subprocess.run(
+                        [*node_args, str(helper), chrome, str(root / "browser"), url, notification_url, run_id],
+                        capture_output=True, text=True, encoding="utf-8", timeout=110,
+                    )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 print(result.stdout, end="", flush=True)
             finally:
