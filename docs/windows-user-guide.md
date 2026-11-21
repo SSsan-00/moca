@@ -143,7 +143,7 @@ git -C 'C:\work\LegacyApp' rev-parse --verify HEAD
 
 たとえば、チェッカーがビルド対象と移行先をこの順で受け取る場合は、`tools/check_migration.py` の行の後に `{build_project}` と `{target}` を1行ずつ追加します。
 
-チェッカーは **プロジェクトの詳細設定** の共通設定で指定します。CLIの `--checker-command` があれば優先します。旧TOMLの `[[units]].checker_command` は削除し、必要なコマンドを共通設定またはCLIに移してください。
+チェッカーは **プロジェクトの詳細設定** の共通設定で指定します。CLIの `--checker-command` があれば優先します。
 
 `py` が使えず `python` やPythonの実行ファイルのパスを指定する場合は、`-3` の行を取り除き、`-X`、`utf8`、スクリプトのパスを続けます。`-3` などの版指定は `py` 専用です。
 
