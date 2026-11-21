@@ -130,6 +130,15 @@ end_line = 1
             }})
         self.assertIsNone(chat.turn_id)
 
+    def test_agent_cancelled_prompt_reports_unfinished_turn_and_provider_guidance(self):
+        chat = RuleChat.__new__(RuleChat)
+        chat.turn_id = 10
+        chat.prompt_finished = False
+        with self.assertRaisesRegex(ValueError, "中断.*認証・利用資格"):
+            chat._receive_message({"id": 10, "result": {"stopReason": "cancelled"}})
+        self.assertIsNone(chat.turn_id)
+        self.assertFalse(chat.prompt_finished)
+
     def test_ready_wait_uses_the_acp_connection_deadline(self):
         from threading import Event
         from unittest.mock import Mock

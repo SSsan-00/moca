@@ -85,6 +85,13 @@ class JunieRequestTests(unittest.TestCase):
                 waiting = json.load(response)
             self.assertEqual([item["run_id"] for item in waiting], ["run-b", "run-a"])
             answer = {**vars(next(iter(self.pending()))), "option_id": "yes"}
+            pending_key = next(iter(self.pending()))
+            live_token = "A" * 32
+            server.junie_notifications.links[live_token] = pending_key
+            with urlopen(f"{origin.scheme}://{origin.netloc}/junie-open/{live_token}", timeout=3) as response:
+                self.assertEqual(parse_qs(urlsplit(response.geturl()).query)["run"], ["run-b"])
+            self.assertIn(pending_key, server.junie_notifications.opened_requests)
+            self.assertFalse(b.done())
             headers["Content-Type"] = "application/json"
             headers["Origin"] = "https://unrelated.test"
             with self.assertRaises(HTTPError) as denied:
@@ -136,7 +143,7 @@ class JunieNotificationTests(unittest.TestCase):
             "http://127.0.0.1:9234", "/secret/", lambda *args: self.events.append(args), now=lambda: self.moment,
         )
 
-    def test_immediate_and_two_repeats_then_remove_without_retargeting_link(self):
+    def test_immediate_and_three_repeats_then_remove_without_retargeting_link(self):
         self.notifier.tick()
         self.assertEqual(len(self.events), 1)
         tag, url = self.events[0][1:]
@@ -149,16 +156,59 @@ class JunieNotificationTests(unittest.TestCase):
         token = url.rsplit("/", 1)[1]
         expected = {"run": ["run-b"], "junie_operation": ["operation-2"], "junie_request": ["request-2"]}
         self.assertEqual(parse_qs(urlsplit(self.notifier.location(token)).query), expected)
-        for moment in (14, 299, 300, 301, 599, 600, 601, 1000):
+        for moment, count in [(59, 1), (60, 2), (179, 2), (180, 3), (299, 3), (300, 4), (1000, 4)]:
             self.moment = moment
             self.notifier.tick()
-        self.assertEqual(self.events, [("show", tag, url)] * 3)
+            self.assertEqual(self.events, [("show", tag, url)] * count)
         self.requests = {RequestKey("run-b", "operation-3", "request-3"): {}}
         self.notifier.tick()
         self.assertEqual(self.events[-2], ("remove", tag, ""))
         self.assertEqual(self.events[-1][0], "show")
         self.assertNotEqual(self.events[-1][2], url)
         self.assertEqual(parse_qs(urlsplit(self.notifier.location(token)).query), expected)
+
+    def test_activation_stops_only_that_request_without_answering_it(self):
+        other = RequestKey("run-a", "another-op", "another-request")
+        self.requests[other] = {}
+        self.notifier.tick()
+        _, tag, url = self.events[1]
+        token = url.rsplit("/", 1)[-1]
+        self.assertIsNotNone(self.notifier.location(token, activate=True))
+        self.assertIn(self.key, self.requests)
+        for seconds in (60, 180, 300):
+            self.moment = seconds
+            self.notifier.tick()
+        self.assertEqual([action for action, label, _ in self.events if label == tag], ["show", "remove"])
+        self.assertEqual(sum(action == "show" and label != tag for action, label, _ in self.events), 4)
+        # An old activation must not suppress another operation of the same Run.
+        self.requests.pop(self.key)
+        self.requests[RequestKey("run-b", "new-op", "new-request")] = {}
+        self.notifier.location(token, activate=True)
+        self.notifier.tick()
+        self.assertEqual(self.events[-1][0], "show")
+        self.assertNotEqual(self.events[-1][1], tag)
+
+    def test_delayed_worker_does_not_deliver_a_burst_of_overdue_repeats(self):
+        self.notifier.tick()
+        self.moment = 250
+        self.notifier.tick()
+        self.notifier.tick()
+        self.assertEqual(len(self.events), 2)
+        self.moment = 300
+        self.notifier.tick()
+        self.assertEqual(len(self.events), 3)
+
+    def test_custom_offsets_can_disable_repeats_and_reject_ambiguous_schedules(self):
+        self.test_policy = notification_settings({"repeat_after_seconds": []})
+        self.notifier.tick()
+        self.moment = 600
+        self.notifier.tick()
+        self.assertEqual(len(self.events), 1)
+        for value in ([1, 1], [3, 1], [False], [0], [86401]):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                notification_settings({"repeat_after_seconds": value})
+        with self.assertRaises(ValueError):
+            notification_settings({"repeat_after_seconds": [1], "repeats": 1})
 
     def test_configurable_repeat_and_disable(self):
         self.test_policy = notification_settings({"enabled": False, "interval_seconds": 45, "repeats": 1})
