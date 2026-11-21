@@ -355,6 +355,8 @@
     .rule-workspace-columns > section { display: grid; min-height: 0; align-content: start; gap: 8px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
     .rule-workspace-columns h3 { margin: 0; }
     .rule-workspace-columns label { display: grid; gap: 4px; }
+    .rule-workspace .rule-confirm { display: flex; align-items: flex-start; gap: 8px; }
+    .rule-workspace #rules-confirm { flex: none; width: 16px; height: 16px; min-height: 0; margin: 3px 0 0; padding: 0; }
     .rule-workspace pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 19rem; overflow: auto; }
     .rule-workspace textarea { height: auto; min-height: 0; }
     #rules-archive { flex: none; max-height: min(20vh, 12rem); overflow: auto; }
@@ -625,6 +627,15 @@
       background: var(--surface-muted); color: var(--muted); border-color: var(--line); opacity: 1; transform: none;
     }
     #editor-send:enabled:hover { background: var(--blue-hover); }
+    #review-dialog { overflow: hidden; }
+    #review-dialog > .review-dialog-inner { display: grid; grid-template-rows: minmax(0, 1fr) auto; max-height: min(86dvh, 760px); padding: 0; }
+    .checker-review-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: clamp(14px, 3vw, 22px); }
+    .checker-review-footer { padding: 10px clamp(14px, 3vw, 22px); border-top: 1px solid var(--line); }
+    .checker-review-footer .review-note-label { margin-top: 0; }
+    .checker-review-footer textarea { max-height: clamp(66px, 22dvh, 150px); }
+    .checker-review-footer .review-caveat { max-height: 3.5em; overflow: auto; }
+    .checker-review-footer .review-caveat:empty { display: none; }
+    .checker-review-footer .review-actions { margin-top: 10px; gap: 8px; }
     #build-review-dialog { width: min(760px, calc(100vw - 20px)); max-height: none; overflow: hidden; }
     #build-review-form { display: flex; flex-direction: column; max-height: min(90dvh, 800px); }
     .build-review-body { min-height: 0; overflow: auto; padding: clamp(16px, 3vw, 22px); }
@@ -1049,7 +1060,11 @@
               <div id="rules-history" role="log" aria-label="保存済みの会話"></div>
               <pre id="rules-live" aria-live="off"></pre>
               <div id="rules-permission" hidden></div>
-              <label>指示・質問 <textarea id="rules-instruction" rows="4" placeholder="どんな時に適用するか、Junieと相談できます"></textarea></label>
+              <label for="rules-instruction">指示・質問</label>
+              <div class="prompt-field">
+                <textarea id="rules-instruction" rows="4" placeholder=" " aria-describedby="rules-instruction-example"></textarea>
+                <span class="prompt-example" id="rules-instruction-example" style="--characters: 25" aria-hidden="true"><span>例：どんな時に適用するか、Junieと相談できます</span></span>
+              </div>
               <button type="button" id="rules-message">送信</button>
               <button type="button" id="rules-optimize">整理案を作る</button>
               <button type="button" id="rules-stop" hidden>中断</button>
@@ -1063,7 +1078,7 @@
                 <details open><summary>原文の差分</summary><pre id="rules-text-diff"></pre></details>
                 <details open><summary>出力先・分類・原文の行範囲</summary><pre id="rules-coverage"></pre></details>
                 <details><summary>TOMLの差分</summary><pre id="rules-toml-diff"></pre></details>
-                <label><input type="checkbox" id="rules-confirm"> 条件・例外・優先順位と、意図した変更を確認しました</label>
+                <label class="rule-confirm"><input type="checkbox" id="rules-confirm"> 条件・例外・優先順位と、意図した変更を確認しました</label>
                 <button type="button" id="rules-apply">次のRunから適用</button>
               </div>
             </section>
@@ -1124,13 +1139,13 @@
                 <p class="settings-material-range" id="settings-junie-effort-status" role="status" hidden></p>
                 <fieldset class="settings-fields" aria-describedby="settings-junie-log-help">
                   <legend>Junieの詳細ログ</legend>
-                  <label for="settings-junie-log-language">案内の言語</label>
+                  <label for="settings-junie-log-language">言語</label>
                   <select id="settings-junie-log-language" class="workspace-select" data-section="junie" data-setting="log_language">
-                    <option value="ja">日本語（既定）</option><option value="en">英語</option>
+                    <option value="ja">日本語</option><option value="en">英語</option>
                   </select>
-                  <label for="settings-junie-log-tone">案内の口調</label>
+                  <label for="settings-junie-log-tone">口調</label>
                   <select id="settings-junie-log-tone" class="workspace-select" data-section="junie" data-setting="log_tone">
-                    <option value="neutral">標準（既定）</option><option value="polite">丁寧</option>
+                    <option value="neutral">標準</option><option value="polite">丁寧</option>
                   </select>
                   <p id="settings-junie-log-help" class="settings-material-range">詳細ログ画面の案内に適用します。Junie・ビルド・チェッカーの原文は変えません。</p>
                 </fieldset>
@@ -1293,68 +1308,72 @@
   </div>
   <dialog class="review-dialog" id="review-dialog" aria-labelledby="review-title">
     <div class="review-dialog-inner">
-      <header class="review-heading">
-        <div>
-          <h2 id="review-title" tabindex="-1">チェッカーの指摘を確認</h2>
+      <div class="checker-review-scroll">
+        <header class="review-heading">
+          <div>
+            <h2 id="review-title" tabindex="-1">チェッカーの指摘を確認</h2>
+          </div>
+          <button class="review-close" id="review-close" type="button" aria-label="閉じる">×</button>
+        </header>
+        <div class="checker-review-summary">
+          <p><strong>自動修正が止まった理由</strong><br><span id="checker-review-reason">修正後も、同じ指摘が残っています。</span></p>
+          <p><strong>次にすること</strong><br><span id="checker-review-next">チェッカー出力を確認し、修正してほしい内容を「Junie への追加指示」に入力してください。</span></p>
         </div>
-        <button class="review-close" id="review-close" type="button" aria-label="閉じる">×</button>
-      </header>
-      <div class="checker-review-summary">
-        <p><strong>自動修正が止まった理由</strong><br><span id="checker-review-reason">修正後も、同じ指摘が残っています。</span></p>
-        <p><strong>次にすること</strong><br><span id="checker-review-next">チェッカー出力を確認し、修正してほしい内容を「Junie への追加指示」に入力してください。</span></p>
-      </div>
-      <section class="review-finding" aria-label="チェッカーの指摘内容">
-        <div class="review-finding-top"><span class="review-rule-id">RULE RZ-017</span><span class="review-severity">警告 · 判断待ち</span></div>
-        <h3>共通化対象の状態変換がページ内に残っている可能性</h3>
-        <p>ページ固有でない変換処理は、共通の .cs 関数へ切り出すルールです。チェッカーはページ内での実装を検出しました。</p>
-        <div class="review-location">
-          <div><small>移行元</small><code>php/orders.php · get_status_label()</code></div>
-          <div><small>指摘箇所</small><code>Pages/Orders/Index.cshtml.cs</code><small>チェッカー報告 · 2行目</small></div>
+        <section class="review-finding" aria-label="チェッカーの指摘内容">
+          <div class="review-finding-top"><span class="review-rule-id">RULE RZ-017</span><span class="review-severity">警告 · 判断待ち</span></div>
+          <h3>共通化対象の状態変換がページ内に残っている可能性</h3>
+          <p>ページ固有でない変換処理は、共通の .cs 関数へ切り出すルールです。チェッカーはページ内での実装を検出しました。</p>
+          <div class="review-location">
+            <div><small>移行元</small><code>php/orders.php · get_status_label()</code></div>
+            <div><small>指摘箇所</small><code>Pages/Orders/Index.cshtml.cs</code><small>チェッカー報告 · 2行目</small></div>
+          </div>
+          <pre class="review-code"><code>ViewData["StatusText"] = GetStatusText(row.Status);</code></pre>
+          <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
+          <button class="review-action" id="checker-open-editor" type="button">エディタで修正</button>
+        </section>
+        <details class="review-context" id="checker-output-section" open>
+          <summary>チェッカー出力</summary>
+          <pre class="review-code" id="checker-review-output" tabindex="0" aria-label="チェッカー出力">検査結果: 確認が必要です。
+  注文の状態変換がページ内に残っています。</pre>
+          <p id="checker-output-status" role="status"></p>
+          <p><a id="checker-output-download" download="checker.log" hidden>出力をダウンロード</a></p>
+        </details>
+        <details class="review-context" id="checker-review-details">
+          <summary>詳細ログ</summary>
+          <pre class="review-code" id="checker-review-technical" tabindex="0" aria-label="詳細ログ">チェッカーの終了コード 1
+  RZ-017: a previous checker finding is still present</pre>
+        </details>
+        <details class="review-context" id="review-demo-context">
+          <summary>この指摘を判断する材料</summary>
+          <p><strong>適用ルール:</strong> 複数ページで使う状態変換は共通関数にまとめる。<br><strong>確認点:</strong> <code>OrderStatusMap.ToLabel</code>の実装が共通 .cs にあり、変換処理が重複していないか確認する。</p>
+        </details>
+        <div data-live-only>
+          <label class="review-note-label" for="review-note">判断理由（必須）</label>
+        <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
         </div>
-        <pre class="review-code"><code>ViewData["StatusText"] = GetStatusText(row.Status);</code></pre>
-        <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
-        <button class="review-action" id="checker-open-editor" type="button">エディタで修正</button>
-      </section>
-      <details class="review-context" id="checker-output-section" open>
-        <summary>チェッカー出力</summary>
-        <pre class="review-code" id="checker-review-output" tabindex="0" aria-label="チェッカー出力">検査結果: 確認が必要です。
-注文の状態変換がページ内に残っています。</pre>
-        <p id="checker-output-status" role="status"></p>
-        <p><a id="checker-output-download" download="checker.log" hidden>出力をダウンロード</a></p>
-      </details>
-      <details class="review-context" id="checker-review-details">
-        <summary>詳細ログ</summary>
-        <pre class="review-code" id="checker-review-technical" tabindex="0" aria-label="詳細ログ">チェッカーの終了コード 1
-RZ-017: a previous checker finding is still present</pre>
-      </details>
-      <details class="review-context" id="review-demo-context">
-        <summary>この指摘を判断する材料</summary>
-        <p><strong>適用ルール:</strong> 複数ページで使う状態変換は共通関数にまとめる。<br><strong>確認点:</strong> <code>OrderStatusMap.ToLabel</code>の実装が共通 .cs にあり、変換処理が重複していないか確認する。</p>
-      </details>
-      <div data-live-only>
-        <label class="review-note-label" for="review-note">判断理由（必須）</label>
-      <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
       </div>
-      <label class="review-note-label" for="checker-instruction">Junie への追加指示（任意）</label>
-      <div class="prompt-field">
-        <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2" placeholder=" "
-                  aria-describedby="checker-instruction-status checker-instruction-example"></textarea>
-        <span class="prompt-example" id="checker-instruction-example" style="--characters: 14" aria-hidden="true"><span>例：状態変換を共通関数に移す</span></span>
-      </div>
-      <p class="review-caveat" id="checker-instruction-status" role="status"></p>
-      <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
-      <div class="review-actions">
-        <button class="review-action" id="review-later" type="button">あとで確認</button>
-        <div class="comparison-control">
-          <button class="review-action" id="open-diff-viewer" type="button" data-compare>比較ツールを開く</button>
-          <details class="comparison-options">
-            <summary class="review-action" aria-label="比較オプション"></summary>
-            <div class="comparison-option-panel"><button type="button" data-propose-anchors>Junieで対応行を提案して開く</button></div>
-          </details>
+      <footer class="checker-review-footer">
+        <label class="review-note-label" for="checker-instruction">Junie への追加指示（任意）</label>
+        <div class="prompt-field">
+          <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2" placeholder=" "
+                    aria-describedby="checker-instruction-status checker-instruction-example"></textarea>
+          <span class="prompt-example" id="checker-instruction-example" style="--characters: 14" aria-hidden="true"><span>例：状態変換を共通関数に移す</span></span>
         </div>
-        <button class="review-action" id="review-accept" type="button">問題なしとして記録</button>
-        <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
-      </div>
+        <p class="review-caveat" id="checker-instruction-status" role="status"></p>
+        <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
+        <div class="review-actions">
+          <button class="review-action" id="review-later" type="button">あとで確認</button>
+          <div class="comparison-control">
+            <button class="review-action" id="open-diff-viewer" type="button" data-compare>比較ツールを開く</button>
+            <details class="comparison-options">
+              <summary class="review-action" aria-label="比較オプション"></summary>
+              <div class="comparison-option-panel"><button type="button" data-propose-anchors>Junieで対応行を提案して開く</button></div>
+            </details>
+          </div>
+          <button class="review-action" id="review-accept" type="button">問題なしとして記録</button>
+          <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
+        </div>
+      </footer>
     </div>
   </dialog>
   <dialog class="review-dialog" id="progress-prompt-dialog" aria-labelledby="progress-prompt-title">

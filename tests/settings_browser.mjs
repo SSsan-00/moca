@@ -252,6 +252,13 @@ try {
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
   assert(await evaluate("!document.querySelector('#settings-unit-checker-command') && !!document.querySelector('#settings-checker-command')"));
   await evaluate('document.querySelector("#settings-project-details > summary").click()');
+  for (const [id, title, options] of [
+    ["settings-junie-log-language", "言語", ["日本語", "英語"]],
+    ["settings-junie-log-tone", "口調", ["標準", "丁寧"]],
+  ]) {
+    assert.equal(await evaluate(field(id) + ".labels[0].textContent"), title);
+    assert.deepEqual(await evaluate("Array.from(" + field(id) + ".options, option => option.text)"), options);
+  }
   const model = "settings-junie-model";
   const effort = "settings-junie-effort";
   const effortStatus = "settings-junie-effort-status";
@@ -366,10 +373,22 @@ try {
   await showRuleWorkspace();
   await click("rules-start");
   await wait("!" + field("rules-draft") + ".hidden");
+  const instructionExample = field("rules-instruction-example");
+  assert.equal(await evaluate("getComputedStyle(" + instructionExample + ").visibility"), "visible");
+  await cdp("Emulation.setEmulatedMedia", {features: [{name: "prefers-reduced-motion", value: "no-preference"}]});
+  assert.equal(await evaluate("getComputedStyle(" + instructionExample + ".firstElementChild).animationName"), "prompt-type");
+  await cdp("Emulation.setEmulatedMedia", {features: [{name: "prefers-reduced-motion", value: "reduce"}]});
+  assert.equal(await evaluate("getComputedStyle(" + instructionExample + ".firstElementChild).animationName"), "none");
+  await change("rules-instruction", "確認テスト", "input");
+  assert.equal(await evaluate("getComputedStyle(" + instructionExample + ").visibility"), "hidden");
   await click("rules-optimize");
   await wait("!" + field("rules-proposal") + ".hidden");
   await click("rules-preview");
   await wait("!" + field("rules-review") + ".hidden");
+  const rulesConfirm = field("rules-confirm");
+  assert.deepEqual(await evaluate("[" + rulesConfirm + ".offsetWidth, " + rulesConfirm + ".offsetHeight]"), [16, 16]);
+  await evaluate("document.querySelector('.rule-confirm').click()");
+  assert(await evaluate("document.querySelector('#rules-confirm').checked"));
   for (const [width, height] of [[1280, 650], [390, 650], [1280, 440]]) {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: false});
     assert(await evaluate(ruleViewport), "rules demo fits " + width + "×" + height);
@@ -380,6 +399,31 @@ try {
       "long rule controls can scroll at " + width + "×" + height);
   }
   console.log("Browser rules: settings tab adjacency and bounded desktop/compact layouts");
+  const reviewLayout = [
+    "(() => {",
+    "const dialog = document.getElementById('review-dialog');",
+    "if (!dialog.open) dialog.showModal();",
+    "const panel = dialog.querySelector('.checker-review-scroll');",
+    "const input = dialog.querySelector('#checker-instruction');",
+    "const action = dialog.querySelector('#review-fix');",
+    "const heading = dialog.querySelector('#review-title');",
+    "const top = element => element.getBoundingClientRect().top;",
+    "panel.scrollTop = 0;",
+    "const inputBefore = top(input), headingBefore = top(heading);",
+    "panel.scrollTop = panel.scrollHeight;",
+    "const result = panel.scrollTop > 0 && top(heading) < headingBefore && Math.abs(top(input) - inputBefore) < 1",
+    "  && top(input) >= 0 && action.getBoundingClientRect().bottom <= innerHeight + 1;",
+    "dialog.close();",
+    "return result;",
+    "})()",
+  ].join("\n");
+  await cdp("Emulation.setEmulatedMedia", {features: [{name: "prefers-reduced-motion", value: "reduce"}]});
+  for (const [width, height] of [[760, 520], [390, 480]]) {
+    await cdp("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: false});
+    await evaluate("document.getElementById('checker-review-output').textContent = 'fixture output\\n'.repeat(40)");
+    assert(await evaluate(reviewLayout), "checker instructions stay visible while findings scroll at " + width + "×" + height);
+  }
+  console.log("Browser review: findings scroll while instructions and actions stay visible");
 
   await cdp("Browser.close").catch(() => {});
 } finally {
