@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
 ACP_TIMEOUT = 30
+_ACP_SELECT_LITE_REQUEST = -1
 MODEL_LIST_TIMEOUT = 10
 DASHBOARD_PROGRESS_INSTRUCTION = (
     "進捗と最終回答は日本語で書いてください。重要な確認や変更に進むときは、"
@@ -796,6 +797,7 @@ class _AcpSession:
         self.tool_calls: dict[str, dict] = {}
         self.pending: tuple[int | str, Future[str]] | None = None
         self.startup_deadline = time.monotonic() + ACP_TIMEOUT
+        self.selecting_lite = False
         self.permission_started = 0.0
         self.prompts = prompts
         self.completion_path = completion_path
@@ -855,6 +857,8 @@ class _AcpSession:
         if (self.prompts is None or not self.steering_supported or self.session_id is None
                 or self.pending or self.steering_waiting is not None or self.prompt_finished
                 or has_completion_record(self.completion_path, self.token)):
+            return
+        if self.selecting_lite:
             return
         token = uuid.uuid4().hex
         receipt = safe_target(self.project, Path(".migration-scratch") / f"steering-{token}.txt")
@@ -992,6 +996,36 @@ class _AcpSession:
             del self.steering_requests[request_id]
             report_activity("追加指示を送信待ちに戻しました。画面に表示されたタイミングで渡します。")
 
+    def _select_lite_if_missing(self, session: dict) -> bool:
+        flags = self.command[:-2]
+        if "--model" not in flags or "--effort" in flags:
+            return False
+        if flags[flags.index("--model") + 1:][:1] != ["junie-lite"]:
+            return False
+        models = session.get("models") or {}
+        if models.get("availableModels") or models.get("currentModelId"):
+            return False
+        if any(option.get("category") == "model" or option.get("id") == "model"
+               for option in (session.get("configOptions") or []) if isinstance(option, dict)):
+            return False
+        # Junie 4100.11 can advertise no models until Lite is set on the session.
+        self.selecting_lite = True
+        self.startup_deadline = time.monotonic() + ACP_TIMEOUT
+        self.request(_ACP_SELECT_LITE_REQUEST, "session/set_model", sessionId=self.session_id, modelId="junie-lite")
+        return True
+
+    def _complete_lite_selection(self, message) -> None:
+        self.selecting_lite = False
+        error = message.get("error")
+        if (not isinstance(error, dict) and "result" in message
+                or isinstance(error, dict) and error.get("code") == -32601):
+            return
+        raise JunieSessionError(self.command, 1, "Junie ACP で指定した Junie Lite を選択できませんでした。")
+
+    def _send_initial_prompt(self) -> None:
+        self.request(3, "session/prompt", sessionId=self.session_id,
+                     prompt=[{"type": "text", "text": self.command[-1]}])
+
     def _advance_prompt(self, request_id, message) -> bool:
         # 要求IDは1=初期化、2=セッション作成、3=プロンプト実行。応答を待って次へ進む。
         if "error" in message:
@@ -1011,8 +1045,8 @@ class _AcpSession:
             self.request(2, "session/new", cwd=str(self.project), mcpServers=[])
         elif request_id == 2 and result.get("sessionId"):
             self.session_id = result["sessionId"]
-            self.request(3, "session/prompt", sessionId=self.session_id,
-                         prompt=[{"type": "text", "text": self.command[-1]}])
+            if not self._select_lite_if_missing(result):
+                self._send_initial_prompt()
         elif request_id == 3:
             self.prompt_finished = True
             if self.steering_waiting is None and not self.steering_new_turn:
@@ -1040,6 +1074,9 @@ class _AcpSession:
             update = params.get("update", {})
             if update.get("sessionUpdate") in ("tool_call", "tool_call_update") and "toolCallId" in update:
                 self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
+        elif not method and request_id == _ACP_SELECT_LITE_REQUEST and self.selecting_lite:
+            self._complete_lite_selection(message)
+            self._send_initial_prompt()
         elif not method and request_id in (1, 2, 3):
             return self._advance_prompt(request_id, message)
         return False
@@ -1076,7 +1113,7 @@ class _AcpSession:
                 return True
             if self.pending:
                 return False
-        if self.session_id is None and time.monotonic() >= self.startup_deadline:
+        if (self.session_id is None or self.selecting_lite) and time.monotonic() >= self.startup_deadline:
             raise JunieSessionError(self.command, 1, "JunieのACP接続がタイムアウトしました。Junie CLIのバージョンとログを確認してください。")
         if self.steering_waiting is not None and time.monotonic() >= self.steering_deadline:
             raise JunieSessionError(self.command, 1, "追加指示の受信を確認できませんでした。指示を送信待ちに戻します。実行を再開してください。")
