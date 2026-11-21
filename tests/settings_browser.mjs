@@ -190,12 +190,16 @@ try {
   assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
-  await evaluate("window.beforeRecoveryReload = true");
-  await navigate("Page.reload");
-  await wait(`!window.beforeRecoveryReload && document.readyState === "complete" && document.documentElement.dataset.liveReady === "true"`);
+  // Reopen the same Run in a new document instead of relying on Chrome's reload scheduling.
+  const recoveryUrl = new URL(url);
+  recoveryUrl.searchParams.set("run", expectedRun);
+  recoveryUrl.searchParams.set("reopen", "1");
+  await navigate("Page.navigate", {url: recoveryUrl.href});
+  await wait(`document.documentElement.dataset.liveReady === "true"
+    && new URL(location.href).searchParams.get("reopen") === "1"`);
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
-  console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reload");
+  console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reopen");
   await click("tab-settings");
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
   assert(await evaluate("!document.querySelector('#settings-unit-checker-command') && !!document.querySelector('#settings-checker-command')"));
