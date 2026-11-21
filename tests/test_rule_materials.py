@@ -399,6 +399,60 @@ class RuleMaterialsTests(HarnessCase):
                 self.assertEqual(len(attempts), 2)
                 self.assertIn("previous reply was not valid JSON", attempts[1])
 
+    def test_invalid_context_evidence_retries_without_reusing_completion(self):
+        capsule = self.root / "capsule"
+        capsule.mkdir()
+        source = capsule / "context.md"
+        entry, = rule_materials.write_rule_files(capsule / "materials", [
+            ({"path": "orders.md", "usage": "reference", "description": "Order output"}, "Preserve order IDs.\n"),
+        ])
+        manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": [entry]}
+        rule = entry["file"]
+        context_file = "evidence/target.cs"
+        inventory = {context_file: {"file_lines": 2}}
+        for large in (False, True):
+            source.write_text("<?php echo $orderId;\n" * (3000 if large else 1), encoding="utf-8")
+            for repair in (False, True):
+                with self.subTest(large=large, repair=repair):
+                    record = {}
+                    attempts = []
+
+                    def review(command, completion, token, outputs, **kwargs):
+                        self.assertEqual(kwargs["accept_result"] is None, large)
+                        self.assertNotIn("detail_applicability", record)
+                        self.assertFalse(completion.exists())
+                        if attempts:
+                            prior_completion, prior_token = attempts[0]
+                            self.assertFalse(prior_completion.exists())
+                            self.assertNotEqual(token, prior_token)
+                            self.assertIn(token, command[-1])
+                            self.assertIn("Check every context_evidence", command[-1])
+                            if large:
+                                retained = json.loads(outputs[0].read_text(encoding="utf-8"))
+                                self.assertEqual(retained[rule]["reason"], "Outputs orders")
+                        decisions = {rule: {"applies": True, "reason": "Outputs orders", "context_evidence": {
+                            "file": context_file if repair and attempts else "source-0001.md", "lines": [1, 2],
+                        }}}
+                        attempts.append((completion, token))
+                        if large:
+                            outputs[0].write_text(json.dumps(decisions), encoding="utf-8")
+                            completion.write_text(token, encoding="utf-8")
+                        else:
+                            kwargs["accept_result"](json.dumps({"review_token": token, "decisions": decisions}))
+
+                    args = self.root, capsule, manifest, (Path("Page.cs"),), record, None
+                    with patch.object(workflow, "stage_review_evidence", return_value=inventory), \
+                            patch.object(junie_cli, "run_interactive", side_effect=review):
+                        if repair:
+                            self.assertEqual(workflow._review_detail_applicability(*args), {rule})
+                            self.assertEqual(record["detail_applicability"][rule]["context_evidence"]["file"],
+                                             context_file)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "invalid review context evidence"):
+                                workflow._review_detail_applicability(*args)
+                            self.assertNotIn("detail_applicability", record)
+                    self.assertEqual(len(attempts), 2)
+
     def test_large_review_uses_complete_files_instead_of_inlining_only_a_prefix(self):
         capsule = self.root / "capsule"
         capsule.mkdir()

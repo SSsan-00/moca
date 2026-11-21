@@ -56,6 +56,10 @@ def detail_index(manifest: dict) -> list[dict]:
     ]
 
 
+class InvalidDetailContextEvidence(ValueError):
+    pass
+
+
 def selected_details(
     index: list[dict], decisions: object, line_counts: dict[str, int] | None = None,
     evidence_inventory: dict[str, dict] | None = None,
@@ -89,7 +93,7 @@ def selected_details(
                     or any(type(line) is not int for line in lines) or not 1 <= lines[0] <= lines[1]
                     or evidence_inventory is not None and (
                         file not in evidence_inventory or lines[1] > evidence_inventory[file]["file_lines"])):
-                raise ValueError(f"invalid review context evidence for saved detail: {name}")
+                raise InvalidDetailContextEvidence(f"invalid review context evidence for saved detail: {name}")
         if decision["applies"]:
             selected.add(name)
     return frozenset(selected)
