@@ -56,7 +56,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-テストは一時ディレクトリにGitリポジトリとRunを作ります。準備処理はPythonとGitで実行し、制御のテストではJunieや.NETなどをテスト用の処理に置き換えます。GitHub ActionsはmainへのpushとPRで、WindowsとLinuxのPython 3.11・3.13を検証します。
+テストは一時ディレクトリにGitリポジトリとRunを作ります。準備処理はPythonとGitで実行し、制御のテストではJunieや.NETなどをテスト用の処理に置き換えます。GitHub ActionsはpushとPRで、WindowsのPython 3.11・3.13を検証します。WindowsでJunieの起動スモークも実行します。
 
 GitHubでIssueを1件ずつ処理する管理者向け手順は、[Codex Issueワークフロー](docs/codex-issue-workflow.md)を参照してください。
 
@@ -445,7 +445,7 @@ Junieがステップ上限に達した場合、ダッシュボードから同じ
 - [アーキテクチャと実行フロー](docs/architecture.md)
 - [Junie の技術質問スキル](.junie/skills/harness-architecture/SKILL.md)。ハーネスのフォルダで `junie` を起動し、入力欄で `/harness-architecture ビルド成功から移行台帳の完了判定までを、実装を根拠に説明してください` と依頼できます。`/skills` で有効状態を確認できます。 [Junie の Agent Skills](https://junie.jetbrains.com/docs/agent-skills.html)
 - [実装フローの図解](migration-harness-spec.html)
-- [進捗画面デモ（模擬データ）](progress-demo.html)
+- [進捗画面デモ（模擬データ）](progress-demo.html)。確認待ち通知のデモも試せます。Windowsへの通知や実際の移行は行いません。
 - GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
 
 以下は設計・実装の参考資料です。いずれもこのハーネスの実行時依存として導入せず、必要な考え方を参考にします。
