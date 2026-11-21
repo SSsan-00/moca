@@ -15,7 +15,6 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 | `[junie]` | 任意の `model` と `effort` を `--model`・`--effort` に渡す。`effort` は `none`・`minimal`・`low`・`medium`・`high`・`xhigh`・`max` のいずれかで、`model` の指定が必要。空欄・省略時はCLIへ渡さない。`max_steps` は任意の正の整数。 |
 | `[build]` | 任意の `project` にアプリ内の `.csproj`、`.sln`、`.slnx` を指定する。省略時はworktree直下で `dotnet build` を実行する。 |
 | `[checker]` | 任意の `command` を実行ファイルと個別の引数で指定する。 `max_repair_attempts` はビルド・チェッカーで共有し、既定はRunごとに2回。0で自動修正を無効にする。`review_free_output_with_junie` は既定で無効。有効時は形式未対応の出力を最大32 KiBのテキスト専用ACP判定へ送り、根拠行とハッシュを保存して確認待ちとする。参考判定のみ有効なら修正や合格には進まない。工程への反映は `[junie].apply_output_decisions` を別途有効化する。`[junie].review_script_output` による工程スクリプトの参考判定も、既定では終了コードの続行・停止条件は変更しない。 |
-| `[[units]].checker_command` | 単位ごとのチェッカー。共通の `[checker].command` より優先する。CLIの `--checker-command` を指定した場合はCLIを優先する。 |
 | `[scripts]` | 各工程にコマンドの配列を指定する。詳細は下記の実行順序を参照。 |
 | `[diff_viewer]` | `html` が指定され有効な場合に比較・アンカー生成を提供する。 `anchor_reference` はTOMLを基準とした相対パスまたは絶対パスの配列。従来の単一パスも受け付ける。 |
 

@@ -106,9 +106,6 @@ targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
 # この移行単位の仮C#／Razorのコピー元。アプリルートからの相対パス、または外部ファイルの絶対パス。
 # 移行先が複数なら拡張子で照合し、Junie移行前にworktreeへ取り込む。
 # draft_imports = ["C:/draft/generated/Menu.cshtml.cs", "C:/draft/generated/Menu.cshtml"]
-# この移行単位だけで使うチェッカー。省略時は [checker].command を使う。
-# --checker-command を指定した場合は、CLIのコマンドを優先する。
-# checker_command = ["py", "-3", "tools/check_menu.py"]
 # Razorページは同じ場所・同じ名前の .cshtml と .cshtml.cs を両方指定する。
 # 通常のC#ファイル1つなら target = "Menu.cs" でも指定できる。
 # 文字コードの自動判定が曖昧なときは source_encoding = "euc-jp" などを指定する。

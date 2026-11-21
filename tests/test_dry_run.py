@@ -21,9 +21,8 @@ def make_config(tmp_path):
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "fixture")
     return dict(config_path=str(tmp_path / "harness.toml"), project_root=str(root), base_ref="HEAD",
                 run_root=str(tmp_path / "runs"), worktree_root=str(tmp_path / "worktrees"),
-                max_context_chars=1000, build_project="App.csproj", checker_command=["unselected-command"],
+                max_context_chars=1000, build_project="App.csproj", checker_command=[sys.executable, "checker.py", "{target}"],
                 units=[dict(id="注文", target="Page.cshtml", targets=["Page.cshtml", "Page.cshtml.cs"],
-                            checker_command=[sys.executable, "checker.py", "{target}"],
                             inputs=[dict(path="source.php", encoding="auto", start_line=1, end_line=1)])])
 
 
@@ -33,7 +32,7 @@ class DryRunTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.config = make_config(Path(temp.name))
 
-    def test_plan_uses_unit_checker_and_never_runs_configured_commands(self):
+    def test_plan_uses_project_checker_and_never_runs_configured_commands(self):
         config = self.config
         root = Path(config["project_root"])
         marker = root / "executed"
@@ -42,7 +41,7 @@ class DryRunTests(unittest.TestCase):
         assert report["commit"]
         checks = report["checks"]
         checker = next(item for item in checks if item["phase"] == "checker")
-        assert "Page.cshtml" in checker["command"] and "unselected-command" not in checker["command"]
+        assert "Page.cshtml" in checker["command"]
         assert checker["cwd"] == report["worktree_template"]
         assert any(item["phase"] == "prepare" and item.get("characters") for item in checks)
         assert not marker.exists()
@@ -69,7 +68,7 @@ class DryRunTests(unittest.TestCase):
                        ["python", "--check-hash-based-pycs", "always", "--"]):
             for requested, expected in ((script, "confirmed"), (Path("generated.py"), "unchecked")):
                 with self.subTest(prefix=prefix, requested=requested):
-                    config["units"][0]["checker_command"] = [*prefix, str(requested), "{target}"]
+                    config["checker_command"] = [*prefix, str(requested), "{target}"]
                     with patch("migration_harness.dry_run.shutil.which", return_value="checked-only"):
                         checks = [item for item in plan_dry_run(config, config["units"][0]["id"])["checks"]
                                   if item["phase"] == "checker"]
@@ -84,7 +83,7 @@ class DryRunTests(unittest.TestCase):
         for options in (["-m", "checker.py"], ["-c", "checker.py"], ["-", "checker.py"],
                         ["--unknown", "checker.py"], ["-X", "utf8"], ["-X"]):
             with self.subTest(options=options):
-                config["units"][0]["checker_command"] = ["python", *options]
+                config["checker_command"] = ["python", *options]
                 with patch("migration_harness.dry_run.shutil.which", return_value="checked-only"):
                     checks = [item for item in plan_dry_run(config, config["units"][0]["id"])["checks"]
                               if item["phase"] == "checker"]

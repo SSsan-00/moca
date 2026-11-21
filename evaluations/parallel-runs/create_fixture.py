@@ -16,7 +16,7 @@ app.mkdir(parents=True, exist_ok=False)
     "Only edit the specified target. Do not run business code or the PHP.\n"
 )
 (app / "check.py").write_text(
-    "import pathlib,sys\nn=int(sys.argv[1])\ns=pathlib.Path(f'Unit{n}.cs').read_text()\n"
+    "import pathlib,sys\ntarget=pathlib.Path(sys.argv[1])\nn=int(target.stem.removeprefix('Unit'))\ns=target.read_text()\n"
     "assert f'Unit{n}' in s and 'Label' in s and f'unit-{n}' in s, s\n"
 )
 config = f'''[project]
@@ -32,6 +32,7 @@ usage = "required"
 project = "Case.csproj"
 
 [checker]
+command = {json.dumps([sys.executable, "check.py", "{target}"])}
 max_repair_attempts = 1
 '''
 for n, label in enumerate(("注文一覧", "顧客詳細", "売上集計", "在庫照会", "請求一覧", "入金消込")):
@@ -40,7 +41,6 @@ for n, label in enumerate(("注文一覧", "顧客詳細", "売上集計", "在�
 id = "{label}"
 source = "source{n}.php"
 target = "Unit{n}.cs"
-checker_command = {json.dumps([sys.executable, "check.py", str(n)])}
 '''
 for args in (("init", "-q"), ("config", "user.name", "Parallel evaluation"),
              ("config", "user.email", "evaluation@example.invalid"), ("add", "."),
