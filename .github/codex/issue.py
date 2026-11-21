@@ -11,8 +11,7 @@ import time
 
 
 CHECKS = {
-    f"regression ({os}-latest, {version})"
-    for os in ("ubuntu", "windows")
+    f"regression (windows-latest, {version})"
     for version in ("3.11", "3.13")
 } | {"windows-junie"}
 CI_JOBS = CHECKS | {
@@ -214,7 +213,7 @@ def pr_body(number, head):
         f"The investigation, planned tests and limitations are in `proposal.json` in the "
         f"[dispatch run artifacts]({run_url()}).\n\n"
         "Verification is tracked in the PR Checks and the corresponding branch push run "
-        "(Windows and Ubuntu, Python 3.11/3.13 and Windows Junie startup smoke).\n\n"
+        "(Windows with Python 3.11/3.13 and Junie startup smoke).\n\n"
         "For Codex GitHub review, mark this draft ready and request `@codex review` if needed. "
         f"Follow the [operator guide](https://github.com/{repo}/blob/main/docs/codex-issue-workflow.md) to record a "
         "maintainer approval and any authenticated Junie evidence. The Issue stays open for maintainer follow-up."

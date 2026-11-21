@@ -2,7 +2,6 @@
 import io
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -21,16 +20,14 @@ from ui_dependencies import node_executable, require_ui_dependency
 class SettingsBrowserTests(unittest.TestCase):
     def test_settings_round_trip_in_chromium(self):
         applications = [
-            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             *(Path(base) / vendor / "Application" / executable
               for key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")
               if (base := os.environ.get(key))
               for vendor, executable in (("Google/Chrome", "chrome.exe"), ("Microsoft/Edge", "msedge.exe"))),
         ]
         chrome = next((str(path) for path in applications if path.is_file()), None)
-        chrome = chrome or shutil.which("google-chrome") or shutil.which("chromium")
         node = node_executable(self)
-        require_ui_dependency(self, chrome, "Chromium, Chrome, or Edge is required for the browser test")
+        require_ui_dependency(self, chrome, "Chrome or Edge is required for the Windows browser test")
         node_args = [node]
         probe = "process.exit(typeof WebSocket === 'function' ? 0 : 1)"
         if subprocess.run([node, "-e", probe], timeout=10).returncode:
