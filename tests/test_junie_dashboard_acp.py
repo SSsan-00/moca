@@ -25,7 +25,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
             session = SimpleNamespace(
                 project=root, completion_path=root / "done", token="initial", prompts=prompts,
                 steering_supported=True, session_id="session", pending={}, steering_waiting=None,
-                prompt_finished=False, next_request_id=4, steering_requests={}, request=request,
+                prompt_finished=False, next_request_id=4, steering_requests={}, request=request, selecting_lite=False,
             )
             record_path = root / "run.json"
             record = {}
@@ -41,6 +41,52 @@ class JunieDashboardAcpTests(unittest.TestCase):
                 self.assertTrue(record["last_junie_steering_input"]["blocked"])
                 request.assert_not_called()
                 prompts.finish.assert_called_once_with(["id"], False)
+
+    def test_explicit_lite_is_selected_before_prompt_when_acp_does_not_advertise_models(self):
+        from unittest.mock import Mock
+
+        for outcome in ({"result": {}}, {"error": {"code": -32601}}, {"error": {"code": -32602}}):
+            with self.subTest(outcome=outcome):
+                session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+                session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model="junie-lite")
+                session.request = Mock()
+                session.selecting_lite = False
+                session.steering_waiting = None
+                session._advance_prompt(2, {"result": {"sessionId": "test", "configOptions": [{"id": "mode"}]}})
+                request_id, method = session.request.call_args.args
+                self.assertEqual(method, "session/set_model")
+                self.assertEqual(session.request.call_args.kwargs, {"sessionId": "test", "modelId": "junie-lite"})
+                self.assertTrue(session.selecting_lite)
+                if outcome.get("error", {}).get("code") == -32602:
+                    with self.assertRaises(junie_cli.JunieSessionError):
+                        session._receive_message({"id": request_id, **outcome})
+                    self.assertEqual(session.request.call_count, 1)
+                else:
+                    session._receive_message({"id": request_id, **outcome})
+                    self.assertEqual(session.request.call_count, 2)
+                    self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
+                self.assertFalse(session.selecting_lite)
+
+    def test_model_workaround_does_not_override_catalog_default_other_models_or_effort(self):
+        from unittest.mock import Mock
+
+        catalog = {
+            "models": {"availableModels": [{"modelId": "junie-lite"}]},
+        }
+        for model, effort, metadata in (
+            (None, None, {}),
+            ("sonnet", None, {}),
+            ("junie-lite", "low", {}),
+            ("junie-lite", None, catalog),
+            ("junie-lite", None, {"configOptions": [{"id": "selector", "category": "model"}]}),
+        ):
+            with self.subTest(model=model, effort=effort, metadata=metadata):
+                session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+                session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model=model, effort=effort)
+                session.request = Mock()
+                session._advance_prompt(2, {"result": {"sessionId": "test", **metadata}})
+                self.assertEqual(session.request.call_count, 1)
+                self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
 
     def test_missing_acp_model_retries_with_headless_junie_only_after_confirmation(self):
         for approve in (False, True):
