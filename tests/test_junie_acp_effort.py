@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from queue import Queue
 from unittest.mock import Mock
 
 from migration_harness import junie_cli
@@ -71,16 +72,65 @@ class JunieAcpEffortTests(unittest.TestCase):
         session.request.assert_not_called()
         self.assertFalse(session.session_ready)
 
-    def test_rejected_or_unapplied_level_never_sends_a_prompt(self):
-        for reply in ({"error": {"code": -32601}}, {"result": {"configOptions": config("low")}},
-                      {"result": {}}, {"result": None}):
-            with self.subTest(reply=reply):
+    def test_retry_applies_same_level_and_ignores_late_first_reply(self):
+        for first in ({"result": {"configOptions": config("low")}},
+                      {"error": {"code": -32603}}):
+            with self.subTest(first=first):
+                session = make_session(RuleChat)
+                respond_new(session, config("low"))
+                start = junie_cli._ACP_SET_EFFORT_REQUEST
+                retry = junie_cli._ACP_RETRY_EFFORT_REQUEST
+                session._receive_message({"id": start, **first})
+                session.request.assert_called_with(retry, "session/set_config_option",
+                                                   sessionId="session", configId="reasoning", value="medium")
+                confirmation = {"result": {"configOptions": config("medium")}}
+                session._receive_message({"id": start, **confirmation})
+                self.assertFalse(session.session_ready)
+                with self.assertRaises(RuntimeError):
+                    session.begin("test")
+                session._receive_message({"id": retry, **confirmation})
+                session.begin("test")
+                self.assertEqual(session.request.call_args.args, (10, "session/prompt"))
+                self.assertEqual(session.request.call_count, 3)
+
+    def test_wait_timeout_retries_once_and_keeps_migration_unsent(self):
+        session = make_session(junie_cli._AcpSession)
+        session._check_writes = Mock()
+        session.pending = None
+        session.prompt_finished = False
+        session.steering_new_turn = False
+        session.messages = Queue()
+        respond_new(session, config("low"))
+        session.startup_deadline = 0
+        self.assertFalse(session.advance())
+        self.assertEqual(session.request.call_args.args,
+                         (junie_cli._ACP_RETRY_EFFORT_REQUEST, "session/set_config_option"))
+        session.startup_deadline = 0
+        with self.assertRaises(junie_cli.JunieSessionError):
+            session.advance()
+        self.assertFalse(session.session_ready)
+        self.assertEqual(session.request.call_count, 2)
+
+    def test_unsupported_request_stops_without_resending(self):
+        for code in (-32601, -32602):
+            with self.subTest(code=code):
                 session = make_session(junie_cli._AcpSession)
                 respond_new(session, config("low"))
                 with self.assertRaises(junie_cli.JunieSessionError):
-                    session._receive_message({"id": junie_cli._ACP_SET_EFFORT_REQUEST, **reply})
+                    session._receive_message({"id": junie_cli._ACP_SET_EFFORT_REQUEST, "error": {"code": code}})
                 self.assertFalse(session.session_ready)
                 self.assertEqual(session.request.call_count, 1)
+
+    def test_unapplied_retry_never_sends_a_prompt(self):
+        for reply in ({"result": {"configOptions": config("low")}}, {"result": {}}, {"result": None}):
+            with self.subTest(reply=reply):
+                session = make_session(junie_cli._AcpSession)
+                respond_new(session, config("low"))
+                session._receive_message({"id": junie_cli._ACP_SET_EFFORT_REQUEST, **reply})
+                with self.assertRaises(junie_cli.JunieSessionError):
+                    session._receive_message({"id": junie_cli._ACP_RETRY_EFFORT_REQUEST, **reply})
+                self.assertFalse(session.session_ready)
+                self.assertEqual(session.request.call_count, 2)
 
     def test_only_lite_none_can_run_without_a_selector(self):
         for effort, passed in (("none", True), ("low", False)):

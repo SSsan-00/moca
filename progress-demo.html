@@ -1082,9 +1082,10 @@
                 </select>
                 <p class="settings-material-range" id="settings-junie-model-status" role="status" hidden></p>
                 <label for="settings-junie-effort">推論の強さ</label>
-                <select id="settings-junie-effort" class="workspace-select" data-section="junie" data-setting="effort" disabled>
+                <select id="settings-junie-effort" class="workspace-select" data-section="junie" data-setting="effort" aria-describedby="settings-junie-effort-status" disabled>
                   <option value="">モデルを選択してください</option>
                 </select>
+                <p class="settings-material-range" id="settings-junie-effort-status" role="status" hidden></p>
                 <div class="settings-pair">
                   <div>
                     <label for="settings-context-limit">カプセルの文字数上限</label>
@@ -2565,6 +2566,10 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
   }
   bindHarnessWorkspace({
     readRuns: demoRuns.read,
+    readModels: async () => ({models: Array.from(document.querySelector("#settings-junie-model").options)
+      .filter(option => option.value).map(option => ({
+        id: option.value, name: option.text, efforts: option.value === "junie-lite" ? ["none"] : ["low", "medium", "high"],
+      }))}),
     readSettings: async () => ({path: "harness.local.toml（デモ内）", version: "demo", ...demoSettingsDraft(demoSettings)}),
     previewSettings: async (content, changes) => demoSettingsDraft(content, changes),
     saveSettings: async content => {

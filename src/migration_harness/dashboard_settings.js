@@ -227,6 +227,8 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   const modelSelect = document.querySelector("#settings-junie-model");
   const modelStatus = document.querySelector("#settings-junie-model-status");
   const effortSelect = document.querySelector("#settings-junie-effort");
+  const effortStatus = document.querySelector("#settings-junie-effort-status");
+  let unsupportedEffort = false;
   const fallbackModels = [...modelSelect.options].slice(1).map(option => ({id: option.value, name: option.text}));
   let modelCatalog = fallbackModels;
   const added = new WeakSet();
@@ -251,18 +253,27 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   }
 
   // 設定読込時は保存値を保持し、モデル変更時は対応する強さに絞る。
-  function showEfforts(value = effortSelect.value, preserve = true) {
+  function showEfforts(value = effortSelect.value) {
     const model = modelSelect.value;
-    const supported = modelCatalog.find(item => item.id === model)?.efforts
-      ?? (model === "junie-lite" ? ["none"] : ["low", "medium", "high"]);
-    const values = model ? supported.filter(effort => Object.hasOwn(effortLabels, effort)) : [];
+    const supported = modelCatalog.find(item => item.id === model)?.efforts;
+    const values = model ? (supported ?? []).filter(effort => Object.hasOwn(effortLabels, effort)) : [];
+    const unavailable = Boolean(value && !values.includes(value));
+    unsupportedEffort = unavailable && Array.isArray(supported);
     effortSelect.replaceChildren(new Option(model ? "モデルの既定値" : "モデルを選択してください", ""),
-      ...values.map(effort => new Option(`${effortLabels[effort]}（${effort}）`, effort)));
-    if (preserve && value && !values.includes(value)) {
-      effortSelect.add(new Option(`${effortLabels[value] ?? value}（指定済み）`, value));
+      ...values.map(effort => new Option(effortLabels[effort] + "（" + effort + "）", effort)));
+    if (unavailable) {
+      const previous = new Option((effortLabels[value] ?? value) + (unsupportedEffort ? "（非対応）" : "（未確認）"), value);
+      previous.disabled = true;
+      effortSelect.add(previous);
     }
-    effortSelect.value = preserve || values.includes(value) ? value : "";
+    effortSelect.value = model ? value : "";
     effortSelect.disabled = !model;
+    effortStatus.textContent = unsupportedEffort
+      ? "このモデルでは現在の推論レベルを使えません。対応する値か「モデルの既定値」を選び直してください。"
+      : model && !Array.isArray(supported)
+        ? "対応する推論レベルを取得できていません。新しく指定する場合はモデル一覧を読み込み直してください。"
+        : "";
+    effortStatus.hidden = !effortStatus.textContent;
   }
 
   // 取得に失敗したときも、保存済みの選択値と代表候補を表示する。
@@ -289,12 +300,13 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     showEfforts();
     modelStatus.textContent = message;
     modelStatus.hidden = !message;
+    workspaceControls();
   }
   workspaceControls = () => {
     const available = canConfigure() && !loadingOrSavingSettings;
     runsUI.sync();
     settings.querySelector('button[type="submit"]').disabled = !available || previewPending || !settingsVersion
-      || !workspaceConfig.value.trim() || !settingsForm;
+      || !workspaceConfig.value.trim() || !settingsForm || unsupportedEffort;
     workspaceConfig.readOnly = !available || !settingsVersion || (previewPending && !readingTOML);
     editToggle.disabled = !available || !settingsVersion || previewPending || (!workspaceConfig.hidden && !settingsForm);
     for (const fieldset of fields.querySelectorAll("fieldset")) fieldset.disabled = !available || readingTOML;
@@ -636,8 +648,10 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
     settingsForm[section] ??= {};
     settingsChanges[section][setting] = settingsForm[section][setting] = value;
     if (field === modelSelect) {
-      showEfforts(effortSelect.value, false);
+      showEfforts(value ? effortSelect.value : "");
       settingsChanges.junie.effort = settingsForm.junie.effort = effortSelect.value;
+    } else if (field === effortSelect) {
+      showEfforts(value);
     }
     schedulePreview();
   });

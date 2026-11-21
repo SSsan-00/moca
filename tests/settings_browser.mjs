@@ -168,6 +168,27 @@ try {
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
   assert(await evaluate("!document.querySelector('#settings-unit-checker-command') && !!document.querySelector('#settings-checker-command')"));
   await evaluate('document.querySelector("#settings-project-details > summary").click()');
+  const model = "settings-junie-model";
+  const effort = "settings-junie-effort";
+  const effortStatus = "settings-junie-effort-status";
+  await wait("Array.from(document.getElementById('settings-junie-model').options).some(option => option.value === 'fixture-luna')");
+  await change(model, "fixture-luna", "input");
+  const choices = () => evaluate("Array.from(document.getElementById('settings-junie-effort').options).filter(option => !option.disabled).map(option => option.value)");
+  assert.deepEqual(await choices(), ["", "low", "medium"]);
+  await change(effort, "medium", "input");
+  await change(model, "fixture-lite", "input");
+  assert.deepEqual(await choices(), ["", "none"]);
+  assert.equal(await value(effort), "medium");
+  assert(await evaluate("document.getElementById('settings-junie-effort').selectedOptions[0].disabled"));
+  assert(!(await evaluate(field(effortStatus) + ".hidden")));
+  assert(await evaluate("document.getElementById('settings-junie-effort').closest('form').querySelector('button[type=submit]').disabled"));
+  await change(effort, "none", "input");
+  assert(await evaluate(field(effortStatus) + ".hidden"));
+  await change(model, "fixture-unknown", "input");
+  assert.deepEqual(await choices(), [""]);
+  await change(model, "", "input");
+  assert.equal(await value(effort), "");
+  console.log("Browser settings: supported Junie efforts only; prior unsupported value is not silently changed");
   for (const width of [390, 768, 1280]) {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height: 900, deviceScaleFactor: 1, mobile: false});
     const layout = await evaluate('JSON.stringify({viewport: innerWidth, width: document.documentElement.scrollWidth, tabs: document.querySelector(".workspace-tabs").getBoundingClientRect().right, overflow: [...document.querySelectorAll("body *")].filter(e => e.getClientRects().length && e.getBoundingClientRect().right > innerWidth + 1).slice(0, 16).map(e => [e.id || e.className, e.getBoundingClientRect().right])})');
