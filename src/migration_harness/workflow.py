@@ -2913,10 +2913,10 @@ def _verify_worktree(
 
 
 def _checker_provenance(config):
-    provenance = {"checker_from_cli": bool(config.get("checker_from_cli")), "toml_checker_scope": "project"}
-    if provenance["checker_from_cli"]:
-        provenance["toml_checker_command"] = config.get("toml_checker_command")
-    return provenance
+    if not config.get("checker_from_cli"):
+        return {"checker_from_cli": False}
+    return {"checker_from_cli": True, "toml_checker_command": config.get("toml_checker_command"),
+            "toml_checker_scope": "project"}
 
 
 def _execute_verification_build(config, unit, result, record, run_path, worktree, targets, *,
@@ -2925,8 +2925,6 @@ def _execute_verification_build(config, unit, result, record, run_path, worktree
     hashes = {path.as_posix(): review_target_hash(worktree, path) for path in targets}
     if expected_targets is not None and hashes != expected_targets:
         raise ValueError("ビルドの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
-    if command is not None:
-        record.pop("legacy_checker_command", None)
     record["verification"] = {
         "target_hashes": hashes,
         "build_project": config["build_project"],
@@ -3628,32 +3626,13 @@ def _previously_required_checker(record: dict[str, Any]) -> bool:
     )
 
 
-def _legacy_checker(record):
-    if preserved := record.get("legacy_checker_command"):
-        return preserved
-    verification = record.get("verification") or {}
-    scope = verification.get("toml_checker_scope")
-    if verification.get("checker_from_cli"):
-        return verification.get("toml_checker_command") if scope == "unit" else None
-    # 旧RunはCLI以外のチェッカー設定の出所を記録していない。
-    if scope != "project":
-        return verification.get("configured_checker_command", verification.get("checker_command"))
-    return None
-
-
-def _saved_checker_error(config, record):
-    command = config["checker_command"]
-    if command is None and _previously_required_checker(record):
-        return "この Run に必要なチェッカーを設定するか、--checker-command で再指定してください。"
-    if (legacy := _legacy_checker(record)) and not config.get("checker_from_cli") and command != legacy:
-        return ("旧Runのチェッカーが共通設定と異なります。同じコマンドを [checker].command に設定するか、"
-                "--checker-command で明示してください。")
-    return None
+def _missing_required_checker(config, record):
+    return _previously_required_checker(record) and config["checker_command"] is None
 
 
 def _require_saved_checker(config, record):
-    if error := _saved_checker_error(config, record):
-        raise ValueError(error)
+    if _missing_required_checker(config, record):
+        raise ValueError("この Run に必要なチェッカーを設定するか、--checker-command で再指定してください。")
 
 
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
@@ -3665,7 +3644,7 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
         return False
     if "unit_id" in record:
         find_unit(config, record["unit_id"])
-    if _saved_checker_error(config, record):
+    if _missing_required_checker(config, record):
         return False
     return status not in _CHECKER_RESUME_STATUSES or record.get("build_exit_code") == 0
 
@@ -3831,7 +3810,6 @@ def plan_checker_resume(config, run_id):
         raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
-        _require_saved_checker(config, record)
         if (record["status"] not in VERIFIED_STATUSES | _CHECKER_RESUME_STATUSES
                 or not record.get("completed_capsules")
                 or record["completed_capsules"] != record.get("context_capsules")
@@ -3863,7 +3841,6 @@ def _resume_checker(config, unit, result, record, plan, request_id):
             **plan, "id": request_id, "accepted_at": datetime.now(timezone.utc).isoformat(),
         })
         verification = record["verification"]
-        record.pop("legacy_checker_command", None)
         verification.update(configured_checker_command=command, checker_command=command, checker_only=True,
                             scripts={}, scripts_passed=False,
                             input_files=verification_files(config, worktree, unit["target"], command, {}))
@@ -4033,8 +4010,6 @@ def _resume_with_junie(
         config, run_id, run_path, worktree_path, record, unit, status,
     )
     record.pop("last_stop", None)
-    if (stage == "migration" or explicit_build) and (legacy := _legacy_checker(record)):
-        record["legacy_checker_command"] = legacy
     if stage == "migration":
         result["request_id"] = verification_request["id"]
         junie_cli.require_interactive_cli()
