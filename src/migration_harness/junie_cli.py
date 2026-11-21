@@ -44,6 +44,7 @@ USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
 ACP_TIMEOUT = 30
 _ACP_SELECT_LITE_REQUEST = -1
 _ACP_SET_EFFORT_REQUEST = -2
+_ACP_RETRY_EFFORT_REQUEST = -3
 MODEL_LIST_TIMEOUT = 10
 DASHBOARD_PROGRESS_INSTRUCTION = (
     "進捗と最終回答は日本語で書いてください。重要な確認や変更に進むときは、"
@@ -802,7 +803,7 @@ class _AcpSession:
         self.pending: tuple[int | str, Future[str]] | None = None
         self.startup_deadline = time.monotonic() + self._connection_timeout()
         self.selecting_lite = False
-        self.pending_effort: str | None = None
+        self.pending_effort: tuple[str, str, int] | None = None
         self.session_ready = False
         self.permission_started = 0.0
         self.prompts = prompts
@@ -1054,17 +1055,30 @@ class _AcpSession:
             return
         if option is None or not isinstance(option.get("id"), str) or not option["id"]:
             raise self._effort_not_confirmed(effort)
-        self.pending_effort = effort
+        self._send_effort_request(option["id"], effort, _ACP_SET_EFFORT_REQUEST)
+
+    def _send_effort_request(self, config_id: str, value: str, request_id: int) -> None:
+        self.pending_effort = config_id, value, request_id
         self.startup_deadline = time.monotonic() + self._connection_timeout()
-        self.request(_ACP_SET_EFFORT_REQUEST, "session/set_config_option",
-                     sessionId=self.session_id, configId=option["id"], value=effort)
+        self.request(request_id, "session/set_config_option",
+                     sessionId=self.session_id, configId=config_id, value=value)
+
+    def _retry_effort_configuration(self, error: dict | None = None) -> None:
+        assert self.pending_effort is not None
+        config_id, effort, request_id = self.pending_effort
+        if request_id == _ACP_RETRY_EFFORT_REQUEST or (error or {}).get("code") in (-32601, -32602):
+            raise self._effort_not_confirmed(effort)
+        self._send_effort_request(config_id, effort, _ACP_RETRY_EFFORT_REQUEST)
 
     def _complete_effort_configuration(self, message: dict) -> None:
-        effort = self.pending_effort
+        assert self.pending_effort is not None
+        _, effort, _ = self.pending_effort
         result = message.get("result")
         option = self._effort_option(result) if isinstance(result, dict) else None
+        error = message.get("error")
         if "error" in message or option is None or option.get("currentValue") != effort:
-            raise self._effort_not_confirmed(effort)
+            self._retry_effort_configuration(error if isinstance(error, dict) else None)
+            return
         self.pending_effort = None
         self._mark_session_ready()
 
@@ -1127,7 +1141,7 @@ class _AcpSession:
         elif not method and request_id == _ACP_SELECT_LITE_REQUEST and self.selecting_lite:
             self._complete_lite_selection(message)
             self._configure_effort(message.get("result") or {})
-        elif not method and request_id == _ACP_SET_EFFORT_REQUEST and self.pending_effort is not None:
+        elif not method and self.pending_effort is not None and request_id == self.pending_effort[2]:
             self._complete_effort_configuration(message)
         elif not method and request_id in (1, 2, 3):
             return self._advance_prompt(request_id, message)
@@ -1166,7 +1180,10 @@ class _AcpSession:
             if self.pending:
                 return False
         if not self.session_ready and time.monotonic() >= self.startup_deadline:
-            raise JunieSessionError(self.command, 1, "JunieのACP接続がタイムアウトしました。Junie CLIのバージョンとログを確認してください。")
+            if self.pending_effort is not None:
+                self._retry_effort_configuration()
+            else:
+                raise JunieSessionError(self.command, 1, "JunieのACP接続がタイムアウトしました。Junie CLIのバージョンとログを確認してください。")
         if self.steering_waiting is not None and time.monotonic() >= self.steering_deadline:
             raise JunieSessionError(self.command, 1, "追加指示の受信を確認できませんでした。指示を送信待ちに戻します。実行を再開してください。")
         return self.prompt_finished and self.steering_waiting is None and not self.steering_new_turn
