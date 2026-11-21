@@ -195,6 +195,12 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     checker_command = checker.get("command")
     if "command" in checker:
         validate_checker_command(checker_command)
+    checker_files = checker.get("verification_files", [])
+    if not isinstance(checker_files, list):
+        raise ValueError("[checker].verification_files must be an array of file paths")
+    checker_files = list(dict.fromkeys(
+        _file_path(value, root, "[checker].verification_files", inside=True) for value in checker_files
+    ))
     review_free_output = checker.get("review_free_output_with_junie", False)
     if type(review_free_output) is not bool:
         raise ValueError("[checker].review_free_output_with_junie must be a boolean")
@@ -283,6 +289,7 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     return {
         "build_project": build_project,
         "checker_command": checker_command,
+        "checker_verification_files": checker_files,
         "scripts": scripts,
         "diff_viewer_html": viewer_html if viewer_enabled else None,
         "diff_viewer_anchor_reference": anchor_references,

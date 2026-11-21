@@ -209,14 +209,16 @@ class LedgerReviewTest(HarnessCase):
         self.verify()
         self.assertTrue(self.completion()["complete"])
         checker.write_text("raise SystemExit(1)\n", encoding="utf-8")
-        self.assertTrue(self.completion()["verification_passed"])
+        self.assertFalse(self.completion()["verification_passed"])
+        self.assertEqual(self.completion()["verification_input_status"], "changed")
         self.assertEqual(self.verify()["status"], "checker_needs_review")
         self.assertFalse(self.completion()["complete"])
         checker.write_text("# fixed\n", encoding="utf-8")
         self.verify()
         self.assertTrue(self.completion()["complete"])
         hook.write_text("# edited\n", encoding="utf-8")
-        self.assertTrue(self.completion()["verification_passed"])
+        self.assertFalse(self.completion()["verification_passed"])
+        self.assertEqual(self.completion()["verification_input_status"], "changed")
         self.verify()
         self.assertTrue(self.completion()["complete"])
 
@@ -230,6 +232,28 @@ class LedgerReviewTest(HarnessCase):
         self.assertTrue(self.completion()["complete"])
         self.settings["checker_command"] = None
         self.assertFalse(self.completion()["verification_passed"])
+
+    def test_expected_file_change_deletion_and_legacy_receipt_require_reverification(self):
+        expected = self.target.parent / "expected.json"
+        expected.write_text("[]", encoding="utf-8")
+        self.settings["checker_verification_files"] = ["expected.json"]
+        self.prepare_for_verification()
+        self.verify()
+        self.assertTrue(self.completion()["verification_passed"])
+        expected.write_text("[1]", encoding="utf-8")
+        self.assertEqual(self.completion()["verification_input_status"], "changed")
+        self.verify()
+        self.assertTrue(self.completion()["verification_passed"])
+        expected.unlink()
+        self.assertEqual(self.completion()["verification_input_status"], "changed")
+        expected.write_text("[1]", encoding="utf-8")
+        record_path = self.record_path
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        del record["verification"]["input_files"]
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(self.completion()["verification_input_status"], "legacy")
+        self.verify()
+        self.assertTrue(self.completion()["verification_passed"])
 
     def test_saved_cli_checker_is_used_with_toml_only_when_reading_ledger(self):
         self.settings.update(checker_from_cli=True, checker_command=[sys.executable, "-c", "pass"])

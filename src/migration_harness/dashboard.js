@@ -1123,7 +1123,8 @@ function render() {
   element(".run-detail").title = data.worktree_path || "";
   let label = describe(data);
   if (verificationFinished && migrationCompletion) {
-    label = done ? "移行完了" : migrationCompletion.verification_passed ? "移行台帳の確認待ち" : "ビルド・チェックの再確認が必要";
+    label = done ? "移行完了" : migrationCompletion.verification_passed ? "移行台帳の確認待ち"
+      : migrationCompletion.verification_input_status ? "前回合格・要再検証" : "ビルド・チェックの再確認が必要";
   }
   element("#state-label").textContent = data.stop_requested ? "停止待ち" : waitingForJunie ? "Junie の確認待ち" : label;
   element("#run-state").title = element("#state-label").textContent;
