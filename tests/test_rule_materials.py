@@ -461,15 +461,19 @@ class RuleMaterialsTests(HarnessCase):
         capsule.mkdir()
         first, last = capsule / "first.md", capsule / "last.md"
         first.write_text("<?php echo 'orders';\n", encoding="utf-8")
-        entry, = rule_materials.write_rule_files(capsule / "materials", [
+        entries = rule_materials.write_rule_files(capsule / "materials", [
             ({"path": "rules.md", "usage": "reference", "description": "Order output"}, "Use every original order.\n"),
+            ({"path": "other.md", "usage": "reference", "description": "Unrelated\ncheck"}, "Another scope.\n"),
         ])
-        manifest = {"unit_id": "test", "parts": [], "rule_files": [entry]}
+        entry = entries[0]
+        manifest = {"unit_id": "test", "parts": [], "rule_files": entries}
 
         def review(command, completion, token, outputs, **kwargs):
             if oversized == "huge_index":
                 self.assertNotIn("--ide-guidelines", command)
                 self.assertFalse((completion.parent / "review-context.md").exists())
+                self.assertIn("one candidate per physical line", command[-1])
+                self.assertIn("do not create a script just to page", command[-1])
             else:
                 context = Path(command[command.index("--ide-guidelines") + 1]).read_text(encoding="utf-8")
                 self.assertIn(json.dumps(rule_materials.detail_index(manifest), ensure_ascii=False), context)
@@ -480,16 +484,23 @@ class RuleMaterialsTests(HarnessCase):
             self.assertIn("Search across all the saved capsules", command[-1])
             for number, p in enumerate((first, last), 1):
                 self.assertEqual((completion.parent / f"source-{number:04d}.md").read_bytes(), p.read_bytes())
-            saved_index = json.loads((completion.parent / "details.json").read_text(encoding="utf-8"))
-            self.assertEqual(saved_index[0]["when_to_read"], entry["description"])
+            index_text = (completion.parent / "details.json").read_text(encoding="utf-8")
+            expected_index = rule_materials.detail_index(manifest)
+            self.assertEqual(json.loads(index_text), expected_index)
+            self.assertEqual([json.loads(line.removesuffix(",")) for line in index_text.splitlines()[1:-1]],
+                             expected_index)
             self.assertEqual((completion.parent / "details" / entry["file"]).read_text(encoding="utf-8"),
                              "Use every original order.\n")
             self.assertIsNone(kwargs["accept_result"])
             self.assertEqual(json.loads(outputs[0].read_text(encoding="utf-8")), {
                 "rule-0001.txt": {"applies": None, "reason": ""},
+                "rule-0002.txt": {"applies": None, "reason": ""},
             })
             self.assertIn("including its .txt", command[-1])
-            outputs[0].write_text(json.dumps({"rule-0001.txt": {"applies": True, "reason": "Orders"}}))
+            outputs[0].write_text(json.dumps({
+                "rule-0001.txt": {"applies": True, "reason": "Orders"},
+                "rule-0002.txt": {"applies": False, "reason": "Unrelated"},
+            }))
             completion.write_text(token)
 
         for oversized in ("source", "index", "huge_index"):

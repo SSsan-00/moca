@@ -73,6 +73,11 @@ class CapsulePreparationTests(HarnessCase):
         def junie(command, completion, token, agent_targets, *, report_usage=None, prompts=None):
             self.assertIn("`メニュー`", command[-1])
             final_reviews.append("Check exact branch conditions and selector strings" in command[-1])
+            self.assertIn("Verify the full accumulated sequence", command[-1])
+            self.assertIn("values, order, duplicates and PHP literal decoding", command[-1])
+            self.assertIn("Use direct source and target reads", command[-1])
+            self.assertIn("For long or repetitive data, use mechanical extraction and comparison", command[-1])
+            self.assertIn("Do not create a temporary script when direct reads or the supplied helper suffice", command[-1])
             context = (completion.parent / ".migration-context.md").read_bytes().decode("utf-8")
             observed_lines.extend(re.findall(r"^ *([0-9]+) \| ([^\r\n]*)", context, re.MULTILINE))
             accumulated = "".join(p.read_bytes().decode("utf-8") for p in sorted(
