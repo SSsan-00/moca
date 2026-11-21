@@ -25,7 +25,7 @@ def pending_requests(dashboard, manager):
     with dashboard.condition:
         views = manager.views.values() if manager else (dashboard,)
         result = {}
-        for view in sorted(views, key=lambda view: view.junie_requested_at):
+        for view in sorted(views, key=lambda view: view.junie_request_sequence):
             state = view.state
             request = state.get("junie_request")
             if (not request or state.get("stop_requested") or state.get("ready")
@@ -171,7 +171,10 @@ if ($data.action -eq 'remove') {
     $history.Remove($data.tag, 'MigrationHarness', $app.AppID)
 } elseif ($data.action -eq 'show') {
     $notifier = $manager::CreateToastNotifier($app.AppID)
-    if ($notifier.Setting.ToString() -ne 'Enabled') { exit 3 }
+    # Some Windows PowerShell WinRT projections do not expose Setting.
+    # When it is absent, Windows still applies its notification policies in Show.
+    $setting = $notifier.Setting
+    if ($null -ne $setting -and [string]$setting -ne 'Enabled') { exit 3 }
     $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime]::new()
     $xml.LoadXml($data.xml)
     $item = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType=WindowsRuntime]::new($xml)

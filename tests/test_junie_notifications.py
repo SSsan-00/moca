@@ -34,7 +34,8 @@ class JunieRequestTests(unittest.TestCase):
     def pending(self):
         return pending_requests(self.dashboard, self.manager)
 
-    def test_queue_order_and_answer_always_tied_to_run_operation_and_request(self):
+    @patch("time.monotonic_ns", return_value=42)
+    def test_queue_order_and_answer_always_tied_to_run_operation_and_request(self, _clock):
         future_b = self.ask("run-b")
         future_a = self.ask("run-a")
         self.assertEqual([key.run_id for key in self.pending()], ["run-b", "run-a"])

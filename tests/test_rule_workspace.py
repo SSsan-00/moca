@@ -77,6 +77,17 @@ end_line = 1
         self.assertEqual((path / "sources/rule-0001.md").read_bytes(), b"first\r\nnew exception\r\n")
         self.assertEqual((path / "sources/rule-0002.md").read_bytes(), new_data)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows compares paths without case")
+    def test_managed_pack_keeps_original_bytes_with_case_alias(self):
+        runs = Path(self.config["run_root"])
+        runs.mkdir()
+        self.config["run_root"] = str(runs.with_name("RuNs"))
+        original = b"# Original\r\nException\r\n"
+        (self.app / "original.md").write_bytes(original)
+        self.apply(self.workspace.start())
+        next_draft = self.workspace.draft(self.workspace.start()["id"])
+        self.assertEqual((next_draft / "sources/rule-0001.md").read_bytes(), original)
+
     def test_toml_change_and_external_draft_edit_invalidate_apply(self):
         draft = self.workspace.start()
         ready = self.send(draft, "preview")
@@ -98,7 +109,7 @@ end_line = 1
         run = self.root / "runs" / "fixture"
         run.mkdir()
         record = run / "run.json"
-        record.write_text(json.dumps({"pinned_reference": a["id"]}))
+        record.write_text(json.dumps({"pinned_reference": a["id"].upper()}))
         self.assertEqual(self.workspace._archives(), [])
         record.unlink()
         self.assertEqual(self.workspace._archives(), [{"id": a["id"], "archived": False}])
@@ -109,6 +120,15 @@ end_line = 1
         self.send(a, "restore")
         self.assertFalse(self.workspace._archives()[0]["archived"])
         self.assertTrue((self.workspace.draft(b["id"]) / "published/generated/Agent.md").is_file())
+
+    def test_unavailable_model_has_actionable_acp_error(self):
+        chat = object.__new__(RuleChat)
+        chat.turn_id = 10
+        with self.assertRaisesRegex(ValueError, "利用できるモデルがありません"):
+            chat._receive_message({"id": 10, "error": {
+                "code": -32002, "message": "No models are currently available for submission",
+            }})
+        self.assertIsNone(chat.turn_id)
 
     def test_chat_proposals_are_not_written_until_accepted(self):
         class FakeChat:
