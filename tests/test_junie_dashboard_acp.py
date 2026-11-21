@@ -48,7 +48,8 @@ class JunieDashboardAcpTests(unittest.TestCase):
         for outcome in ({"result": {}}, {"error": {"code": -32601}}, {"error": {"code": -32602}}):
             with self.subTest(outcome=outcome):
                 session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
-                session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model="junie-lite")
+                effort = "none" if "result" in outcome else None
+                session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model="junie-lite", effort=effort)
                 session.request = Mock()
                 session.selecting_lite = False
                 session.steering_waiting = None
