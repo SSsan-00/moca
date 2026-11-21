@@ -16,7 +16,8 @@ _TABLE_FIELDS = {
     "project": ("root", "worktree_root", "run_root", "base_ref", "max_context_chars"),
     "build": ("project",),
     "checker": ("command", "max_repair_attempts"),
-    "junie": ("max_steps", "model", "effort", "warn_input_bytes", "max_input_bytes", "log_language", "log_tone"),
+    "junie": ("max_steps", "model", "effort", "warn_input_bytes", "max_input_bytes", "log_language",
+              "log_tone", "log_tone_instruction"),
     "diff_viewer": ("html", "enabled", "anchor_reference"),
     "target_context": ("roots", "folders", "exclude", "recursive", "max_files", "max_bytes", "max_file_bytes"),
 }

@@ -1146,8 +1146,15 @@
                   <label for="settings-junie-log-tone">口調</label>
                   <select id="settings-junie-log-tone" class="workspace-select" data-section="junie" data-setting="log_tone">
                     <option value="neutral">標準</option><option value="polite">丁寧</option>
+                    <option value="concise">簡潔</option><option value="friendly">フレンドリー</option>
+                    <option value="custom">カスタム</option>
                   </select>
-                  <p id="settings-junie-log-help" class="settings-material-range">詳細ログ画面の案内に適用します。Junie・ビルド・チェッカーの原文は変えません。</p>
+                  <div id="settings-junie-log-custom" hidden>
+                    <label for="settings-junie-log-instruction">Junieへの口調指示</label>
+                    <input id="settings-junie-log-instruction" data-section="junie" data-setting="log_tone_instruction" maxlength="300"
+                      placeholder="例：関西弁で、専門用語は短く補足して">
+                  </div>
+                  <p id="settings-junie-log-help" class="settings-material-range">Junieが人向けに書く進捗説明と報告に適用します。生成コード、ビルド・チェッカー出力は対象外です。<span data-demo-only>デモでは指示をJunieに送信しません。</span></p>
                 </fieldset>
                 <div class="settings-pair">
                   <div>
@@ -2618,6 +2625,7 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
           ...Object.fromEntries(["max_steps", "model", "effort"].map(key => [key, read(findTable("junie"), key)])),
           log_language: read(findTable("junie"), "log_language") ?? "ja",
           log_tone: read(findTable("junie"), "log_tone") ?? "neutral",
+          log_tone_instruction: read(findTable("junie"), "log_tone_instruction") ?? "",
         },
         diff_viewer: {
           html: read(findTable("diff_viewer"), "html"),
@@ -2701,8 +2709,12 @@ draft_imports = ["C:/migration/draft/Orders.cshtml", "C:/migration/draft/Orders.
       }
       if (effort && !model) throw new Error("推論の強さを指定する場合は、Junieで使うモデルも選択してください。");
       const {log_language = "", log_tone = ""} = form.junie;
-      if (!["", "ja", "en"].includes(log_language) || !["", "neutral", "polite"].includes(log_tone)) {
+      if (!["ja", "en"].includes(log_language) || !["neutral", "polite", "concise", "friendly", "custom"].includes(log_tone)) {
         throw new Error("詳細ログの案内には指定できる言語と口調を選んでください。");
+      }
+      const custom = form.junie.log_tone_instruction;
+      if (typeof custom !== "string" || [...custom].length > 300 || (log_tone === "custom" && !custom.trim())) {
+        throw new Error("口調のカスタム指示を300文字以内で入力してください。");
       }
       demoSettings = content;
       demoLogOptions = {log_language: log_language || "ja", log_tone: log_tone || "neutral"};

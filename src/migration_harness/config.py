@@ -251,8 +251,13 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     log_tone = junie.get("log_tone", "neutral")
     if log_language not in ("ja", "en"):
         raise ValueError("詳細ログの表示言語は ja または en を指定してください。")
-    if log_tone not in ("neutral", "polite"):
-        raise ValueError("詳細ログの口調は neutral または polite を指定してください。")
+    if log_tone not in ("neutral", "polite", "concise", "friendly", "custom"):
+        raise ValueError("詳細ログの口調が選択肢にありません。")
+    log_tone_instruction = junie.get("log_tone_instruction", "")
+    if not isinstance(log_tone_instruction, str) or len(log_tone_instruction) > 300:
+        raise ValueError("口調のカスタム指示は300文字以内で入力してください。")
+    if log_tone == "custom" and not log_tone_instruction.strip():
+        raise ValueError("口調のカスタム指示を入力してください。")
     pinned_reference_reads = junie.get("pinned_reference_reads", False)
     if type(pinned_reference_reads) is not bool:
         raise ValueError("[junie].pinned_reference_reads must be a boolean")
@@ -308,6 +313,7 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         "junie_model": junie_model,
         "junie_log_language": log_language,
         "junie_log_tone": log_tone,
+        "junie_log_tone_instruction": log_tone_instruction.strip(),
         "junie_review_script_output": review_script_output,
         "junie_apply_output_decisions": apply_output_decisions,
         "junie_ground_output_repairs": ground_output_repairs,
