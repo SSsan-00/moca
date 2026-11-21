@@ -998,10 +998,15 @@ class _AcpSession:
 
     def _select_lite_if_missing(self, session: dict) -> bool:
         flags = self.command[:-2]
-        if "--model" not in flags or "--effort" in flags:
+        if "--model" not in flags:
             return False
-        if flags[flags.index("--model") + 1:][:1] != ["junie-lite"]:
+        model_index = flags.index("--model")
+        if flags[model_index + 1:model_index + 2] != ["junie-lite"]:
             return False
+        if "--effort" in flags:
+            effort_index = flags.index("--effort")
+            if flags[effort_index + 1:effort_index + 2] != ["none"]:
+                return False
         models = session.get("models") or {}
         if models.get("availableModels") or models.get("currentModelId"):
             return False
