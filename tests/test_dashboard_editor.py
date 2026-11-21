@@ -6,7 +6,9 @@ import subprocess
 import sys
 import textwrap
 from contextlib import redirect_stdout
+from http.client import HTTPConnection
 from pathlib import Path
+from select import select
 from threading import Thread
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -192,6 +194,7 @@ class DashboardEditorTests(HarnessCase):
                     script = f"import os; os.chdir({str(root)!r})\nsupported = {supported!r}\nhanding_off = {handing_off!r}\n" + textwrap.dedent("""
                         import json, re, sys
                         from pathlib import Path
+from select import select
                         def read():
                             return json.loads(sys.stdin.readline())
                         def send(**message):
@@ -420,6 +423,7 @@ class DashboardEditorTests(HarnessCase):
             script = f"import os; os.chdir({str(root)!r})\n" + textwrap.dedent("""
                 import json, re, sys, time
                 from pathlib import Path
+from select import select
                 def read():
                     return json.loads(sys.stdin.readline())
                 def send(**message):
@@ -592,6 +596,24 @@ class DashboardEditorTests(HarnessCase):
             self.request("editor-php", {"kind": "save", "target": "source.php"})
         self.assertEqual(method.exception.code, 404)
         method.exception.close()
+
+    def test_php_view_rejects_post_when_body_arrives_after_headers(self):
+        address = urlsplit(self.url)
+        connection = HTTPConnection(address.hostname, address.port, timeout=4)
+        self.addCleanup(connection.close)
+        body = b'{"kind":"save","target":"source.php"}'
+        connection.putrequest("POST", address.path + "editor-php")
+        connection.putheader("Origin", self.origin)
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", str(len(body)))
+        connection.endheaders()
+        self.assertFalse(select([connection.sock], [], [], 0.25)[0],
+                         "server closed or responded before receiving the request body")
+        connection.send(body)
+        with connection.getresponse() as response:
+            self.assertEqual(response.status, 404)
+            response.read()
+        self.assertEqual((self.project / "source.php").read_text(encoding="utf-8"), "<?php echo 1;")
 
     def test_editor_get_rejects_another_run_with_the_same_target(self):
         first = self.finished_run()

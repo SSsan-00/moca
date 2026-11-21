@@ -136,6 +136,26 @@ try {
   console.log("Browser:", (await cdp("Browser.getVersion")).product);
   await cdp("Runtime.enable");
   await cdp("Page.enable");
+  await cdp("Page.addScriptToEvaluateOnNewDocument", {source: "(" + function () {
+    if (!new URL(location.href).searchParams.has("notice")) return;
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url) {
+        super(url);
+        this.onerror = null;
+        // Report a reconnectable error before the first real event.
+        this.bootstrapError = true;
+      }
+      set onerror(handler) {
+        super.onerror = handler;
+        if (handler && this.bootstrapError) {
+          this.bootstrapError = false;
+          handler(new Event("error"));
+        }
+      }
+      get onerror() { return super.onerror; }
+    };
+  }.toString() + ")()"});
   await navigate("Page.navigate", {url: notificationUrl});
   await wait(`document.activeElement.id === "run-state"`);
   assert(await evaluate(`new URL(location.href).searchParams.get("run") === ${JSON.stringify(expectedRun)}
