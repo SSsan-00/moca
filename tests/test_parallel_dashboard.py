@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock, Thread
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -97,6 +98,20 @@ class ParallelDashboardTests(HarnessCase):
                 return json.load(response)
 
         return post, get
+
+    def test_only_finished_runs_notify_and_user_stop_is_silent(self):
+        notices = []
+        self.manager.notifications = SimpleNamespace(settings=lambda: {}, post=lambda notice: notices.append(notice) if notice else None)
+        completed = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
+        stopped = self.manager.submit({"action": "run", "unit_id": "unit-1"})["run_id"]
+        self.assertTrue(self.started[0].wait(8))
+        self.assertTrue(self.started[1].wait(8))
+        self.assertEqual(notices, [])
+        view = self.manager.get(stopped)
+        self.assertTrue(view.request_stop({"operation_id": view.state["operation_id"]}))
+        self.release[0].set()
+        self.wait_until(lambda: not self.manager.workers)
+        self.assertEqual([(notice.run_id, notice.kind) for notice in notices], [(completed, "built")])
 
     def test_cancelling_queued_anchors_finishes_the_original_http_request(self):
         self.settings["diff_viewer_html"] = "viewer.html"
