@@ -69,7 +69,7 @@ def plan_dry_run(config, unit_id):
     check_cancelled()
     unit = find_unit(config, unit_id)
     root = Path(config["project_root"])
-    planned = Path(config["worktree_root"]) / "00000000-0000-0000-0000-000000000000"
+    planned = (Path(config["worktree_root"]) / "00000000-0000-0000-0000-000000000000").resolve()
     build_project = config["build_project"]
     target = unit["target"]
     checker = checker_command_for_unit(config, unit)

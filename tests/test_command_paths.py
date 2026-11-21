@@ -98,7 +98,9 @@ class CommandPathsTests(HarnessCase):
         self.verify(result)
         self.assertTrue(workflow.migration_ledger(self.settings, result["run_id"])["completion"]["verification_passed"])
         checker.write_text("raise SystemExit(1)\n", encoding="utf-8")
-        self.assertTrue(workflow.migration_ledger(self.settings, result["run_id"])["completion"]["verification_passed"])
+        completion = workflow.migration_ledger(self.settings, result["run_id"])["completion"]
+        self.assertFalse(completion["verification_passed"])
+        self.assertEqual(completion["verification_input_status"], "changed")
         self.assertEqual(self.verify(result)["status"], "checker_needs_review")
         self.assertFalse(workflow.migration_ledger(self.settings, result["run_id"])["completion"]["verification_passed"])
 
