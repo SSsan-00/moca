@@ -178,9 +178,15 @@ class RuleWorkspace:
 
     def _managed_active(self, rules):
         paths = [(Path(self.config["project_root"]) / item["path"]).resolve() for item in rules]
-        if not paths or not paths[0].is_relative_to(self.root()):
+        if not paths:
             return None
-        identifier = paths[0].relative_to(self.root()).parts[0]
+        root = self.root().resolve()
+        if not paths[0].is_relative_to(root):
+            return None
+        relative = paths[0].relative_to(root)
+        if not relative.parts or not _ID.fullmatch(relative.parts[0]):
+            return None
+        identifier = relative.parts[0]
         pack = self.draft(identifier)
         state = rule_pack.read_json(pack / "state.json")
         export = pack / "published"
@@ -188,9 +194,12 @@ class RuleWorkspace:
             return None
         rule_pack.verify(export)
         expected = tomllib.loads((export / "generated" / "rules.toml").read_text(encoding="utf-8"))["project"]["migration_rules"]
-        normalized = [(entry["path"], entry.get("usage", "required"), entry.get("description", "")) for entry in expected]
-        actual = [(str(p).replace("\\", "/"), r.get("usage", "required"), r.get("description", "")) for p, r in zip(paths, rules)]
-        return pack if normalized == actual else None
+        def signature(entry, path):
+            return path, entry.get("usage", "required"), entry.get("description", "")
+
+        generated = [signature(entry, Path(entry["path"]).resolve()) for entry in expected]
+        registered = [signature(entry, path) for entry, path in zip(rules, paths)]
+        return pack if generated == registered else None
 
     def snapshot(self, identifier=None):
         with self.lock:
@@ -468,7 +477,7 @@ class RuleWorkspace:
                         continue
                     if not file.is_file() or file.is_symlink() or file.stat().st_size > 16 * _MAX_SOURCE:
                         return []
-                    references.append(file.read_text(encoding="utf-8"))
+                    references.append(file.read_text(encoding="utf-8").casefold())
         choices = []
         for path, _ in ordered:
             if path in protected:
