@@ -13,6 +13,7 @@ from collections import deque
 from concurrent.futures import Future
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import count
 from pathlib import Path
 from queue import Empty, Queue
 from subprocess import CalledProcessError
@@ -149,6 +150,9 @@ def _save_settings(path: Path, content: str, version: str, *, before_replace=Non
         candidate.unlink(missing_ok=True)
 
 
+_junie_request_sequence = count(1)
+
+
 class Dashboard:
 
     def __init__(self) -> None:
@@ -162,7 +166,7 @@ class Dashboard:
         self.closed = False
         self.control: ExecutionControl | None = None
         self.junie_reply: Future[str] | None = None
-        self.junie_requested_at = 0
+        self.junie_request_sequence = 0
         self.trusted_junie_workspaces: set[str] = set()
         self.activity_sequence = 0
 
@@ -204,7 +208,7 @@ class Dashboard:
             if request is not None and self.control and not self.control.cancelled.is_set():
                 state["junie_request"] = {**request, "id": secrets.token_hex(16)}
                 self.junie_reply = Future()
-                self.junie_requested_at = time.monotonic_ns()
+                self.junie_request_sequence = next(_junie_request_sequence)
             self.publish(state)
             return self.junie_reply
 
@@ -407,8 +411,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.send_header("Referrer-Policy", "no-referrer")
             for name, value in {"X-Frame-Options": "DENY", **(headers or {})}.items():
                 self.send_header(name, value)
-            self.end_headers()
-            self.wfile.write(body)
+            with suppress(BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                self.end_headers()
+                self.wfile.write(body)
 
         def do_GET(self) -> None:
             if self.headers.get("Host") != self.expected_host:

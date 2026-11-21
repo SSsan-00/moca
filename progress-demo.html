@@ -84,7 +84,7 @@
     .brand:hover { color: var(--blue); }
     .top-links { display: flex; gap: 18px; font-size: 13px; }
     .top-links a { text-decoration: none; }
-    .workspace-tabs { position: relative; display: flex; gap: 12px; border-bottom: 2px solid var(--line); }
+    .workspace-tabs { position: relative; display: flex; gap: 12px; overflow: clip; overflow-clip-margin: 3px; border-bottom: 2px solid var(--line); }
     .workspace-tabs button { min-height: 42px; padding: 0 16px; border: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); cursor: pointer; }
     .workspace-tabs button:hover { background: var(--surface-hover); }
     .workspace-tabs button[aria-selected="true"] { color: var(--blue); font-weight: 700; }

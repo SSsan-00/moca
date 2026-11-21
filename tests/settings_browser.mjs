@@ -79,7 +79,10 @@ try {
   async function cdp(method, params = {}) {
     const id = ++sequence;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Browser command timed out: " + method)), 5000);
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("Browser command timed out: " + method));
+      }, 10_000);
       pending.set(id, message => {
         clearTimeout(timeout);
         pending.delete(id);
@@ -94,7 +97,15 @@ try {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result.value;
   }
-  const wait = expression => eventually(() => evaluate(expression), expression);
+  const wait = expression => eventually(async () => {
+    try {
+      return await evaluate(expression);
+    } catch (error) {
+      // Chrome may replace the JavaScript context during a real navigation.
+      if (!/Execution context was destroyed|Cannot find context/.test(error.message)) throw error;
+      return false;
+    }
+  }, expression);
   const field = id => `document.getElementById(${JSON.stringify(id)})`;
   const click = id => evaluate(`${field(id)}.click()`);
   const change = (id, value, event = "change") => evaluate(`
@@ -115,7 +126,8 @@ try {
   assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
-  await evaluate('(window.beforeRecoveryReload = true, setTimeout(() => location.reload(), 20), true)');
+  await evaluate("window.beforeRecoveryReload = true");
+  await cdp("Page.reload");
   await wait(`!window.beforeRecoveryReload && document.readyState === "complete" && document.documentElement.dataset.liveReady === "true"`);
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
@@ -125,7 +137,8 @@ try {
   await evaluate('document.querySelector("#settings-project-details > summary").click()');
   for (const width of [390, 768, 1280]) {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height: 900, deviceScaleFactor: 1, mobile: false});
-    assert(await evaluate(`document.documentElement.lang === "ja" && document.documentElement.scrollWidth <= ${width}`));
+    const layout = await evaluate('JSON.stringify({viewport: innerWidth, width: document.documentElement.scrollWidth, tabs: document.querySelector(".workspace-tabs").getBoundingClientRect().right, overflow: [...document.querySelectorAll("body *")].filter(e => e.getClientRects().length && e.getBoundingClientRect().right > innerWidth + 1).slice(0, 16).map(e => [e.id || e.className, e.getBoundingClientRect().right])})');
+    assert(await evaluate(`document.documentElement.lang === "ja" && document.documentElement.scrollWidth <= ${width}`), layout);
   }
   for (const id of ["settings-context-scope", "settings-context-exclude", "settings-context-recursive",
     "settings-context-max-files", "settings-context-max-total", "settings-context-max-file",

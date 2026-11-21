@@ -58,7 +58,11 @@ class RuleChat(junie_cli._AcpSession):
             return False
         if self.turn_id is not None and message.get("id") == self.turn_id and "method" not in message:
             self.turn_id = None
-            if message.get("result", {}).get("stopReason") != "end_turn":
+            error = message.get("error")
+            if (isinstance(error, dict) and error.get("code") == -32002
+                    and str(error.get("message", "")).strip().lower() == "no models are currently available for submission"):
+                raise ValueError("Junieで利用できるモデルがありません。同じWindowsユーザーでJunieにサインインし、モデルを確認してください。")
+            if (message.get("result") or {}).get("stopReason") != "end_turn":
                 raise ValueError("Junieが整理の応答を完了しませんでした。")
             self.prompt_finished = True
             return True
