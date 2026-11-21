@@ -1265,13 +1265,20 @@ def _run_migration_junie(
         nonlocal closed
         closed = True
 
+    stop_reason = None
+
+    def remember_stop(reason):
+        nonlocal stop_reason
+        stop_reason = reason
+
     observer = junie_cli.session_closed_observer.set(confirm_closed)
+    stop_observer = junie_cli.acp_stop_observer.set(remember_stop)
     try:
         exit_code = _run_budgeted_junie(config, record_path, record, phase, guidelines, agent_root, inputs,
                                        command, completion, token, agent_targets, **kwargs)
         if resumed_draft and not closed:
             raise junie_cli.JunieStopError("Junie と子プロセスの終了を確認できませんでした。")
-        return exit_code
+        return exit_code, stop_reason
     except (KeyboardInterrupt, OSError, RuntimeError, ValueError) as exc:
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
             record["migration_stop_unconfirmed"] = True
@@ -1283,6 +1290,7 @@ def _run_migration_junie(
             )
         raise
     finally:
+        junie_cli.acp_stop_observer.reset(stop_observer)
         junie_cli.session_closed_observer.reset(observer)
 
 
@@ -1553,6 +1561,8 @@ def _stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targe
         f"for migration unit `{unit['id']}`. The configured target files are "
         + ", ".join(f"`{path.as_posix()}`" for path in relative_targets) + ". "
         "Preserve work from earlier segments and continue only with this segment. "
+        "Read the current target around each edit. If a patch does not match, reread the target and make a fresh, smaller patch. "
+        "Do not retry a denied action through another tool; report the blocking step if you cannot continue. "
         "Edit only the configured targets, the optional handoff file, the completion record, and temporary files in .migration-scratch/. "
         "Ensure every configured target exists before writing a completion record. "
         f"{_TARGET_ENCODING}"
@@ -1638,7 +1648,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
                                       effort=record.get("junie_effort"))
     try:
         try:
-            exit_code = _run_migration_junie(
+            exit_code, stop_reason = _run_migration_junie(
                 config, record_path, record, "migration", guidelines, agent_root, inputs,
                 command, completion_path, completion_token, agent_targets,
                 worktree=worktree_root, targets=relative_targets, allowed=allowed, other_files=other_files,
@@ -1688,7 +1698,10 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         record["error"] = (
             f"Junie did not produce configured targets: {', '.join(missing)}" if missing
             else "Junie did not leave a valid completion record for this capsule"
-        ) + f"\nExit code: {exit_code}\n" + junie_cli.launch_diagnostics(command)
+        )
+        if stop_reason:
+            record["error"] += f"\nJunie ACP stopped: {stop_reason}."
+        record["error"] += f"\nExit code: {exit_code}\n" + junie_cli.launch_diagnostics(command)
         write_run_record(record_path, record)
         return exit_code, False
 

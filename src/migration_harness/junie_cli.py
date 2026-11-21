@@ -699,6 +699,8 @@ def _task_command(command: list[str]) -> list[str]:
 launch_input_observer: ContextVar[Callable[[str], None] | None] = ContextVar("launch_input_observer", default=None)
 steering_input_observer: ContextVar[Callable[[str], bool] | None] = ContextVar("steering_input_observer", default=None)
 session_closed_observer: ContextVar[Callable[[], None] | None] = ContextVar("session_closed_observer", default=None)
+acp_stop_observer: ContextVar[Callable[[str | None], None] | None] = ContextVar("acp_stop_observer", default=None)
+_ACP_INCOMPLETE_REASONS = {"cancelled", "max_tokens", "max_turn_requests", "refusal"}
 
 
 def run_interactive(
@@ -1132,6 +1134,10 @@ class _AcpSession:
             if not self._select_lite_if_missing(result):
                 self._configure_effort(result)
         elif request_id == 3:
+            reason = result.get("stopReason")
+            if isinstance(reason, str) and reason in _ACP_INCOMPLETE_REASONS:
+                if observe := acp_stop_observer.get():
+                    observe(reason)
             self.prompt_finished = True
             if self.steering_waiting is None and not self.steering_new_turn:
                 return True
@@ -1267,6 +1273,8 @@ def _run_session(
     check_cancelled()
     root = completion_path.parent
     dashboard = junie_dashboard_control()
+    if observe := acp_stop_observer.get():
+        observe(None)
     headless = command[-2:-1] == ["--task"]
     restore_terminal = _save_terminal_mode() if dashboard is None and not headless else None
     process = None
