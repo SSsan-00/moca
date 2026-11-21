@@ -61,7 +61,13 @@ class RuleChat(junie_cli._AcpSession):
             if (isinstance(error, dict) and error.get("code") == -32002
                     and str(error.get("message", "")).strip().lower() == "no models are currently available for submission"):
                 raise ValueError("Junieで利用できるモデルがありません。選択したモデルと通常のJunie CLIでの利用可否を確認してください。")
-            if (message.get("result") or {}).get("stopReason") != "end_turn":
+            stop_reason = (message.get("result") or {}).get("stopReason")
+            if stop_reason == "cancelled":
+                raise ValueError(
+                    "Junie側で整理の応答が中断されました。停止操作をしていない場合は、"
+                    "選んだプロバイダーの認証・利用資格を確認してから再試行してください。"
+                )
+            if stop_reason != "end_turn":
                 raise ValueError("Junieが整理の応答を完了しませんでした。")
             self.prompt_finished = True
             return True

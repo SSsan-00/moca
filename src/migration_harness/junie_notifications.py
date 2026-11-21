@@ -7,6 +7,7 @@ import os
 import secrets
 import subprocess
 import time
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, SimpleQueue
@@ -51,20 +52,34 @@ def answer_pending(dashboard, manager, action):
 
 
 def notification_settings(raw):
-    if not isinstance(raw, dict) or raw.keys() - {"enabled", "interval_seconds", "repeats", "milestone_after_seconds"}:
-        raise ValueError("[junie_notifications] must contain enabled, interval_seconds, repeats or milestone_after_seconds")
+    keys = {"enabled", "repeat_after_seconds", "interval_seconds", "repeats", "milestone_after_seconds"}
+    if not isinstance(raw, dict) or raw.keys() - keys:
+        raise ValueError("[junie_notifications] has an unknown setting")
     enabled = raw.get("enabled", True)
-    interval = raw.get("interval_seconds", 300)
-    repeats = raw.get("repeats", 2)
-    if type(enabled) is not bool or type(interval) is not int or not 1 <= interval <= 86400:
-        raise ValueError("[junie_notifications] expects a boolean enabled and 1–86400 interval_seconds")
-    if type(repeats) is not int or not 0 <= repeats <= 10:
-        raise ValueError("[junie_notifications].repeats must be between 0 and 10")
+    if type(enabled) is not bool:
+        raise ValueError("[junie_notifications].enabled must be a boolean")
+    legacy = {"interval_seconds", "repeats"} & raw.keys()
+    if legacy:
+        if "repeat_after_seconds" in raw:
+            raise ValueError("[junie_notifications] cannot mix repeat_after_seconds with interval_seconds or repeats")
+        interval = raw.get("interval_seconds", 300)
+        repeats = raw.get("repeats", 2)
+        if type(interval) is not int or not 1 <= interval <= 86400:
+            raise ValueError("[junie_notifications].interval_seconds must be between 1 and 86400")
+        if type(repeats) is not int or not 0 <= repeats <= 10:
+            raise ValueError("[junie_notifications].repeats must be between 0 and 10")
+        offsets = tuple(interval * i for i in range(1, repeats + 1))
+    else:
+        offsets = raw.get("repeat_after_seconds", [60, 180, 300])
+        if (not isinstance(offsets, list) or len(offsets) > 10
+                or any(type(value) is not int or not 1 <= value <= 86400 for value in offsets)
+                or offsets != sorted(set(offsets))):
+            raise ValueError("[junie_notifications].repeat_after_seconds needs up to 10 increasing, distinct seconds (1–86400)")
+        offsets = tuple(offsets)
     milestone = raw.get("milestone_after_seconds", 0)
     if type(milestone) is not int or not 0 <= milestone <= 86400:
         raise ValueError("[junie_notifications].milestone_after_seconds must be between 0 and 86400")
-    return {"enabled": enabled, "interval_seconds": interval, "repeats": repeats,
-            "milestone_after_seconds": milestone}
+    return {"enabled": enabled, "repeat_after_seconds": offsets, "milestone_after_seconds": milestone}
 
 
 @dataclass(frozen=True)
@@ -108,7 +123,7 @@ def run_notice(run_id, action, result, *, failed=False):
 @dataclass
 class PendingToast:
     token: str
-    next_at: float
+    first_at: float
     emitted: int = 0
 
 
@@ -122,6 +137,7 @@ class JunieNotifications:
         self.now = now
         self.active = {}
         self.links = {}
+        self.opened_requests = set()
         self.run_queue = SimpleQueue()
         self.completed = set()
         self.milestones = set()
@@ -171,7 +187,11 @@ class JunieNotifications:
 
     def tick(self):
         policy = self.settings()
-        visible = set(self.pending()) if policy["enabled"] else set()
+        pending = set(self.pending())
+        with self.link_lock:
+            self.opened_requests.intersection_update(pending)
+            visible = pending - self.opened_requests if policy["enabled"] else set()
+        offsets = policy["repeat_after_seconds"]
         for key in list(self.active.keys() - visible):
             toast = self.active.pop(key)
             if toast.emitted:
@@ -182,11 +202,14 @@ class JunieNotifications:
             if toast is None:
                 toast = self.active[key] = PendingToast(secrets.token_urlsafe(24), now)
                 self.remember(toast.token, key)
-            if toast.emitted <= policy["repeats"] and toast.next_at <= now and key in self.pending():
+            due = 1 + bisect_right(offsets, now - toast.first_at)
+            if toast.emitted < due and key in self.pending():
                 if self.stop.is_set():
                     return
-                toast.emitted += 1
-                toast.next_at = now + policy["interval_seconds"]
+                with self.link_lock:
+                    if key in self.opened_requests:
+                        continue
+                toast.emitted = due
                 self.try_backend("show", self.tag(toast), f"{self.origin}/junie-open/{toast.token}")
 
         notices = []
@@ -221,9 +244,12 @@ class JunieNotifications:
             # A disabled or unavailable Windows notifier must not interrupt the dashboard.
             pass
 
-    def location(self, token):
+    def location(self, token, *, activate=False):
         with self.link_lock:
             key = self.links.get(token)
+        if activate and isinstance(key, RequestKey) and key in self.pending():
+            with self.link_lock:
+                self.opened_requests.add(key)
         if key is None:
             return None
         if isinstance(key, RunNotice):

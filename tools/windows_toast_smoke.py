@@ -13,12 +13,12 @@ from migration_harness.junie_notifications import JunieNotifications, RequestKey
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--interval", type=int, default=300)
-    parser.add_argument("--timeout", type=int, default=630)
+    parser.add_argument("--interval", type=int, help="Override with a uniform interval for fast checks")
+    parser.add_argument("--timeout", type=int, default=330)
     args = parser.parse_args()
     if os.name != "nt" or args.timeout <= 0:
         parser.error("Run on Windows with a positive timeout.")
-    settings = notification_settings({"interval_seconds": args.interval})
+    settings = notification_settings({"interval_seconds": args.interval} if args.interval is not None else {})
     key = RequestKey("native-fixture-b", "fixture-operation-b", "fixture-request-b")
     expected = {"run": [key.run_id], "junie_operation": [key.operation_id], "junie_request": [key.request_id]}
     waiting, clicked = Event(), Event()
@@ -45,7 +45,7 @@ def main():
         def do_GET(self):
             parsed = urlsplit(self.path)
             if parsed.path.startswith("/junie-open/"):
-                target = notices.location(parsed.path.rsplit("/", 1)[-1])
+                target = notices.location(parsed.path.rsplit("/", 1)[-1], activate=True)
                 if target:
                     self.send_response(303)
                     self.send_header("Location", target)
