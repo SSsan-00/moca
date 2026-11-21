@@ -1020,6 +1020,15 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
                                   prefix + "build-response", prefix + "editor", prefix + "prompts",
                                   prefix + "rule-workspace", prefix + "junie-requests"):
+                if (self.path.partition("?")[0] == prefix + "editor-php"
+                        and self.headers.get("Host") == self.expected_host
+                        and self.headers.get("Origin") == "http://" + self.expected_host):
+                    # Closing with unread request bytes can reset the connection on Windows.
+                    with suppress(OSError, ValueError):
+                        length = int(self.headers.get("Content-Length", "0"))
+                        if 0 < length <= 16_384:
+                            self.connection.settimeout(1)
+                            self.rfile.read(length)
                 self.send_error(404)
                 return
             if self.headers.get("Host") != self.expected_host or self.headers.get("Origin") != "http://" + self.expected_host:
