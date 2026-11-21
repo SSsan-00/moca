@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -198,6 +199,81 @@ end_line = 1
         accepted = self.send(reopened, "accept")
         self.assertEqual(len(accepted["files"]), 2)
         self.assertIn("new rule", self.workspace.file_text(draft["id"], accepted["files"][1]["source"])["text"])
+
+    def test_rule_workspace_answers_only_current_permission_and_keeps_toml_unchanged(self):
+        mock = """import json,sys
+def send(data): print(json.dumps(data),flush=True)
+for line in sys.stdin:
+    msg=json.loads(line)
+    method=msg.get("method")
+    if method=="initialize":
+        send({"id":msg["id"],"result":{"protocolVersion":1}})
+    elif method=="session/new":
+        send({"id":msg["id"],"result":{"sessionId":"rule-scope"}})
+    elif method=="session/prompt":
+        prompt_id=msg["id"]
+        send({"id":700,"method":"session/request_permission","params":{"sessionId":"rule-scope",
+            "toolCall":{"toolCallId":"fixture-read","kind":"read","title":"Read synthetic fixture"},
+            "options":[{"optionId":"yes","name":"Allow once","kind":"allow_once"},
+                       {"optionId":"no","name":"Deny once","kind":"reject_once"}]}})
+    elif msg.get("id")==700:
+        choice=msg["result"]["outcome"]["optionId"]
+        answer={"message":choice,"unresolved":[]}
+        if choice=="yes":
+            answer["edit"]={"source":"new","name":"proposal.md","text":"new fixture rule"}
+        send({"method":"session/update","params":{"sessionId":"rule-scope","update":{
+            "sessionUpdate":"agent_message_chunk","content":{"type":"text","text":json.dumps(answer)}}}})
+        send({"id":prompt_id,"result":{"stopReason":"end_turn"}})
+"""
+        original = self.config_path.read_bytes()
+        own = self.workspace.start()
+        foreign = self.workspace.start()
+        self.assertNotEqual(own["id"], foreign["id"])
+        request_ids = set()
+        def stop_fixture(process):
+            process.terminate()
+            return process.wait(timeout=5)
+
+        with patch("migration_harness.junie_cli._close_junie", side_effect=stop_fixture), patch(
+                "migration_harness.junie_cli._launch_process", side_effect=lambda *args, **kwargs: subprocess.Popen(
+                    [sys.executable, "-u", "-c", mock], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL)):
+            try:
+                for option in ("no", "yes"):
+                    with self.subTest(option=option):
+                        current = self.workspace.snapshot(own["id"])
+                        self.send(current, "message", text="Synthetic read permission test")
+                        deadline = time.monotonic() + 8
+                        while time.monotonic() < deadline:
+                            with self.workspace.lock:
+                                permission = (self.workspace.live or {}).get("permission")
+                            if permission and permission["id"] not in request_ids:
+                                break
+                            time.sleep(0.02)
+                        else:
+                            self.fail("Permission did not reach the rule workspace")
+                        current = self.workspace.snapshot(own["id"])
+                        request = permission["id"]
+                        with self.assertRaises(ValueError):
+                            self.send(foreign, "answer", request=request, option=option)
+                        for stale in {"stale-request", *request_ids}:
+                            with self.assertRaises(ValueError):
+                                self.send(current, "answer", request=stale, option=option)
+                        with self.assertRaises(ValueError):
+                            self.send(current, "answer", request=request, option="not-an-option")
+                        self.send(current, "answer", request=request, option=option)
+                        request_ids.add(request)
+                        worker = self.workspace.worker
+                        if worker:
+                            worker.join(8)
+                        self.assertIsNone(self.workspace.worker)
+                        result = self.workspace.snapshot(own["id"])
+                        self.assertEqual(result["messages"][-1]["text"], option)
+                        self.assertEqual(bool(result.get("proposal")), option == "yes")
+                        self.assertEqual(self.config_path.read_bytes(), original)
+                        self.assertFalse((self.app / "proposal.md").exists())
+            finally:
+                self.workspace.close()
 
     def test_acp_skill_announcement_and_multiple_turns_same_session(self):
         mock = """import sys,json
