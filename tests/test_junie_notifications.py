@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import unittest
 from contextlib import redirect_stdout
 from threading import Thread
@@ -193,6 +194,25 @@ class JunieNotificationTests(unittest.TestCase):
         self.assertIn(url, kwargs["input"].decode("ascii"))
         self.assertNotIn("/secret/", kwargs["input"].decode("ascii"))
         self.assertNotIn("shell", kwargs)
+
+    def test_windows_show_retries_a_timeout_once_with_identical_tag_and_payload(self):
+        expired = subprocess.TimeoutExpired("powershell.exe", 5)
+        with patch("migration_harness.junie_notifications.subprocess.run", side_effect=[expired, None]) as command:
+            WindowsToast()("show", "stable-tag", "http://127.0.0.1:9234/junie-open/token", "failed")
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual(command.call_args_list[0].args, command.call_args_list[1].args)
+        self.assertEqual(command.call_args_list[0].kwargs["input"], command.call_args_list[1].kwargs["input"])
+        self.assertEqual(json.loads(command.call_args.kwargs["input"])["tag"], "stable-tag")
+
+    def test_windows_toast_does_not_loop_or_retry_explicit_rejection_or_removal(self):
+        expired = subprocess.TimeoutExpired("powershell.exe", 5)
+        rejected = subprocess.CalledProcessError(3, "powershell.exe")
+        for action, error, calls in (("show", expired, 2), ("show", rejected, 1), ("remove", expired, 1)):
+            with self.subTest(action=action, error=type(error).__name__):
+                with patch("migration_harness.junie_notifications.subprocess.run", side_effect=error) as command:
+                    with self.assertRaises(type(error)):
+                        WindowsToast()(action, "stable-tag", "")
+                self.assertEqual(command.call_count, calls)
 
     def test_run_outcomes_are_distinct_and_manual_stop_or_intermediate_status_is_silent(self):
         outcomes = [
