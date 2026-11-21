@@ -1013,7 +1013,7 @@ def _read_operator_review(
 
 def _restore_operator_question_targets(agent_root, worktree, targets):
     """質問待ちの編集を外部変更と照合し、作業領域に復元する。"""
-    with worktree_source_lock:
+    with worktree_source_lock(worktree):
         for target in targets:
             source = safe_target(worktree, target)
             destination = safe_target(agent_root, target)
@@ -1183,7 +1183,7 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
 def _checkpoint_migration_draft(record_path, record, worktree, agent_root, targets, allowed, other_files, before,
                                 *, memo=None, phase="migration", through=None):
     """対象外と基準版が一致するときだけ、移行中の最新下書きを記録する。"""
-    with worktree_source_lock:
+    with worktree_source_lock(worktree):
         try:
             safe = (
                 _unlisted_workspace_files(agent_root, allowed) == other_files
@@ -1363,7 +1363,7 @@ def _prepare_migration_workspace(config, unit, run_path, result, record, *, resu
                              "採用済みの作業ツリーと Junie 作業領域を比較し、対象外の変更や外部編集を確認してください。")
     rewind = record.get("migration_rewind")
     if rewind and "restore_from" in rewind:
-        with editor_queue(run_path) as queue, worktree_source_lock:
+        with editor_queue(run_path) as queue, worktree_source_lock(worktree_root):
             if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
                 raise ValueError("巻き戻しと未反映の操作が競合しています。")
             _restore_snapshot_targets(
@@ -1643,7 +1643,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
     save_junie_memo(memo, run_path, record, phase="migration", through=index)
     record["completed_capsules"] = index
     record["current_capsule"] = min(index + 1, capsule_count)
-    with worktree_source_lock:
+    with worktree_source_lock(worktree_root):
         record.setdefault("capsule_checkpoints", {})[str(index)] = _save_capsule_checkpoint(
             run_path, worktree_root, relative_targets, record["target_hashes"],
         )
@@ -2167,7 +2167,7 @@ def plan_stopped_repair(config, run_id):
     run_id = str(uuid.UUID(run_id))
     with execution_lock(config, run_id):
         run_path, worktree, record, unit = load_saved_run(config, run_id)
-        with editor_queue(run_path) as queue, worktree_source_lock:
+        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
             plan, _, _, _ = _stopped_repair_plan(run_path, worktree, unit, record, queue)
     return plan
 
@@ -2177,7 +2177,7 @@ def resolve_stopped_repair(config, run_id, version, choices):
     run_id = str(uuid.UUID(run_id))
     with execution_lock(config, run_id):
         run_path, worktree, record, unit = load_saved_run(config, run_id)
-        with editor_queue(run_path) as queue, worktree_source_lock:
+        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
             plan, current, agent, snapshot = _stopped_repair_plan(run_path, worktree, unit, record, queue)
             if plan["version"] != version:
                 raise ValueError("下書きまたは現行版が更新されました。復元計画を取り直してください。")
@@ -2263,7 +2263,7 @@ def _recover_selected_repair(run_path, worktree, targets, record):
     draft = attempt["draft"]
     agent_root = run_path / "agent-workspace"
     try:
-        with editor_queue(run_path) as queue, worktree_source_lock:
+        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
             if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
                 raise ValueError("未反映の保存操作または Junie 指示があります。")
             names = {path.as_posix() for path in targets}
@@ -2532,7 +2532,7 @@ def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targe
         raise CheckerRepairBlocked(
             "stopped_draft", "停止時の下書きの保存に失敗しました。Junie 作業領域の編集を確認してください。",
         )
-    with editor_queue(run_path) as queue, worktree_source_lock:
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         source_files = {path: safe_target(worktree, path) for path in targets}
         agent_files = {path: safe_target(agent_root, path) for path in targets}
         before = {path.as_posix(): sha256_file(source) for path, source in source_files.items()}
@@ -2664,7 +2664,7 @@ def build_failure_review(config: dict[str, Any], run_id: str, target: str | None
     if target is not None:
         if target not in {path.as_posix() for path in targets}:
             raise ValueError("設定された移行対象ファイルを選んでください。")
-        with worktree_source_lock:
+        with worktree_source_lock(worktree):
             data, content = read_target(worktree, Path(target))
         if data is None:
             raise ValueError("対象ファイルが見つかりません。作業ツリーで確認してください。")
@@ -2761,7 +2761,7 @@ def _apply_verification_edits(run_path, worktree, unit, request):
 
     targets = target_paths(unit)
     apply_error = None
-    with editor_queue(run_path) as queue, worktree_source_lock:
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         check_cancelled()
         if (saved_edits(queue) != request["edits"] or queue.get("edit_revision") != request["edit_revision"]
                 or target_versions(worktree, unit) != request["targets"]):
@@ -3654,7 +3654,7 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     from .junie_conversation import saved_edits, target_versions
 
     run_path, worktree, _, unit = load_saved_run(config, run_id)
-    with editor_queue(run_path) as queue, worktree_source_lock:
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
         if not can_resume_build(record):
             raise ValueError("移行が完了してから「ビルドのみ」を選んでください。")
@@ -3676,7 +3676,7 @@ def plan_migration_resume(
     from .junie_conversation import target_versions
 
     run_path, worktree, _, unit = load_saved_run(config, run_id)
-    with editor_queue(run_path) as queue, worktree_source_lock:
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
         agent = run_path / "agent-workspace"
         capsule, manifest = load_capsule_manifest(run_path)
@@ -3732,7 +3732,7 @@ def plan_migration_resume(
 
 
 def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
-    with editor_queue(run_path) as queue, worktree_source_lock:
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         if (queue.get("edit_revision") != plan["edit_revision"] or queue["edits"]
                 or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
             raise ValueError("巻き戻しと未反映の操作が競合しています。")
@@ -3799,7 +3799,7 @@ def plan_checker_resume(config, run_id):
         raise ValueError("チェッカーを設定してから再開してください。")
     if _verification_scripts(config, command) or config.get("scripts", {}).get("after_migration"):
         raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
-    with editor_queue(run_path) as queue, worktree_source_lock:
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
         if (record["status"] not in VERIFIED_STATUSES | _CHECKER_RESUME_STATUSES
                 or not record.get("completed_capsules")
@@ -3822,11 +3822,12 @@ def _resume_checker(config, unit, result, record, plan, request_id):
     run_path, worktree = Path(result["run_path"]), Path(result["worktree_path"])
     record_path = run_path / "run.json"
     command = plan["checker_command"]
-    with editor_queue(run_path) as queue, worktree_source_lock:
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         if (queue.get("edit_revision") != plan["edit_revision"] or queue["edits"]
                 or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
             raise ValueError("計画後に編集または指示が更新されました。")
-        _check_build_receipt(config, worktree, record)
+        if _check_build_receipt(config, worktree, record) != plan["build_receipt"]:
+            raise ValueError("確認後にビルドの保存版が更新されました。チェッカーの再開計画を確認し直してください。")
         record.setdefault("resume_operations", []).append({
             **plan, "id": request_id, "accepted_at": datetime.now(timezone.utc).isoformat(),
         })
