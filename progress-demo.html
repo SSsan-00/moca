@@ -824,6 +824,20 @@
       <button class="button" id="open-progress-prompt" type="button" aria-haspopup="dialog" hidden>Junie に指示</button>
       <button class="button" id="stop" type="button" title="編集内容を残して処理を停止します">停止</button>
       <button class="button" id="restart" type="button">最初から</button>
+      <button class="button" id="demo-notice" type="button" aria-haspopup="dialog" data-demo-only>確認待ち通知（デモ）</button>
+      <dialog id="demo-notice-dialog" aria-labelledby="demo-notice-title" data-demo-only>
+        <form method="dialog" class="review-content">
+          <h2 id="demo-notice-title">Windowsの確認待ち通知</h2>
+          <p>これは模擬通知です。OSには通知を送信しません。</p>
+          <p>実際のハーネスでは、初回から1・3・5分後に再通知します。通知を開くと同じ確認の再通知だけが止まります。</p>
+          <p id="demo-notice-state" role="status">確認待ち。まだ回答していません。</p>
+          <div class="controls">
+            <button class="button" id="demo-notice-open" type="button">通知を開く</button>
+            <button class="button" id="demo-notice-answer" type="button" hidden>確認に回答</button>
+            <button class="button">閉じる</button>
+          </div>
+        </form>
+      </dialog>
       <div class="comparison-control">
         <button class="button" type="button" data-compare>比較ツールを開く</button>
         <details class="comparison-options">
@@ -2163,6 +2177,30 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
 }
 </script>
 <!-- dashboard-script -->
+<script>
+(() => {
+  const dialog = document.getElementById("demo-notice-dialog");
+  const state = document.getElementById("demo-notice-state");
+  const open = document.getElementById("demo-notice-open");
+  const answer = document.getElementById("demo-notice-answer");
+  document.getElementById("demo-notice").addEventListener("click", () => {
+    state.textContent = "確認待ち。まだ回答していません。";
+    open.disabled = false;
+    answer.hidden = true;
+    dialog.showModal();
+  });
+  open.addEventListener("click", () => {
+    state.textContent = "再通知を停止しました。確認はまだ未回答です。";
+    open.disabled = true;
+    answer.hidden = false;
+    answer.focus();
+  });
+  answer.addEventListener("click", () => {
+    state.textContent = "確認への回答を記録しました。";
+    answer.hidden = true;
+  });
+})();
+</script>
 <script src="./src/migration_harness/dashboard_runs_demo.js"></script>
 <script>
   const steps = [...document.querySelectorAll(".step")];

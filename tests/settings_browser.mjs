@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
+import {fileURLToPath, pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
 
@@ -290,6 +291,19 @@ try {
     run_id: "different-run", operation_id: "op-one", request_id: "one", option_id: "allow",
   });
   console.log("Browser Junie checks: cross-Run queue, exact answer, active tab and editor selection retained");
+  const demoUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "progress-demo.html"));
+  await navigate("Page.navigate", {url: demoUrl.href});
+  const demoDialog = field("demo-notice-dialog");
+  await wait(`!!${field("demo-notice")}?.offsetWidth`);
+  await click("demo-notice");
+  assert.equal(await evaluate(`${demoDialog}.open && ${field("demo-notice-answer")}.hidden`), true);
+  await click("demo-notice-open");
+  assert.match(await evaluate(`${field("demo-notice-state")}.textContent`), /再通知を停止.*未回答/);
+  assert.equal(await evaluate(`${field("demo-notice-answer")}.hidden`), false);
+  await click("demo-notice-answer");
+  assert.match(await evaluate(`${field("demo-notice-state")}.textContent`), /回答を記録/);
+  console.log("Browser demo: opening suppresses reminders without answering the confirmation");
+
   await cdp("Browser.close").catch(() => {});
 } finally {
   socket?.close();
