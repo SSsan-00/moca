@@ -1479,10 +1479,11 @@ function connectRun(runId = "", {removed = false} = {}) {
       connected = false;
       connection.textContent = "接続を再試行中";
       syncActions();
-      if (!received && runId && stream.readyState === EventSource.CLOSED) {
-        connectRun("").catch(() => {});
+      // EventSource reconnects automatically after a recoverable error.
+      if (!received && stream.readyState === EventSource.CLOSED) {
+        if (runId) connectRun("").catch(() => {});
+        reject(new Error("実行を開けませんでした。実行一覧から選び直してください。"));
       }
-      if (!received) reject(new Error("実行を開けませんでした。実行一覧から選び直してください。"));
     };
     stream.onmessage = event => {
       if (generation !== streamGeneration) return;
