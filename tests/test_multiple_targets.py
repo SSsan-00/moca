@@ -109,9 +109,21 @@ class MultipleTargetsTest(HarnessCase):
 
     # 中断時の編集が残り、再開後に両方のファイルを比較できることを検証する。
     def test_partial_edits_are_kept_and_both_targets_are_compared(self):
-        paused = self.resume(self.edit_with_junie(complete=False))
+        from migration_harness import junie_cli
+
+        def cancelled_while_editing(args, *rest, **kwargs):
+            self.assertIn("reread the target and make a fresh, smaller patch", args[-1])
+            session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+            session.steering_waiting = None
+            session.steering_new_turn = False
+            self.assertTrue(session._advance_prompt(3, {"result": {"stopReason": "cancelled"}}))
+            return self.edit_with_junie(complete=False)(args, *rest, **kwargs)
+
+        paused = self.resume(cancelled_while_editing)
         self.assertEqual(paused["status"], "interrupted")
         self.assertEqual(paused["completed_capsules"], 0)
+        self.assertEqual(self.record()["junie_exit_code"], 0)
+        self.assertIn("Junie ACP stopped: cancelled.", self.record()["error"])
         with patch.object(workflow, "_verify_worktree", wraps=lambda _config, _unit, result, _record: result) as verify:
             done = self.resume(self.edit_with_junie())
         verify.assert_called_once()
