@@ -13,7 +13,7 @@ from migration_harness import junie_cli, rule_materials, workflow
 
 
 class CheckerProvenanceTests(SavedRunFixture):
-    def test_checker_only_cli_override_keeps_the_unit_default(self):
+    def test_checker_only_cli_override_keeps_the_project_default(self):
         project = self.worktree / "App.csproj"
         project.write_text(
             '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
@@ -29,11 +29,9 @@ class CheckerProvenanceTests(SavedRunFixture):
         dll = project.parent / "bin/Debug/net8.0/App.dll"
         assets = project.parent / "obj/project.assets.json"
         override = [sys.executable, "-c", "raise SystemExit(0)"]
-        unit_default = [sys.executable, "-c", "raise SystemExit(5)"]
         global_default = [sys.executable, "-c", "raise SystemExit(7)"]
         self.config.update(build_project=project.name, checker_from_cli=True, checker_command=override,
                            toml_checker_command=global_default)
-        self.config["units"][0]["checker_command"] = unit_default
 
         run_process = workflow.run_process
 
@@ -52,11 +50,11 @@ class CheckerProvenanceTests(SavedRunFixture):
               redirect_stdout(io.StringIO())):
             build = workflow.plan_build_resume(self.config, self.run_id)
             workflow.resume_with_junie(self.config, self.run_id, verification_request={**build, "id": "build"})
-            self.assertEqual(self.record()["verification"]["toml_checker_command"], unit_default)
+            self.assertEqual(self.record()["verification"]["toml_checker_command"], global_default)
             plan = workflow.plan_checker_resume(self.config, self.run_id)
             result = workflow.resume_with_junie(self.config, self.run_id, verification_request={**plan, "id": "checker"})
             self.assertEqual(result["status"], "checker_succeeded")
-            self.assertEqual(self.record()["verification"]["toml_checker_command"], unit_default)
+            self.assertEqual(self.record()["verification"]["toml_checker_command"], global_default)
             self.assertEqual([call.args[0] for call in executed.call_args_list if call.args[0][0] != "dotnet"], [override])
 
             workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Checked synthetic range",
@@ -67,16 +65,12 @@ class CheckerProvenanceTests(SavedRunFixture):
             regular["checker_command"] = global_default
             self.assertTrue(workflow.migration_ledger(regular, self.run_id)["completion"]["verification_passed"])
             regular["checker_command"] = [sys.executable, "-c", "raise SystemExit(9)"]
-            self.assertTrue(workflow.migration_ledger(regular, self.run_id)["completion"]["verification_passed"])
-            regular["checker_command"] = global_default
-            del regular["units"][0]["checker_command"]
-            self.assertFalse(workflow.migration_ledger(regular, self.run_id)["completion"]["verification_passed"])
-            regular["units"][0]["checker_command"] = global_default
             completion = workflow.migration_ledger(regular, self.run_id)["completion"]
             self.assertFalse(completion["verification_passed"])
             self.assertFalse(completion["complete"])
             self.assertEqual(subprocess.run(global_default, check=False).returncode, 7)
 
+            regular["checker_command"] = global_default
             stale = self.record()
             stale["verification"].pop("toml_checker_scope")
             stale["verification"]["toml_checker_command"] = global_default

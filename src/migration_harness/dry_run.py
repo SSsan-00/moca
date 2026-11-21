@@ -10,7 +10,7 @@ from time import monotonic
 from . import junie_cli
 from .capsules import _selected_lines, input_encoding
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
-from .config import SCRIPT_PHASES, checker_command_for_unit, find_unit, target_paths
+from .config import SCRIPT_PHASES, find_unit, target_paths
 from .errors import safe_command
 from .execution import check_cancelled, report_activity
 
@@ -72,7 +72,7 @@ def plan_dry_run(config, unit_id):
     planned = (Path(config["worktree_root"]) / "00000000-0000-0000-0000-000000000000").resolve()
     build_project = config["build_project"]
     target = unit["target"]
-    checker = checker_command_for_unit(config, unit)
+    checker = config["checker_command"]
     scripts = config.get("scripts", {})
     changes_before_inputs = bool(scripts.get("before_prepare"))
     build_dependent = any(scripts.get(phase) for phase in SCRIPT_PHASES[:5])

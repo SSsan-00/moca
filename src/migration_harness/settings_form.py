@@ -34,7 +34,7 @@ _NUMERIC_FIELDS = {
 }
 _INPUT_FIELDS = ("path", "start_line", "end_line", "encoding", "symbol")
 _RULE_FIELDS = ("usage", "description")
-_UNIT_SETTINGS = ("id", "source", "targets", "checker_command", "draft_imports", "target_context")
+_UNIT_SETTINGS = ("id", "source", "targets", "draft_imports", "target_context")
 _REFERENCE_TARGET_ROLES = ("reference_csharp", "reference_razor")
 
 
@@ -234,13 +234,6 @@ def _apply_unit_edits(document: Any, unit_changes: dict[str, Any]) -> None:
                 raise ValueError("移行単位の入力内容を確認してください。")
             elif key == "target_context":
                 _apply_table_fields(unit, key, _TABLE_FIELDS[key], value, preserve_empty=True)
-            elif key == "checker_command":
-                if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
-                    raise ValueError("移行単位のチェッカーのコマンドと引数を確認してください。")
-                if value:
-                    unit[key] = value
-                else:
-                    unit.pop(key, None)
             elif key == "draft_imports":
                 if not isinstance(value, list) or any(not isinstance(path, str) or not path.strip() for path in value):
                     raise ValueError("仮C#のコピー元は1行に1ファイル指定してください。")
@@ -347,7 +340,6 @@ def _settings_form(document: Any) -> dict[str, Any]:
                 if isinstance(context := unit.get("target_context"), Mapping)
                 and (value := context.get(key)) is not None
             },
-            "checker_command": unit.get("checker_command", []),
             "draft_imports": unit.get("draft_imports", []),
             "targets": [path for path in unit.get("targets", [unit.get("target")]) if isinstance(path, str)]
             if isinstance(unit.get("targets", []), list) else [],

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
 
-from .config import checker_command_for_unit, target_paths
+from .config import target_paths
 from .editor_queue import editor_queue, editor_text
 from .errors import format_error
 from .files import safe_target
@@ -666,7 +666,7 @@ class JunieConversations:
         mode = intent.removeprefix("stop_").removeprefix("after_build_")
         if mode not in REBUILD or not state.get("ready"):
             return True
-        if mode.startswith("checker") and checker_command_for_unit(config, unit) is None:
+        if mode.startswith("checker") and config["checker_command"] is None:
             _finish(entry, "failed", "チェッカーが設定されていません。設定タブでコマンドを確認してください。")
             return True
         if any(other["unit_id"] == record["unit_id"] for other in self.manager.jobs.values()):

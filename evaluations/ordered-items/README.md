@@ -2,7 +2,7 @@
 
 固定の [`ordered-items.php`](app/ordered-items.php) を、1ユニットで `Pages/OrderedItems.cshtml` と `Pages/OrderedItems.cshtml.cs` に移行します。`single.toml` は1カプセル、`split.toml` は2カプセルに分けます。両設定で同じ入力・初期状態・チェッカーを使い、自動修正は0回に固定します。
 
-ハーネスでビルドした .NET 10 アプリは、ループバックの空きポートで Razor Pages を起動し、`/OrderedItems` のHTTPレスポンスを標準出力に書き出します。`checker_command` はHTMLの各 `li` のテキストを出現順に取り出し、HTMLエンティティを復号して前後の空白を除き、[`expected.json`](app/expected.json) の24件と比較します。完全一致は終了コード `0`、列の不一致は `1`、実行エラーは `2` です。
+ハーネスでビルドした .NET 10 アプリは、ループバックの空きポートで Razor Pages を起動し、`/OrderedItems` のHTTPレスポンスを標準出力に書き出します。`[checker].command` はHTMLの各 `li` のテキストを出現順に取り出し、HTMLエンティティを復号して前後の空白を除き、[`expected.json`](app/expected.json) の24件と比較します。完全一致は終了コード `0`、列の不一致は `1`、実行エラーは `2` です。
 
 ## 準備
 

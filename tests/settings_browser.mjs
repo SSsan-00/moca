@@ -153,6 +153,7 @@ try {
   console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reload");
   await click("tab-settings");
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
+  assert(await evaluate("!document.querySelector('#settings-unit-checker-command') && !!document.querySelector('#settings-checker-command')"));
   await evaluate('document.querySelector("#settings-project-details > summary").click()');
   for (const width of [390, 768, 1280]) {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height: 900, deviceScaleFactor: 1, mobile: false});
