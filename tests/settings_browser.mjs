@@ -338,6 +338,18 @@ try {
     run_id: "different-run", operation_id: "op-one", request_id: "one", option_id: "allow",
   });
   console.log("Browser Junie checks: cross-Run queue, exact answer, active tab and editor selection retained");
+  const rulePanel = field("workspace-rule-workspace");
+  async function showRuleWorkspace() {
+    assert(await evaluate(field("tab-settings") + ".nextElementSibling === " + field("tab-rule-workspace")));
+    await click("tab-rule-workspace");
+    await wait("!" + rulePanel + ".hidden");
+  }
+  const ruleViewport = "document.body.scrollHeight <= innerHeight + 1 && "
+    + "document.documentElement.scrollWidth <= innerWidth && "
+    + "document.querySelector('.rule-workspace').getBoundingClientRect().bottom <= innerHeight + 1";
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 650, deviceScaleFactor: 1, mobile: false});
+  await showRuleWorkspace();
+  assert(await evaluate(ruleViewport), "live rules fit the available viewport");
   const demoUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "progress-demo.html"));
   await navigate("Page.navigate", {url: demoUrl.href});
   const demoDialog = field("demo-notice-dialog");
@@ -350,6 +362,24 @@ try {
   await click("demo-notice-answer");
   assert.match(await evaluate(`${field("demo-notice-state")}.textContent`), /回答を記録/);
   console.log("Browser demo: opening suppresses reminders without answering the confirmation");
+
+  await showRuleWorkspace();
+  await click("rules-start");
+  await wait("!" + field("rules-draft") + ".hidden");
+  await click("rules-optimize");
+  await wait("!" + field("rules-proposal") + ".hidden");
+  await click("rules-preview");
+  await wait("!" + field("rules-review") + ".hidden");
+  for (const [width, height] of [[1280, 650], [390, 650], [1280, 440]]) {
+    await cdp("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: false});
+    assert(await evaluate(ruleViewport), "rules demo fits " + width + "×" + height);
+    const scrollable = width <= 950 || height <= 500
+      ? "document.querySelector('.rule-workspace')"
+      : "document.querySelector('.rule-workspace-columns > section')";
+    assert(await evaluate(scrollable + ".scrollHeight > " + scrollable + ".clientHeight"),
+      "long rule controls can scroll at " + width + "×" + height);
+  }
+  console.log("Browser rules: settings tab adjacency and bounded desktop/compact layouts");
 
   await cdp("Browser.close").catch(() => {});
 } finally {
