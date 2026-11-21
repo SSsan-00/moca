@@ -778,6 +778,9 @@ permission_observer: ContextVar[Callable[[str, str], None] | None] = ContextVar(
 class _AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
+    def _connection_timeout(self) -> float:
+        return ACP_TIMEOUT
+
     def __init__(
         self, process: subprocess.Popen, command: list[str], project: Path, show_request: Callable,
         completion_path: Path, token: str, prompts: LivePrompts | None,
@@ -796,7 +799,7 @@ class _AcpSession:
         self.session_id = None
         self.tool_calls: dict[str, dict] = {}
         self.pending: tuple[int | str, Future[str]] | None = None
-        self.startup_deadline = time.monotonic() + ACP_TIMEOUT
+        self.startup_deadline = time.monotonic() + self._connection_timeout()
         self.selecting_lite = False
         self.permission_started = 0.0
         self.prompts = prompts
@@ -1015,7 +1018,7 @@ class _AcpSession:
             return False
         # Junie 4100.11 can advertise no models until Lite is set on the session.
         self.selecting_lite = True
-        self.startup_deadline = time.monotonic() + ACP_TIMEOUT
+        self.startup_deadline = time.monotonic() + self._connection_timeout()
         self.request(_ACP_SELECT_LITE_REQUEST, "session/set_model", sessionId=self.session_id, modelId="junie-lite")
         return True
 
