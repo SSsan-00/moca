@@ -25,6 +25,7 @@ from typing import Any
 from . import junie_cli
 from .acp_permissions import PinnedReferenceReads
 from .build_receipt import build_artifacts, build_inputs
+from .verification_files import verification_files
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
 from .checker_advisory import LOG_LIMIT, bounded_advisory_text, checker_advisory, matching_evidence, output_advisory
 from .checker_output import (
@@ -2909,7 +2910,7 @@ def _checker_provenance(config, unit):
 
 
 def _execute_verification_build(config, unit, result, record, run_path, worktree, targets, *,
-                                expected_targets, previous_receipt, configured_checker, command, scripts, request):
+                                expected_targets, previous_receipt, configured_checker, command, scripts, input_files, request):
     """ビルド前の対象版・設定を記録し、ビルドと実行中の対象版を照合する。"""
     hashes = {path.as_posix(): review_target_hash(worktree, path) for path in targets}
     if expected_targets is not None and hashes != expected_targets:
@@ -2922,6 +2923,7 @@ def _execute_verification_build(config, unit, result, record, run_path, worktree
         **_checker_provenance(config, unit),
         "scripts": scripts,
         "scripts_passed": False,
+        "input_files": input_files,
     }
     inputs = None if scripts or config.get("scripts", {}).get("after_migration") else build_inputs(
         worktree, config["build_project"],
@@ -3090,7 +3092,10 @@ def _run_verification(
     expected_targets = request.get("build_targets") if request else None
 
     def save_verification() -> None:
-        record["verification"]["scripts_passed"] = True
+        verification = record["verification"]
+        current = verification_files(config, worktree, unit["target"], command, scripts)
+        verification["inputs_changed_during_verification"] = verification["input_files"] != current
+        verification["scripts_passed"] = True
         write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
     # 修正に成功したらここへ戻り、変更後のファイルを必ずビルドから検証し直す。
@@ -3116,12 +3121,13 @@ def _run_verification(
             _script_decision_versions(worktree, record) if config.get("junie_apply_output_decisions")
             and config.get("junie_review_script_output") and config.get("scripts", {}).get("before_build") else {}
         )
+        input_files = verification_files(config, worktree, unit["target"], command, scripts)
         if _verification_script(config, "before_build", worktree, run_path, record, targets, before_build_hashes, request):
             continue
         verified, hashes, inputs = _execute_verification_build(
             config, unit, result, record, run_path, worktree, targets, expected_targets=expected_targets,
             previous_receipt=previous_receipt, configured_checker=configured_checker, command=command,
-            scripts=scripts, request=request,
+            scripts=scripts, input_files=input_files, request=request,
         )
         expected_targets = None
         if record["status"] == "build_failed":
@@ -3384,6 +3390,18 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     if verification_passed:
         current_targets = {path: current_hash(path) for path in targets}
         verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
+    input_status = None
+    if verification_passed:
+        current_inputs = verification_files(config, worktree, unit["target"], configured_checker, scripts)
+        saved_inputs = verification.get("input_files")
+        if verification.get("inputs_changed_during_verification") or (
+            saved_inputs is not None and saved_inputs != current_inputs
+        ) or any(digest is None for digest in current_inputs.values()):
+            input_status = "changed"
+        elif saved_inputs is None and current_inputs:
+            input_status = "legacy"
+        if input_status:
+            verification_passed = False
     if verification_passed and verification.get("checker_only"):
         try:
             _check_build_receipt(config, worktree, record)
@@ -3399,6 +3417,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             # ビルド・チェッカーの成功に加え、すべてのPHP範囲に根拠付きの判断が必要。
             "complete": verification_passed and total > 0 and reviewed == total,
             "verification_passed": verification_passed,
+            **({"verification_input_status": input_status} if input_status else {}),
             "reviewed": reviewed,
             "total": total,
         },
@@ -3813,7 +3832,8 @@ def _resume_checker(config, unit, result, record, plan, request_id):
         })
         verification = record["verification"]
         verification.update(configured_checker_command=command, checker_command=command, checker_only=True,
-                            scripts={}, scripts_passed=False)
+                            scripts={}, scripts_passed=False,
+                            input_files=verification_files(config, worktree, unit["target"], command, {}))
         verification.pop("toml_checker_command", None)
         verification.pop("toml_checker_scope", None)
         verification.update(_checker_provenance(config, unit))
@@ -3831,6 +3851,9 @@ def _resume_checker(config, unit, result, record, plan, request_id):
         record.update(status="checker_failed", checker_exit_code=None, error=str(exc))
         write_run_record(record_path, record)
         return {**checked, "status": record["status"], "checker_exit_code": None, "error": str(exc)}
+    verification["inputs_changed_during_verification"] = (
+        verification["input_files"] != verification_files(config, worktree, unit["target"], command, {})
+    )
     verification["scripts_passed"] = True
     write_run_record(record_path, record)
     if use_raw_output:

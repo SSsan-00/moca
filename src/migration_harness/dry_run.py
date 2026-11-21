@@ -34,6 +34,37 @@ def _entry(root, commit, path, *, timeout):
     return len(header) == 3 and header[0] in {b"100644", b"100755"}
 
 
+def _python_script(argv, launcher):
+    args = iter(argv[1:])
+    first = next(args, None)
+    if launcher == "py" and first and re.fullmatch(
+        r"(?:-[23](?:\.\d+)?(?:-32|-64)?|-V:[A-Za-z0-9._/-]+)", first
+    ):
+        first = next(args, None)
+    switches = {"-b", "-bb", "-B", "-d", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v", "-vv", "-x"}
+    arg = first
+    while arg is not None:
+        if arg == "--":
+            arg = next(args, None)
+            return Path(arg) if arg and arg != "-" else None
+        if arg == "-":
+            return None
+        if arg in {"-W", "-X"}:
+            if not next(args, None):
+                return None
+        elif arg == "--check-hash-based-pycs":
+            if next(args, None) not in {"default", "always", "never"}:
+                return None
+        elif arg in switches or arg.startswith(("-W", "-X")):
+            pass
+        elif arg.startswith("-"):
+            return None
+        else:
+            return Path(arg) if arg else None
+        arg = next(args, None)
+    return None
+
+
 def plan_dry_run(config, unit_id):
     check_cancelled()
     unit = find_unit(config, unit_id)
@@ -66,8 +97,10 @@ def plan_dry_run(config, unit_id):
         if len(argv) < 2:
             return
         name = Path(argv[0]).stem.lower()
-        if re.fullmatch(r"python(?:[23](?:\.\d+)?)?|py", name) and not argv[1].startswith("-") and argv[1] != "-":
-            script = Path(argv[1])
+        if re.fullmatch(r"python(?:[23](?:\.\d+)?)?|py", name):
+            script = _python_script(argv, name)
+            if script is None:
+                return
         elif name in {"pwsh", "powershell"}:
             option = next((i for i, arg in enumerate(argv[1:], 1) if arg.lower() == "-file"), None)
             if option is None or option + 1 >= len(argv):

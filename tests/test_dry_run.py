@@ -50,6 +50,44 @@ class DryRunTests(unittest.TestCase):
         assert not Path(config["worktree_root"]).exists()
 
 
+    def test_detects_python_scripts_after_supported_windows_launcher_options(self):
+        from unittest.mock import patch
+
+        config = self.config
+        root = Path(config["project_root"])
+        script = Path("検証 scripts") / "確認 script.py"
+        (root / script.parent).mkdir()
+        (root / script).write_text("raise RuntimeError('dry run must not launch')", encoding="utf-8")
+        subprocess.check_call(["git", "-C", str(root), "add", "."])
+        subprocess.check_call(["git", "-C", str(root), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                               "commit", "-qm", "checker"])
+
+        for prefix in (["py", "-3", "-X", "utf8"], ["python", "-Xutf8", "-W", "ignore"],
+                       ["python", "--check-hash-based-pycs", "always", "--"]):
+            for requested, expected in ((script, "confirmed"), (Path("generated.py"), "unchecked")):
+                with self.subTest(prefix=prefix, requested=requested):
+                    config["units"][0]["checker_command"] = [*prefix, str(requested), "{target}"]
+                    with patch("migration_harness.dry_run.shutil.which", return_value="checked-only"):
+                        checks = [item for item in plan_dry_run(config, config["units"][0]["id"])["checks"]
+                                  if item["phase"] == "checker"]
+                    self.assertTrue(any("command" in item and item["state"] == "confirmed" for item in checks))
+                    self.assertEqual([(item["path"], item["state"]) for item in checks if "path" in item],
+                                     [(str(requested), expected)])
+
+    def test_does_not_treat_python_inline_module_stdin_or_unknown_options_as_script_paths(self):
+        from unittest.mock import patch
+
+        config = self.config
+        for options in (["-m", "checker.py"], ["-c", "checker.py"], ["-", "checker.py"],
+                        ["--unknown", "checker.py"], ["-X", "utf8"], ["-X"]):
+            with self.subTest(options=options):
+                config["units"][0]["checker_command"] = ["python", *options]
+                with patch("migration_harness.dry_run.shutil.which", return_value="checked-only"):
+                    checks = [item for item in plan_dry_run(config, config["units"][0]["id"])["checks"]
+                              if item["phase"] == "checker"]
+                self.assertTrue(any("command" in item for item in checks))
+                self.assertFalse(any("path" in item for item in checks))
+
     def test_reports_wrong_alias_and_uncommitted_script(self):
         config = self.config
         root = Path(config["project_root"])
