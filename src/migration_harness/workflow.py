@@ -809,9 +809,12 @@ def _review_detail_applicability(
         output = review_root / "decisions.json"
         if context is None:
             # 判定は未入力のまま、照合に使うファイル名だけを固定する。
-            output.write_text(json.dumps({
-                item["file"]: {"applies": None, "reason": ""} for item in index
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            pending = json.dumps({"applies": None, "reason": ""})
+            rows = (
+                f'  {json.dumps(item["file"], ensure_ascii=False)}: {pending}'
+                for item in index
+            )
+            output.write_text("{\n" + ",\n".join(rows) + "\n}\n", encoding="utf-8")
 
         def save_decisions(answer: str) -> None:
             # 原文と詳細索引の全文を渡した場合は、最終回答を照合してハーネス側で完了記録を作る。
@@ -834,8 +837,9 @@ def _review_detail_applicability(
         result_instruction = (
             "Update the prepared decisions.json: keep every existing key exactly as provided, including its .txt "
             "extension, and replace every null applies with a boolean and every empty reason with a brief reason. "
-            "Each key is the exact file value in the index, not its stem. You may use a workspace shell script. "
-            "Check the saved keys against the file values loaded from details.json, not a hand-written list. "
+            "Each key is the exact file value in the index, not its stem. Each decision is already on its own line. "
+            "Use direct file edits in bounded ranges. Do not create or run helper scripts or use shell commands "
+            "to generate, validate, or clean up the result. The harness checks the saved keys and evidence. "
             "Every index file must occur exactly once, with no unknown keys or unresolved decisions. "
             "Do not print the full JSON in tools or your final response. Do not edit the source files, "
             "details.json or guidelines. After saving and checking the complete decisions.json, "
