@@ -32,14 +32,14 @@ def parameters(number):
     )
 
 
-def generate_php():
+def generate_php(line_count=2_000):
     """固定ケースを展開し、評価用PHPと期待データを生成する。"""
     core = (HERE / "core.php").read_text(encoding="utf-8")
     template = (HERE / "policy.php.tpl").read_text(encoding="utf-8")
     policies = []
     blocks = []
     # Each contract adds a real function and a dispatch entry, not dummy rows.
-    count = (2_000 - len(core.splitlines()) - 4) // (len(template.splitlines()) + 1)
+    count = (line_count - len(core.splitlines()) - 4) // (len(template.splitlines()) + 1)
     for number in range(count):
         p = parameters(number)
         policies.append(p)
@@ -50,11 +50,11 @@ def generate_php():
         f"        {number} => 'quote_{number:03d}',\n" for number in range(count)
     ) + "    ];\n}\n"
     source = core + "".join(blocks) + dispatch
-    # Normal multiline SQL parameter formatting makes the physical size exactly 2k.
-    remainder = 2_000 - len(source.splitlines())
+    # Normal multiline SQL parameter formatting fills the remaining physical lines.
+    remainder = line_count - len(source.splitlines())
     assert 0 <= remainder < len(template.splitlines()) + 1
     source = re.sub(r", (?=':[a-z]+'\s*=>)", ",\n        ", source, count=remainder)
-    assert len(source.splitlines()) == 2_000
+    assert len(source.splitlines()) == line_count
     return source, policies
 
 

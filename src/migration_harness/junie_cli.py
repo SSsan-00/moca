@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 USAGE_FIELDS = ("input", "output", "cache_read", "cache_write", "responses")
 ACP_TIMEOUT = 30
+ACP_STARTUP_TIMEOUT = 60
 _ACP_SELECT_LITE_REQUEST = -1
 _ACP_SET_EFFORT_REQUEST = -2
 _ACP_RETRY_EFFORT_REQUEST = -3
@@ -801,7 +802,7 @@ class _AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
     def _connection_timeout(self) -> float:
-        return ACP_TIMEOUT
+        return ACP_STARTUP_TIMEOUT
 
     def __init__(
         self, process: subprocess.Popen, command: list[str], project: Path, show_request: Callable,
