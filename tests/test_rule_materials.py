@@ -496,7 +496,16 @@ class RuleMaterialsTests(HarnessCase):
                 "rule-0001.txt": {"applies": None, "reason": ""},
                 "rule-0002.txt": {"applies": None, "reason": ""},
             })
+            rows = outputs[0].read_text(encoding="utf-8").splitlines()[1:-1]
+            self.assertEqual(len(rows), len(expected_index))
+            self.assertEqual(
+                [next(iter(json.loads("{" + line.strip().removesuffix(",") + "}"))) for line in rows],
+                [item["file"] for item in expected_index],
+            )
             self.assertIn("including its .txt", command[-1])
+            self.assertIn("Use direct file edits in bounded ranges", command[-1])
+            self.assertIn("Do not create or run helper scripts", command[-1])
+            self.assertNotIn("You may use a workspace shell script", command[-1])
             outputs[0].write_text(json.dumps({
                 "rule-0001.txt": {"applies": True, "reason": "Orders"},
                 "rule-0002.txt": {"applies": False, "reason": "Unrelated"},
