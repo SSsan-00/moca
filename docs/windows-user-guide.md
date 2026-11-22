@@ -48,13 +48,12 @@ git clone https://github.com/SSsan-00/php-to-csharp-migration-harness.git
 Set-Location .\php-to-csharp-migration-harness
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\php-to-csharp-harness.exe --help
-.\h.cmd d
+.\h.cmd
 ```
 
-1行ずつ実行し、エラーが出たらその段階を解決してから進みます。既にclone済みならそのフォルダへ移動し、使える `.venv` があれば作り直す必要はありません。`--help` にコマンド一覧が出ればインストール完了です。仮想環境を直接呼ぶため、`Activate.ps1` の実行やPowerShellの実行ポリシー変更は不要です。
+1行ずつ実行し、エラーが出たらその段階を解決してから進みます。既にclone済みならそのフォルダへ移動し、使える `.venv` があれば作り直す必要はありません。ダッシュボードが開けばインストール完了です。仮想環境を直接呼ぶため、`Activate.ps1` の実行やPowerShellの実行ポリシー変更は不要です。
 
-次回以降はハーネスのフォルダで `.\h.cmd d` を実行します。端末に表示された `http://127.0.0.1:.../` のURLを、末尾の文字列まで含めてブラウザーで開きます。起動したPowerShellは開いたままにします。ダッシュボードから移行する場合、Junieへの指示や操作の許可への回答はブラウザーで行います。初回は設定ファイルがなくても開けるため、設定例をコピーする必要はありません。
+次回以降はハーネスのフォルダで `.\h.cmd` を実行します。端末に表示された `http://127.0.0.1:.../` のURLを、末尾の文字列まで含めてブラウザーで開きます。起動したPowerShellは開いたままにします。ダッシュボードから移行する場合、Junieへの指示や操作の許可への回答はブラウザーで行います。初回は設定ファイルがなくても開けるため、設定例をコピーする必要はありません。
 
 | つまずいた場合 | 確認すること |
 | --- | --- |
@@ -68,7 +67,7 @@ py -3 -m venv .venv
 ```powershell
 git pull --ff-only origin main
 .\.venv\Scripts\python.exe -m pip install -e .
-.\h.cmd d
+.\h.cmd
 ```
 
 ## 2. 移行元と移行先を設定する
@@ -184,18 +183,9 @@ MIG101 src/Web/Pages/Menu.cshtml.cs:12 warning: 共通メソッドを使って�
 
 起動入力は、実際に渡す指示と同梱ガイドラインの合計です。例として1 MiBを警告、2 MiBを停止に設定するなら、TOML の `[junie]` に `warn_input_bytes = 1048576` と `max_input_bytes = 2097152` を指定します。値と同じ容量は許容し、超過時は警告または起動停止になります。これは入力例です。後から読む資料量、トークン数、実行時間、費用や規約の遵守状況は、この設定では測定・保証できません。
 
-`php-to-csharp-harness junie-input --config harness.toml --run-id RUN_ID` でその Run の直近の計測を JSON で確認できます。指示・ガイドライン別の容量、資料の内訳、起動を止めたかどうかを表示します。計測記録がまだないときは `last_junie_input` が `null` です。ACP で実行中の追加指示を送る場合は、実際に送る文の容量を `last_junie_steering_input` に記録します。追加指示が停止値を超えた場合は送信を保留し、次の反映操作で再評価します。
+Junieへの起動入力の容量は、Runの詳細ログで指示とガイドラインの内訳を確認できます。追加指示が停止値を超えた場合は送信を保留します。
 
 新しく準備するRunでは、必須ルールと採用済み詳細を起動時に渡す際、ハーネスが機械的に付けた行ごとの番号だけを省きます。原文とあわせて出所・原文行範囲・番号付き資料のファイル名を示します。固定資料・照合用ハッシュ・レビューで使う行番号は変えません。旧Run・未対応の形式・本文が短く出所の追記で逆に容量が増える場合は、従来どおり本文を渡します。
-
-**ルールの採否・根拠を確認する** ときは `rule-review` で、保存本文のパス・ハッシュ・行数、Junie の採否と理由、利用者の判断、独立検証の記録を確認できます。本文中の根拠を確認し、保存本文の物理行番号と表示された `version` を指定します。
-
-```powershell
-php-to-csharp-harness rule-review --config harness.toml --run-id RUN_ID
-php-to-csharp-harness rule-review --config harness.toml --run-id RUN_ID --rule rule-0002.txt --version VERSION --record include --start-line 8 --end-line 10 --reason "末尾の例外が今回の移行に該当する"
-```
-
-参照ルールの `include`／`exclude` は次の移行・修正に反映します。必須ルールは全文を使います。確認した本文は `read`、実装への適用を確認した場合は `applied`、独立したチェッカーや回帰テストの結果は `passed`／`failed` として記録できます。`applied`・`passed`・`failed` では確認に使ったレポートやテストの識別子を `--reference` で指定します。これは利用者が確認した結果の記録です。対象版や採否が変わると以前の結果を履歴に残し、現行の検証結果は未確認になります。
 
 **参照起点** では **既定の4箇所を使う**、**個別に選ぶ**、**既定の起点を使わない** から選べます。例えば移行先が `src/Web/Pages/Orders/Index.cshtml.cs` なら、既定は `src/Web/Pages/Orders`、`src/Web/Pages/inc`、`src/Web/Libs`、`src/Web/Extensions` です。追加するフォルダーは作業ツリーからの相対パスで指定します。既定起点を外しても追加フォルダーは有効です。上限を超えると初回収集を中止します。`[units.target_context]` の指定項目は共通設定を上書きし、配列は置き換えます。
 
@@ -215,7 +205,7 @@ target = "Menu.cs"
 roots = []
 ```
 
-`php-to-csharp-harness preview-context --config harness.local.toml --unit メニュー` は現在のアプリ作業コピーを読み取り、参照候補と容量を表示します。走査中は端末に進捗が出ます。`Ctrl+C` で取り消せます。実行用の基準リビジョンや準備スクリプトでファイルが変わると、初回収集時の結果も変わります。固定済み Run は以前の資料を使います。
+**実行 → 参照プレビュー** で、現在のアプリ作業コピーから集めた参照候補と容量を確認できます。準備スクリプトや基準リビジョンによって、Runの準備時に集める資料が変わることがあります。固定済みのRunは保存した資料を使います。
 
 **差分ビューアーのHTML** の相対パスはアプリルートが基準です。**アンカーの参照JSON（任意）** は設定ファイルの場所が基準で、Junie に渡す対応行の手本です。HTML が空欄なら無効です。**使用しない** を選んでも入力済みのパスは保存されます。
 
@@ -236,26 +226,7 @@ roots = []
 
 ### 保存された根拠と引き継ぎを確認する
 
-対象のRun IDを指定します。最初に一覧で実際の資料IDと範囲を調べ、以下のID・パス・行番号を置き換えてください。範囲指定は両端を含みます。
-
-```powershell
-php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID
-php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --feature "注文合計"
-php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --source-id php-0001 --start-line 10 --end-line 20 --max-chars 1000
-php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --last-plan
-php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --target-references
-php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --related-to "target:Pages/Shared/Example.cshtml"
-php-to-csharp-harness context-evidence --config harness.local.toml --run-id RUN_ID --source-id "target:Pages/Shared/Example.cshtml" --start-line 1 --end-line 10
-```
-
-移行中のPHPを調べるときは `--through-capsule N` で、当該カプセルまでの担当範囲と参照資料に絞れます。 `next_offset` が数値なら、同じ条件に `--offset` でその値を加えて取得します。 `--last-plan` の供給ルールと参照候補は「読んだ」「適用した」「検証した」の証拠ではありません。一意に照合できた診断の固定C#／Razorパスは候補に表示されますが、障害原因を断定しません。 `--target-references` には現在編集している移行先は含まれません。
-
-```powershell
-php-to-csharp-harness context-handoff --config harness.local.toml --run-id RUN_ID
-php-to-csharp-harness context-handoff --config harness.local.toml --run-id RUN_ID --source-id php-0001 --start-line 10 --end-line 20 --note "例外時の戻り値を確認"
-```
-
-引き継ぎの追記や、Junieが任意で出力した補助メモは、原文範囲と版が一致するときの手がかりです。進捗や検証結果はメモでは変わりません。必要なら出典を開き、人が確認・再検証してください。
+引き継ぎメモや参照計画は、原文範囲と版が一致するときの手がかりです。資料を読み取ったことや、検証の成功を示すものではありません。元PHPは **エディタ** の **PHP**、対応する移行先は **比較ツールを開く** から確認できます。
 
 ### スキルで読み込み方を最適化する・原文を整理する
 
@@ -280,7 +251,7 @@ php-to-csharp-harness context-handoff --config harness.local.toml --run-id RUN_I
 
 設定の反映も任せる場合は、最後を「TOMLへの反映もお願いします」に置き換えます。スキルは専用フォルダに原文のコピーを残し、空行・例・例外も含めて全行の対応を検証します。条件や優先順位も確認し、未解決の矛盾があれば設定反映を保留します。
 
-整理した原文を新規登録する場合も、既存登録と同じ意味レビューを先に行います。手動で反映する場合は、スキルの [新規登録手順](../.junie/skills/harness-optimize-rules/references/register-new.md) に従い、`tools/rule_review.py meaning` と `apply` の両方に `--register-new` を指定します。このツールと、実行済みRunを確認する `php-to-csharp-harness rule-review` は別のものです。
+整理した原文を新規登録する場合も、既存登録と同じ意味レビューを先に行います。手動で反映する場合は、スキルの [新規登録手順](../.junie/skills/harness-optimize-rules/references/register-new.md) に従い、`tools/rule_review.py meaning` と `apply` の両方に `--register-new` を指定します。
 
 整理後は **プロジェクト共通の移行ルール** に次のように登録します。ファイル名だけでは必須扱いになりません。
 
@@ -350,7 +321,7 @@ tools/check-migration.ps1
 
 複数の移行単位にチェックを付けて一括で登録できます。同時実行数は最大5件で、残りは実行待ちになります。行の **待機を取消** はその登録だけを取り消します。**進捗** と **エディタ** の **表示する実行** でRunを切り替えても、他のRunは実行を続けます。入力途中のコード・エディタ指示は同じページ内の切り替えでは保持しますが、再読み込み前に保存してください。
 
-不要なRunは、行の **削除** を押すと実行一覧から取り除けます。実行中は **停止**、実行待ちは **待機を取消** の後に削除できます。作業ツリーとログは保存され、Run IDを指定すればCLIから開けます。
+不要なRunは、行の **削除** を押すと実行一覧から取り除けます。実行中は **停止**、実行待ちは **待機を取消** の後に削除できます。作業ツリーとログは削除されません。
 
 ### 復旧の確認と、結果不明のスクリプト
 
@@ -358,12 +329,7 @@ tools/check-migration.ps1
 
 `after_prepare`、`before_migration`、`after_migration` の中断で、コマンドの開始記録だけが残った場合は **実行結果不明** と表示し、通常再開や工程指定で自動再実行しません。ログと更新先を確認して、処理が残っていないことと、同じ処理を再度行って安全なことを確認できた場合だけ、そのコマンドを明示的に再試行します。
 
-```powershell
-php-to-csharp-harness script-recovery --config harness.toml --run-id RUN_ID
-php-to-csharp-harness script-recovery --config harness.toml --run-id RUN_ID --retry VERSION
-```
-
-再試行は対象コマンドだけを実行します。成功後はダッシュボードを起動し直し、同じRunの **再開** を選びます。対象や実行条件が変わったら確認からやり直してください。開始記録により自動再実行を防ぎますが、外部処理の実行結果やスクリプトのすべての依存物はハーネスでは照合できません。再実行に備え、既存結果を確認でき、何度実行しても外部状態を重複更新しないスクリプトを推奨します。旧Runで開始記録がない場合や、作業ツリーの作成前に実行する `before_prepare` はこの確認の対象外です。電源断時にストレージへ記録が残ることまでは保証しません。
+スクリプト単体の再試行は、画面からは直接行えません。通常の **再開** を繰り返さず、対象Runとログを管理者に共有してください。開始記録により自動再実行を防ぎますが、外部処理の実行結果やスクリプトのすべての依存物はハーネスでは照合できません。再実行に備え、既存結果を確認でき、何度実行しても外部状態を重複更新しないスクリプトを推奨します。旧Runで開始記録がない場合や、作業ツリーの作成前に実行する `before_prepare` はこの確認の対象外です。電源断時にストレージへ記録が残ることまでは保証しません。
 
 ### 停止した移行の下書きを確認する
 
@@ -371,53 +337,32 @@ php-to-csharp-harness script-recovery --config harness.toml --run-id RUN_ID --re
 
 移行中に通信やセッションが失敗した場合も、Junie と子プロセスの終了を確認できたときは、更新された下書きを履歴とともに保存します。カプセルの完了には完了記録と移行先ファイルが必要です。終了を確認できなかった場合は、起動した端末で残存プロセスを終了し、保存版と Junie 作業領域を比較して必要な編集を新しい Run に引き継いでください。
 
-### 停止した自動修正の下書きを選ぶ
+### 停止した自動修正の下書きを確認する
 
-停止後に作業ツリーを手修正したときは、`repair-draft` で対象ごとの保存版を確認できます。出力の `base` は停止時の作業ツリー、`draft` は停止下書き、`worktree` は現在の手修正、`agent` は現在の Junie 作業領域のハッシュです。`null` はファイルの欠損です。下書きの生バイトとファイルの順番は Run の `stopped-repair-…/draft.json` と番号付きの `.draft` ファイルで確認できます。
-
-```powershell
-php-to-csharp-harness repair-draft --config harness.toml --run-id RUN_ID
-php-to-csharp-harness repair-draft --config harness.toml --run-id RUN_ID --version VERSION --choose 'Pages/A.cs=draft' --choose 'Pages/B.cs=worktree'
-php-to-csharp-harness resume --config harness.toml --run-id RUN_ID
-```
-
-`VERSION` とファイル名は計画の出力に合わせ、表示された下書き対象すべてについて選びます。`draft` を選ぶと停止時の欠損も引き継ぎます。欠損を埋めるには、その対象に作業ツリーの版を使う `worktree` を選びます。元の下書き、置き換え前の Junie 作業版、対象の手修正版を Run に保全します。通常の再開では、選択した UTF-8 のファイルを作業ツリーに反映してからビルドとチェッカーを実行します。欠損や UTF-8 として読めない下書きは、今回もそのファイルを修正するときに Junie へ引き継ぎます。今回の修正対象から外れた場合は、手修正を保存するか、`worktree` を選び直してください。計画後に版が変わったときは計画を取り直してください。
+停止後に対象を手修正した場合は、**進捗 → 復旧の確認** で下書きの有無を確認します。保存版が競合した場合は上書きせず停止します。自動修正の下書きをファイル単位で選択する操作は、現在ダッシュボードでは行えません。
 
 ### 再開方法を選ぶ
 
 | 再開方法 | 選ぶ条件 | 保存データの扱い |
 | --- | --- | --- |
-| 通常の **再開**（`resume`） | 準備済み、中断、検証のやり直し | 移行途中なら完了済みの区間を飛ばし、停止下書きと保留中の手修正・指示を照合します。移行済みなら保留中の編集を処理してからビルド・チェッカーを再実行します。 |
-| **ビルドのみ**（`resume --from build`） | 移行が完了し、現在の保存版をビルドしたい | 保存済みの手修正を取り込み、以前の検証結果を無効にします。自動修正とチェッカーは実行しません。 |
-| **チェッカーのみ**（`resume --from checker`） | 現在のビルド入力・生成物と設定を照合できる場合 | 照合した成果物でチェッカーを実行します。条件が変わった場合は通常の再開でビルドから実行します。 |
-| **移行**（`resume --from migration`） | 次の未完了区間から続けるか、保存済みの区間を選んでやり直したい | 終了番号を指定するとその区間で停止します。巻き戻しは確認済みの計画と区間の保存版を照合し、直前の版を退避します。 |
+| 通常の **再開** | 準備済み、中断、検証のやり直し | 移行途中なら完了済みの区間を飛ばし、停止下書きと保留中の手修正・指示を照合します。移行済みなら保留中の編集を処理してからビルド・チェッカーを再実行します。 |
+| **ビルドのみ** | 移行が完了し、現在の保存版をビルドしたい | 保存済みの手修正を取り込み、以前の検証結果を無効にします。自動修正とチェッカーは実行しません。 |
+| **チェッカーのみ** | 現在のビルド入力・生成物と設定を照合できる場合 | 照合した成果物でチェッカーを実行します。条件が変わった場合は通常の再開でビルドから実行します。 |
+| **移行** | 次の未完了区間から続けるか、保存済みの区間を選んでやり直したい | 終了番号を指定するとその区間で停止します。巻き戻しは確認済みの計画と区間の保存版を照合し、直前の版を退避します。 |
 
-画面で確認した計画の対象版や実行条件が変わった場合は再開を拒否します。**計画を確認** をもう一度押してください。CLIでは `--plan` と `--version` で確認した版を指定でき、巻き戻しには両方の操作が必要です。保留中の操作や外部編集と巻き戻しが競合する場合は、対象を確認してから計画を作り直します。
+画面で確認した計画の対象版や実行条件が変わった場合は再開を拒否します。**計画を確認** をもう一度押してください。保留中の操作や外部編集と巻き戻しが競合する場合は、対象を確認してから計画を作り直します。
 
 ### 移行を指定区間まで再開する
 
 実行一覧の **再開方法…** から開始工程と移行区間を選び、**計画を確認** で保存版を確認して **再開する** を押します。Junie 欄では「移行の続きから区間3まで」「区間2だけやり直して」「チェッカーのみ再開」のような明確な指定も受け付けます。停止した工程は、ダッシュボードを開き直したあとも進捗に表示されます。
 
-中断した移行は、`resume --from migration` で保存版を照合して次の未完了区間から再開できます。たとえば次の区間が3なら、`--through-capsule 3` でその区間だけ処理し、ビルドとチェッカーの手前で停止します。終了番号を省略すると最後まで移行し、通常どおり検証します。
-
-```powershell
-php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from migration --through-capsule 3
-```
-
-処理済みの区間をやり直す場合は、`--rewind-to` を指定します。開始前の保存版と現在の完了地点の保存版が必要です。まず `--plan` で計画を確認し、表示された `version` を指定して実行します。
-
-```powershell
-php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from migration --rewind-to 2 --through-capsule 2 --plan
-php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from migration --rewind-to 2 --through-capsule 2 --version VERSION
-```
+次の未完了区間が3なら、終了区間に3を指定すると、その区間だけを処理して検証前に停止します。処理済み区間をやり直す場合は、再開画面で開始区間を選び計画を確認します。
 
 巻き戻しは移行単位の対象ファイル全体に対して行います。保存後の対象編集や保留中の操作があれば中止します。直前の版は `run.json` の `resume_operations` に記録する `rewind_backup` に退避されます。開始区間以降の完了記録とレビュー・検証結果は再確認が必要になります。対象外のファイルは巻き戻しの書き換え対象に含みません。旧 Run では、必要な区間の保存版がない場合があります。
 
 ### チェッカーだけを再開する
 
-```powershell
-php-to-csharp-harness resume --config harness.toml --run-id RUN_ID --from checker
-```
+**再開方法… → チェッカーのみ** を選びます。
 
 照合できるビルド記録がある場合、現在のコード・依存入力・成果物を照合してチェッカーだけを実行します。対象は、作業ツリー内の `Microsoft.NET.Sdk` を使う単一ターゲットの C# プロジェクトです。`Nullable` や `ImplicitUsings` など、照合可能な静的プロパティに対応します。パッケージ参照・プロジェクト参照・外部インポートがある構成では通常の再開を使用します。移行後や検証前後にスクリプトを実行する構成は、通常の再開を使ってください。ビルド記録は生成物のない状態からの成功ビルドで作られます。既存の生成物があるときは、入力と以前の記録が一致する場合に限って記録を更新します。エラー時は表示された理由を確認してください。
 
@@ -453,13 +398,9 @@ Copy-Item -LiteralPath .\tools\dist\index.min.html -Destination $viewerDir
 
 ビューアーを有効にして **Junieで対応行を提案して開く** を選ぶと、今回の比較から対応行を提案します。**プロジェクトの詳細設定 → アンカーの参照JSON（任意）** に手本となるDiff ViewerのワークスペースJSONのパスを1行に1つ入力します。指定した各ファイルの手動アンカーを先頭から最大12件使います。絶対パス、または設定ファイルの場所からの相対パスで指定します。空欄なら同じRunの確認済み対応例を自動参照します。指定ファイルがない・JSONが不正な場合はエラーになり、自動参照には切り替えません。パスとJSONを直すか、空欄に戻して保存してください。この操作には移行とは別のJunie呼び出しが発生します。 `--task` に対応したJunieでは、アンカー生成を非対話モードで実行します。非対応なら従来の起動方法を使います。
 
-移行台帳は閲覧用です。判断はハーネスのフォルダからCLIで記録します。次の例の `RUN_ID` と `1:1` は画面の値に置き換えます。同じ理由と移行先で複数範囲を確認した場合は、`--range` を繰り返します。
+移行台帳は閲覧用です。画面では、記録済みの判断と理由を確認できます。範囲ごとの判断登録は画面からは行えません。
 
-```powershell
-.\.venv\Scripts\php-to-csharp-harness.exe ledger-review --config harness.local.toml --run-id RUN_ID --range 1:1 --state confirmed --target src/Web/Pages/Menu.cshtml.cs --target src/Web/Pages/Menu.cshtml --reason "元PHPと画面およびPageModelの対応を確認"
-```
-
-対象外の範囲を記録する場合は `--state excluded` と `--reason` を指定します。現時点の入力でビルド、設定済みの検証スクリプト、チェッカーの条件を満たし、全範囲が確認済みか理由付きの対象外になると、画面に **移行完了** が表示されます。確認後に移行先を変更すると、対応する範囲が **要再確認** に戻ります。
+現時点の入力でビルド、設定済みの検証スクリプト、チェッカーの条件を満たし、全範囲が確認済みか理由付きの対象外になると、画面に **移行完了** が表示されます。確認後に移行先を変更すると、対応する範囲が **要再確認** に戻ります。
 
 worktreeは直接編集せず、手修正はダッシュボードのエディタから行います。通常の移行完了判定では、移行対象の版とコマンド設定を確認します。依存ソース・プロジェクトファイル・チェッカーなどを外部で変更した場合は、**ビルド・チェックを再実行** を選んでください。
 
@@ -497,7 +438,7 @@ WindowsのPowerShellを使っています。
 
 ### 設定を検証（ドライラン）
 
-実行タブで移行単位を1つ選び、「設定を検証」を押します。CLIの場合は `php-to-csharp-harness dry-run --config harness.local.toml --unit <移行単位ID>` を実行します。基準コミット、入力、工程順のコマンドと実行場所が表示されます。「未確認」は、その場では検証できず実行時に確認が必要な項目です。準備のみと異なり作業ツリーもRunも作りません。Junie、ビルド、設定済みスクリプトは起動しません。
+実行タブで移行単位を1つ選び、「設定を検証」を押します。基準コミット、入力、工程順のコマンドと実行場所が表示されます。「未確認」は、その場では検証できず実行時に確認が必要な項目です。準備のみと異なり作業ツリーもRunも作りません。Junie、ビルド、設定済みスクリプトは起動しません。
 
 ### チェッカー・前後スクリプト・期待値の版
 
