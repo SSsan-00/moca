@@ -2,7 +2,8 @@ name: Harness tests
 
 on:
   push:
-    branches: [main, "codex/**"]
+    # Managed Issue candidates require both push and PR checks.
+    branches: [main, "codex/issue-*"]
   pull_request:
 
 permissions:
@@ -17,6 +18,7 @@ jobs:
         python: ["3.11", "3.13"]
         suite: [conversation-editor, remaining]
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
