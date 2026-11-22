@@ -4117,6 +4117,16 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     return proposal
 
 
+def _capture_reference_revision(worktree, targets, run_path, capsule, policy, hashes):
+    name = f"target-context-{uuid.uuid4().hex}"
+    with TemporaryDirectory(prefix="reference-capture-", dir=run_path) as staging:
+        stage_target_context(worktree, targets, capsule, Path(staging), policy=policy, snapshot_name=name)
+    _, captured = target_context_inventory(target_context_snapshot(capsule, name))
+    if captured != hashes:
+        raise ValueError("参考資料が採取中に更新されました。もう一度再開してください。")
+    return name
+
+
 def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, *, migration_complete):
     capsule, manifest = load_capsule_manifest(run_path)
     saved = target_context_snapshot(capsule)
@@ -4125,6 +4135,7 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
     targets = target_paths(unit)
     record_path = run_path / "run.json"
     pending = record.get("reference_refresh")
+    recovering_adoption = bool(pending and pending.get("adoption"))
     canonical = run_path / "agent-workspace"
     if not pending:
         if any(record.get(key) for key in ("repair_pending", "migration_rewind", "target_apply_pending",
@@ -4136,12 +4147,7 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
         policy, hashes, changes = compare_target_context(worktree, targets, saved)
         if not changes:
             return
-        name = f"target-context-{uuid.uuid4().hex}"
-        with TemporaryDirectory(prefix="reference-capture-", dir=run_path) as staging:
-            stage_target_context(worktree, targets, capsule, Path(staging), policy=policy, snapshot_name=name)
-        _, captured = target_context_inventory(target_context_snapshot(capsule, name))
-        if captured != hashes:
-            raise ValueError("参考資料が採取中に更新されました。もう一度再開してください。")
+        name = _capture_reference_revision(worktree, targets, run_path, capsule, policy, hashes)
         pending = {"previous": saved.name, "snapshot": name, "changes": changes}
         if stopped := record.get("stopped_migration_draft"):
             _verified_target_snapshot(run_path, stopped)
@@ -4160,6 +4166,20 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
                 pending.setdefault("previous_results", {})[key] = record.pop(key)
         record["status"] = "junie_finished" if migration_complete else "interrupted"
         write_run_record(record_path, record, invalidate_migration_reviews=True)
+    elif not recovering_adoption:
+        original = target_context_snapshot(capsule, pending["previous"])
+        policy, hashes, changes = compare_target_context(worktree, targets, original)
+        _, proposed_hashes = target_context_inventory(target_context_snapshot(capsule, pending["snapshot"]))
+        if hashes != proposed_hashes:
+            name = (_capture_reference_revision(worktree, targets, run_path, capsule, policy, hashes)
+                    if changes else original.name)
+            pending.setdefault("superseded_snapshots", []).append(pending["snapshot"])
+            pending.update(snapshot=name, changes=changes)
+            for key in ("detail_applicability", "detail_review_evidence", "supplied_rules"):
+                record.pop(key, None)
+                if not changes and key in pending.get("previous_results", {}):
+                    record[key] = pending["previous_results"][key]
+            write_run_record(record_path, record)
     activate_target_context(capsule, target_context_snapshot(capsule, pending["snapshot"]))
     if record.get("target_apply_pending"):
         finish_pending_targets(canonical, worktree, targets, record, record_path)
@@ -4186,7 +4206,7 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
                {before[path.as_posix()], target_hash(baseline[path.as_posix()]) if completed else None}
                for path in targets):
             raise ValueError("参考資料が変更されました。保存されていない Junie の下書きを先に確認してください。")
-        if completed:
+        if completed and pending["changes"]:
             if not all(before.values()) or not all(path.is_file() for path in baseline.values()):
                 raise ValueError("変換済みファイルの基準版が不足しているため、参考資料の変更を反映できません。")
             proposal = _propose_reference_refresh(config, run_path, capsule, manifest, worktree,
@@ -4243,6 +4263,9 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
     record.pop("error", None)
     report_activity(f"更新された参考資料 {len(pending['changes'])} 件を反映しました。")
     write_run_record(record_path, record)
+    if recovering_adoption:
+        _refresh_target_context_on_resume(config, unit, run_path, worktree, record,
+                                          migration_complete=migration_complete)
 
 
 def _validate_resume_plan(config, run_id, record, verification_request, stage):
