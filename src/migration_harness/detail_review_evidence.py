@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .files import safe_target
 from .execution import check_cancelled
+from .source_context import target_context_snapshot
 
 
 def stage_review_evidence(review_root, capsule, manifest, pinned_context):
@@ -40,7 +41,7 @@ def stage_review_evidence(review_root, capsule, manifest, pinned_context):
         origin = required[name]["path"] if name in required else name
         copy(capsule / "materials", Path(name), Path("evidence/materials") / name, digest, origin)
     if pinned_context is not None:
-        snapshot = capsule / "target-context"
+        snapshot = target_context_snapshot(capsule)
         entries = json.loads(safe_target(snapshot, Path("manifest.json")).read_text(encoding="utf-8"))["files"]
         for entry in entries:
             relative = Path(entry["path"])
