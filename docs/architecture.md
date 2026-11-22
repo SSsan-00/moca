@@ -244,7 +244,7 @@ flowchart TD
     Before["アプリルートで before_prepare"]
     Validate["設定で指定した入力ファイルの存在を確認"]
     Pin["PHP の元バイト列・文字コード・SHA-256 を固定"]
-    Split["行番号付きカプセル・境界資料・ルール索引を保存"]
+    Split["行番号付きカプセル・境界資料・ルール一覧を保存"]
     Git["git worktree add --detach で基準リビジョンを展開"]
     Prepared["worktree の位置と prepared を保存"]
     After["worktree で after_prepare"]
