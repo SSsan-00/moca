@@ -191,6 +191,7 @@ function syncActions() {
   migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
   dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || !snapshot.diff_viewer_enabled || snapshotting;
   element("#migration-ledger-compare").disabled = dashboardViewer.disabled;
+  element("#open-rule-verification").disabled = !connected || !snapshot.ready || !snapshot.run_id;
   for (const button of anchorButtons) {
     button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
   }
@@ -693,6 +694,125 @@ function runFetch(path, options = {}) {
   if (runId && !["workspace", "token-runs", "settings", "junie-models"].includes(path)) headers.set("X-Run-ID", runId);
   return fetch(path, {...options, headers});
 }
+
+const ruleVerificationDialog = element("#rule-verification-dialog");
+const ruleVerificationForm = element("#rule-verification-form");
+const ruleVerificationSelect = element("#rule-verification-rule");
+const ruleVerificationStatus = element("#rule-verification-status");
+const ruleVerificationLabels = {passed: "反映確認済み", failed: "未反映", human_review_needed: "要確認"};
+let ruleVerificationReport;
+let ruleVerificationRequest = 0;
+
+function renderRuleVerification(report, preferredRule) {
+  ruleVerificationReport = report;
+  const rules = report.rules.filter(rule => ruleVerificationLabels[rule.verification_state]);
+  ruleVerificationSelect.replaceChildren(...rules.map(rule =>
+    new Option(`${rule.path}（${ruleVerificationLabels[rule.verification_state]}）`, rule.file)));
+  if (rules.some(rule => rule.file === preferredRule)) ruleVerificationSelect.value = preferredRule;
+  ruleVerificationForm.hidden = !rules.length;
+  const pending = rules.filter(rule => rule.verification_state === "human_review_needed").length;
+  const failed = rules.filter(rule => rule.verification_state === "failed").length;
+  const passed = rules.length - pending - failed;
+  ruleVerificationStatus.textContent = rules.length
+    ? `要確認: ${pending} 件 / 未反映: ${failed} 件 / 反映確認済み: ${passed} 件`
+    : "確認対象のルールがありません。";
+  renderRuleVerificationContext();
+}
+
+function renderRuleVerificationContext() {
+  const rule = ruleVerificationReport?.rules.find(item => item.file === ruleVerificationSelect.value);
+  const context = element("#rule-verification-context");
+  const transfer = element("#rule-verification-to-editor");
+  transfer.hidden = rule?.verification_state !== "failed";
+  if (!rule) {
+    context.textContent = "";
+    return;
+  }
+  const decision = rule.operator_decision || rule.model_decision;
+  const last = rule.independent_verification;
+  const sources = rule.applicability_evidence.map(span => `${span.path}:${span.lines.join("–")}`);
+  context.textContent = [rule.description, decision?.reason, sources.length ? `選別の根拠: ${sources.join("、")}` : "",
+    last?.reason, last?.reference]
+    .filter(Boolean).join(" / ");
+  for (const field of ["start", "end"]) ruleVerificationForm.elements.namedItem(field).max = rule.saved_file_lines;
+}
+
+element("#open-rule-verification").addEventListener("click", async () => {
+  const request = ++ruleVerificationRequest;
+  const runId = snapshot.run_id;
+  ruleVerificationReport = undefined;
+  ruleVerificationForm.reset();
+  ruleVerificationForm.hidden = true;
+  ruleVerificationStatus.textContent = "確認対象を読み込んでいます。";
+  ruleVerificationDialog.showModal();
+  try {
+    const response = await runFetch(`rule-review?run_id=${encodeURIComponent(runId)}`, {cache: "no-store"});
+    if (!response.ok) throw await responseError(response);
+    const report = await response.json();
+    if (ruleVerificationDialog.open && request === ruleVerificationRequest) renderRuleVerification(report);
+  } catch (error) {
+    if (request === ruleVerificationRequest) ruleVerificationStatus.textContent = String(error);
+  }
+});
+ruleVerificationSelect.addEventListener("change", renderRuleVerificationContext);
+element("#rule-verification-to-editor").addEventListener("click", async () => {
+  const report = ruleVerificationReport;
+  const ruleId = ruleVerificationSelect.value;
+  if (!report || report.run_id !== snapshot.run_id) return;
+  const button = element("#rule-verification-to-editor");
+  button.disabled = true;
+  try {
+    const response = await runFetch(`rule-review?run_id=${encodeURIComponent(report.run_id)}`, {cache: "no-store"});
+    if (!response.ok) throw await responseError(response);
+    const current = await response.json();
+    if (report !== ruleVerificationReport || report.run_id !== snapshot.run_id || !ruleVerificationDialog.open) return;
+    if (current.version !== report.version) {
+      renderRuleVerification(current, ruleId);
+      ruleVerificationStatus.textContent = "実行または資料の版が変わりました。最新の判定を確認してください。";
+      return;
+    }
+    const rule = current.rules.find(item => item.file === ruleId);
+    const evidence = rule?.independent_verification;
+    if (evidence?.kind !== "failed") return;
+    const text = `反映確認で未反映と判断: ${rule.path}:${evidence.start_line}–${evidence.end_line}\n`
+      + `判断: ${evidence.reason}\n確認根拠: ${evidence.reference}\nこの方針に沿って対象を修正し、再検証してください。`;
+    window.harnessEditorStageDraft(report.run_id, text);
+    ruleVerificationDialog.close();
+    element("#migration-ledger-dialog").close();
+    switchHarnessTab(harnessTabs.indexOf(element("#tab-editor")), true);
+    element("#editor-prompt").focus();
+  } catch (error) {
+    if (report === ruleVerificationReport) ruleVerificationStatus.textContent = String(error);
+  } finally {
+    button.disabled = false;
+  }
+});
+ruleVerificationForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const report = ruleVerificationReport;
+  if (!report || report.run_id !== snapshot.run_id) return;
+  const data = Object.fromEntries(new FormData(ruleVerificationForm));
+  const rule = ruleVerificationSelect.value;
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    const response = await runFetch("rule-review", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({...data, rule, run_id: report.run_id, version: report.version,
+        start: Number(data.start), end: Number(data.end)}),
+    });
+    if (!response.ok) throw await responseError(response);
+    const updated = await response.json();
+    if (report === ruleVerificationReport && ruleVerificationDialog.open) {
+      ruleVerificationForm.reset();
+      renderRuleVerification(updated, rule);
+    }
+  } catch (error) {
+    if (report === ruleVerificationReport) ruleVerificationStatus.textContent = String(error);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function tailJunieLog(view) {
   const url = new URL("junie-thoughts", location.href);

@@ -44,6 +44,7 @@ from migration_harness.junie_thoughts import FILENAME as JUNIE_THOUGHTS_FILENAME
 from migration_harness.review_anchors import generate_anchors
 from migration_harness.run_records import edit_run_record, load_dashboard_record, load_saved_run, run_observer, validate_run_id
 from migration_harness.recovery_status import recovery_status
+from migration_harness.rule_review import review_rules
 from migration_harness.rule_workspace import RuleWorkspace
 from migration_harness.settings_form import build_settings_draft
 from migration_harness.junie_notifications import (
@@ -493,6 +494,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     self.send_body(200, content_type, asset)
             elif self.path.partition("?")[0] == prefix + "editor":
                 self.send_editor()
+            elif self.path.partition("?")[0] == prefix + "rule-review":
+                run_id = parse_qs(urlsplit(self.path).query).get("run_id", [None])[0] or self.headers.get("X-Run-ID")
+                self.send_rule_review(run_id)
             elif self.path.partition("?")[0] == prefix + "recovery":
                 try:
                     run_id = parse_qs(urlsplit(self.path).query).get("run_id", [""])[0]
@@ -1025,7 +1029,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
         def do_POST(self) -> None:
             if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
                                   prefix + "build-response", prefix + "editor", prefix + "prompts",
-                                  prefix + "rule-workspace", prefix + "junie-requests"):
+                                  prefix + "rule-workspace", prefix + "rule-review", prefix + "junie-requests"):
                 if (self.path.partition("?")[0] == prefix + "editor-php"
                         and self.headers.get("Host") == self.expected_host
                         and self.headers.get("Origin") == "http://" + self.expected_host):
@@ -1068,8 +1072,24 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_prompts(action)
             elif route == "comparison":
                 self.create_comparison(action)
+            elif route == "rule-review":
+                self.send_rule_review(action.get("run_id"), action)
             else:
                 self.post_control(action)
+
+        def send_rule_review(self, run_id, action=None):
+            try:
+                validate_run_id(run_id)
+                if self.dashboard.state.get("run_id") != run_id or not self.dashboard.state.get("ready"):
+                    raise ValueError("停止中または完了した実行を選んでください。")
+                fields = ("rule", "kind", "version", "start", "end", "reason", "reference")
+                if action is not None and (set(action) - {"run_id", *fields} or not isinstance(action.get("kind"), str)):
+                    raise ValueError("確認するルールと判定を指定してください。")
+                options = {key: action[key] for key in fields if key in action} if action is not None else {}
+                report = review_rules(config, run_id, **options)
+                self.send_body(200, "application/json", json.dumps(report, ensure_ascii=False).encode("utf-8"))
+            except _ERRORS as exc:
+                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
 
         def send_dry_run(self, action):
             from migration_harness.dry_run import plan_dry_run
