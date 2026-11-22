@@ -8,6 +8,7 @@ import re
 import stat
 
 from .files import has_symlink_component
+from .source_context import target_context_snapshot
 
 
 _LIMIT = 2 * 1024 * 1024
@@ -51,7 +52,7 @@ def _load_bytes(path, max_bytes):
 
 
 def target_references(capsule):
-    path = _safe_path(capsule, Path("target-context", "manifest.json"))
+    path = _safe_path(target_context_snapshot(capsule), Path("manifest.json"))
     if not path.exists():
         return {}
     manifest = json.loads(_load_bytes(path, _LIMIT))
@@ -79,7 +80,7 @@ def target_references(capsule):
 def _pinned_bytes(capsule, entry):
     if entry["bytes"] > _LIMIT:
         raise ValueError("pinned target reference exceeds its evidence budget")
-    path = _safe_path(capsule, Path("target-context", "files", *PurePosixPath(entry["path"]).parts))
+    path = _safe_path(target_context_snapshot(capsule), Path("files", *PurePosixPath(entry["path"]).parts))
     data = _load_bytes(path, _LIMIT)
     if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
         raise ValueError("pinned target reference hash mismatch")
