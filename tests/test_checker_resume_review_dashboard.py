@@ -1574,6 +1574,11 @@ class SavedDashboardTests(SavedRunFixture):
         def interact(*, timeout):
             nonlocal inspected
             if inspected:
+                if resume:
+                    with view.manager.condition:
+                        self.assertTrue(view.manager.condition.wait_for(
+                            lambda: self.run_id not in view.manager.workers, timeout=10,
+                        ), "saved run did not finish")
                 raise KeyboardInterrupt
             inspected = True
             first_line = terminal.getvalue().splitlines()[0]

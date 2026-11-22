@@ -185,6 +185,44 @@ class ExecutionIntegrationTests(HarnessCase):
         time.sleep(2.1)
         self.assertFalse(marker.exists())
 
+    @unittest.skipUnless(os.name == "nt", "requires Windows Job Objects")
+    def test_stop_owns_child_even_after_windows_launcher_exits(self):
+        ready = self.root / "ready"
+        release = self.root / "release"
+        marker = self.root / "late-write"
+        child_code = (
+            "import time; from pathlib import Path; "
+            f"Path({str(ready)!r}).touch(); "
+            f"exec(\"while not Path({str(release)!r}).exists(): time.sleep(0.02)\"); "
+            f"Path({str(marker)!r}).touch()"
+        )
+        launcher = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {child_code!r}])"
+        command = [sys.executable, "-c", launcher]
+        control = ExecutionControl(lambda _event: None)
+        real_popen = subprocess.Popen
+
+        def start_and_cancel_after_exit(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            control.on_activity = lambda _event: request_stop(process)
+            return process
+
+        def request_stop(process):
+            process.wait(timeout=10)
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(ready.exists(), "child did not start")
+            control.cancelled.set()
+
+        try:
+            with patch.object(subprocess, "Popen", side_effect=start_and_cancel_after_exit), control_scope(control):
+                with self.assertRaises(OperationCancelled):
+                    run_process(command, label="test", capture_output=True)
+        finally:
+            release.touch()
+        time.sleep(.3)
+        self.assertFalse(marker.exists())
+
     def test_stopped_build_can_resume_same_run(self):
         result = workflow.prepare_run(self.settings, "sample")
         run_path = Path(result["run_path"])

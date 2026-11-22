@@ -1,4 +1,4 @@
-"""Win32 Job Object for a Junie launcher and its normally inherited children."""
+"""Win32 Job Object for a launcher and its normally inherited children."""
 
 import ctypes
 import time
@@ -25,6 +25,9 @@ class _JobAccounting(ctypes.Structure):
 _HANDLE = win.HANDLE
 _DWORD = win.DWORD
 _BOOL = win.BOOL
+
+
+CREATE_SUSPENDED = 0x00000004
 
 
 class WindowsJob:
@@ -75,7 +78,7 @@ class WindowsJob:
                         if previous_count == 0xFFFFFFFF:
                             raise ctypes.WinError(ctypes.get_last_error())
                         if previous_count != 1:
-                            raise OSError("Junie launcher did not have the expected suspend count")
+                            raise OSError("Launcher did not have the expected suspend count")
                         return
                     finally:
                         self._close(thread)
@@ -96,7 +99,7 @@ class WindowsJob:
             raise ctypes.WinError(ctypes.get_last_error())
         while active():
             if time.monotonic() >= deadline:
-                raise TimeoutError("Junie Job Object still has active processes")
+                raise TimeoutError("Job Object still has active processes")
             time.sleep(.025)
 
     def close(self):
