@@ -13,6 +13,35 @@ from fixtures import HarnessCase, SavedRunFixture
 
 
 class TaskGuidelinesTests(unittest.TestCase):
+    def test_editor_followup_reads_operator_file_only_if_not_in_guidelines(self):
+        for instruction, bundled in (("Apply the fix.", True), ("修" * 9000, False)):
+            with self.subTest(bundled=bundled), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                agent = root / "agent"
+                agent.mkdir()
+                with (
+                    patch.object(workflow, "handoff_prompt", return_value=""),
+                    patch.object(workflow, "junie_usage_recorder", return_value=None),
+                    patch.object(workflow, "_run_migration_junie") as launch,
+                ):
+                    workflow._run_editor_followup(
+                        agent, root, (Path("Page.cs"),), {"completed_capsules": 1},
+                        root / "run.json", {"junie_max_steps": None}, instruction,
+                    )
+                args = launch.call_args.args
+                guidelines, inputs, command = args[4], args[6], args[7]
+                operator_file, = inputs
+                prompt = command[-1]
+                self.assertEqual((agent / operator_file).read_text(encoding="utf-8"), instruction + "\n")
+                if bundled:
+                    self.assertIn(f"from the `{operator_file}` entry in the guidelines", prompt)
+                    self.assertNotIn(f"Read `{operator_file}`", prompt)
+                    self.assertIn(instruction, guidelines.read_text(encoding="utf-8"))
+                else:
+                    self.assertIsNone(guidelines)
+                    self.assertIn(f"Read `{operator_file}`", prompt)
+                self.assertIn("Read the current versions of the configured targets: Page.cs.", prompt)
+
     def test_accumulated_source_keeps_exact_assigned_rows_and_excludes_future_or_shared_data(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()

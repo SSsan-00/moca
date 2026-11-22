@@ -1325,9 +1325,16 @@ def _run_editor_followup(
     completion = agent_root / f"migration-complete-{token}.txt"
     memo, memo_request = junie_memo_request(agent_root, token)
     instructions = _stage_operator_prompts(agent_root, token, instruction)
+    inputs = [Path(instructions)]
+    context, report = _operator_edit_context(record_path.parent, agent_root, token, inputs, record.get("operator_question"))
+    guidelines, supplied = _task_guidelines(agent_root, inputs)
     names = ", ".join(target.as_posix() for target in targets)
+    operator_input = (
+        f"Use the operator's follow-up instructions from the `{instructions}` entry in the guidelines. "
+        if supplied else f"Read `{instructions}` for the operator's follow-up instructions. "
+    )
     prompt = (
-        f"Read `{instructions}` and apply the operator's follow-up instructions to the completed migration. "
+        f"{operator_input}Apply them to the completed migration. "
         f"Read the current versions of the configured targets: {names}. "
         "Consult the staged PHP source and migration rules when needed. "
         "Preserve unrelated edits and the migration rules. Edit only these targets and the optional handoff file. "
@@ -1336,9 +1343,6 @@ def _run_editor_followup(
         "Do not access files outside this workspace or run builds, tests, or checkers. "
         f"When finished, write exactly {token} to {completion.name} as the final file action."
     )
-    inputs = [Path(instructions)]
-    context, report = _operator_edit_context(record_path.parent, agent_root, token, inputs, record.get("operator_question"))
-    guidelines, supplied = _task_guidelines(agent_root, inputs)
     prompt = context + handoff_prompt(record_path.parent, agent_root, targets, record,
                            draft=record.get("stopped_migration_draft")) + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
