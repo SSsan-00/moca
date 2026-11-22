@@ -123,6 +123,8 @@ def _ensure_utf8_bom(path: Path) -> None:
         data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError(f"移行先ファイルは UTF-8 で保存してください: {path.name}") from None
+    if b"\0" in data:
+        raise ValueError(f"Migration target is not UTF-8 source text (NUL byte): {path.name}")
     if data.startswith(codecs.BOM_UTF8):
         return
     with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
