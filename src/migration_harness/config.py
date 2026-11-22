@@ -127,9 +127,6 @@ def load_config(path: Path) -> dict[str, Any]:
     execution["diff_viewer_anchor_reference"] = [
         _config_relative_path(config_path, reference) for reference in execution["diff_viewer_anchor_reference"]
     ]
-    from .rule_search import normalize_rule_search
-
-    execution["rule_search"] = normalize_rule_search(raw.get("rule_search"), config_path, project_settings, units)
     return {"config_path": str(config_path), **project_settings, **execution, "units": units}
 
 

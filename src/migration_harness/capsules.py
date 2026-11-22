@@ -257,18 +257,14 @@ def _rule_groups(index, item, source):
     return groups
 
 
-def configured_search_rules(config, unit):
-    root = Path(config["project_root"])
-    scope = config.get("rule_search", {}).get("scopes", {}).get(unit["id"], {})
-    paths = set(scope.get("references", ()))
-    outputs = []
-    for index, item in enumerate(unit["inputs"]):
-        if item["role"] != "migration_rules" or item["path"] not in paths:
+def _search_regions(segment_inputs, syntax_by_path):
+    for _, item, path in segment_inputs:
+        if not is_php_input(item) or item["role"] == "reference_php":
             continue
-        source = root / item["path"]
-        scoped = {**item, "resolved_encoding": input_encoding(source, item["encoding"])}
-        outputs.extend((group["item"], _render_groups([group])) for group in _rule_groups(index, scoped, source))
-    return outputs
+        first, last = item["start_line"], item["end_line"]
+        functions = tuple(fn for fn in syntax_by_path[item["path"]][0]
+                          if first <= fn.start_line and (last is None or fn.start_line <= last))
+        yield functions, _selected_lines(path, first, last, item["resolved_encoding"])
 
 
 def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path) -> dict[str, Any]:
@@ -393,8 +389,8 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
         "php_sources": php_sources,
         "parts": manifest_parts,
     }
-    if hint := prepare_rule_hint(config, unit, rule_sources, rule_files):
-        manifest["semantic_rule_hint"] = hint
+    if hint := prepare_rule_hint(_search_regions(segment_inputs, syntax_by_path), rule_sources, rule_files):
+        manifest["rule_read_order"] = hint
         report_activity("固定した詳細ルールのローカル検索候補を保存しました。")
     (capsule / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return {

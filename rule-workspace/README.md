@@ -49,26 +49,8 @@ Junieに任せる場合は、ハーネス直下で `junie` を起動し、`/skil
 
 採用済みの原文と生成物は保持します。変更時は `LegacyApp-r2` のような新しい作業領域を作成してください。登録したファイルは絶対パスで参照するため、移動・削除しないでください。このフォルダ内の案件データはGitの対象外です。共有・バックアップが必要なら別途保管します。
 
-## 詳細ルールのローカル意味検索（任意）
+## 詳細ルールの読み始めの案内
 
-移行単位の対象が明確な詳細ルールに限り、言い換えや日英の表現差で関連する原文を探せます。通常の詳細レビューに候補行を案内するだけで、必須事項・採用済み詳細・既存索引は置き換えません。検索の有無は適用・除外や検証成功の根拠ではありません。
+新しい Run を準備するとき、移行対象の PHP と登録済みルールの版を固定します。対象 PHP の識別子や語を、日本語の語の一部も含めて、固定した参照用の詳細ルールと照合します。識別子の一致を優先し、関数ごとの BM25 の順位で最大 16 件の読み始めの候補を記録します。検索はローカルで行い、事前の索引作成、追加インストール、追加設定は不要です。再開時はその Run の記録を使い、新しい Run では最新の登録内容から計算し直します。
 
-ハーネスの仮想環境に `python -m pip install -e ".[rule-search]"` で追加依存を導入し、アプリリポジトリ外に [E5 small ONNXモデル](https://huggingface.co/intfloat/multilingual-e5-small/blob/main/onnx/model_qint8_avx512_vnni.onnx) を `model.onnx`、[同じ配布元のtokenizer](https://huggingface.co/intfloat/multilingual-e5-small/blob/main/tokenizer.json) を `tokenizer.json` として配置します。ハーネスは既知のSHA-256を照合し、モデルをダウンロードしたり、埋め込み用に資料を外部に送ったりしません。Junieによる既存のレビューとは別です。
-
-```toml
-[rule_search]
-model_dir = "rule-workspace/_models/e5" # 設定ファイルからの相対パス
-
-[[rule_search.units]]
-unit = "orders"
-query = "返品処理、文字列のゼロ、払い戻し上限" # 任意。省略時は単位・移行先・入力のシンボルを使用
-references = ["C:/migration/Orders-r3/generated/details/returns.md"]
-```
-
-`references` はその移行単位で参照可能な、既に `usage = "reference"` で登録したファイルへの明示範囲です。相対パスは `project.root` が基準です。版や対象が違う資料は指定しないでください。原文・生成物の検証と設定反映のあと、通常のCLIから索引を更新します。
-
-```powershell
-.\.venv\Scripts\python.exe -m migration_harness.cli rule-search-index --config harness.local.toml --unit orders
-```
-
-更新前の索引は、元ファイル・登録・モデルの版が一致しなくなれば使われません。生成先が次版へ移ったときは `references` も新しい版を指すよう確認します。索引はRun保存先の `.rule-search` に置き、新しいRunでのみ検索を行って候補を固定します。索引や追加依存がない、破損、不一致、または読込に失敗した場合は従来どおりです。
+候補なし、検索語なし、一致なし、検索補助の失敗や処理量の上限、保存した候補と詳細資料の不一致、Junie への入力予算不足のときは、案内だけを省きます。案内は採用・除外の根拠ではなく、必須事項の適用も詳細ルール全件の適用判定も変わりません。必須入力のエラーや停止要求は通常どおり処理します。
