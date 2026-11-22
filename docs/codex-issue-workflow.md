@@ -8,7 +8,7 @@
 2. GitHubの **Settings → Environments** で `codex-issue-write` を作り、デプロイ可能なブランチを `main` のみに限定します。Appの秘密鍵はこの環境のsecret `CODEX_ISSUE_APP_PRIVATE_KEY` に、Client IDは環境のvariable `CODEX_ISSUE_APP_CLIENT_ID` に登録します。登録済みのリポジトリsecret `OPENAI_API_KEY` はパッチ生成ジョブのCodex Actionにだけ渡します。
 3. `main` に適用される **Active** なブランチrulesetを作成し、次の条件を設定します。バイパスリストは空のままにし、squash mergeを許可します。このワークフローはGitHubの **Allow auto-merge** 設定を使わず、条件がそろった時点でマージを要求します。
    - **Require a pull request before merging**。承認1件以上、新しいコミットで古い承認を取り消す設定、およびすべての会話の解決を必須にします。
-   - **Require status checks to pass** と **Require branches to be up to date before merging**。次の5チェックすべての提供元を **GitHub Actions** に指定します。選択肢に出ない場合は最近成功した `Harness tests` の実行を確認します。
+   - **Require status checks to pass** と **Require branches to be up to date before merging**。次の3チェックすべての提供元を **GitHub Actions** に指定します。選択肢に出ない場合は最近成功した `Harness tests` の実行を確認します。
      - `regression (windows-latest, 3.11)`
      - `regression (windows-latest, 3.13)`
      - `windows-junie`
@@ -17,6 +17,8 @@
 5. Codex設定でこのリポジトリを接続し、**Review code → Automatic review** を有効にします。有効になるレビューの種類と、担当者が手動でレビューを依頼できることを確認します。
 
 標準の `GITHUB_TOKEN` で作成したPRでは、PR起点のActionsが承認待ちになることがあります。専用Appの短命なインストールトークンでブランチをpushし、Draft PRを作成します。最初の許可済み試行では、候補のpushとPRの両方から既存の `Harness tests` が実際に起動し、同じ候補SHAで必須3チェックとWindowsの分割ジョブ4件（各Pythonの `conversation-editor` と `remaining`）がすべて成功することを確認してください。設定前に本番の生成やマージを試す必要はありません。 [GitHubのトークンと起動イベント](https://docs.github.com/en/actions/concepts/security/github_token) · [GitHub Appのトークン発行](https://github.com/actions/create-github-app-token) · [GitHub ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
+
+通常のPRはPRイベントのCIだけを実行します。専用ワークフローの codex/issue-* 候補だけは、上記のマージ前確認に必要なpush・PR両方のCIを維持します。mainへの反映後もpushのCIが動きます。
 
 ## 手動実行と承認
 

@@ -155,12 +155,15 @@ class ExecutionIntegrationTests(HarnessCase):
         self.assertIsNone(record["active_stage"])
 
     def test_stopping_a_real_command_terminates_its_children(self):
+        if os.name == "nt":
+            self._assert_windows_child_stops(launcher_exits=False)
+            return
         control = ExecutionControl(lambda _event: None)
         pid_file = self.root / "child.pid"
         marker = self.root / "child-wrote-after-stop"
         child_code = (
             "import os, signal, time; from pathlib import Path; "
-            + ("signal.signal(signal.SIGTERM, signal.SIG_IGN); " if os.name != "nt" else "")
+            + "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
             + f"Path({str(pid_file)!r}).write_text(str(os.getpid())); "
             + f"time.sleep(2); Path({str(marker)!r}).write_text('still alive'); time.sleep(30)"
         )
@@ -187,6 +190,9 @@ class ExecutionIntegrationTests(HarnessCase):
 
     @unittest.skipUnless(os.name == "nt", "requires Windows Job Objects")
     def test_stop_owns_child_even_after_windows_launcher_exits(self):
+        self._assert_windows_child_stops(launcher_exits=True)
+
+    def _assert_windows_child_stops(self, *, launcher_exits):
         import ctypes
         from ctypes import wintypes
 
@@ -206,19 +212,22 @@ class ExecutionIntegrationTests(HarnessCase):
             f"\nwhile not Path({str(release)!r}).exists(): time.sleep(0.02)\n"
         )
         launcher = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {child_code!r}])"
+        if not launcher_exits:
+            launcher += f"\nimport time; from pathlib import Path\nwhile not Path({str(release)!r}).exists(): time.sleep(0.02)"
         command = [sys.executable, "-c", launcher]
         control = ExecutionControl(lambda _event: None)
         real_popen = subprocess.Popen
         child_handle = None
 
-        def start_and_cancel_after_exit(*args, **kwargs):
+        def start_and_watch(*args, **kwargs):
             process = real_popen(*args, **kwargs)
             control.on_activity = lambda _event: request_stop(process)
             return process
 
         def request_stop(process):
             nonlocal child_handle
-            process.wait(timeout=10)
+            if launcher_exits:
+                process.wait(timeout=10)
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 if ready.exists() and (pid := ready.read_text()).isdigit():
@@ -226,10 +235,12 @@ class ExecutionIntegrationTests(HarnessCase):
                     break
                 time.sleep(.02)
             self.assertTrue(child_handle, "child did not start")
+            if not launcher_exits:
+                self.assertIsNone(process.poll(), "launcher exited before cancellation")
             control.cancelled.set()
 
         try:
-            with patch.object(subprocess, "Popen", side_effect=start_and_cancel_after_exit), control_scope(control):
+            with patch.object(subprocess, "Popen", side_effect=start_and_watch), control_scope(control):
                 with self.assertRaises(OperationCancelled):
                     run_process(command, label="test", capture_output=True)
             self.assertEqual(kernel.WaitForSingleObject(child_handle, 3000), 0, "child survived cancellation")
