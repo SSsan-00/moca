@@ -298,15 +298,18 @@ class CapsulePreparationTests(HarnessCase):
         constraint.write_bytes(b"REQUIRED_OUTPUT_CONSTRAINT\n")
         config = load_config(self.config_path({**PHP, "end_line": 3}, CONSTRAINT, RULES))
         observed_contexts = []
+        completion_markers = []
 
         def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
             target, = targets
+            completion_markers.append(completion)
             guidelines = Path(command[command.index("--ide-guidelines") + 1])
             self.assertIn(b"REQUIRED_MIGRATION_RULE", guidelines.read_bytes())
             self.assertNotIn("migration-read-rules.py", command[-1])
             observed_contexts.append((target.parent / ".migration-context.md").read_bytes())
             if len(observed_contexts) == 2:
                 target.write_bytes(b"class Partial {}\n")
+                completion.write_text("incomplete", encoding="ascii")
                 junie_cli.session_closed_observer.get()()
                 raise KeyboardInterrupt
             if len(observed_contexts) == 3:
@@ -328,6 +331,8 @@ class CapsulePreparationTests(HarnessCase):
             interrupted_record = self.read_json(record_path)
             self.assertEqual(interrupted_record["completed_capsules"], 1)
             self.assertEqual(interrupted_record["current_capsule"], 2)
+            self.assertFalse(completion_markers[0].exists(), "committed capsule marker must be removed")
+            self.assertEqual(completion_markers[1].read_text(encoding="ascii"), "incomplete")
             saved_draft = run_path / interrupted_record["stopped_migration_draft"]["snapshot"]
             self.assertEqual((saved_draft / "0.draft").read_bytes(), b"class Partial {}\n")
             previous = Path(interrupted_record["worktree_path"]) / interrupted_record["target"]
@@ -345,6 +350,7 @@ class CapsulePreparationTests(HarnessCase):
             bounded = workflow.resume_with_junie(config, run_id, verification_request=request)
             self.assertEqual(bounded["completed_capsules"], 2)
             self.assertEqual(bounded["status"], "interrupted")
+            self.assertFalse(completion_markers[2].exists(), "resumed capsule marker must be removed after commit")
             saved = self.read_json(record_path)
             self.assertEqual(saved["current_capsule"], 3)
             self.assertEqual(saved["resume_operations"][-1]["capsule_range"], [2, 2])
