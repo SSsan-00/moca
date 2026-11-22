@@ -4075,7 +4075,10 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
         model=record.get("junie_model", config.get("junie_model")), effort=record.get("junie_effort"),
         config=config, pinned_context=proposal,
     )
-    material = _stage_migration_materials(capsule, manifest, proposal, targets=targets, selected=selected)
+    material = _stage_migration_materials(
+        capsule, manifest, proposal, targets=targets, selected=selected,
+        excluded=frozenset(name for name, value in record.get("detail_overrides", {}).items() if not value["applies"]),
+    )
     excerpts = _stage_source_excerpts(capsule, manifest, proposal, through_capsule=record["completed_capsules"])
     for target in targets:
         output = safe_target(proposal, target)
