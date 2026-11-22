@@ -77,7 +77,7 @@ class CapsulePreparationTests(HarnessCase):
             self.assertIn("values, order, duplicates and PHP literal decoding", command[-1])
             self.assertIn("Use direct source and target reads", command[-1])
             self.assertIn("For long or repetitive data, use mechanical extraction and comparison", command[-1])
-            self.assertIn("Do not create a temporary script when direct reads or the supplied helper suffice", command[-1])
+            self.assertIn("Use the supplied helper or a read-only one-liner instead of writing extraction scripts", command[-1])
             context = (completion.parent / ".migration-context.md").read_bytes().decode("utf-8")
             observed_lines.extend(re.findall(r"^ *([0-9]+) \| ([^\r\n]*)", context, re.MULTILINE))
             accumulated = "".join(p.read_bytes().decode("utf-8") for p in sorted(
