@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 from queue import Queue
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from migration_harness import junie_cli
 from migration_harness.rule_chat import RuleChat
@@ -33,6 +33,32 @@ def respond_new(session, options):
 
 
 class JunieAcpEffortTests(unittest.TestCase):
+    def test_slow_provider_startup_has_its_own_bounded_deadline(self):
+        clock = Mock(return_value=100.0)
+        with patch.object(junie_cli.time, "monotonic", clock), patch.object(junie_cli, "Thread"):
+            session = junie_cli._AcpSession(
+                Mock(), ["junie", "--prompt", "synthetic prompt"], Path.cwd(), Mock(),
+                Path("completion.json"), "run-token", None,
+            )
+            session.request = Mock()
+            clock.return_value = 131.0
+            self.assertFalse(session.advance())
+            self.assertFalse(session.session_ready)
+            session.request.assert_not_called()
+            clock.return_value = 159.0
+            session.messages.put(b'{"id":2,"result":{"sessionId":"ready"}}')
+            self.assertFalse(session.advance())
+            self.assertTrue(session.session_ready)
+            session.request.assert_called_once()
+            self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
+
+            clock.return_value = 100.0
+            stalled = junie_cli._AcpSession(Mock(), ["junie"], Path.cwd(), Mock(), Path("completion.json"),
+                                           "run-token", None)
+            clock.return_value = 160.0
+            with self.assertRaises(junie_cli.JunieSessionError):
+                stalled.advance()
+
     def test_migration_waits_for_effort_ack_before_prompt(self):
         session = make_session(junie_cli._AcpSession)
         respond_new(session, config("low"))
