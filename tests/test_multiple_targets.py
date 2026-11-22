@@ -56,7 +56,9 @@ class MultipleTargetsTest(HarnessCase):
             self.assertIn("Never add an explicit route to a bare @page", args[-1])
             self.assertIn("fully qualified type in @model", args[-1])
             self.assertIn("Razor encodes that expression once", args[-1])
-            self.assertIn("UTF-8 with BOM (EF BB BF)", args[-1])
+            self.assertIn("The harness validates UTF-8 and adds the BOM", args[-1])
+            self.assertIn("do not run encoding or BOM checks or create a hex dump", args[-1])
+            self.assertNotIn("Put temporary extraction scripts", args[-1])
             for path in targets:
                 path.write_text(f"migrated {path.name}", encoding="utf-8")
             if outside:
@@ -107,6 +109,19 @@ class MultipleTargetsTest(HarnessCase):
             self.assertEqual((self.worktree / name).read_bytes(), f"original {name}".encode("utf-8"))
         self.assertNotIn("target_apply_pending", self.record())
 
+    def test_bomless_utf16_output_is_rejected_before_publishing(self):
+        def junie(args, completion, token, targets, **kwargs):
+            targets[0].write_bytes(b"class Page {}")
+            targets[1].write_bytes("<p>Page</p>".encode("utf-16-le"))
+            completion.write_text(token)
+            return 0
+
+        with self.assertRaisesRegex(ValueError, "not UTF-8 source text .*NUL byte"):
+            self.resume(junie)
+        for name in self.targets:
+            self.assertEqual((self.worktree / name).read_bytes(), f"original {name}".encode("utf-8"))
+        self.assertNotIn("target_apply_pending", self.record())
+
     # 中断時の編集が残り、再開後に両方のファイルを比較できることを検証する。
     def test_partial_edits_are_kept_and_both_targets_are_compared(self):
         from migration_harness import junie_cli
@@ -141,8 +156,9 @@ class MultipleTargetsTest(HarnessCase):
 
     # 許可外の変更があれば、許可済みファイルも反映する前に停止することを検証する。
     def test_rejects_changes_to_unlisted_files_before_publishing_any_target(self):
-        with self.assertRaisesRegex(ValueError, "outside the configured targets"):
+        with self.assertRaisesRegex(ValueError, "outside the configured targets: 'unlisted[.]cs'"):
             self.resume(self.edit_with_junie(outside=True))
+        self.assertIn("unlisted.cs", self.record()["error"])
         for name in self.targets:
             self.assertEqual((self.worktree / name).read_text(encoding="utf-8"), f"original {name}")
         self.assertEqual(self.record()["completed_capsules"], 0)
@@ -333,7 +349,7 @@ class MultipleTargetsTest(HarnessCase):
                     self.assertIn("extract the exact ordered data mechanically", command[-1])
                     self.assertIn("fully qualified type in @model", command[-1])
                     self.assertIn("Razor encodes that expression once", command[-1])
-                    self.assertIn("UTF-8 with BOM (EF BB BF)", command[-1])
+                    self.assertIn("The harness validates UTF-8 and adds the BOM", command[-1])
                     self.assertEqual(target.read_bytes(), b"latest view before repair")
                     self.assertEqual((agent / model_name).read_bytes(), b"latest model with NewName")
                     target.write_bytes(b"repaired using NewName")
