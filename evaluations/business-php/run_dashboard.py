@@ -1,14 +1,17 @@
 """Drive the ordinary dashboard with real Junie; requires Playwright and Chrome.
 
 Usage: PYTHONPATH=/absolute/harness/src python run_dashboard.py FIXTURE_ROOT OUTPUT_DIR
-Only the isolated evaluation's trust/headless retry prompts are accepted.
+Accept trust/headless retry and confirmed completion receipts only for the isolated evaluation.
 """
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from threading import Thread
 import time
+from uuid import UUID
 
 
 def serve(root, run_id=None):
@@ -17,14 +20,48 @@ def serve(root, run_id=None):
     run_dashboard(load_config(root / "harness.toml"), **({"run_id": run_id} if run_id else {"unit_id": "business-scale"}))
 
 
-def check(root, output):
-    from playwright.sync_api import expect, sync_playwright
+def read_record(path):
+    # A Windows reader can briefly lose the file while the writer atomically replaces it.
+    for attempt in range(20):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (PermissionError, FileNotFoundError):
+            if attempt == 19:
+                raise
+            time.sleep(0.05)
+
+
+def allow_fixture_receipt(root, run_id, detail):
+    if not run_id:
+        return False
+    lines = detail.strip().splitlines()
+    if not lines or lines[0] != "Allow changes in this file?":
+        return False
+    path = Path(lines[-1])
+    if not path.is_absolute():
+        return False
+    workspace = root.resolve() / "runs" / run_id / "agent-workspace"
+    if workspace.resolve() != workspace:
+        return False
+    if re.fullmatch(r"migration-complete-[a-f0-9]{32}\.txt", path.name):
+        return path.resolve().parent == workspace
+    if re.fullmatch(r"steering-[a-f0-9]{32}\.txt", path.name):
+        return path.resolve().parent == workspace / ".migration-scratch"
+    return False
+
+
+def check(root, output, run_id=None):
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout, expect, sync_playwright
+    run_id = str(UUID(run_id)) if run_id else None
     output.mkdir(parents=True, exist_ok=True)
     existing = set((root / "runs").glob("*/run.json"))
     start = time.monotonic()
-    process = subprocess.Popen([sys.executable, "-u", __file__, "--server", str(root)], stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True)
-    record, run_path, page_errors, transitions = None, None, [], []
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), environment.get("PATH", "")))
+    process = subprocess.Popen([sys.executable, "-u", __file__, "--server", str(root), *([run_id] if run_id else [])], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, env=environment)
+    run_path = root / "runs" / run_id / "run.json" if run_id else None
+    record, page_errors, transitions = None, [], []
     try:
         for line in process.stdout:
             print(line, end="", flush=True)
@@ -41,13 +78,19 @@ def check(root, output):
             browser = p.chromium.launch(channel="chrome")
             page = browser.new_page(locale="ja-JP", viewport={"width": 1440, "height": 960})
             page.on("pageerror", lambda error: page_errors.append(str(error)))
-            page.goto(url)
+            page.goto(url + ("?run=" + run_id if run_id else ""))
+            if run_id:
+                page.locator("#tab-runs").click(timeout=20_000)
+                page.locator(f'tr[data-run-id="{run_id}"] button[data-action="resume-run"]').click(timeout=20_000)
             last = None
             for _ in range(9000):
-                for name in ("信頼して続行", "今回のみ非対話モードで再試行", "今回のみ許可"):
+                for name in ("信頼して続行", "今回のみ非対話モードで再試行"):
                     button = page.get_by_role("button", name=name, exact=True)
-                    if button.is_visible():
-                        button.click()
+                    if button.is_visible() and button.is_enabled():
+                        try:
+                            button.click(timeout=1500)
+                        except PlaywrightTimeout:
+                            continue
                         print("APPROVED", name, flush=True)
                 if run_path is None:
                     found = set((root / "runs").glob("*/run.json")) - existing
@@ -55,7 +98,20 @@ def check(root, output):
                         assert len(found) == 1, found
                         run_path, = found
                 if run_path is not None:
-                    record = json.loads(run_path.read_text(encoding="utf-8"))
+                    popup = page.locator("#junie-confirmation[open]")
+                    shown_run = popup.locator("#junie-confirmation-run")
+                    detail = popup.locator("#junie-confirmation-detail")
+                    approve = popup.get_by_role("button", name=re.compile(r"^今回のみ許可(?:（.*）)?$"))
+                    current_id = run_path.parent.name
+                    try:
+                        if (approve.is_visible() and approve.is_enabled() and detail.is_visible()
+                                and shown_run.inner_text(timeout=1500).endswith(f"Run {current_id}")
+                                and allow_fixture_receipt(root, current_id, detail.inner_text(timeout=1500))):
+                            approve.click(timeout=1500)
+                            print("APPROVED scoped fixture receipt once", flush=True)
+                    except PlaywrightTimeout:
+                        pass
+                    record = read_record(run_path)
                     state = (record["status"], record.get("current_capsule"), len(record.get("repair_history", [])))
                     if state != last:
                         transitions.append({"seconds": round(time.monotonic()-start, 3), "state": state})
@@ -65,7 +121,7 @@ def check(root, output):
                         break
                     if state[0] in {"checker_needs_review", "build_failed", "junie_failed", "script_failed", "interrupted"}:
                         page.wait_for_timeout(1500)
-                        if json.loads(run_path.read_text(encoding="utf-8"))["status"] == state[0]:
+                        if read_record(run_path)["status"] == state[0]:
                             break
                 page.wait_for_timeout(400)
             else:
@@ -77,7 +133,7 @@ def check(root, output):
     finally:
         elapsed = time.monotonic()-start
         if run_path:
-            record = json.loads(run_path.read_text(encoding="utf-8"))
+            record = read_record(run_path)
             worktree = Path(record["worktree_path"])
             evidence = dict(run_id=record["run_id"], run_path=str(run_path.parent), status=record["status"],
                 wall_seconds=round(elapsed, 3), transitions=transitions, page_errors=page_errors,
@@ -105,4 +161,4 @@ if __name__ == "__main__":
     if sys.argv[1] == "--server":
         serve(Path(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else None)
     else:
-        check(Path(sys.argv[1]), Path(sys.argv[2]))
+        check(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else None)

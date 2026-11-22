@@ -11,9 +11,6 @@ from . import junie_cli
 
 
 class RuleChat(junie_cli._AcpSession):
-    def _connection_timeout(self) -> float:
-        return 60
-
     def __init__(self, project, model, effort):
         self.response = []
         self.size = 0
