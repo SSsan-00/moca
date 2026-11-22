@@ -4202,8 +4202,10 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
         before = {path.as_posix(): target_hash(safe_target(worktree, path)) for path in targets}
         completed = record["completed_capsules"]
         baseline = _reference_refresh_sources(run_path, record) if completed else {}
+        recorded = record.get("target_hashes", {})
         if any(target_hash(safe_target(canonical, path)) not in
-               {before[path.as_posix()], target_hash(baseline[path.as_posix()]) if completed else None}
+               {before[path.as_posix()], target_hash(baseline[path.as_posix()]) if completed else None,
+                recorded.get(path.as_posix(), before[path.as_posix()])}
                for path in targets):
             raise ValueError("参考資料が変更されました。保存されていない Junie の下書きを先に確認してください。")
         if completed and pending["changes"]:

@@ -100,6 +100,38 @@ class ReferenceRefreshTests(unittest.TestCase):
                 self.refresh()
         self.assertEqual((self.worktree / self.target).read_text(encoding="utf-8-sig"), self.base_text)
 
+    def test_later_reference_change_checks_conflict_after_previous_merge_kept_hand_edit(self):
+        self.put(self.ref, "revision B")
+        self.put(self.target, self.base_text.replace("old label", "operator label"))
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose):
+            self.refresh()
+        merged = (self.worktree / self.target).read_text(encoding="utf-8-sig")
+        self.put(self.target, merged.replace("new reference behavior", "operator behavior"))
+        before = (self.worktree / self.target).read_bytes()
+        self.put(self.ref, "revision C")
+
+        def propose_again(*_):
+            proposal = self.run / "reference-refresh-C"
+            pure = self.base_text.replace("old reference behavior", "revision C")
+            self.put(self.target, pure, root=proposal)
+            return proposal
+
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=propose_again) as model:
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.refresh()
+        model.assert_called_once()
+        self.assertEqual((self.worktree / self.target).read_bytes(), before)
+
+    def test_unrecorded_junie_draft_is_still_not_overwritten(self):
+        self.put(self.ref, "revision B")
+        self.put(self.target, "unsaved Junie draft", root=self.agent)
+        with patch.object(workflow, "_propose_reference_refresh") as model:
+            with self.assertRaisesRegex(ValueError, "保存されていない Junie"):
+                self.refresh()
+        model.assert_not_called()
+        self.assertEqual((self.agent / self.target).read_text(encoding="utf-8-sig"), "unsaved Junie draft")
+        self.assertEqual((self.worktree / self.target).read_text(encoding="utf-8-sig"), self.base_text)
+
     def test_resume_replaces_conflicted_reference_revision_with_latest(self):
         self.put(self.ref, "revision B")
         self.put(self.target, self.base_text.replace("old reference behavior", "operator behavior"))
