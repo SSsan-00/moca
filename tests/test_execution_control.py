@@ -187,19 +187,29 @@ class ExecutionIntegrationTests(HarnessCase):
 
     @unittest.skipUnless(os.name == "nt", "requires Windows Job Objects")
     def test_stop_owns_child_even_after_windows_launcher_exits(self):
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
         ready = self.root / "ready"
         release = self.root / "release"
-        marker = self.root / "late-write"
         child_code = (
-            "import time; from pathlib import Path; "
-            f"Path({str(ready)!r}).touch(); "
-            f"exec(\"while not Path({str(release)!r}).exists(): time.sleep(0.02)\"); "
-            f"Path({str(marker)!r}).touch()"
+            "import os, time; from pathlib import Path; "
+            f"Path({str(ready)!r}).write_text(str(os.getpid())); "
+            f"\nwhile not Path({str(release)!r}).exists(): time.sleep(0.02)\n"
         )
         launcher = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {child_code!r}])"
         command = [sys.executable, "-c", launcher]
         control = ExecutionControl(lambda _event: None)
         real_popen = subprocess.Popen
+        child_handle = None
 
         def start_and_cancel_after_exit(*args, **kwargs):
             process = real_popen(*args, **kwargs)
@@ -207,21 +217,27 @@ class ExecutionIntegrationTests(HarnessCase):
             return process
 
         def request_stop(process):
+            nonlocal child_handle
             process.wait(timeout=10)
             deadline = time.monotonic() + 10
-            while not ready.exists() and time.monotonic() < deadline:
+            while time.monotonic() < deadline:
+                if ready.exists() and (pid := ready.read_text()).isdigit():
+                    child_handle = kernel.OpenProcess(0x00100000, False, int(pid))  # SYNCHRONIZE
+                    break
                 time.sleep(.02)
-            self.assertTrue(ready.exists(), "child did not start")
+            self.assertTrue(child_handle, "child did not start")
             control.cancelled.set()
 
         try:
             with patch.object(subprocess, "Popen", side_effect=start_and_cancel_after_exit), control_scope(control):
                 with self.assertRaises(OperationCancelled):
                     run_process(command, label="test", capture_output=True)
+            self.assertEqual(kernel.WaitForSingleObject(child_handle, 3000), 0, "child survived cancellation")
         finally:
             release.touch()
-        time.sleep(.3)
-        self.assertFalse(marker.exists())
+            if child_handle:
+                kernel.WaitForSingleObject(child_handle, 5000)
+                kernel.CloseHandle(child_handle)
 
     def test_stopped_build_can_resume_same_run(self):
         result = workflow.prepare_run(self.settings, "sample")
