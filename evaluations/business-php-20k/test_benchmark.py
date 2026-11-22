@@ -1,5 +1,10 @@
+from contextlib import chdir, redirect_stdout
 import importlib.util
+from io import StringIO
+import json
 from pathlib import Path
+from subprocess import CompletedProcess
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -55,6 +60,21 @@ class BenchmarkTests(unittest.TestCase):
         for path in (workspace / "BusinessService.cs", completion.name, other / completion.name):
             self.assertFalse(dashboard.allow_fixture_receipt(root, run_id, f"Allow changes in this file?\n\n{path}"))
         self.assertFalse(dashboard.allow_fixture_receipt(root, run_id, f"Read this file?\n\n{completion}"))
+
+
+    def test_checker_reports_counts_separately_from_success_status(self):
+        rows = [{"id": "synthetic", "steps": [{"ok": True}], "state": {}}]
+        with tempfile.TemporaryDirectory() as temp, chdir(temp), redirect_stdout(StringIO()) as written:
+            oracle = Path("expected.json")
+            oracle.write_text(json.dumps(rows), encoding="utf-8")
+            result = CompletedProcess([], 0, stdout=json.dumps(rows).encode(), stderr=b"")
+            report = Path("bin/Debug/net9.0/behavior-results.json")
+            report.parent.mkdir(parents=True)
+            with patch.object(check.subprocess, "run", return_value=result):
+                self.assertEqual(check.run(Path("requests.json"), oracle), 0)
+            self.assertEqual(written.getvalue().strip(), check.CHECKER_SUCCESS_MESSAGE)
+            self.assertEqual(json.loads(report.read_bytes()),
+                             {"matched_operations": 1, "matched_sqlite_snapshots": 1})
 
 
     def test_checker_detects_output_and_database_changes(self):
