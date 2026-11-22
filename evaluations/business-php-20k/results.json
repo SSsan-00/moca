@@ -1,0 +1,47 @@
+{
+  "run_id": "572faf7d-3202-4aa9-8466-d0e7b8f3cd21",
+  "environment": {
+    "os": "Windows",
+    "php_cli": "8.6.0",
+    "target_framework": "net9.0",
+    "junie_cli": "26.11.2 (4100.11)",
+    "provider": "OpenAI BYOK",
+    "model": "gpt-6-luna",
+    "reasoning_effort": "medium"
+  },
+  "fixture": {
+    "php_lines": 20000,
+    "php_chars": 717901,
+    "policies": 183,
+    "scenarios": 187,
+    "operations": 955
+  },
+  "sha256": {
+    "inputs": {
+      "php": "bbf1a4820883c8279795de64b4d9ad94c1320d937d9a555107d7dff105d37632",
+      "scenarios": "6c6b9947912d74d855a0f4303714654d97bfe1d054d1d959066c9cdafadec082",
+      "php_expected": "5150d15e4d42d1fe707aaddb9fa7d9c4da43622e856a63402e183bb566b119b6",
+      "schema": "abdfeff33b505ac047a19e3409d30fdb25b3fbd2418bcdd828c92751fc036031"
+    },
+    "targets": {
+      "Pages/Business/BusinessService.cs": "2e6e1fc977fa110ab75be04e19d691ba0063f38f5beeb220c310d266c95d5cc6",
+      "Pages/Business/PolicyCatalog.cs": "b7a24899b5ee072e40e08e6b39c5d324ae09700e5552b16fa9b02584327f1a6f"
+    }
+  },
+  "rules_selected": [
+    "rule-0003.txt",
+    "rule-0004.txt"
+  ],
+  "capsules_completed": 4,
+  "capsules_total": 4,
+  "resumed": true,
+  "resumed_migration_segment_seconds": 2849.214,
+  "reverification_seconds": 26.007,
+  "build_exit_code": 0,
+  "checker_exit_code": 0,
+  "final_status": "checker_succeeded",
+  "matched_operations": 955,
+  "matched_sqlite_snapshots": 187,
+  "browser_page_errors": 0,
+  "repair_attempts": 1
+}

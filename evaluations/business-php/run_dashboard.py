@@ -80,6 +80,14 @@ def check(root, output, run_id=None):
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             page.goto(url + ("?run=" + run_id if run_id else ""))
             if run_id:
+                saved_status = read_record(run_path)["status"]
+                close_selectors = {"checker_needs_review": "#review-close", "build_failed": "#build-review-close"}
+                if selector := close_selectors.get(saved_status):
+                    try:
+                        page.locator(selector).click(timeout=3000)
+                    except PlaywrightTimeout:
+                        pass
+
                 page.locator("#tab-runs").click(timeout=20_000)
                 page.locator(f'tr[data-run-id="{run_id}"] button[data-action="resume-run"]').click(timeout=20_000)
             last = None
