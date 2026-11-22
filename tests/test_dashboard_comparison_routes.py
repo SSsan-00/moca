@@ -204,6 +204,41 @@ for (const mode of ["delayed", "ready", "slow-start", "abandoned", "unsupported"
         self.assertEqual(json.loads(html.split(marker, 1)[1].split(b"</script>", 1)[0]), payload)
         return payload
 
+    def test_rule_verification_dashboard_requires_evidence_and_current_version(self):
+        (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
+        (self.project / "required.md").write_text("Preserve the result.", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config["units"][0]["inputs"].append({
+            "path": "required.md", "role": "migration_rules", "usage": "required", "encoding": "utf-8",
+            "start_line": 1, "end_line": None, "shared": True,
+        })
+        run = workflow.prepare_run(config, "sample")
+        run_id = run["run_id"]
+        with self.live_dashboard(config, run_id) as url:
+            self.ready_event(url)
+            endpoint = "rule-review?run_id=" + run_id
+            with urlopen(url + endpoint, timeout=5) as response:
+                initial = json.load(response)
+            rule = initial["rules"][0]
+            self.assertEqual(rule["verification_state"], "human_review_needed")
+            decision = {"run_id": run_id, "rule": rule["file"], "version": initial["version"],
+                        "kind": "passed", "start": 1, "end": 1, "reason": "Compared C# with PHP."}
+            with self.assertRaises(HTTPError) as incomplete:
+                self.post(url, "rule-review", decision, 200)
+            self.assertEqual(incomplete.exception.code, 409)
+            decision["reference"] = "source.php:1, Page.cs:1"
+            verified = self.post(url, "rule-review", decision, 200)
+            self.assertEqual(verified["rules"][0]["verification_state"], "passed")
+            (Path(run["worktree_path"]) / "Page.cs").write_text("class Changed {}", encoding="utf-8")
+            with self.assertRaises(HTTPError) as stale:
+                self.post(url, "rule-review", {**decision, "version": verified["version"]}, 200)
+            self.assertEqual(stale.exception.code, 409)
+            with urlopen(url + endpoint, timeout=5) as response:
+                current = json.load(response)
+            self.assertEqual(current["rules"][0]["verification_state"], "human_review_needed")
+
     def test_comparisons_stay_with_creating_run_after_open_run_and_settings_save(self):
         (self.project / "source.php").write_text("<?php echo 'Hello';\n", encoding="utf-8")
         (self.project / "earlier-example.php").write_text("<?php echo 'Hello';\n", encoding="utf-8")
