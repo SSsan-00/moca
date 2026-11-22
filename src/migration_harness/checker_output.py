@@ -36,6 +36,12 @@ def checker_response_status(log_path: Path) -> str | None:
     # ログやJSONの値に含まれた文言を、チェッカー自身の合格判定として扱わない。
     if text == CHECKER_SUCCESS_MESSAGE:
         return "checker_succeeded"
+    if re.fullmatch(
+        r"(?:error:\s*)?(?:no checks (?:were )?(?:run|performed)|(?:the )?checker (?:did not|could not) run)"
+        r"\s*[.!]?",
+        text, re.IGNORECASE,
+    ):
+        return "checker_incomplete"
     return "checker_needs_review" if text else None
 
 

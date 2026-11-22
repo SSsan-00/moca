@@ -28,9 +28,16 @@ assert receive('initialize', 1)['clientCapabilities'] == {}
 send(id=1, result={'protocolVersion': 1})
 assert receive('session/new', 2) == {'cwd': str(Path.cwd()), 'mcpServers': []}
 send(id=2, result={'sessionId': '1'})
+if sys.argv[1] == 'auth-notice':
+    send(method='_auth/status_update', params={'state': 'ready'})
+    update("available_commands_update", availableCommands=[])
+    update("config_option_update", configOptions=[])
+    update("session_info_update", title="Checker advisory")
 assert receive('session/prompt', 3)['prompt'][0]['type'] == 'text'
 if sys.argv[1] == 'tool':
     update('tool_call', kind='execute')
+elif sys.argv[1] == 'auth-request':
+    send(method='_auth/status_update', id=35, params={'state': 'ready'})
 elif sys.argv[1] == 'permission':
     send(method='session/request_permission', id=34, params={'sessionId': '1'})
 elif sys.argv[1] == 'timeout':
@@ -41,6 +48,7 @@ else:
     update('agent_thought_chunk', content={'type':'text', 'text':'not persisted'})
     update('agent_message_chunk', content={'type':'text', 'text':'{"verdict":"informational",'})
     update('agent_message_chunk', content={'type':'text', 'text':'"evidence_lines":[1]}'})
+    update("usage_update", used=512)
     send(id=3, result={'stopReason': 'end_turn'})
 """
 
@@ -79,7 +87,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
                 self.assertEqual(agent.call_count, 1)
 
     def test_real_pipe_handshake_without_tools_and_fails_closed(self):
-        for mode in ('complete', 'permission', 'tool', 'stop', 'timeout'):
+        for mode in ('complete', 'auth-notice', 'auth-request', 'permission', 'tool', 'stop', 'timeout'):
             with self.subTest(mode=mode):
                 launched = []
 
@@ -92,7 +100,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
                     return result
 
                 with patch.object(junie_cli, '_launch_process', side_effect=launch):
-                    if mode == 'complete':
+                    if mode in ('complete', 'auth-notice'):
                         reply = advisory.run_text_advisory("sample only", timeout=5)
                         self.assertEqual(advisory.parse_advisory(reply, 1)["verdict"], "informational")
                     elif mode == 'timeout':

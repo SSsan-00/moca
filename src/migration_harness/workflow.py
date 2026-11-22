@@ -1952,7 +1952,10 @@ def _run_checker(
             try:
                 findings, unrecognized = checker_findings(log_path, worktree)
                 response_status = checker_response_status(log_path)
-                if (not findings and response_status == "checker_succeeded"
+                if not findings and response_status == "checker_incomplete":
+                    record.update(status="checker_needs_review", checker_review_reason="checker_incomplete",
+                                  error="checker reported that no inspection ran; inspect checker.log and rerun")
+                elif (not findings and response_status == "checker_succeeded"
                         and (not require_zero_for_success or completed.returncode == 0)):
                     record.update(status="checker_succeeded", checker_success_message=CHECKER_SUCCESS_MESSAGE)
                 elif findings or completed.returncode > 0 or response_status == "checker_needs_review":
