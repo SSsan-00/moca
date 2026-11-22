@@ -371,13 +371,20 @@ class RuleMaterialsTests(HarnessCase):
         source.write_text("<?php echo $orderId;", encoding="utf-8")
         manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": entries}
         rule = entries[0]["file"]
-        for should_complete in (True, False):
-            with self.subTest(should_complete=should_complete):
+        manifest["rule_read_order"] = [{"file": rule, "sha256": entries[0]["sha256"], "lines": [1, 1]}]
+        hint = workflow.review_hint(manifest, {rule: 1})
+        self.assertTrue(hint)
+        budget = None
+        for should_complete, limited in ((True, False), (False, False), (True, True)):
+            with self.subTest(should_complete=should_complete, limited=limited):
                 record = {"status": "junie_running"}
                 attempts = []
+                sizes = []
 
                 def reply(command, completion, token, outputs, **kwargs):
                     attempts.append(command[-1])
+                    guidelines = Path(command[command.index("--ide-guidelines") + 1])
+                    sizes.append(len(command[-1].encode("utf-8")) + guidelines.stat().st_size)
                     self.assertFalse(outputs[0].exists())
                     self.assertFalse(completion.exists())
                     self.assertNotIn("detail_applicability", record)
@@ -391,13 +398,22 @@ class RuleMaterialsTests(HarnessCase):
                 with patch.object(junie_cli, "run_interactive", side_effect=reply):
                     args = self.root, capsule, manifest, (Path("Page.cs"),), record, None
                     if should_complete:
-                        self.assertEqual(workflow._review_detail_applicability(*args), {rule})
+                        config = {"junie_input_limits": {"max_input_bytes": budget}} if limited else None
+                        self.assertEqual(workflow._review_detail_applicability(*args, config=config), {rule})
                     else:
                         with self.assertRaisesRegex(ValueError, "JSON形式"):
                             workflow._review_detail_applicability(*args)
                         self.assertNotIn("detail_applicability", record)
                 self.assertEqual(len(attempts), 2)
                 self.assertIn("previous reply was not valid JSON", attempts[1])
+                self.assertIn(hint, attempts[0])
+                if limited:
+                    self.assertNotIn(hint, attempts[1])
+                    self.assertTrue(all(size <= budget for size in sizes))
+                else:
+                    self.assertIn(hint, attempts[1])
+                    if should_complete:
+                        budget = max(sizes[0], sizes[1] - len(hint.encode("utf-8")))
 
     def test_invalid_context_evidence_retries_without_reusing_completion(self):
         capsule = self.root / "capsule"
