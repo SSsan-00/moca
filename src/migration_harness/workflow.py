@@ -1736,6 +1736,10 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         record["status"] = "editor_checkpoint" if index == capsule_count else "junie_running"
         record.pop("error", None)
     write_run_record(record_path, record, timing_stage=3)
+    try:
+        completion_path.unlink(missing_ok=True)
+    except OSError:
+        report_activity("保存済み区間の一時完了マーカーを削除できませんでした。区間の完了は保持されています。")
     return exit_code, True
 
 
