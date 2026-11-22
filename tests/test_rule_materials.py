@@ -8,6 +8,29 @@ from migration_harness import junie_cli, rule_materials, workflow
 
 
 class RuleMaterialsTests(HarnessCase):
+    def test_context_evidence_keeps_distinct_policy_example_and_target_spans(self):
+        rule = "rule-0001.txt"
+        inventory = {f"evidence/{name}": {"file_lines": 3}
+                     for name in ("policy.md", "example.cs", "target.cs")}
+        index = [{"file": rule}]
+        def span(name, lines=None):
+            return {"file": f"evidence/{name}", "lines": lines or [1, 2]}
+
+        decision = {"applies": True, "reason": "Both required conditions hold.",
+                    "context_evidence": span("policy.md")}
+        self.assertEqual(rule_materials.selected_details(index, {rule: decision}, evidence_inventory=inventory), {rule})
+        related = [span("example.cs"), span("target.cs", [3, 3])]
+        multi = {**decision, "additional_context_evidence": related}
+        self.assertEqual(rule_materials.selected_details(index, {rule: multi}, evidence_inventory=inventory), {rule})
+        for invalid in ([span("missing.cs")], [span("target.cs", [1, 4])], [span("policy.md")], related + [span("policy.md")]):
+            with self.subTest(additional=invalid), self.assertRaises(rule_materials.InvalidDetailContextEvidence):
+                rule_materials.selected_details(index, {rule: {**multi, "additional_context_evidence": invalid}},
+                                               evidence_inventory=inventory)
+        with self.assertRaises(rule_materials.InvalidDetailContextEvidence):
+            rule_materials.selected_details(index, {rule: {"applies": False, "reason": "without a primary",
+                                                           "additional_context_evidence": related}},
+                                           evidence_inventory=inventory)
+
     def test_operator_rule_review_replaces_false_decision_and_checks_evidence_version(self):
         from migration_harness.rule_review import review_rules
 

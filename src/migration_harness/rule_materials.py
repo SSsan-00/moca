@@ -60,6 +60,17 @@ class InvalidDetailContextEvidence(ValueError):
     pass
 
 
+def _detail_context_span(reference, name, inventory):
+    file = reference.get("file") if isinstance(reference, dict) else None
+    lines = reference.get("lines") if isinstance(reference, dict) else None
+    if (not isinstance(file, str) or not file.startswith("evidence/")
+            or not isinstance(lines, list) or len(lines) != 2
+            or any(type(line) is not int for line in lines) or not 1 <= lines[0] <= lines[1]
+            or inventory is not None and (file not in inventory or lines[1] > inventory[file]["file_lines"])):
+        raise InvalidDetailContextEvidence(f"invalid review context evidence for saved detail: {name}")
+    return file, *lines
+
+
 def selected_details(
     index: list[dict], decisions: object, line_counts: dict[str, int] | None = None,
     evidence_inventory: dict[str, dict] | None = None,
@@ -85,14 +96,12 @@ def selected_details(
         if type(insufficient) is not bool or insufficient and not decision["applies"]:
             raise ValueError(f"insufficient context cannot justify excluding saved detail: {name}")
         reference = decision.get("context_evidence")
+        related = decision.get("additional_context_evidence", [])
+        if not isinstance(related, list) or len(related) > 2 or related and reference is None:
+            raise InvalidDetailContextEvidence(f"invalid review context evidence for saved detail: {name}")
         if reference is not None:
-            file = reference.get("file") if isinstance(reference, dict) else None
-            lines = reference.get("lines") if isinstance(reference, dict) else None
-            if (not isinstance(file, str) or not file.startswith("evidence/")
-                    or not isinstance(lines, list) or len(lines) != 2
-                    or any(type(line) is not int for line in lines) or not 1 <= lines[0] <= lines[1]
-                    or evidence_inventory is not None and (
-                        file not in evidence_inventory or lines[1] > evidence_inventory[file]["file_lines"])):
+            spans = [_detail_context_span(item, name, evidence_inventory) for item in (reference, *related)]
+            if len(spans) != len(set(spans)):
                 raise InvalidDetailContextEvidence(f"invalid review context evidence for saved detail: {name}")
         if decision["applies"]:
             selected.add(name)
