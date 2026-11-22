@@ -1,4 +1,5 @@
 import codecs
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -51,6 +52,37 @@ class ReferenceRefreshTests(unittest.TestCase):
         proposal = self.run / "reference-refresh-proposal"
         self.put(self.target, self.base_text.replace("old reference behavior", "new reference behavior"), root=proposal)
         return proposal
+
+    def test_reference_refresh_does_not_supply_manually_excluded_target_rule(self):
+        materials = self.capsule / "materials"
+        materials.mkdir()
+        name = "rule-0001.txt"
+        marker = "Exclude this Page.cs rule from the reference refresh."
+        (materials / name).write_text(marker, encoding="utf-8")
+        entry = {"file": name, "path": "Rules/Target.md", "usage": "reference",
+                 "description": "For Page.cs", "sha256": target_hash(materials / name)}
+        (materials / "rules.json").write_text(json.dumps([entry]), encoding="utf-8")
+        manifest = {"rule_files": [entry], "materials": {
+            item: target_hash(materials / item) for item in (name, "rules.json")}}
+        self.record["detail_overrides"] = {name: {"applies": False}}
+        self.put(self.ref, "updated reference")
+        pending = {"previous": "target-context", "changes": {self.ref.as_posix(): "changed"}}
+
+        def finish(_config, _record_path, _record, _stage, guidelines, proposal, _inputs,
+                   _command, completion, token, _targets, **_kwargs):
+            self.assertFalse((proposal / ".migration-materials" / name).exists())
+            if guidelines is not None:
+                self.assertNotIn(marker, guidelines.read_text(encoding="utf-8"))
+            completion.write_text(token, encoding="utf-8")
+
+        with (patch.object(workflow, "_review_detail_applicability", return_value=frozenset()),
+              patch.object(workflow, "_stage_source_excerpts", return_value=[]),
+              patch.object(workflow.junie_cli, "build_command", return_value=[]),
+              patch.object(workflow, "_run_budgeted_junie", side_effect=finish) as launch):
+            workflow._propose_reference_refresh(
+                {"junie_max_steps": 10}, self.run, self.capsule, manifest, self.worktree, self.targets,
+                self.record, pending, {self.target.as_posix(): self.agent / self.target})
+        launch.assert_called_once()
 
     def test_unmodified_reference_skips_junie_even_if_timestamp_changed(self):
         (self.worktree / self.ref).touch()
