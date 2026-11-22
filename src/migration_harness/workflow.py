@@ -618,7 +618,10 @@ def _stage_migration_materials(
 
 
 # 以下はJunieへ渡す共通指示。実行による検証はハーネス側の工程に任せる。
-_TARGET_ENCODING = "Save every edited target file as UTF-8 with BOM (EF BB BF). "
+_TARGET_ENCODING = (
+    "Save edited targets as UTF-8 text. The harness validates UTF-8 and adds the BOM before applying "
+    "the targets, so do not run encoding or BOM checks or create a hex dump. "
+)
 
 _STATIC_SOURCE_REVIEW = (
     "Verify source and target statically. Do not execute the original PHP or migrated application, "
@@ -631,8 +634,9 @@ _STATIC_SOURCE_REVIEW = (
 _EXACT_SOURCE_DATA = (
     "For repeated statements with data, literal tables, or other long sequences, use the workspace shell to "
     "extract the exact ordered data mechanically from the assigned PHP lines. A short Python command is fine. "
-    "Put temporary extraction scripts and data only in .migration-scratch/ (no symlinks); these files are "
-    "not migration outputs and are not copied to the application. Do not leave temporary files elsewhere. "
+    "Use the supplied helper or a read-only one-liner instead of writing extraction scripts. "
+    "If temporary data is needed, put it only in .migration-scratch/ (no symlinks); it is not copied "
+    "to the application. Do not leave temporary files elsewhere. "
     "Read the file on disk, select the original numbered source rows in scope, and match the complete statements "
     "or use a tokenizer as needed. Exclude examples, shared rules, and read-only boundary rows from the data. "
     "For plain quoted PHP strings use the supplied .migration-materials/php_literals.py: "
@@ -1520,12 +1524,8 @@ def _stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targe
             "against these originals before completing this segment, preserving values, order, duplicates and "
             "PHP literal decoding. Use direct source and target reads for short, straightforward sequences. "
             "For long or repetitive data, use mechanical extraction and comparison as described below. "
-            "Do not create a temporary script when direct reads or the supplied helper suffice. "
             "Do not rely on the previous target's count or contents as the source of truth. "
             "Never append data from `.migration-boundary.md`; those rows belong to another segment. "
-            "Before writing extraction or verification scripts, inspect existing scripts in `.migration-scratch`. "
-            "Reuse correct scripts from earlier segments where applicable, adapting their input ranges and "
-            "checking complete coverage, rather than rebuilding the same extraction logic. "
             "A function may span several source excerpts. Reassemble its numbered rows by original file and "
             "line across all available segments before parsing the function; do not parse each segment as "
             "a separate complete function or invent defaults for fields beyond its boundary. "
@@ -1676,8 +1676,16 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
             record.update(status="interrupted", error="interrupted by user; current capsule can be resumed")
             write_run_record(record_path, record)
             raise RunInterrupted(record["run_id"]) from None
-        if _unlisted_workspace_files(agent_root, allowed) != other_files:
-            raise ValueError("Junie changed files outside the configured targets; inspect the agent workspace")
+        current_files = _unlisted_workspace_files(agent_root, allowed)
+        if current_files != other_files:
+            changed = sorted(
+                path.as_posix() for path in other_files.keys() | current_files.keys()
+                if other_files.get(path) != current_files.get(path)
+            )
+            paths = ", ".join(repr(path) for path in changed[:5])
+            if len(changed) > 5:
+                paths += f" (+{len(changed) - 5} more)"
+            raise ValueError(f"Junie changed files outside the configured targets: {paths}")
         completion_recorded = junie_cli.has_completion_record(completion_path, completion_token)
         missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
         complete = completion_recorded and not missing
