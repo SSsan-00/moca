@@ -589,6 +589,8 @@
     .review-finding h3 { margin: 10px 0 5px; font-size: 14px; }
     .review-finding > p { margin: 0; color: var(--amber-ink); font-size: 12px; }
     #checker-open-editor { margin-top: 12px; }
+  #rule-verification-form label { display: grid; gap: 4px; margin-block: 10px; }
+  #rule-verification-form input, #rule-verification-form select, #rule-verification-form textarea { width: 100%; }
     .review-location { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 14px 0 10px; }
     .review-location div { min-width: 0; padding: 9px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); }
     .review-location small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
@@ -1484,6 +1486,7 @@
       <h2 id="migration-ledger-title" tabindex="-1">移行台帳</h2>
       <form method="dialog"><button class="review-close" type="submit" aria-label="移行台帳を閉じる">×</button></form>
     </header>
+    <p><button class="review-action" id="open-rule-verification" type="button" disabled>ルールの反映を確認</button></p>
     <div id="migration-ledger-details" hidden>
       <p class="run-detail">Run ID <code id="migration-ledger-run-id"></code></p>
       <p class="migration-ledger-target">移行先 <code id="migration-ledger-target"></code></p>
@@ -1497,6 +1500,29 @@
     </div>
     <p class="review-intro" id="migration-ledger-message" role="status" hidden></p>
     <ol class="migration-ledger-list" id="migration-ledger-list" aria-label="カプセルごとの処理状況"></ol>
+  </div>
+</dialog>
+<dialog class="review-dialog" id="rule-verification-dialog" aria-labelledby="rule-verification-title">
+  <div class="review-dialog-inner">
+    <header class="review-heading">
+      <h2 id="rule-verification-title">ルールの反映確認</h2>
+      <form method="dialog"><button class="review-close" type="submit" aria-label="ルールの反映確認を閉じる">×</button></form>
+    </header>
+    <p>ビルドの成功とは別に、適用するルールの反映を確認します。根拠が足りない場合は判断を記録せず、要確認のままにしてください。</p>
+    <p id="rule-verification-status" role="status"></p>
+    <form id="rule-verification-form" hidden>
+      <label>ルール <select id="rule-verification-rule" required></select></label>
+      <p id="rule-verification-context"></p>
+      <label>判定
+        <select name="kind" required><option value="">選択してください</option><option value="passed">反映を確認</option><option value="failed">未反映を確認</option></select>
+      </label>
+      <label>ルール本文の開始行 <input name="start" type="number" min="1" required></label>
+      <label>終了行 <input name="end" type="number" min="1" required></label>
+      <label>判断した内容 <textarea name="reason" maxlength="2000" required></textarea></label>
+      <label>確認根拠（PHP・C#の箇所やテストの結果など） <input name="reference" maxlength="1000" required></label>
+      <button class="review-action" type="submit">判断を記録</button>
+      <button class="review-action" id="rule-verification-to-editor" type="button" hidden>この判断を修正指示に使う</button>
+    </form>
   </div>
 </dialog>
 <template id="migration-mapping-template">

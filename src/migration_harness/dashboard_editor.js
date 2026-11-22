@@ -687,6 +687,22 @@
     }
   });
   window.harnessEditorCanSwitch = () => !saving && !sending;
+  window.harnessEditorStageDraft = (runId, text) => {
+    if (switching || sending || runId !== progress().run_id) throw new Error("表示中の実行を選び直してください。");
+    const displayed = state?.run_id === runId;
+    const draft = displayed ? {prompt: prompt.value, editPrompt} : (runDrafts.get(runId) || {});
+    if (draft.editPrompt) throw new Error("編集中の追加指示を閉じてから、もう一度実行してください。");
+    const value = [draft.prompt, text].filter(Boolean).join("\n\n");
+    if (new TextEncoder().encode(value).length > 4000) {
+      throw new Error("追加指示が長すぎます。エディタ側の下書きを整理してください。");
+    }
+    if (displayed) {
+      prompt.value = value;
+      updateSendButton();
+    } else {
+      runDrafts.set(runId, {...draft, prompt: value});
+    }
+  };
   document.addEventListener("harnessrunselect", () => {
     switching = true;
     revision++;

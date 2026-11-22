@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import junie_cli, rule_materials, workflow
+from migration_harness import junie_cli, rule_materials, source_context, workflow
 
 
 class RuleMaterialsTests(HarnessCase):
@@ -83,6 +83,48 @@ class RuleMaterialsTests(HarnessCase):
         (run_path / row["snapshot"]).write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "saved rule changed"):
             review_rules(config, run_id)
+
+    def test_human_verification_becomes_pending_when_reference_revision_changes(self):
+        from migration_harness.rule_review import review_rules
+
+        (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
+        (self.project / "required.md").write_text("Match the example.", encoding="utf-8")
+        (self.project / "refs").mkdir()
+        (self.project / "refs/Example.cs").write_text("class Example { int Version = 1; }", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config["units"][0]["inputs"].append({
+            "path": "required.md", "role": "migration_rules", "usage": "required", "encoding": "utf-8",
+            "start_line": 1, "end_line": None, "shared": True,
+        })
+        run = workflow.prepare_run(config, "sample")
+        run_id, capsule = run["run_id"], Path(run["capsule_path"])
+        worktree = Path(run["worktree_path"])
+        agent = Path(run["run_path"]) / "agent-workspace"
+        targets = (Path("Page.cs"),)
+        policy = {"roots": [], "folders": ["refs"]}
+        source_context.stage_target_context(worktree, targets, capsule, agent, policy=policy)
+        initial = review_rules(config, run_id)
+        self.assertEqual(initial["rules"][0]["verification_state"], "human_review_needed")
+        reviewed = review_rules(
+            config, run_id, rule="rule-0001.txt", kind="passed", version=initial["version"],
+            start=1, end=1, reason="Checked against example version 1.", reference="manual comparison",
+        )
+        self.assertEqual(reviewed["rules"][0]["independent_verification"]["kind"], "passed")
+        self.assertEqual(reviewed["rules"][0]["verification_state"], "passed")
+
+        (worktree / "refs/Example.cs").write_text("class Example { int Version = 2; }", encoding="utf-8")
+        snapshot_name = "target-context-" + "a" * 32
+        source_context.stage_target_context(worktree, targets, capsule, agent, policy=policy, snapshot_name=snapshot_name)
+        source_context.activate_target_context(capsule, capsule / snapshot_name)
+        current = review_rules(config, run_id)
+        self.assertEqual(current["targets"], reviewed["targets"])
+        self.assertNotEqual(current["version"], reviewed["version"])
+        row = current["rules"][0]
+        self.assertIsNone(row["independent_verification"])
+        self.assertEqual(row["verification_state"], "human_review_needed")
+        self.assertEqual(row["history"][-1]["kind"], "passed")
 
     def test_hundreds_of_rules_keep_every_line_and_manifest_range(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
