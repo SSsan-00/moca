@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import time
@@ -159,8 +160,75 @@ def preview_target_context(worktree, targets, policy):
                          if key in settings and value > settings[key]}}
 
 
+def target_context_snapshot(capsule: Path, name: str | None = None) -> Path:
+    using_active = name is None
+    if name is None:
+        current = _safe(capsule, Path("target-context-current"))
+        name = current.read_text(encoding="ascii").strip() if current.exists() else "target-context"
+    if name != "target-context" and not re.fullmatch(r"target-context-[0-9a-f]{32}", name):
+        raise ValueError("invalid target reference revision")
+    result = _safe(capsule, Path(name))
+    if using_active and name != "target-context" and not result.is_dir():
+        raise ValueError("saved target reference revision is missing")
+    return result
+
+
+def activate_target_context(capsule: Path, snapshot: Path) -> None:
+    snapshot = target_context_snapshot(capsule, snapshot.name)
+    if not snapshot.is_dir():
+        raise ValueError("saved target reference revision is missing")
+    name = snapshot.name
+    with NamedTemporaryFile(dir=capsule, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write((name + "\n").encode("ascii"))
+    try:
+        temporary.replace(_safe(capsule, Path("target-context-current")))
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def target_context_inventory(snapshot: Path) -> tuple[dict, dict[str, str]]:
+    manifest = json.loads(_safe(snapshot, Path("manifest.json")).read_bytes())
+    files = {}
+    for entry in manifest["files"]:
+        name, digest = entry["path"], entry["sha256"]
+        relative = Path(name)
+        if not relative.parts or relative.as_posix() != name or name in files or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("invalid saved target context entry")
+        _safe(snapshot, Path("files") / relative)
+        files[name] = digest
+    return manifest, files
+
+
+def compare_target_context(worktree: Path, targets: tuple[Path, ...], snapshot: Path):
+    manifest, previous = target_context_inventory(snapshot)
+    settings = target_context_policy(manifest["policy"])
+    targets = set(targets)
+    if manifest["targets"] != sorted(path.as_posix() for path in targets):
+        raise ValueError("saved target context does not match the current migration targets")
+    report_activity("参考ファイルの更新を確認しています。")
+    current = {}
+    total = 0
+    for relative, source, size in _context_entries(worktree, targets, settings, _context_roots(targets, settings),
+                                                   lambda _: check_cancelled()):
+        if size is not None:
+            total += size
+            _check_context_limits(settings, relative, size, total, len(current) + 1)
+            current[relative.as_posix()] = sha256_file(source, check=check_cancelled)
+    changes = {name: "追加" if name not in previous else "削除" if name not in current else "更新"
+               for name in sorted(previous.keys() | current.keys()) if previous.get(name) != current.get(name)}
+    return settings, current, changes
+
+
+def _check_context_limits(settings, relative, size, total, count):
+    for key, actual in {"max_file_bytes": size, "max_bytes": total, "max_files": count}.items():
+        if key in settings and actual > settings[key]:
+            raise ValueError(f"参照資料 {relative.as_posix()} で {key} の上限を超えました（{actual:,} / {settings[key]:,}）。")
+
+
 def stage_target_context(
     worktree: Path, targets: tuple[Path, ...], capsule: Path, agent_root: Path, *, policy: dict | None = None,
+    snapshot_name: str | None = None,
 ) -> str:
     """Call after preparation scripts, before Junie; restore only pinned non-target files.
 
@@ -181,7 +249,7 @@ def stage_target_context(
         if not target.parts or target.anchor or ".." in target.parts or _reserved(target):
             raise ValueError(f"target conflicts with a reserved or invalid context path: {target}")
     target_names = sorted(path.as_posix() for path in targets)
-    snapshot = _safe(capsule, Path("target-context"))
+    snapshot = target_context_snapshot(capsule, snapshot_name)
     manifest_path = _safe(snapshot, Path("manifest.json"))
     processed, last_report = 0, time.monotonic()
     report_activity("移行先の参照資料を検証・復元しています。")
@@ -210,13 +278,7 @@ def stage_target_context(
                 if size is None:
                     manifest["directories"].append(relative.as_posix())
                     continue
-                usage = {"max_file_bytes": size, "max_bytes": manifest["bytes"] + size,
-                         "max_files": len(manifest["files"]) + 1}
-                for key, actual in usage.items():
-                    if key in settings and actual > settings[key]:
-                        raise ValueError(
-                            f"参照資料 {relative.as_posix()} で {key} の上限を超えました（{actual:,} / {settings[key]:,}）。",
-                        )
+                _check_context_limits(settings, relative, size, manifest["bytes"] + size, len(manifest["files"]) + 1)
                 digest = _copy(source, staging / "files" / relative)
                 manifest["files"].append({"path": relative.as_posix(), "source": str(source), "sha256": digest, "bytes": size})
                 manifest["bytes"] += size
