@@ -5,6 +5,9 @@ import subprocess
 import sys
 
 
+CHECKER_SUCCESS_MESSAGE = "特に気になる点はありません。"
+
+
 def difference(expected, actual, label="result"):
     if type(expected) is not type(actual):
         return f"{label}: expected {type(expected).__name__}, got {type(actual).__name__}"
@@ -44,8 +47,10 @@ def diagnostic(message):
 
 def run(cases, oracle):
     expected = json.loads(oracle.read_bytes())
+    binary = Path("bin/Debug/net9.0/Case.dll")
+    (binary.parent / "behavior-results.json").unlink(missing_ok=True)
     result = subprocess.run(
-        ["dotnet", "bin/Debug/net9.0/Case.dll", str(cases), "verification/schema.sql"],
+        ["dotnet", str(binary), str(cases), "verification/schema.sql"],
         capture_output=True, timeout=60, check=False,
     )
     if result.returncode:
@@ -63,9 +68,14 @@ def run(cases, oracle):
             diagnostic(issue)
         return 1
     operations = sum(len(case["steps"]) for case in expected)
-    print(f"PASS: {operations} operation results and {len(expected)} SQLite state snapshots matched PHP.")
+    (binary.parent / "behavior-results.json").write_text(
+        json.dumps({"matched_operations": operations, "matched_sqlite_snapshots": len(expected)}) + "\n",
+        encoding="utf-8",
+    )
+    print(CHECKER_SUCCESS_MESSAGE)
     return 0
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
     raise SystemExit(run(*(Path(arg) for arg in sys.argv[1:])))
