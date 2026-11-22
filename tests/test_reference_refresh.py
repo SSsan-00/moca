@@ -100,6 +100,72 @@ class ReferenceRefreshTests(unittest.TestCase):
                 self.refresh()
         self.assertEqual((self.worktree / self.target).read_text(encoding="utf-8-sig"), self.base_text)
 
+    def test_resume_replaces_conflicted_reference_revision_with_latest(self):
+        self.put(self.ref, "revision B")
+        self.put(self.target, self.base_text.replace("old reference behavior", "operator behavior"))
+        observed = []
+
+        def propose(*_):
+            latest = source_context.target_context_snapshot(self.capsule) / "files" / self.ref
+            revision = latest.read_text(encoding="utf-8-sig")
+            observed.append(revision)
+            output = self.run / f"reference-refresh-{len(observed)}"
+            self.put(self.target, self.base_text.replace("old reference behavior", revision), root=output)
+            return output
+
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=propose):
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.refresh()
+            previous = self.record["reference_refresh"]["snapshot"]
+            self.put(self.ref, "revision C")
+            self.put(self.target, self.base_text.replace("old label", "operator label"))
+            self.refresh()
+        self.assertEqual(observed, ["revision B", "revision C"])
+        self.assertIn("revision C", (self.worktree / self.target).read_text(encoding="utf-8-sig"))
+        self.assertIn("operator label", (self.worktree / self.target).read_text(encoding="utf-8-sig"))
+        self.assertIn(previous, self.record["reference_refresh_history"][0]["superseded_snapshots"])
+        self.assertNotIn("checker_exit_code", self.record)
+
+    def test_reverting_conflicted_reference_reuses_original_without_overwriting_csharp(self):
+        self.put(self.ref, "revision B")
+        changed = self.base_text.replace("old reference behavior", "operator behavior")
+        self.put(self.target, changed)
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as propose:
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.refresh()
+            self.put(self.ref, "old reference")
+            self.refresh()
+        self.assertEqual(propose.call_count, 1)
+        self.assertEqual(source_context.target_context_snapshot(self.capsule).name, "target-context")
+        self.assertEqual((self.worktree / self.target).read_text(encoding="utf-8-sig"), changed)
+        self.assertNotIn("checker_exit_code", self.record)
+
+    def test_recovery_finishes_durable_adoption_and_checks_latest_references(self):
+        original_apply = workflow.apply_agent_targets
+        observed = []
+
+        def propose(*_):
+            latest = source_context.target_context_snapshot(self.capsule) / "files" / self.ref
+            revision = latest.read_text(encoding="utf-8-sig")
+            observed.append(revision)
+            output = self.run / f"reference-refresh-{len(observed)}"
+            self.put(self.target, self.base_text.replace("old reference behavior", revision), root=output)
+            return output
+
+        self.put(self.ref, "revision B")
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=propose):
+            with patch.object(workflow, "apply_agent_targets", side_effect=OSError("simulated interruption")):
+                with self.assertRaisesRegex(OSError, "simulated interruption"):
+                    self.refresh()
+            self.assertIn("adoption", self.record["reference_refresh"])
+            self.put(self.ref, "revision C")
+            with patch.object(workflow, "apply_agent_targets", wraps=original_apply) as apply:
+                self.refresh()
+            self.assertEqual(apply.call_count, 2)
+        self.assertEqual(observed, ["revision B", "revision C"])
+        self.assertIn("revision C", (self.worktree / self.target).read_text(encoding="utf-8-sig"))
+        self.assertEqual(len(self.record["reference_refresh_history"]), 2)
+
     def test_stopped_draft_is_retained_but_restarted_from_saved_output(self):
         before = self.record["target_hashes"].copy()
         self.put(self.target, "unfinished old-reference draft", root=self.agent)
