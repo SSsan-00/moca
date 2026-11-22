@@ -7,7 +7,7 @@ import signal
 import subprocess
 import time
 from concurrent.futures import Future
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,25 +104,19 @@ def report_activity(message: str, *, kind: str = "activity", detail: str = "") -
 def _terminate_process_tree(process: subprocess.Popen) -> None:
     # 子プロセスがファイルを書き続けないよう、専用のプロセス群ごと止める。
     """所有する外部プロセス群を停止して終了を確認する。"""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     try:
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            process.kill()
+        pass
     finally:
-        # 親が先に終了しても、SIGTERMを無視する子を残さない。
-        if os.name != "nt":
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait()
 
 
@@ -134,11 +128,23 @@ def run_process(command: list[str], *, label: str, cancellable: bool = True, **k
     check = kwargs.pop("check", False)
     if kwargs.pop("capture_output", False):
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        kwargs["start_new_session"] = True
-    with subprocess.Popen(command, **kwargs) as process:
+    with ExitStack() as stack:
+        job = None
+        if os.name == "nt":
+            from .windows_job import CREATE_SUSPENDED, WindowsJob
+
+            job = WindowsJob()
+            stack.callback(job.close)
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | CREATE_SUSPENDED
+        else:
+            kwargs["start_new_session"] = True
+        process = stack.enter_context(subprocess.Popen(command, **kwargs))
+        if job is not None:
+            try:
+                job.start(process)
+            except BaseException:
+                process.kill()
+                raise
         try:
             report_activity(f"{label}のプロセスを起動しました。")
             next_report = time.monotonic() + HEARTBEAT_SECONDS
@@ -153,7 +159,10 @@ def run_process(command: list[str], *, label: str, cancellable: bool = True, **k
                         report_activity(f"{label}のプロセスは起動中です。終了を待っています。", kind="heartbeat")
                         next_report = time.monotonic() + HEARTBEAT_SECONDS
         except BaseException:
-            _terminate_process_tree(process)
+            if job is None:
+                _terminate_process_tree(process)
+            else:
+                job.stop(time.monotonic() + 5)
             raise
         if check and process.returncode:
             raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)

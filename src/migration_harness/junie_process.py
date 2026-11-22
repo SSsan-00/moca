@@ -16,12 +16,12 @@ class JunieProcess(subprocess.Popen):
         self._terminal = None
         self._job = None
         if os.name == "nt":
-            from .windows_job import WindowsJob
+            from .windows_job import CREATE_SUSPENDED, WindowsJob
 
             job = WindowsJob()
             try:
                 # Assign before the launcher can spawn, including when it is cmd.exe.
-                super().__init__(command, creationflags=0x00000004, **kwargs)  # CREATE_SUSPENDED
+                super().__init__(command, creationflags=CREATE_SUSPENDED, **kwargs)
                 try:
                     job.start(self)
                 except BaseException:
