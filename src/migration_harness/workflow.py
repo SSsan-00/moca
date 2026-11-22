@@ -887,14 +887,17 @@ def _review_detail_applicability(
         )
         hint = review_hint(manifest, line_counts)
         budget = (config or {}).get("junie_input_limits", {}).get("max_input_bytes")
-        if hint and (budget is None or len((prompt + hint).encode("utf-8"))
-                     + (guidelines.stat().st_size if guidelines else 0) <= budget):
-            prompt += hint
-        command = junie_cli.build_command(review_root, prompt, max_steps, guidelines=guidelines, model=model, effort=effort)
+        guideline_bytes = guidelines.stat().st_size if hint and budget is not None and guidelines else 0
         inputs = [path.relative_to(review_root) for path in review_root.rglob("*")
                   if path.is_file() and path != guidelines and path != output]
         report_usage = junie_usage_recorder(run_path, "rule_review")
         for attempt in range(2):
+            launch_prompt = prompt
+            if hint and (budget is None or len((prompt + hint).encode("utf-8")) + guideline_bytes <= budget):
+                launch_prompt += hint
+            command = junie_cli.build_command(
+                review_root, launch_prompt, max_steps, guidelines=guidelines, model=model, effort=effort,
+            )
             try:
                 _run_budgeted_junie(
                     config or {}, run_path / "run.json", record, "rule_review", guidelines, review_root, inputs,
@@ -931,7 +934,7 @@ def _review_detail_applicability(
                 previous_token = token
                 token = uuid.uuid4().hex
                 completion = review_root / f"review-complete-{token}.txt"
-                command = [*command[:-1], command[-1].replace(previous_token, token) + " " + correction]
+                prompt = prompt.replace(previous_token, token) + " " + correction
     if evidence:
         record["detail_review_evidence"] = evidence
     record["detail_applicability"] = decisions
