@@ -47,7 +47,9 @@ from .verification.checker_output import (
 )
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
 from .context.context_evidence import boundary_hints
-from .context.context_handoff import handoff_prompt, junie_memo_request, save_junie_memo, unresolved_junie_memos
+from .context.context_handoff import (
+    handoff_prompt, junie_memo_request, save_junie_memo, unresolved_junie_memos, unresolved_operator_notes,
+)
 from .context.context_plan import navigation_plan
 from .verification.repair_context import diagnostic_php_ranges
 from .context.target_evidence import diagnostic_references
@@ -3604,6 +3606,9 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "targets": targets,
         "capsules": capsules,
         "unresolved_junie_memos": unresolved_junie_memos(
+            run_path, worktree, tuple(Path(path) for path in targets), record,
+        ),
+        "unresolved_operator_notes": unresolved_operator_notes(
             run_path, worktree, tuple(Path(path) for path in targets), record,
         ),
         "completion": {

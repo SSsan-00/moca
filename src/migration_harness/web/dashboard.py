@@ -11,7 +11,7 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import Future
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import count
 from pathlib import Path
@@ -166,7 +166,7 @@ def _read_settings(path: Path) -> tuple[bytes, str]:
     return data, hashlib.sha256(data).hexdigest()
 
 
-def _save_settings(path: Path, content: str, version: str, *, before_replace=None) -> dict[str, Any]:
+def _save_settings(path: Path, content: str, version: str, *, manager=None, verify_origins=None) -> dict[str, Any]:
     # 設定ファイルと同じディレクトリで検証し、相対パスの基準を保つ。
     """検証済み設定を版を照合して保存する。"""
     with NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", newline="", delete=False) as stream:
@@ -174,12 +174,13 @@ def _save_settings(path: Path, content: str, version: str, *, before_replace=Non
     try:
         candidate.write_text(content, encoding="utf-8", newline="")
         normalized = load_config(candidate)
-        if _read_settings(path)[1] != version:
-            raise ValueError("設定ファイルが更新されています。最新の設定を読み込み、変更を反映し直してください。")
         normalized["config_path"] = str(path)
-        if before_replace:
-            before_replace(normalized)
-        candidate.replace(path)
+        with manager.settings_switch(normalized) if manager else nullcontext():
+            if _read_settings(path)[1] != version:
+                raise ValueError("設定ファイルが更新されています。最新の設定を読み込み、変更を反映し直してください。")
+            if verify_origins:
+                verify_origins()
+            candidate.replace(path)
         return normalized
     finally:
         candidate.unlink(missing_ok=True)
@@ -957,13 +958,13 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             self.send_body(200, "application/json", body)
 
         def send_rule_workspace(self, *, action=None, query=None):
-            def apply_config(content, version):
+            def apply_config(content, version, verify_origins):
                 condition = manager.condition if manager else dashboard.condition
                 with condition:
                     if manager and manager.busy:
                         raise ValueError("実行中の処理が終わってから反映してください。")
                     path = Path(config["config_path"])
-                    updated = _save_settings(path, content, version, before_replace=manager.configure if manager else None)
+                    updated = _save_settings(path, content, version, manager=manager, verify_origins=verify_origins)
                     config.update(updated)
                     if manager:
                         manager.start_pending()
@@ -1348,7 +1349,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         raise ValueError("実行中の処理が終わってから設定を保存してください。")
                     path = Path(config["config_path"])
                     updated = _save_settings(path, action["content"], action["version"],
-                                             before_replace=manager.configure if manager else None)
+                                             manager=manager)
                     config.pop("checker_from_cli", None)
                     config.pop("toml_checker_command", None)
                     config.update(updated)

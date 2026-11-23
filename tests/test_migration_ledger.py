@@ -30,6 +30,21 @@ class LedgerReviewTest(HarnessCase):
     def completion(self):
         return workflow.migration_ledger(self.settings, self.run_id)["completion"]
 
+    def test_ledger_returns_all_current_operator_notes_separately_without_changing_completion(self):
+        from migration_harness.context.context_handoff import record_handoff
+
+        before = self.completion()
+        for index in range(4):
+            record_handoff(self.record_path.parent, self.target.parent, (Path(self.target.name),), {},
+                           "php-0001", 1, 1, f"question {index}")
+        ledger = workflow.migration_ledger(self.settings, self.run_id)
+        self.assertEqual([f"question {i}" for i in reversed(range(4))],
+                         [row["note"] for row in ledger["unresolved_operator_notes"]])
+        self.assertEqual([], ledger["unresolved_junie_memos"])
+        self.assertEqual(before, ledger["completion"])
+        self.target.write_text("class HumanEdit {}", encoding="utf-8")
+        self.assertEqual([], workflow.migration_ledger(self.settings, self.run_id)["unresolved_operator_notes"])
+
     def prepare_for_verification(self):
         record = json.loads(self.record_path.read_bytes())
         record.update(status="junie_finished", completed_capsules=1)

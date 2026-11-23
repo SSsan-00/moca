@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 from contextlib import redirect_stdout
@@ -58,6 +59,88 @@ class ContextHandoffTests(unittest.TestCase):
         self.target.write_text("class Demo {}", encoding="utf-8")
         (self.run / "capsule/php-sources/0001.php").write_text("corrupt", encoding="utf-8")
         self.assertEqual("", handoff_prompt(self.run, self.root, self.targets, {}))
+
+    def test_revisions_do_not_consume_the_operator_prompt_budget(self):
+        from migration_harness.context import context_evidence
+
+        first = self.add("Unrelated operator question")
+        second = self.add("Initial amount check")
+        changed = self.add("Intermediate amount check", supersedes=second["id"])
+        latest = self.add("Latest amount check", supersedes=changed["id"])
+        before = self.record.read_bytes()
+        with patch.object(context_evidence, "read_pinned_php", wraps=context_evidence.read_pinned_php) as read:
+            prompt = handoff_prompt(self.run, self.root, self.targets, {}, through=1)
+        self.assertEqual(1, read.call_count)
+        for item in (first, latest):
+            self.assertIn(item["note"], prompt)
+        for item in (second, changed):
+            self.assertNotIn(item["note"], prompt)
+        self.assertNotIn("omitted", prompt)
+        self.assertEqual(["pending", "superseded", "superseded", "pending"], [
+            row["state"] for row in context_handoff(self.run, self.root, self.targets, {}, through=1)
+        ])
+        self.assertEqual(before, self.record.read_bytes())
+
+    def test_overflow_counts_current_notes_and_gives_bounded_locations_and_real_lookup(self):
+        from migration_harness.context.context_handoff import unresolved_operator_notes
+
+        notes = [self.add(f"operator marker {i}") for i in range(10)]
+        prompt = handoff_prompt(self.run, self.root, self.targets, {}, through=1)
+        self.assertIn("7 additional pending operator note(s) omitted", prompt)
+        self.assertIn("移行台帳", prompt)
+        for item in notes[-3:]:
+            self.assertIn(item["note"], prompt)
+        for item in notes[:-3]:
+            self.assertNotIn(item["note"], prompt)
+        for item in notes[-6:-3]:
+            self.assertIn(item["id"], prompt)
+        self.assertNotIn(notes[0]["id"], prompt)
+        self.assertEqual([item["id"] for item in reversed(notes)], [
+            row["id"] for row in unresolved_operator_notes(self.run, self.root, self.targets, {})
+        ])
+
+    def test_changed_corrupt_or_out_of_scope_replacement_does_not_hide_pending_predecessor(self):
+        from migration_harness.context.context_handoff import unresolved_operator_notes
+
+        prior = self.add("Keep original question")
+        current = self.add("Replacement question", supersedes=prior["id"])
+        path = self.run / "context-handoff.json"
+
+        def reidentified(**changes):
+            fields = {key: value for key, value in current.items() if key != "id"}
+            fields.update(changes)
+            return {**fields, "id": hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()}
+
+        for damaged in (None, {**current, "note": "tampered"}, {**current, "note": ""},
+                        reidentified(source_sha256="0" * 64), reidentified(end_line=999),
+                        reidentified(reference_version="old")):
+            with self.subTest(damaged=damaged):
+                path.write_text(json.dumps({"version": 1, "notes": [prior, damaged]}), encoding="utf-8")
+                prompt = handoff_prompt(self.run, self.root, self.targets, {}, through=1)
+                self.assertIn(prior["note"], prompt)
+                self.assertNotIn(current["note"], prompt)
+                self.assertNotIn("tampered", prompt)
+                rows = unresolved_operator_notes(self.run, self.root, self.targets, {})
+                self.assertEqual([prior["id"]], [row["id"] for row in rows])
+
+    def test_future_capsule_replacement_only_supersedes_when_its_evidence_is_assigned(self):
+        run = self.root / "multi"
+        (self.root / "demo.php").write_text("<?php\n" + ("echo 2; " + " " * 75 + "\n") * 30, encoding="utf-8")
+        prepare_context({"project_root": str(self.root), "max_context_chars": 650}, {
+            "id": "unit", "target": "Demo.cs", "inputs": [{
+                "role": "php", "path": "demo.php", "start_line": 1, "end_line": None,
+                "encoding": "utf-8", "shared": False,
+            }],
+        }, run)
+        args = run, self.root, self.targets, {}
+        prior = record_handoff(*args, "php-0001", 1, 1, "Currently visible lead")
+        newer = record_handoff(*args, "php-0001", 30, 30, "Future lead", supersedes=prior["id"])
+        prompt = handoff_prompt(*args, through=1)
+        self.assertIn(prior["note"], prompt)
+        self.assertNotIn(newer["note"], prompt)
+        prompt = handoff_prompt(*args)
+        self.assertIn(newer["note"], prompt)
+        self.assertNotIn(prior["note"], prompt)
 
     def test_missing_and_corrupt_legacy_handoff_does_not_prevent_work(self):
         self.assertEqual("", handoff_prompt(self.run, self.root, self.targets, {}))
