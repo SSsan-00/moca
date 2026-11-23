@@ -176,10 +176,10 @@ def _save_settings(path: Path, content: str, version: str, *, manager=None, veri
         normalized = load_config(candidate)
         normalized["config_path"] = str(path)
         with manager.settings_switch(normalized) if manager else nullcontext():
-            if _read_settings(path)[1] != version:
-                raise ValueError("設定ファイルが更新されています。最新の設定を読み込み、変更を反映し直してください。")
             if verify_origins:
                 verify_origins()
+            if _read_settings(path)[1] != version:
+                raise ValueError("設定ファイルが更新されています。最新の設定を読み込み、変更を反映し直してください。")
             candidate.replace(path)
         return normalized
     finally:
