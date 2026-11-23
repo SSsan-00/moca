@@ -16,6 +16,7 @@ from typing import Any
 from ..junie import junie_cli
 from ..execution import check_cancelled
 from ..files import safe_target
+from .checker_output import decode_checker_output
 
 LOG_LIMIT = 32_768
 REPLY_LIMIT = 4096
@@ -257,10 +258,10 @@ def output_advisory(
         evidence.update(log_sha256=sha256(raw).hexdigest(), byte_length=len(raw))
         if expected_hash is not None and expected_hash != evidence["log_sha256"]:
             raise ValueError("Saved script output changed")
-        diagnostic = raw.decode("utf-8-sig")
+        diagnostic = decode_checker_output(raw) if phase == "checker" else raw.decode("utf-8-sig")
         lines = diagnostic.splitlines()
         if not diagnostic.strip() or "\x00" in diagnostic:
-            raise ValueError("Diagnostic has no supported UTF-8 text")
+            raise ValueError("Diagnostic has no supported text")
         nonblank = {n: line.strip() for n, line in enumerate(lines, 1) if line.strip()}
         if (phase == "checker" and allow_pass and exit_code == 0 and len(nonblank) <= 8
                 and all(COUNTED_PASS_LINE.fullmatch(line) for line in nonblank.values())):
@@ -327,7 +328,7 @@ def bounded_advisory_text(run_path: Path, advisory: dict[str, Any]) -> str | Non
             raw = stream.read(LOG_LIMIT + 1 if phase == "checker" else length)
         if len(raw) != length or sha256(raw).hexdigest() != advisory.get("log_sha256"):
             return None
-        return raw.decode("utf-8-sig")
+        return decode_checker_output(raw) if phase == "checker" else raw.decode("utf-8-sig")
     except (OSError, ValueError):
         return None
 

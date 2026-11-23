@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from codecs import BOM_UTF8
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -24,13 +25,31 @@ _CHECKER_FIELD = re.compile(
 )
 
 
+def _decode_checker_cp932(raw: bytes) -> str:
+    text = raw.decode("cp932")
+    # CPython also decodes reserved single bytes to control or private-use characters.
+    if invalid := re.search(r"[\u0080\uf8f0-\uf8f3]", text):
+        offset = len(text[:invalid.start()].encode("cp932"))
+        raise UnicodeDecodeError("cp932", raw, offset, offset + 1, "reserved byte in checker output")
+    return text
+
+
+def decode_checker_output(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        if raw.startswith(BOM_UTF8):
+            raise
+        return _decode_checker_cp932(raw)
+
+
 def checker_response_status(log_path: Path) -> str | None:
     with log_path.open("rb") as stream:
         raw = stream.read(65_537)
     if len(raw) > 65_536:
         return "checker_needs_review"
     try:
-        text = raw.decode("utf-8-sig").strip()
+        text = decode_checker_output(raw).strip()
     except UnicodeDecodeError:
         return "checker_needs_review"
     # ログやJSONの値に含まれた文言を、チェッカー自身の合格判定として扱わない。
@@ -45,14 +64,16 @@ def checker_response_status(log_path: Path) -> str | None:
     return "checker_needs_review" if text else None
 
 
-def _checker_diagnostics(log_path: Path) -> Iterator[str]:
+def _checker_diagnostics(log_path: Path, encoding: str, *, strict: bool = True) -> Iterator[str]:
     """ファイル欄から次の指摘までをまとめ、コードや備考の改行を残す。"""
     block = []
     with log_path.open("rb") as stream:
         for index, data in enumerate(stream):
             try:
-                raw = data.decode("utf-8-sig" if index == 0 else "utf-8")
+                raw = data.decode("utf-8" if index else "utf-8-sig") if encoding == "utf-8" else _decode_checker_cp932(data)
             except UnicodeDecodeError:
+                if strict:
+                    raise
                 if block:
                     yield "\n".join(block).strip()
                     block = []
@@ -106,7 +127,17 @@ class CheckerFinding:
 
 
 def checker_findings(log_path: Path, worktree: Path) -> tuple[list[CheckerFinding], bool]:
-    return parse_checker_diagnostics(_checker_diagnostics(log_path), worktree)
+    try:
+        return parse_checker_diagnostics(_checker_diagnostics(log_path, "utf-8"), worktree)
+    except UnicodeDecodeError:
+        with log_path.open("rb") as stream:
+            utf8_bom = stream.read(len(BOM_UTF8)) == BOM_UTF8
+        if not utf8_bom:
+            try:
+                return parse_checker_diagnostics(_checker_diagnostics(log_path, "cp932"), worktree)
+            except UnicodeDecodeError:
+                pass
+        return parse_checker_diagnostics(_checker_diagnostics(log_path, "utf-8", strict=False), worktree)
 
 
 def parse_checker_diagnostics(diagnostics: Iterable[str], worktree: Path) -> tuple[list[CheckerFinding], bool]:
