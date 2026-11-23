@@ -402,7 +402,7 @@ flowchart TD
 ```
 
 1. Diff Viewer は固定済み PHP と取得時点の移行先を比較します。通常の比較スナップショットは worktree を使い、移行実行中のライブ比較では条件に応じて Junie の下書きを使います。固定比較は `review-snapshots/<ID>.json` に保存します。Junie のアンカー生成では対応行の座標を検証し、比較スナップショットと対象ハッシュにひも付く対応候補を記録します。固定済み PHP を持たない旧 Run は manifest の入力パスの現行ファイルを読みます。 [diff_viewer.py](../src/migration_harness/web/diff_viewer.py) · [review_anchors.py](../src/migration_harness/web/review_anchors.py)
-2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。ダッシュボードの移行台帳で範囲を確認し、必要なら Diff Viewer で比較して、 `confirmed`・`excluded`・`needs_review` と理由を記録します。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [cli.py](../src/migration_harness/cli.py) · [workflow.py](../src/migration_harness/workflow.py)
+2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。ダッシュボードの **進捗 → 移行台帳** では PHP 範囲と記録済みの判断を閲覧でき、必要なら Diff Viewer で比較できます。PHP 範囲の判断（`confirmed`・`excluded`・`needs_review`）と理由の登録は画面では行わず、CLI の [`ledger-review`](windows-user-guide.md#php範囲の判断を登録する) を使います。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [cli.py](../src/migration_harness/cli.py) · [workflow.py](../src/migration_harness/workflow.py)
 3. `verification_passed` には、反映保留がないこと、全カプセル完了、ビルド成功、必要なチェッカーの成功または有効な承認、検証フックの成功、対象ハッシュと設定の一致が必要です。照合する設定はビルド先、チェッカーコマンド、検証フックです。`completion.complete` はこれに加えて、PHP 範囲が 1 件以上あり、全件に有効な確認または理由付き除外がある場合に成立します。 [workflow.py](../src/migration_harness/workflow.py)
 
 `run.json` の `build_succeeded`、`checker_succeeded`、`checker_accepted` は検証工程の状態です。移行の完了判定は台帳を参照してください。通常の台帳判定は移行先と検証設定を照合します。チェッカー単独再開に対応した構成では、`build_receipt.py` が作業ツリー、.NET 起動ファイルと SDK 参照パック、成果物を照合し、その再開結果を台帳に表示する際にも確認します。依存ソースやコマンド実体を変更した場合は再検証が必要です。実行時の振る舞いを検証するテストは、プロジェクトのフックやチェッカーで指定できます。 [技術仕様](../SPEC.md)

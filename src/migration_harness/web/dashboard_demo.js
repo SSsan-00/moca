@@ -6,7 +6,8 @@ window.harnessDemoTransport = (() => {
   const settings = createDemoSettings();
   const accepted = new Set();
   const finding = "日付の表示形式が元のPHPと一致するか確認してください。";
-  const usage = [{phase: "migration", capsule: 1, input: 18420, output: 3240, responses: 1}];
+  const usage = [{phase: "migration", capsule: 1, input: 18420, output: 3240,
+    cache_read: 3200, cache_write: 480, responses: 1}];
   let stream, revision = 0;
   const runs = createDemoRuns(first, settings.units, notify, () => settings.read().form.junie);
 
@@ -22,24 +23,33 @@ window.harnessDemoTransport = (() => {
   }
 
   function notify(run) {
-    if (!stream || (stream.runId && stream.runId !== run.run_id)) return;
-    stream.onmessage?.({lastEventId: String(++revision), data: JSON.stringify(snapshot(run))});
+    if (!stream?.opened || stream.runId !== run?.run_id) return;
+    const data = run ? snapshot(run) : {status: "idle", ready: true};
+    stream.onmessage?.({lastEventId: String(++revision), data: JSON.stringify(data)});
   }
 
   function events(path) {
-    const id = new URL(path, document.baseURI).searchParams.get("run_id") || first;
-    const subscription = {runId: id, close() { if (stream === subscription) stream = null; }};
+    const requested = new URL(path, document.baseURI).searchParams.get("run_id");
+    const subscription = {close() { if (stream === subscription) stream = null; }};
     stream = subscription;
     queueMicrotask(async () => {
       const {runs: visible} = await runs.read();
       if (stream !== subscription) return;
-      if (!visible.some(item => item.run_id === id)) {
+      if (requested && !visible.some(item => item.run_id === requested)) {
         subscription.readyState = EventSource.CLOSED;
+        subscription.close();
         subscription.onerror?.();
         return;
       }
+      const id = requested || runs.selected || visible[0]?.run_id;
+      Object.assign(subscription, {runId: id, opened: true});
       subscription.onopen?.();
-      runs.select(id);
+      if (id) {
+        runs.select(id);
+      } else {
+        window.harnessEditorDemo?.select();
+        notify();
+      }
     });
     return subscription;
   }
@@ -61,11 +71,14 @@ window.harnessDemoTransport = (() => {
 
   function ledger(run) {
     const verified = ["checker_succeeded", "checker_accepted"].includes(snapshot(run).status);
+    const capsules = Array.from({length: run.context_capsules}, (_, i) => ({index: i + 1,
+      sources: [{id: (i + 1) + ":1", path: "php/orders.php", start_line: i * 2 + 1, end_line: i * 2 + 2}]}));
+    const {id: source_id, start_line, end_line} = capsules[0].sources[0];
     return {run_id: run.run_id, target, targets: [target, "Pages/Orders/Index.cshtml"],
-      completion: {complete: false, verification_passed: verified, reviewed: 0, total: run.context_capsules},
-      capsules: Array.from({length: run.context_capsules}, (_, i) => ({index: i + 1,
-        sources: [{id: (i + 1) + ":1", path: "php/orders.php", start_line: i * 2 + 1, end_line: i * 2 + 2}]})),
-      unresolved_junie_memos: verified ? [] : [{text: "日付の表示形式を原文と照合する。"}], unresolved_operator_notes: []};
+      completion: {complete: false, verification_passed: verified, reviewed: 0, total: capsules.length},
+      capsules,
+      unresolved_junie_memos: verified ? [] : [{source_id, start_line, end_line, note: "日付の表示形式を原文と照合する。"}],
+      unresolved_operator_notes: []};
   }
 
   const get = new Set(["workspace", "token-runs", "junie-models", "settings", "junie-requests", "junie-thoughts",
