@@ -53,16 +53,20 @@ class DetailLogSettingsTests(HarnessCase):
         from unittest.mock import patch
         from migration_harness.junie import junie_cli
 
+        from migration_harness.execution import ExecutionControl, control_scope
+
         args = ["fixture-junie", "task"], self.path, "token", ()
-        style = junie_cli.dashboard_progress_style("en", "custom", "Use a friendly tone.")
+        custom = {"log_language": "en", "log_tone": "custom", "log_tone_instruction": "Use a friendly tone."}
+        self.path.write_text(build_settings_draft(self.content, {"junie": custom})["content"], encoding="utf-8")
+        style = junie_cli.dashboard_progress_style(load_config(self.path))
         self.assertIn("英語", style)
         self.assertIn("Use a friendly tone.", style)
         self.assertIn("構造化データには文体設定を適用しない", style)
-        with patch.object(junie_cli, "junie_dashboard_control", return_value=object()), \
+        with control_scope(ExecutionControl(lambda _: None, on_junie_request=lambda _: None, junie_progress_style=style)), \
                 patch.object(junie_cli, "_run_session", return_value=0) as launch:
-            junie_cli.run_interactive(*args, progress_style=style)
+            junie_cli.run_interactive(*args)
             self.assertEqual(launch.call_args.args[0][-1], "task\n\n" + style)
-            junie_cli.run_interactive(*args, progress_style=style, accept_result=lambda _: None)
+            junie_cli.run_interactive(*args, accept_result=lambda _: None)
             self.assertEqual(launch.call_args.args[0][-1], "task")
 
     def test_default_tone_records_visible_reply_but_structured_result_does_not(self):
@@ -77,7 +81,7 @@ class DetailLogSettingsTests(HarnessCase):
             with self.subTest(identifier=identifier):
                 run_dir = root / identifier
                 run_dir.mkdir()
-                dashboard = Mock(junie_thoughts_path=run_dir / FILENAME,
+                dashboard = Mock(junie_thoughts_path=run_dir / FILENAME, junie_progress_style=None,
                                  trusted_junie_workspaces={str(run_dir)})
                 process = Mock(stderr=BytesIO(), wait=Mock(side_effect=TimeoutExpired("junie", 1)))
                 acp = Mock(progress_sink=None, pending=None, steering_requests={})

@@ -97,6 +97,11 @@ class JunieDashboardAcpTests(unittest.TestCase):
                 dashboard = Dashboard()
                 dashboard.begin_operation()
                 dashboard.control.trusted_junie_workspaces.add(str(root.resolve()))
+                if approve:
+                    dashboard.control.junie_progress_style = junie_cli.dashboard_progress_style({
+                        "junie_log_tone": "custom", "junie_log_tone_instruction": "関西弁で短く。",
+                    })
+                expected_style = dashboard.control.junie_progress_style or junie_cli.DASHBOARD_PROGRESS_INSTRUCTION
                 acp_agent = textwrap.dedent("""
                     import json, sys
                     for request_id, method, result in (
@@ -111,7 +116,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
                     assert request["method"] == "session/prompt"
                     prompt = request["params"]["prompt"][0]["text"]
                     assert prompt.startswith("repair prompt\\n\\n")
-                    assert "進捗と最終回答は日本語で書いてください。" in prompt
+                    assert prompt.split("\\n\\n", 1)[1] == sys.argv[1]
                     print(json.dumps(dict(jsonrpc="2.0", id=3, error={
                         "code": -32002, "data": {"reason": "model_not_available"},
                     })), flush=True)
@@ -125,7 +130,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
                         return launch([sys.executable, "-c", "print('  --task=<text>  Task description')"], **streams)
                     commands.append(argv)
                     if argv[-1] == "--acp=true":
-                        return launch([sys.executable, "-u", "-c", acp_agent], **streams)
+                        return launch([sys.executable, "-u", "-c", acp_agent, expected_style], **streams)
                     write_token = f"from pathlib import Path; Path({str(completion)!r}).write_text('token')"
                     return launch([sys.executable, "-c", write_token], **streams)
 
@@ -158,7 +163,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
                             self.assertEqual(commands[1], [
                                 "junie", "--project", str(root), "--ide-guidelines", str(root / "rules.md"),
                                 "--max-steps", "7", "--model", "sonnet", "--effort", "high", "--task",
-                                "repair prompt\n\n" + junie_cli.DASHBOARD_PROGRESS_INSTRUCTION,
+                                "repair prompt\n\n" + expected_style,
                             ])
                         else:
                             with self.assertRaises(junie_cli.JunieAcpModelUnavailable):

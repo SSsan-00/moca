@@ -5,12 +5,14 @@ globalThis.harnessLogPresentation = (language, tone, count, waiting = false) => 
     return {
       title: "Junie detailed log",
       description: polite
-        ? "You can review Junie’s original entries below. Your preferences only change the dashboard summary."
-        : "Dashboard summaries follow these settings. Original Junie entries are unchanged.",
-      rawLabel: "Original Junie entries",
-      summary: polite
-        ? `Showing ${entries}.${waiting ? " Please check back for new entries while Junie is running." : ""}`
-        : `${entries} shown.${waiting ? " Junie is running." : ""}`,
+        ? "You can review the entries below. Junie is asked to use your style in new progress updates and reports."
+        : "Junie is asked to use your style in new progress updates and reports. Existing entries are not rewritten.",
+      rawLabel: "Junie log entries",
+      summary: ({
+        polite: `Showing ${entries}.${waiting ? " Please check back for new entries while Junie is running." : ""}`,
+        concise: `${entries}${waiting ? " · Running" : ""}`,
+        friendly: `You’ve got ${entries} so far.${waiting ? " More may arrive as Junie works." : ""}`,
+      })[tone] ?? `${entries} shown.${waiting ? " Junie is running." : ""}`,
       empty: polite ? "No entries to show yet." : "No log entries."
     };
   }
@@ -18,12 +20,14 @@ globalThis.harnessLogPresentation = (language, tone, count, waiting = false) => 
   return {
     title: "Junie の詳細ログ",
     description: polite
-      ? "設定はダッシュボードの状況説明だけに反映します。Junie のログは原文でご確認いただけます。"
-      : "設定は状況説明のみに適用。Junie のログは原文のまま表示。",
-    rawLabel: "Junie のログ原文",
-    summary: polite
-      ? `${count} 件のログを表示しています。${waiting ? "Junie は実行中です。" : ""}`
-      : `表示中のログ：${count} 件。${waiting ? "Junie は実行中。" : ""}`,
+      ? "新しい進捗や報告を選択した口調で書くよう、Junie に依頼します。過去のログは書き換えません。"
+      : "新しい進捗や報告の文体を Junie に指示します。過去のログは書き換えません。",
+    rawLabel: "Junie のログ",
+    summary: ({
+      polite: `${count} 件のログを表示しています。${waiting ? "Junie は実行中です。" : ""}`,
+      concise: `${count} 件${waiting ? "・実行中" : ""}`,
+      friendly: `ここまでのログは ${count} 件です。${waiting ? "Junie は作業を続けています。" : ""}`,
+    })[tone] ?? `表示中のログ：${count} 件。${waiting ? "Junie は実行中。" : ""}`,
     empty: polite ? "表示できるログはまだありません。" : "ログなし。"
   };
 };
