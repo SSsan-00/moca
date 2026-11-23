@@ -302,6 +302,7 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
             materials[name] = sha256_file(snapshot)
             reference_index.append({
                 "role": item["role"], "path": item["path"], "file": name,
+                **({"symbol": item["symbol"]} if "symbol" in item else {}),
                 "start_line": item["start_line"], "end_line": number,
             })
             continue
