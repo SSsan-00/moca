@@ -72,6 +72,52 @@ def _runtime(settings):
                 render_guidelines(directory, manifest, selected=selected))
 
 
+def _trial_evidence(root, transcript):
+    if not transcript:
+        return False, False, ""
+    project = None
+    starts = finishes = 0
+    active = completed = False
+    reads = set()
+    submitted = ""
+    with transcript.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            logger, _, message = line.rstrip().partition(" - ")
+            if logger.endswith("JunieCli") and message.startswith("Using the specified project directory: "):
+                project = Path(message.removeprefix("Using the specified project directory: "))
+            if not logger.endswith("AnalyticsClientImpl") or not message.startswith("[ANALYTICS:EVENT] type="):
+                continue
+            event = message.removeprefix("[ANALYTICS:EVENT] type=")
+            if event.startswith("task_request_started properties="):
+                starts += 1
+                active = event.startswith("task_request_started properties=prompt=/harness-optimize-rules ")
+            elif event.startswith("task_request_finished properties="):
+                finishes += 1
+                completed = active and event.split(",", 1)[0].endswith("properties=status=Success")
+                active = False
+            elif (active and event.startswith("agent_step_finished properties=step_type=")
+                  and event.endswith("step_result=SUBMIT")):
+                step = event.split("step_type=", 1)[1].split(" ", 1)[0]
+                if step not in {"agent_skill_read_doc", "submit"}:
+                    continue
+                _, _, data = event.partition("rawJsonObject=")
+                try:
+                    args, _ = json.JSONDecoder().raw_decode(data)
+                except ValueError:
+                    continue
+                if not isinstance(args, dict):
+                    continue
+                if step == "submit":
+                    submitted = args.get("solution_summary", "")
+                elif args.get("name") == "harness-optimize-rules":
+                    path = args.get("path", "SKILL.md")
+                    if isinstance(path, str):
+                        reads.add(path)
+    same_trial = project == root.resolve() and starts == 1
+    return (same_trial and {"SKILL.md", "references/loading-policy.md"} <= reads,
+            same_trial and finishes == 1 and completed, submitted if isinstance(submitted, str) else "")
+
+
 def score(root, scenario, transcript=None, signals=None):
     expected = "hold" if scenario == "conflict" else "apply"
     config = root / "harness.local.toml"
@@ -100,14 +146,17 @@ def score(root, scenario, transcript=None, signals=None):
         ("apply", "hold"): "unnecessary_hold",
         ("hold", "hold"): "justified_hold" if not failures else "invalid_hold",
     }[expected, observed]
-    trace = transcript.read_text(encoding="utf-8", errors="replace") if transcript else ""
-    required_reads = ("SKILL.md", "loading-policy.md")
-    skill_read = all(any("agent_skill_read_doc" in line and "harness-optimize-rules" in line and name in line
-                         for line in trace.splitlines())
-                     for name in required_reads)
+    skill_read, completed, submitted = _trial_evidence(root, transcript)
+    outcome = result if skill_read and completed else "unverified_trial"
+    if outcome == "justified_hold":
+        quote = (signals or {}).get("reviewed_hold_reason")
+        if not (isinstance(quote, str) and quote in submitted and
+                all(ref in quote for ref in ("export.md:92", "export-rehearsal.md:2"))):
+            outcome = "hold_reason_needs_review"
     return {
-        "scenario": scenario, "expected": expected, "observed": observed, "outcome": result,
-        "failures": failures, "skill_read_verified": skill_read,
+        "scenario": scenario, "expected": expected, "observed": observed, "artifact_outcome": result,
+        "outcome": outcome,
+        "failures": failures, "skill_read_verified": skill_read, "trial_completed": completed,
         "elapsed_seconds": (signals or {}).get("elapsed_seconds"),
         "input_tokens": (signals or {}).get("input_tokens"),
         "cached_input_tokens": (signals or {}).get("cached_input_tokens"),

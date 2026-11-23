@@ -65,10 +65,23 @@ Junieの自己申告だけでなく、外から `rule_pack.py verify`、元フ�
 `holdout.py` でコピーごとに独立した合成ケースを作り、モデルには採点用コードを見せない。たとえば以下を実行する（ハーネス導入済みPythonを使用）。
 
 ```console
-python evaluations/rule-optimization/holdout.py prepare /tmp/rule-opt-trial-01 --scenario conditional
-python evaluations/rule-optimization/holdout.py score /tmp/rule-opt-trial-01 --scenario conditional --transcript /tmp/trial-01.jsonl --signals /tmp/trial-01-usage.json
+python evaluations/rule-optimization/holdout.py prepare C:\Temp\rule-opt-trial-01 --scenario conditional
+python evaluations/rule-optimization/holdout.py score C:\Temp\rule-opt-trial-01 --scenario conditional --transcript C:\Temp\trial-01.log --signals C:\Temp\trial-01-usage.json
 ```
 
 作成先でJunieを新規起動し、`/skills` を確認した上で、`/harness-optimize-rules` に「固定原文と既存登録を照合し、根拠が揃う場合だけ候補を反映してください。矛盾時は反映せず理由を記録し、準備・移行・フックは実行しないでください」と依頼する。各版・各ケースにつき同じモデル・推論条件かつ別の新規パスで最低3回実行する。候補・ログを調整に使った場合は、そのケースを未調整扱いにしない。
+
+`artifact_outcome` はファイルだけを採点した結果で、モデルの試行結果ではない。`--transcript` にはこの作業先・1試行だけのJunieログを指定する。対象Skillによるタスクの開始、両方の資料の読込、正常終了が同じ試行で確認できなければ、`outcome` は `unverified_trial` となる。ログ形式を認識できない場合も推測で合格にしない。
+
+矛盾ケースでは、評価者が最終回答と原文を突き合わせ、保留理由が妥当な場合にその抜粋を `--signals` の `reviewed_hold_reason` に入れる。抜粋には両方の根拠行（`export.md:92` と `export-rehearsal.md:2`）を含める。実際に提出された回答の抜粋と照合できない間は `hold_reason_needs_review` とし、正常終了だけで妥当な保留に数えない。抜粋やログ本文は結果に含めない。
+
+2026-11-23のWindows実機・実Junie（GPT-6 Luna、XHigh）で完了した既存の合成2試行を、同じ成果物・ログで再採点した。時間はタスク開始から正常終了までで、確認待ちも含む。入力はログの非キャッシュ・キャッシュ読込・キャッシュ作成を分けたもので、料金ではない。
+
+| ケース | 試行結果 | 経過秒 | 非キャッシュ入力 | キャッシュ読込 | キャッシュ作成 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CSV条件・例外・優先順位 | 正しい反映 | 1,548.949 | 47,954 | 1,759,379 | 101,586 |
+| 監査IDの維持と置換が矛盾 | 妥当な保留（両出典と回答を確認） | 355.154 | 16,997 | 390,756 | 40,991 |
+
+この2件では誤反映・不要な保留はいずれも0件。各ケース1試行で、各版3回の比較や未知の業務資料での精度・速度向上を示すものではない。
 
 `conditional` はページ末尾の必須事項・紛らわしい参考資料・CSVの条件／例外／明記された優先順。採点は実際のガイドライン生成で、未選択・CSV選択を別々に比較する。`conflict` は別ファイルの矛盾がある版で、元TOMLが変わらないことを確認する。出力は正しい反映・誤反映・妥当な保留・不要な保留と、スキル読込の観測値を分ける。ログ未提供・読込未確認はモデル試行の成功に数えない。ログは実際のセッションのものを使い、保留理由の正しさはレビュー記録で別途確認する。`--signals` の `elapsed_seconds`、`input_tokens`、`cached_input_tokens` は実測値が得られた場合にだけ指定する。この採点CLI自体はモデルを起動せず、精度向上を証明しない。
