@@ -651,8 +651,8 @@ function describe(state) {
   return label;
 }
 
-function showUnresolvedJunieMemos(rows) {
-  const panel = element("#unresolved-junie-memos");
+function showUnresolvedNotes(selector, rows) {
+  const panel = element(selector);
   if (!panel) return;
   const list = panel.querySelector("ul");
   list.replaceChildren();
@@ -677,7 +677,8 @@ async function loadMigrationLedger() {
     migrationCompletion = ledger.completion;
     render();
     if (!migrationLedgerDialog.open) return;
-    showUnresolvedJunieMemos(ledger.unresolved_junie_memos || []);
+    showUnresolvedNotes("#unresolved-junie-memos", ledger.unresolved_junie_memos || []);
+    showUnresolvedNotes("#unresolved-operator-notes", ledger.unresolved_operator_notes || []);
     showMigrationLedger(ledger, snapshot, id => {
       const url = new URL(`${comparisonPath(ledger.run_id, id)}.html`, document.baseURI);
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
@@ -693,7 +694,8 @@ async function loadMigrationLedger() {
 }
 
 migrationLedgerButton.addEventListener("click", () => {
-  showUnresolvedJunieMemos([]);
+  showUnresolvedNotes("#unresolved-junie-memos", []);
+  showUnresolvedNotes("#unresolved-operator-notes", []);
   openMigrationLedger("移行台帳を読み込み中");
   loadMigrationLedger();
 });

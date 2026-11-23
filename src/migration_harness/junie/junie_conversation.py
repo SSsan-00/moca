@@ -275,17 +275,17 @@ class JunieConversations:
         self.cancelled = {}
         self.thread = None
 
-    def start(self):
+    @staticmethod
+    def saved_runs(root, blocked):
+        return {path.parent.name for path in Path(root).glob("*/editor.json")} | blocked.keys()
+
+    def start(self, saved_runs=None):
         root = self.manager.root
         if root and self.thread is None:
-            self.scan()
+            self.runs.update(self.saved_runs(root, self.manager.blocked_conversations) if saved_runs is None else saved_runs)
+            self.wake.set()
             self.thread = Thread(target=self.dispatch, name="junie-conversations", daemon=True)
             self.thread.start()
-
-    def scan(self):
-        self.runs.update(path.parent.name for path in self.manager.queue_path.parent.glob("*/editor.json"))
-        self.runs.update(self.manager.blocked_conversations)
-        self.wake.set()
 
     @contextmanager
     def _preparation_history(self, run_id, state, *, create=False):

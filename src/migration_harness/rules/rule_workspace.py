@@ -20,7 +20,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from . import rule_pack
 from ..config import load_config, validate_rule_usage
-from ..files import harness_asset, has_symlink_component, safe_target
+from ..files import harness_asset, has_symlink_component, safe_target, sha256_file
 from .rule_chat import RuleChat, decode_reply
 
 _MAX_SOURCE = 2 * 1024 * 1024
@@ -152,11 +152,11 @@ class RuleWorkspace:
         identifier = uuid4().hex
         path = self.root() / identifier
         path.mkdir()
-        meta = {"id": identifier, "base": _digest(content), "files": [], "messages": [], "unresolved": [], "revision": 0}
+        meta = {"id": identifier, "base": _digest(content), "origins": {}, "files": [], "messages": [], "unresolved": [], "revision": 0}
         try:
             (path / "sources").mkdir()
             (path / "baseline").mkdir()
-            old = self._managed_active(rules)
+            old = self._managed_active(rules, origins=meta["origins"])
             if old:
                 previous = rule_pack.read_json(old / "state.json")
                 for item, file in self._files(old / "published", previous):
@@ -167,7 +167,9 @@ class RuleWorkspace:
                     value = (Path(self.config["project_root"]) / item["path"]).expanduser()
                     if value.is_symlink() or not value.is_file() or value.stat().st_size > _MAX_SOURCE:
                         raise ValueError("既存ルールは上限内の通常のUTF-8ファイルを指定してください。")
-                    self._new_file(path, meta, value.name, value.read_bytes(), baseline=True,
+                    data = value.read_bytes()
+                    meta["origins"][item["path"]] = _digest(data)
+                    self._new_file(path, meta, value.name, data, baseline=True,
                                    usage=item.get("usage", "required"), description=item.get("description", ""))
             _write(path / "config.before.toml", content)
             _json(path / "state.json", meta)
@@ -176,7 +178,25 @@ class RuleWorkspace:
             raise
         return self.snapshot(identifier)
 
-    def _managed_active(self, rules):
+    def _registered_versions(self, rules):
+        versions = {}
+        for item in rules:
+            name = item["path"]
+            path = (Path(self.config["project_root"]) / name).expanduser()
+            try:
+                if path.is_symlink() or not path.is_file():
+                    raise OSError
+                versions[name] = sha256_file(path)
+            except OSError as exc:
+                raise ValueError(f"登録元のルールを読み取れません: {name}。原本を確認して新しい下書きに取り込み直してください。") from exc
+        return versions
+
+    def _verify_origins(self, state, rules):
+        expected = state.get("origins")
+        if expected is None or expected != self._registered_versions(rules):
+            raise ValueError("登録元のルールの版が一致しません。下書きは保持されています。新しい下書きに取り込み直してください。")
+
+    def _managed_active(self, rules, *, origins=None):
         paths = [(Path(self.config["project_root"]) / item["path"]).resolve() for item in rules]
         if not paths:
             return None
@@ -192,6 +212,9 @@ class RuleWorkspace:
         export = pack / "published"
         if not state.get("applied") or not (export / "generated" / "rules.toml").is_file():
             return None
+        if origins is not None:
+            # 元の分割前原文ではなく、今回実際に登録されている生成物の版を固定する。
+            origins.update(self._registered_versions(rules))
         rule_pack.verify(export)
         expected = tomllib.loads((export / "generated" / "rules.toml").read_text(encoding="utf-8"))["project"]["migration_rules"]
         def signature(entry, path):
@@ -385,9 +408,10 @@ class RuleWorkspace:
     def _preview(self, path, state):
         if state["unresolved"]:
             raise ValueError("未解決の指摘があります。Junieと続けて確認してください。")
-        _, config, _ = self._config()
+        _, config, rules = self._config()
         if state["base"] != _digest(config):
             raise ValueError("TOMLが更新されています。新しい下書きに変更を取り込み直してください。")
+        self._verify_origins(state, rules)
         export = _directory(path, Path("published"))
         if export.exists():
             shutil.rmtree(export)
@@ -436,7 +460,7 @@ class RuleWorkspace:
     def _apply(self, path, state, action, apply_config):
         if action.get("confirmed") is not True or state.get("unresolved"):
             raise ValueError("原文の条件・例外・優先順位を確認してから反映してください。")
-        _, config, _ = self._config()
+        _, config, rules = self._config()
         if state["base"] != _digest(config):
             raise ValueError("TOMLが更新されています。上書きは行いませんでした。")
         export = _directory(path, Path("published"))
@@ -447,7 +471,7 @@ class RuleWorkspace:
         if action.get("preview") != version or (state.get("preview") or {}).get("token") != version:
             raise ValueError("差分が更新されました。再確認してください。")
         # バックアップも削除せず、失敗時は設定を差し替えない既存処理を使う。
-        apply_config(candidate, state["base"])
+        apply_config(candidate, state["base"], lambda: self._verify_origins(state, rules))
         state["applied"] = True
         state.pop("preview", None)
         if self.active_id == state["id"]:

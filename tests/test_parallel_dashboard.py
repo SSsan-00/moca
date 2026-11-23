@@ -502,6 +502,115 @@ class ParallelDashboardTests(HarnessCase):
             self.manager.configure(previous)
         self.assertEqual(self.manager.config["run_root"], updated["run_root"])
 
+    def test_failed_settings_replace_keeps_old_scope_and_new_queue_untouched(self):
+        post, _ = self.open_http_dashboard()
+        path = Path(self.settings["config_path"])
+        original, version = dashboard._read_settings(path)
+        previous = copy.deepcopy(self.settings)
+        old_id = str(uuid.uuid4())
+        old_view = self.manager.new_view(old_id, "unit-0")
+        old_revision = old_view.revision
+        self.manager.results[old_id] = {"status": "previous"}
+        new_root = self.root / "new-runs"
+        new_root.mkdir()
+        new_config = {**self.settings, "run_root": str(new_root)}
+        queue = new_root / "dashboard-queue.json"
+        queue.write_text(json.dumps({"project_root": self.settings["project_root"], "jobs": [
+            {"action": "prepare", "run_id": str(uuid.uuid4()), "unit_id": "sample"},
+        ]}), encoding="utf-8")
+        saved_queue = queue.read_bytes()
+        replace = Path.replace
+
+        def fail_settings_only(candidate, destination):
+            if destination == path:
+                raise PermissionError("fixture: settings file is locked")
+            return replace(candidate, destination)
+
+        content = original.decode().replace('run_root = "runs"', 'run_root = "new-runs"')
+        with patch.object(Path, "replace", fail_settings_only), patch.object(self.manager, "start_pending") as start:
+            with self.assertRaises(HTTPError) as rejected:
+                post("settings", {"content": content, "version": version, "revision": self.view.revision})
+            with rejected.exception as error:
+                self.assertEqual(error.code, 409)
+                self.assertIn("settings file is locked", error.read().decode())
+            start.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.settings, previous)
+        self.assertEqual(self.manager.root, previous["run_root"])
+        self.assertIs(self.manager.get(old_id), old_view)
+        self.assertEqual(old_view.revision, old_revision)
+        self.assertEqual(self.manager.results[old_id], {"status": "previous"})
+        self.assertFalse(self.manager.jobs or self.manager.pending)
+        self.assertEqual(queue.read_bytes(), saved_queue)
+        with execution_lock(new_config, "dashboard"):
+            pass
+        with self.assertRaises(RuntimeError), execution_lock(previous, "dashboard"):
+            pass
+
+    def test_settings_preflight_failure_leaves_saved_toml_and_old_owner(self):
+        post, _ = self.open_http_dashboard()
+        path = Path(self.settings["config_path"])
+        original, version = dashboard._read_settings(path)
+        previous = copy.deepcopy(self.settings)
+        root = self.root / "new-runs"
+        proposed = {**self.settings, "run_root": str(root)}
+        content = original.decode().replace('run_root = "runs"', 'run_root = "new-runs"')
+        request = {"content": content, "version": version, "revision": self.view.revision}
+
+        def rejected():
+            with self.assertRaises(HTTPError) as response:
+                post("settings", request)
+            with response.exception as error:
+                self.assertEqual(error.code, 409)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(self.settings, previous)
+            self.assertEqual(self.manager.root, previous["run_root"])
+            with self.assertRaises(RuntimeError), execution_lock(previous, "dashboard"):
+                pass
+
+        with execution_lock(proposed, "dashboard"):
+            rejected()
+        queue = root / "dashboard-queue.json"
+        queue.write_bytes(b"invalid queue")
+        rejected()
+        self.assertEqual(queue.read_bytes(), b"invalid queue")
+        with execution_lock(proposed, "dashboard"):
+            pass
+
+    def test_first_settings_save_keeps_empty_manager_on_failure_then_commits(self):
+        path = Path(self.settings["config_path"])
+        content = path.read_text(encoding="utf-8")
+        self.manager.close()
+        path.unlink()
+        self.settings = {"config_path": str(path)}
+        self.view = dashboard.Dashboard()
+        self.manager = RunManager(self.settings, self.view)
+        self.view.manager = self.manager
+        self.addCleanup(self.manager.close)
+        post, _ = self.open_http_dashboard()
+        request = {"content": content, "version": "missing", "revision": self.view.revision}
+        replace = Path.replace
+
+        def fail_settings_only(candidate, destination):
+            if destination == path:
+                raise PermissionError("fixture: first settings save")
+            return replace(candidate, destination)
+
+        with patch.object(Path, "replace", fail_settings_only), self.assertRaises(HTTPError) as rejected:
+            post("settings", request)
+        with rejected.exception as error:
+            self.assertEqual(error.code, 409)
+        self.assertFalse(path.exists())
+        self.assertIsNone(self.manager.owner)
+        self.assertIsNone(self.manager.root)
+        self.assertEqual(self.settings, {"config_path": str(path)})
+        status, saved = post("settings", request)
+        self.assertEqual(status, 200)
+        self.assertEqual(dashboard._read_settings(path)[1], saved["version"])
+        self.assertEqual(self.manager.root, self.settings["run_root"])
+        with self.assertRaises(RuntimeError), execution_lock(self.settings, "dashboard"):
+            pass
+
     def test_workspace_preserves_operation_failure_message(self):
         run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)

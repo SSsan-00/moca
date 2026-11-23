@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,7 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
+from migration_harness.config import load_config
 from migration_harness.web.dashboard import _save_settings
 from migration_harness.rules.rule_workspace import RuleWorkspace
 from migration_harness.rules.rule_chat import RuleChat, decode_reply
@@ -49,7 +51,8 @@ end_line = 1
 
     def send(self, data, action, **fields):
         return self.workspace.action({"id": data["id"], "revision": data["revision"], "action": action, **fields},
-                                     lambda content, version: _save_settings(self.config_path, content, version))
+                                     lambda content, version, verify_origins: _save_settings(
+                                         self.config_path, content, version, verify_origins=verify_origins))
 
     def apply(self, draft):
         preview = self.send(draft, "preview")
@@ -103,6 +106,76 @@ end_line = 1
         with self.assertRaisesRegex(ValueError, "TOMLが更新"):
             self.send(ready, "apply", confirmed=True, preview=ready["preview"]["token"])
         self.assertIn("# concurrent", self.config_path.read_text())
+
+    def test_changed_registered_source_blocks_preview_and_preserves_edited_draft(self):
+        draft = self.workspace.start()
+        draft = self.send(draft, "edit", source="rule-0001.md", text="approved draft change\n")
+        original_toml = self.config_path.read_bytes()
+        original = self.app / "original.md"
+        original.write_bytes(b"external change\r\n")
+        with self.assertRaisesRegex(ValueError, "登録元"):
+            self.send(draft, "preview")
+        self.assertEqual(self.config_path.read_bytes(), original_toml)
+        self.assertEqual(original.read_bytes(), b"external change\r\n")
+        self.assertEqual(self.workspace.file_text(draft["id"], "rule-0001.md")["text"], "approved draft change\r\n")
+
+    def test_changed_source_during_settings_validation_blocks_commit(self):
+        draft = self.send(self.workspace.start(), "preview")
+        before = self.config_path.read_bytes()
+        original = self.app / "original.md"
+
+        def change_original(candidate):
+            normalized = load_config(candidate)
+            original.write_bytes(b"new obligation")
+            return normalized
+
+        with patch("migration_harness.web.dashboard.load_config", side_effect=change_original):
+            with self.assertRaisesRegex(ValueError, "登録元"):
+                self.send(draft, "apply", confirmed=True, preview=draft["preview"]["token"])
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertEqual(original.read_bytes(), b"new obligation")
+        self.assertFalse(self.workspace.snapshot(draft["id"]).get("applied"))
+
+    def test_deleted_or_unreadable_source_blocks_apply_but_touch_is_allowed(self):
+        ready = self.send(self.workspace.start(), "preview")
+        original = self.app / "original.md"
+        data, before = original.read_bytes(), self.config_path.read_bytes()
+        token = ready["preview"]["token"]
+        original.unlink()
+        with self.assertRaisesRegex(ValueError, "登録元"):
+            self.send(ready, "apply", confirmed=True, preview=token)
+        self.assertEqual(self.config_path.read_bytes(), before)
+        original.write_bytes(data)
+        with patch("migration_harness.rules.rule_workspace.sha256_file", side_effect=PermissionError):
+            with self.assertRaisesRegex(ValueError, "登録元"):
+                self.send(ready, "apply", confirmed=True, preview=token)
+        self.assertEqual(self.config_path.read_bytes(), before)
+        stamp = original.stat().st_mtime_ns + 2_000_000_000
+        os.utime(original, ns=(stamp, stamp))
+        self.assertTrue(self.send(ready, "apply", confirmed=True, preview=token)["applied"])
+
+    def test_managed_pack_checks_the_currently_registered_markdown(self):
+        first = self.apply(self.workspace.start())
+        second = self.workspace.start()
+        before = self.config_path.read_bytes()
+        registered = self.workspace.draft(first["id"]) / "published/generated/Agent.md"
+        registered.write_bytes(registered.read_bytes() + b"new published obligation\n")
+        with self.assertRaisesRegex(ValueError, "登録元"):
+            self.send(second, "preview")
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertTrue(registered.read_bytes().endswith(b"new published obligation\n"))
+
+    def test_old_draft_without_origin_versions_is_preserved_not_silently_rebased(self):
+        draft = self.workspace.start()
+        metadata = self.workspace.draft(draft["id"]) / "state.json"
+        state = json.loads(metadata.read_bytes())
+        del state["origins"]
+        metadata.write_text(json.dumps(state), encoding="utf-8")
+        before = self.config_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "新しい下書き"):
+            self.send(draft, "preview")
+        self.assertTrue(metadata.exists())
+        self.assertEqual(self.config_path.read_bytes(), before)
 
     def test_archives_keep_previous_and_block_saved_run_references(self):
         a = self.apply(self.workspace.start())

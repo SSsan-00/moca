@@ -6,6 +6,7 @@ import copy
 import json
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from stat import S_ISDIR, S_ISREG
@@ -53,48 +54,64 @@ class RunManager:
         self.configure()
 
     def configure(self, updated=None):
-        config = updated if updated is not None else self.config
-        root = config.get("run_root")
-        scope = tuple(config.get(key) for key in ("project_root", "run_root", "worktree_root"))
-        if scope == self.scope:
-            return
-        if self.busy:
-            raise ValueError("実行中の処理が終わってから設定を保存してください。")
-        # 新しい保存先の所有権と待機データを先に検証し、失敗時は元の画面を保つ。
-        owner = self.owner if root else None
-        if root and root != self.root:
-            owner = execution_lock(config, "dashboard")
-            owner.__enter__()
-        try:
-            jobs, cancelled, blocked = self._read_saved_queue(config, root)
-        except BaseException:
-            if owner is not self.owner and owner:
-                owner.__exit__(None, None, None)
-            raise
-        if self.owner is not owner and self.owner:
-            self.owner.__exit__(None, None, None)
-        self.owner = owner
-        if self.scope is not None:
-            for view in [self.default, *self.views.values()]:
-                view.publish({"status": "idle", "ready": True})
-            self.views.clear()
-            self._disk_run_ids.clear()
-            self.results.clear()
-        self.scope = scope
-        self.root = root
-        self._queue_retry_at = None
-        self._queue_retry_delay = 1.0
-        if updated is not None:
-            self.config.update(updated)
-        self.blocked_conversations = blocked
-        if not root:
-            return
-        self.conversations.cancelled = cancelled
-        self._restore_saved_jobs(jobs)
+        with self.settings_switch(updated):
+            pass
+
+    @contextmanager
+    def settings_switch(self, updated):
+        with self.condition:
+            config = self.config if updated is None else updated
+            root = config.get("run_root")
+            scope = tuple(config.get(key) for key in ("project_root", "run_root", "worktree_root"))
+            if scope == self.scope:
+                yield
+                return
+            if self.busy:
+                raise ValueError("実行中の処理が終わってから設定を保存してください。")
+            old_owner = self.owner
+            owner = old_owner if root else None
+            if root and root != self.root:
+                owner = execution_lock(config, "dashboard")
+                owner.__enter__()
+            try:
+                jobs, cancelled, blocked = self._read_saved_queue(config, root)
+                views, disk_ids, waiting = self._prepare_saved_jobs(config, jobs, blocked)
+                tracked = (self.conversations.saved_runs(root, blocked)
+                           if root and (updated is not None or self.conversations.thread) else None)
+                # TOML の置換が成功するまで旧画面・所有権・待機列を公開したままにする。
+                yield
+            except BaseException:
+                if owner is not old_owner and owner:
+                    owner.__exit__(None, None, None)
+                raise
+            if self.scope is not None:
+                for view in [self.default, *self.views.values()]:
+                    view.publish({"status": "idle", "ready": True})
+                self.results.clear()
+            self.views, self._disk_run_ids = views, disk_ids
+            self.jobs, self.pending = waiting, deque(waiting)
+            self.scope, self.root, self.owner = scope, root, owner
+            self._queue_retry_at, self._queue_retry_delay = None, 1.0
+            if updated is not None:
+                self.config.update(updated)
+            self.blocked_conversations = blocked
+            self.conversations.cancelled = cancelled
+            if old_owner is not owner and old_owner:
+                old_owner.__exit__(None, None, None)
+            if root:
+                if self.conversations.thread:
+                    self.conversations.runs = tracked
+                    self.conversations.wake.set()
+                try:
+                    self.persist()
+                except OSError:
+                    self._defer_queue_retry(tracked)
 
     def _read_saved_queue(self, config, root):
-        path = Path(root) / "dashboard-queue.json" if root else None
-        saved = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
+        try:
+            saved = json.loads((Path(root) / "dashboard-queue.json").read_text(encoding="utf-8")) if root else {}
+        except FileNotFoundError:
+            saved = {}
         jobs = saved.get("jobs", [])
         cancelled = saved.get("cancelled_conversations", {})
         blocked = saved.get("blocked_conversations", {})
@@ -112,30 +129,36 @@ class RunManager:
                 load_saved_run(config, job["run_id"])
         return jobs, cancelled, blocked
 
-    def _restore_saved_jobs(self, jobs):
+    def _prepare_saved_jobs(self, config, jobs, blocked):
+        views = {} if self.scope is not None else self.views.copy()
+        disk_ids, waiting = set(), {}
         for job in jobs:
-            run_id = job["run_id"]
-            if job.get("running"):
-                # 起動済みの工程は繰り返さず、保存されたチェックポイントから明示的な再開を待つ。
-                message = self.blocked_conversations.setdefault(
+            run_id, unit_id = job["run_id"], job["unit_id"]
+            interrupted = job.get("running")
+            if interrupted:
+                message = blocked.setdefault(
                     run_id, "前回の処理の終了を確認できません。ログと残存プロセスを確認してから指示を送信し直してください。",
                 )
+            elif run_id in blocked:
+                continue
+            if interrupted or job["action"] not in {"run", "prepare"}:
                 try:
-                    view = self.get(run_id)
-                    view.publish({**view.state, "message": message})
+                    _, record = load_dashboard_record(config, run_id)
+                    view = self._record_view(config, record, blocked.get(run_id, ""))
+                    disk_ids.add(run_id)
                 except (OSError, ValueError, KeyError):
-                    view = self.new_view(run_id, job["unit_id"])
-                    view.publish({**view.state, "status": "preparation_interrupted", "ready": True,
-                                  "message": message})
-                continue
-            if run_id in self.blocked_conversations:
-                continue
-            view = self.get(run_id) if job["action"] not in {"run", "prepare"} else self.new_view(run_id, job["unit_id"])
-            self.enqueue(view, job, operation_id=job.get("operation_id"))
-        self.persist()
-        if self.conversations.thread:
-            self.conversations.runs.clear()
-            self.conversations.scan()
+                    if not interrupted:
+                        raise
+                    view = self._queued_view(config, run_id, unit_id)
+                    view.publish({**view.state, "status": "preparation_interrupted", "ready": True})
+            else:
+                view = self._queued_view(config, run_id, unit_id)
+            views[run_id] = view
+            if interrupted:
+                view.publish({**view.state, "message": message})
+            else:
+                waiting[run_id] = self._queued_job(view, job, job.get("operation_id"))
+        return views, disk_ids, waiting
 
     @property
     def queue_path(self):
@@ -159,12 +182,16 @@ class RunManager:
         temporary.replace(self.queue_path)
 
     def new_view(self, run_id, unit_id):
+        view = self._queued_view(self.config, run_id, unit_id)
+        self.views[run_id] = view
+        return view
+
+    def _queued_view(self, config, run_id, unit_id):
         view = type(self.default)()
         view.condition = self.condition
         view.publish({"run_id": run_id, "unit_id": unit_id, "status": "queued", "ready": False,
                       "created_at": datetime.now(timezone.utc).isoformat(),
-                      "diff_viewer_enabled": bool(self.config.get("diff_viewer_html"))})
-        self.views[run_id] = view
+                      "diff_viewer_enabled": bool(config.get("diff_viewer_html"))})
         return view
 
     def get(self, run_id=None):
@@ -178,23 +205,29 @@ class RunManager:
             return self.views[run_id]
 
     def _restore_view(self, run_id, record):
+        view = self._record_view(self.config, record, self.blocked_conversations.get(run_id, ""))
+        self.views[run_id] = view
+        return view
+
+    def _record_view(self, config, record, message):
         view = type(self.default)()
         view.condition = self.condition
         view.observe(record)
-        view.ready(self.config, record, self.blocked_conversations.get(run_id, ""))
-        self.views[run_id] = view
+        view.ready(config, record, message)
         return view
 
     def enqueue(self, view, action, *, operation_id=None):
         run_id = view.state["run_id"]
-        self.jobs[run_id] = {
-            **action, "run_id": run_id, "unit_id": view.state["unit_id"],
-            "operation_id": operation_id or uuid.uuid4().hex,
-        }
+        self.jobs[run_id] = self._queued_job(view, action, operation_id)
+        self.pending.append(run_id)
+
+    @staticmethod
+    def _queued_job(view, action, operation_id):
         view.publish({**view.state, "ready": False, "queued": True, "cancellable": False,
                       "operation_id": None, "stop_requested": False,
                       "generating_anchors": action["action"] == "anchors"})
-        self.pending.append(run_id)
+        return {**action, "run_id": view.state["run_id"], "unit_id": view.state["unit_id"],
+                "operation_id": operation_id or uuid.uuid4().hex}
 
     def save_enqueued(self):
         try:
@@ -343,11 +376,11 @@ class RunManager:
                 self.workers[run_id] = thread
                 thread.start()
 
-    def _defer_queue_retry(self):
+    def _defer_queue_retry(self, saved_runs=None):
         if not self.closing:
             self._queue_retry_at = monotonic() + self._queue_retry_delay
             self._queue_retry_delay = min(2 * self._queue_retry_delay, 8.0)
-            self.conversations.start()
+            self.conversations.start(saved_runs)
 
     def retry_queue(self):
         with self.condition:
