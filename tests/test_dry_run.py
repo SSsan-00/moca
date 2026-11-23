@@ -102,6 +102,28 @@ class DryRunTests(unittest.TestCase):
                    for item in result["checks"])
 
 
+    def test_does_not_execute_generated_checker_and_preserves_phase_order_when_input_is_over_budget(self):
+        from unittest.mock import patch
+
+        config = self.config
+        config["scripts"] = {"before_prepare": [[sys.executable, "-c", "raise AssertionError()"]]}
+        config["checker_command"] = ["pwsh", "-NoProfile", "-FiLe", "later.ps1"]
+        with patch("migration_harness.runs.dry_run._MAX_INPUT_BYTES", 1):
+            report = plan_dry_run(config, config["units"][0]["id"])
+
+        phases = list(dict.fromkeys(row["phase"] for row in report["checks"]))
+        self.assertEqual(phases, [
+            "git", "before_prepare", "prepare", "after_prepare", "before_migration", "migration",
+            "after_migration", "before_build", "build", "after_build", "before_checker", "checker",
+            "after_checker", "verification",
+        ])
+        inputs = [row for row in report["checks"] if row["phase"] == "prepare" and "path" in row]
+        self.assertEqual([row["state"] for row in inputs], ["unchecked"])
+        self.assertNotIn("characters", inputs[0])
+        scripts = [row for row in report["checks"] if row["phase"] == "checker" and "path" in row]
+        self.assertEqual([(row["path"], row["state"]) for row in scripts], [("later.ps1", "unchecked")])
+        self.assertFalse(Path(config["worktree_root"]).exists())
+
     def test_invalid_base_does_not_hide_independent_input_failure(self):
         config = self.config
         config["base_ref"] = "missing-revision"
