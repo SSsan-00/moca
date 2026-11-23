@@ -112,7 +112,7 @@ class JunieThoughts:
 
     def append(self, rows: list[dict]) -> None:
         target = safe_target(self.target.parent.parent, Path(self.target.parent.name, FILENAME))
-        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_BINARY
         with os.fdopen(os.open(target, flags, 0o600), "ab+") as stream:
             # 強制終了で書きかけの行があっても、再開後の最初のメモを独立した行にする。
             if stream.seek(0, 2):

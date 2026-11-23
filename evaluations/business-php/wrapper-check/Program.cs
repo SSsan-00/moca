@@ -19,8 +19,7 @@ try
 {
     var contract = Parse(args[0]);
     var targets = args[1..].Select(Parse).ToArray();
-    if (targets.Any(tree => string.Equals(tree.FilePath, contract.FilePath,
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)))
+    if (targets.Any(tree => string.Equals(tree.FilePath, contract.FilePath, StringComparison.OrdinalIgnoreCase)))
     {
         Console.WriteLine($"{RuleId} unknown {contract.FilePath}:1:1: contract and target inputs must be separate.");
         return 2;

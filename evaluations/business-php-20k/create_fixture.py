@@ -113,11 +113,8 @@ def create(root: Path, php: Path):
     request_cases = scenarios(policies)
     cases = validation / "requests.json"
     cases.write_text(json.dumps(request_cases, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
-    command = [str(php), "-n", "-d", "display_errors=stderr"]
-    if sys.platform == "win32":
-        command.extend(("-d", f"extension_dir={php.parent / 'ext'}", "-d", "extension=pdo_sqlite"))
-    else:
-        command = [str(php), "-d", "display_errors=stderr"]
+    command = [str(php), "-n", "-d", "display_errors=stderr", "-d", f"extension_dir={php.parent / 'ext'}",
+               "-d", "extension=pdo_sqlite"]
     subprocess.run([*command, "-l", str(app / "legacy/business.php")], check=True)
     run = subprocess.run([*command, str(validation / "source_runner.php"),
                           str(app / "legacy/business.php"), str(app / "verification/schema.sql"),

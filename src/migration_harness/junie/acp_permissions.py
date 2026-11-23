@@ -52,7 +52,7 @@ class PinnedReferenceReads:
         check_cancelled()
         try:
             target = safe_target(self.workspace, relative)
-            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+            flags = os.O_RDONLY | os.O_BINARY
             with os.fdopen(os.open(target, flags), "rb") as stream:
                 saved = os.fstat(stream.fileno())
                 if not stat.S_ISREG(saved.st_mode) or saved.st_size > MAX_REFERENCE_BYTES:

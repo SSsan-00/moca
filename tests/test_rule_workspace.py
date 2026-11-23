@@ -83,7 +83,6 @@ end_line = 1
         self.assertEqual((path / "sources/rule-0001.md").read_bytes(), b"first\r\nnew exception\r\n")
         self.assertEqual((path / "sources/rule-0002.md").read_bytes(), new_data)
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows compares paths without case")
     def test_managed_pack_keeps_original_bytes_with_case_alias(self):
         runs = Path(self.config["run_root"])
         runs.mkdir()
