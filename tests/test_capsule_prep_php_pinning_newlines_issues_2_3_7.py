@@ -180,7 +180,7 @@ class CapsulePreparationTests(HarnessCase):
             self.assertTrue((agent / ".migration-materials/guidelines.md").is_file())
             self.assertIn("references.json", prompt)
             self.assertIn("last 5", (agent / ".migration-materials" / references[-1]["file"]).read_text())
-            rules = "".join((agent / ".migration-materials" / entry["file"]).read_text() for entry in manifest["rule_files"])
+            rules = "".join((agent / ".migration-materials" / entry["file"]).read_text(encoding="utf-8") for entry in manifest["rule_files"])
             for part in manifest["parts"]:
                 self.assertEqual([entry["path"] for entry in part["sources"]], [PHP["path"]])
                 context = Path(part["path"]).read_text(encoding="utf-8")

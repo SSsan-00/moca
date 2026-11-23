@@ -415,7 +415,7 @@ class MultipleTargetsTest(HarnessCase):
         with patch.object(workflow.subprocess, "run", side_effect=check):
             with self.assertRaises(workflow.RunInterrupted):
                 self.resume(interrupt)
-            self.assertNotEqual((self.worktree / page).read_text(), "draft")
+            self.assertNotEqual((self.worktree / page).read_text(encoding="utf-8-sig"), "draft")
             self.assertEqual(self.record()["repair_history"], [])
             self.assertEqual(self.resume(complete)["status"], "checker_succeeded")
         self.assertEqual(len(self.record()["repair_history"]), 1)
