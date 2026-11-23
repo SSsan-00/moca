@@ -14,6 +14,7 @@ MAX_RESPONSE_CHARS = 32_768
 KINDS = frozenset({"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"})
 _REFERENCE_PATH = re.compile(r"references\.json|(?:rule|reference)-\d+\.txt")
 _DIGEST = re.compile(r"[a-f0-9]{64}")
+_ROWS = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$")
 
 
 def metrics_kind(value: object) -> str:
@@ -27,6 +28,8 @@ class ReadRefused(ValueError):
 class PinnedReferenceReads:
     def __init__(self, workspace: Path, materials: dict[str, str], allowed_rules: set[str]):
         self.workspace = workspace.resolve()
+        self.provided_bytes = 0
+        self.last_delivery = None
         self.pins = {
             Path(".migration-materials") / name: digest
             for name, digest in materials.items()
@@ -71,9 +74,17 @@ class PinnedReferenceReads:
         if line is not None or limit is not None:
             # ACPの行番号は1始まり。改行自体は固定資料のまま返す。
             start = (line or 1) - 1
-            rows = re.findall(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$", text)
+            rows = _ROWS.findall(text)
             text = "".join(rows[start:] if limit is None else rows[start:start + limit])
         if len(text) > MAX_RESPONSE_CHARS:
             raise ReadRefused("bounded_read_required")
         check_cancelled()
         return text
+
+    def delivery_metadata(self, params, content):
+        relative = Path(params["path"]).relative_to(self.workspace)
+        first = params.get("line") or 1
+        count = sum(1 for _ in _ROWS.finditer(content))
+        return {"material_id": relative.name.lower(), "sha256": self.pins[relative],
+                "start_line": first if count else None, "end_line": first + count - 1 if count else None,
+                "utf8_bytes": len(content.encode("utf-8"))}

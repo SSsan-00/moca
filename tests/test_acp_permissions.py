@@ -3,6 +3,8 @@ import json
 import sys
 import tempfile
 import unittest
+from collections import deque
+from queue import Queue
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -199,21 +201,46 @@ send(id=3,result={"stopReason":"end_turn"})
         with control_scope(application.control), patch.object(junie_cli, "run_interactive", side_effect=exercise):
             workflow._run_budgeted_junie({}, self.run_path / "run.json", record, "migration", None, self.workspace, [])
 
-    def test_budgeted_run_persists_only_reasons(self):
+    def test_budgeted_run_counts_only_flushed_pages_and_keeps_last_receipt_without_content(self):
         manifest = self.run_path / "capsule" / "manifest.json"
         manifest.parent.mkdir()
         manifest.write_text(json.dumps({"parts": [{"index": 1}], "materials": self.hashes}))
         application = Dashboard()
         application.begin_operation()
-        record = {"run_id": self.run_path.name, "status": "ready"}
+        record = {"run_id": self.run_path.name, "status": "ready", "current_capsule": 2}
         def exercise():
-            reads = junie_cli.reference_read_scope.get()
-            self.assertEqual(reads.read({"path": str(self.document), "line": 1, "limit": 1}), "一行\r\n")
-            junie_cli.permission_observer.get()("read", "pinned_reference_read")
+            session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+            session.reference_reads = junie_cli.reference_read_scope.get()
+            session.observe_permission = junie_cli.permission_observer.get()
+            session.writes, session.outgoing = deque(), Queue()
+            session.command = ["junie"]
+            for line, limit, success in [(1, 1, False), (4, 1, True), (2, 99, True)]:
+                session.read_reference(7, {"path": str(self.document), "line": line, "limit": limit})
+                _, written = session.outgoing.get_nowait()
+                if success:
+                    written.set_result(None)
+                    session._check_writes()
+                else:
+                    written.set_exception(BrokenPipeError())
+                    with self.assertRaises(junie_cli.JunieSessionError):
+                        session._check_writes()
+                    self.assertIsNone(session.reference_reads.last_delivery)
+                if line == 4:
+                    empty = session.reference_reads.last_delivery
+                    self.assertEqual((empty["utf8_bytes"], empty["start_line"], empty["end_line"]), (0, None, None))
         with control_scope(application.control), patch.object(junie_cli, "run_interactive", side_effect=exercise):
-            workflow._run_budgeted_junie({"junie_pinned_reference_reads": True}, self.run_path / "run.json",
-                                         record, "migration", None, self.workspace, [])
+            for phase in ("migration", "checker_repair"):
+                workflow._run_budgeted_junie({"junie_pinned_reference_reads": True}, self.run_path / "run.json",
+                                             record, phase, None, self.workspace, [])
         data = json.loads((self.run_path / "run.json").read_text("utf-8"))
-        self.assertEqual(data["junie_permission_counts"], {"read": {"pinned_reference_read": 1}})
+        self.assertEqual(data["junie_permission_counts"], {"read": {"pinned_reference_read": 4}})
+        count = len("二行\r\n三行".encode())
+        self.assertEqual(data["junie_reference_delivery"], {
+            "utf8_bytes": count * 2, "last_response": {
+                "material_id": self.document.name, "sha256": self.hashes[self.document.name], "utf8_bytes": count,
+                "start_line": 2, "end_line": 3, "phase": "checker_repair", "capsule": 2,
+            },
+        })
+        self.assertNotIn(str(self.workspace), str(data["junie_reference_delivery"]))
         self.assertNotIn("一行", str(data))
         self.assertIsNone(junie_cli.reference_read_scope.get())

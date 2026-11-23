@@ -800,7 +800,7 @@ class _AcpSession:
         self.messages: Queue[bytes] = Queue()
         self.closing = Event()
         self.outgoing: Queue[tuple[bytes, Future[None]] | None] = Queue()
-        self.writes: deque[tuple[float, Future[None]]] = deque()
+        self.writes: deque[tuple[float, Future[None], Callable[[], None] | None]] = deque()
         self.session_id = None
         self.tool_calls: dict[str, dict] = {}
         self.pending: tuple[int | str, Future[str]] | None = None
@@ -836,11 +836,11 @@ class _AcpSession:
             # キューが一時的に空の状態と、接続が終了した状態を区別するための印。
             self.messages.put(b"")
 
-    def send(self, **message: Any) -> None:
+    def send(self, *, after_flush: Callable[[], None] | None = None, **message: Any) -> None:
         """監視を止めず、送信順にACPメッセージを登録する。"""
         data = (json.dumps({"jsonrpc": "2.0", **message}) + "\n").encode("utf-8")
         written: Future[None] = Future()
-        self.writes.append((time.monotonic() + ACP_TIMEOUT, written))
+        self.writes.append((time.monotonic() + ACP_TIMEOUT, written, after_flush))
         self.outgoing.put((data, written))
 
     def _write(self) -> None:
@@ -983,16 +983,26 @@ class _AcpSession:
                 self.observe_permission("read", str(exc))
             self.send(id=request_id, error={"code": -32602, "message": "Only unchanged, pinned Run references are readable. Use a bounded line range."})
         else:
-            if self.observe_permission is not None:
-                self.observe_permission("read", "pinned_reference_read")
-            self.send(id=request_id, result={"content": content})
+            reads = self.reference_reads
+            receipt = reads.delivery_metadata(params, content)
 
-    def _check_writes(self) -> None:
+            def delivered():
+                reads.provided_bytes += receipt["utf8_bytes"]
+                reads.last_delivery = receipt
+                if self.observe_permission is not None:
+                    self.observe_permission("read", "pinned_reference_read")
+
+            self.send(id=request_id, result={"content": content}, after_flush=delivered)
+
+    def _check_writes(self, *, closing: bool = False) -> None:
         while self.writes and self.writes[0][1].done():
-            _, written = self.writes.popleft()
+            _, written, after_flush = self.writes.popleft()
             if written.exception() is not None:
-                raise JunieSessionError(self.command, 1, "JunieへのACP送信に失敗しました。") from written.exception()
-        if self.writes and time.monotonic() >= self.writes[0][0]:
+                if not closing:
+                    raise JunieSessionError(self.command, 1, "JunieへのACP送信に失敗しました。") from written.exception()
+            elif after_flush is not None:
+                after_flush()
+        if not closing and self.writes and time.monotonic() >= self.writes[0][0]:
             raise JunieSessionError(self.command, 1, "JunieへのACP送信がタイムアウトしました。")
 
     def _accept_steering_response(self, request_id, message) -> None:
@@ -1227,6 +1237,7 @@ class _AcpSession:
         self.closing.set()
         self.outgoing.put(None)
         self.writer.join(timeout=1)
+        self._check_writes(closing=True)
         self.reader.join(timeout=1)
         if not self.reader.is_alive():
             self.process.stdout.close()
