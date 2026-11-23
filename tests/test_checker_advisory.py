@@ -7,7 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from migration_harness.verification import checker_advisory as advisory
 from migration_harness.junie import junie_cli
@@ -96,7 +96,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
                     self.assertTrue(owned)
                     self.assertEqual(command, ["junie", "--project", str(cwd), "--acp=true"])
                     self.assertNotEqual(cwd, Path.cwd())
-                    result = subprocess.Popen([sys.executable, "-c", FAKE_ACP, mode], cwd=cwd, **streams)
+                    result = junie_cli.JunieProcess([sys.executable, "-c", FAKE_ACP, mode], cwd=cwd, **streams)
                     launched.append(result)
                     return result
 
@@ -111,6 +111,59 @@ class CheckerAdvisoryTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             advisory.run_text_advisory("sample only", timeout=5)
                 self.assertIsNotNone(launched[0].poll())
+
+    def test_startup_does_not_reduce_the_model_response_budget(self):
+        frames = [
+            {"id": 1, "result": {"protocolVersion": 1}},
+            {"id": 2, "result": {"sessionId": "opaque"}},
+            {"method": "session/update", "params": {"sessionId": "opaque", "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "answer"},
+            }}},
+            {"id": 3, "result": {"stopReason": "end_turn"}},
+        ]
+        updates = Mock()
+        updates.get.side_effect = [json.dumps({"jsonrpc": "2.0", **frame}).encode() for frame in frames]
+        requests = Mock()
+        with (
+            patch.object(advisory, "Queue", side_effect=[updates, requests]),
+            patch.object(advisory, "Thread"),
+            patch.object(advisory, "monotonic", side_effect=[0, 30, 46, 46, 78, 90]),
+        ):
+            self.assertEqual(advisory._exchange(Mock(), Path("fixture"), "sample", 45, startup_timeout=75), "answer")
+        self.assertEqual(
+            [entry.args[0]["method"] for entry in requests.put.call_args_list[:-1]],
+            ["initialize", "session/new", "session/prompt"],
+        )
+
+    def test_timeout_names_the_waiting_stage_and_still_requires_a_complete_reply(self):
+        init = {"id": 1, "result": {"protocolVersion": 1}}
+        session = {"id": 2, "result": {"sessionId": "opaque"}}
+        for stage, frames, times in (
+            ("initialization", [], [0, 75]),
+            ("session_setup", [init], [0, 30, 75]),
+            ("model_response", [init, session], [0, 30, 46, 46, 91]),
+        ):
+            with self.subTest(stage=stage):
+                updates = Mock()
+                updates.get.side_effect = [json.dumps({"jsonrpc": "2.0", **frame}).encode() for frame in frames]
+                with (
+                    patch.object(advisory, "Queue", side_effect=[updates, Mock()]),
+                    patch.object(advisory, "Thread"),
+                    patch.object(advisory, "monotonic", side_effect=times),
+                    self.assertRaises(advisory.AdvisoryTimeout) as raised,
+                ):
+                    advisory._exchange(Mock(), Path("fixture"), "sample", 45, startup_timeout=75)
+                self.assertEqual(raised.exception.stage, stage)
+
+    def test_timeout_cannot_turn_a_checker_exit_zero_into_success(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "checker.log").write_text("問題ありません", encoding="utf-8")
+            with patch.object(advisory, "run_text_advisory", side_effect=advisory.AdvisoryTimeout("session_setup")):
+                report = advisory.checker_advisory(root, 0, allow_pass=True)
+        self.assertEqual((report["status"], report["reason"], report["timeout_stage"]),
+                         ("unavailable", "TimeoutError", "session_setup"))
+        self.assertNotIn("corroborated", report)
 
     def test_unconfirmed_stop_is_not_converted_to_normal_advisory(self):
         with TemporaryDirectory() as folder:
