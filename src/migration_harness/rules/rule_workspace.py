@@ -210,12 +210,21 @@ class RuleWorkspace:
         pack = self.draft(identifier)
         state = rule_pack.read_json(pack / "state.json")
         export = pack / "published"
-        if not state.get("applied") or not (export / "generated" / "rules.toml").is_file():
+        if not state.get("applied"):
             return None
-        if origins is not None:
-            # 元の分割前原文ではなく、今回実際に登録されている生成物の版を固定する。
-            origins.update(self._registered_versions(rules))
-        rule_pack.verify(export)
+        try:
+            if origins is not None:
+                origins.update(self._registered_versions(rules))
+            rule_pack.verify(export)
+        except (OSError, ValueError) as exc:
+            if origins is None:
+                raise
+            raise ValueError(
+                "登録中の生成ルールの変更・欠落を検出しました。管理された生成物は上書きせず、"
+                "同じ一式の登録済みMarkdownを管理フォルダ外へコピーして必要な修正を反映し、"
+                "設定でその一式の登録先を差し替えてから新しい下書きを作成してください。"
+                "欠落した原文は手元の控えから復元してください。"
+            ) from exc
         expected = tomllib.loads((export / "generated" / "rules.toml").read_text(encoding="utf-8"))["project"]["migration_rules"]
         def signature(entry, path):
             return path, entry.get("usage", "required"), entry.get("description", "")

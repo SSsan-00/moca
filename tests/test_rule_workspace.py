@@ -11,6 +11,7 @@ from threading import Event
 from unittest.mock import patch
 
 from migration_harness.config import load_config
+from migration_harness.files import sha256_file
 from migration_harness.web.dashboard import _save_settings
 from migration_harness.rules.rule_workspace import RuleWorkspace
 from migration_harness.rules.rule_chat import RuleChat, decode_reply
@@ -154,6 +155,20 @@ end_line = 1
         os.utime(original, ns=(stamp, stamp))
         self.assertTrue(self.send(ready, "apply", confirmed=True, preview=token)["applied"])
 
+    def test_toml_change_during_origin_verification_is_not_overwritten(self):
+        ready = self.send(self.workspace.start(), "preview")
+        edited = self.config_path.read_bytes() + b"\n# external settings edit\n"
+
+        def edit_toml(original):
+            self.config_path.write_bytes(edited)
+            return sha256_file(original)
+
+        with patch("migration_harness.rules.rule_workspace.sha256_file", side_effect=edit_toml):
+            with self.assertRaisesRegex(ValueError, "設定ファイルが更新"):
+                self.send(ready, "apply", confirmed=True, preview=ready["preview"]["token"])
+        self.assertEqual(self.config_path.read_bytes(), edited)
+        self.assertEqual(self.workspace.snapshot(ready["id"])["preview"], ready["preview"])
+
     def test_managed_pack_checks_the_currently_registered_markdown(self):
         first = self.apply(self.workspace.start())
         second = self.workspace.start()
@@ -162,8 +177,17 @@ end_line = 1
         registered.write_bytes(registered.read_bytes() + b"new published obligation\n")
         with self.assertRaisesRegex(ValueError, "登録元"):
             self.send(second, "preview")
+        with self.assertRaisesRegex(ValueError, "管理フォルダ外.*設定"):
+            self.workspace.start()
         self.assertEqual(self.config_path.read_bytes(), before)
         self.assertTrue(registered.read_bytes().endswith(b"new published obligation\n"))
+        self.assertEqual(self.workspace.snapshot(second["id"])["files"], second["files"])
+        recovered = self.app / "recovered.md"
+        recovered.write_bytes(registered.read_bytes())
+        content = before.decode().replace(registered.as_posix(), recovered.as_posix())
+        _save_settings(self.config_path, content, second["base"])
+        fresh = self.workspace.start()
+        self.assertIn("new published obligation", self.workspace.file_text(fresh["id"], "rule-0001.md")["text"])
 
     def test_old_draft_without_origin_versions_is_preserved_not_silently_rebased(self):
         draft = self.workspace.start()
