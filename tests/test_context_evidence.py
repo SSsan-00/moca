@@ -64,6 +64,15 @@ class ContextEvidenceTests(unittest.TestCase):
         self.assertEqual("current", by_file["sample.php"]["declared_ranges"][0]["role"])
         self.assertEqual("reference", by_file["helpers.php"]["declared_ranges"][0]["role"])
         self.assertEqual(2, len({row["sha256"] for row in results}))
+        lexical = {row["path"]: row for row in find_feature(self.run, "Calculate", 1)["matches"]}
+        self.assertEqual({"sample.php", "helpers.php"}, set(lexical))
+        self.assertEqual([], lexical["helpers.php"]["lexical_functions"][0]["ledger_range_ids"])
+        self.assertEqual(["1:1"], lexical["sample.php"]["lexical_functions"][0]["ledger_range_ids"])
+        for path, match in lexical.items():
+            function, = match["lexical_functions"]
+            evidence = read_context(self.run, match["id"], function["start_line"], function["end_line"], through=1)
+            self.assertEqual(path, evidence["path"])
+            self.assertIn("function Calculate()", evidence["text"])
 
     def test_fit_named_functions_before_preceding_capsule_runs_out(self):
         body = "".join(

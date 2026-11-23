@@ -7,6 +7,7 @@ from typing import Any
 def navigation_plan(
     manifest: dict[str, Any], record: dict[str, Any], stage: str, targets: tuple[Path, ...],
     *, current: int | None = None, diagnostic: Path | None = None,
+    staged_versions: dict[str, str | None] | None = None,
 ) -> tuple[dict[str, Any], str]:
     through = len(manifest["parts"]) if current is None else current
     if current is None:
@@ -29,11 +30,18 @@ def navigation_plan(
             if len(declared_symbols) == 12:
                 break
     diagnosis = diagnostic.name if diagnostic is not None else None
+    recorded = record.get("target_hashes", {})
+    target_evidence = []
+    for target in targets:
+        name = target.as_posix()
+        entry = {"path": name, "recorded_sha256": recorded.get(name)}
+        if staged_versions is not None and name in staged_versions:
+            entry["staged_sha256"] = staged_versions[name]
+        target_evidence.append(entry)
     return {
         "version": 1, "unit_id": record.get("unit_id", manifest.get("unit_id")), "stage": stage,
         "through_capsule": through, "sources": ranges,
-        "targets": [{"path": path.as_posix(), "recorded_sha256": record.get("target_hashes", {}).get(path.as_posix())}
-                    for path in targets],
+        "targets": target_evidence,
         "rules_record": "supplied_rules",
         "declared_symbol_hints": declared_symbols,
         "diagnostic": diagnosis,

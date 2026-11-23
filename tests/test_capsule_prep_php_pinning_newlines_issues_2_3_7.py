@@ -315,6 +315,11 @@ class CapsulePreparationTests(HarnessCase):
             if len(observed_contexts) == 3:
                 self.assertEqual(target.read_bytes(), b"class Partial {}\n")
                 self.assertIn("This capsule was interrupted", command[-1])
+                junie_cli.launch_input_observer.get()(command[-1])
+                entry, = self.read_json(record_path)["last_context_plan"]["targets"]
+                self.assertEqual(workflow.target_hash(target), entry["staged_sha256"])
+                self.assertEqual(workflow.target_hash(previous), entry["recorded_sha256"])
+                self.assertNotEqual(entry["staged_sha256"], entry["recorded_sha256"])
             completion.write_text(token, encoding="ascii")
             return 0
 

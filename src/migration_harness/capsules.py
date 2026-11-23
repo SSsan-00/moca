@@ -363,8 +363,10 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
     manifest_parts, split_line_coverage = _write_segments(
         capsule, segment_inputs, prefix, max_chars, overlap_chars, budget_error, syntax_by_path,
     )
-    syntax_boundaries = _syntax_manifest(manifest_parts, syntax_by_path)
+    shared_sources = rule_ranges + [_manifest_source(group) for group in shared_groups]
+    syntax_boundaries = _syntax_manifest(manifest_parts, syntax_by_path, [*shared_sources, *reference_index])
 
+    analyzed_assignment = any(fn["capsules"] for item in syntax_boundaries.values() for fn in item["functions"])
     context_paths = [part["path"] for part in manifest_parts]
     context_part_chars = [part["chars"] for part in manifest_parts]
     total_chars = sum(context_part_chars)
@@ -373,14 +375,14 @@ def prepare_context(config: dict[str, Any], unit: dict[str, Any], run_path: Path
         "max_context_chars": max_chars,
         "segmentation_policy": (
             "php_function_boundaries_with_line_and_character_fallback"
-            if any(item["functions"] for item in syntax_boundaries.values())
+            if analyzed_assignment
             else "line_with_character_fallback_and_overlap"
         ),
-        "syntax_boundaries_analyzed": any(item["functions"] for item in syntax_boundaries.values()),
+        "syntax_boundaries_analyzed": analyzed_assignment,
         "syntax_boundaries": syntax_boundaries,
         "split_line_coverage": split_line_coverage,
         "total_context_chars": total_chars,
-        "shared_sources": rule_ranges + [_manifest_source(group) for group in shared_groups],
+        "shared_sources": shared_sources,
         "segment_offset": len(prefix),
         "materials": materials,
         "rule_files": rule_files,
@@ -582,8 +584,13 @@ def _append_segment_group(
 def _syntax_manifest(
     parts: list[dict[str, Any]],
     syntax_by_path: dict[str, tuple[tuple[PhpFunction, ...], str]],
+    references: list[dict[str, Any]],
 ) -> dict[str, Any]:
     by_path: dict[str, list[tuple[int, int, int]]] = {}
+    reference_ranges: dict[str, list[tuple[int, int]]] = {}
+    for source in references:
+        if source["path"] in syntax_by_path:
+            reference_ranges.setdefault(source["path"], []).append((source["start_line"], source["end_line"]))
     for part in parts:
         for source in part["sources"]:
             by_path.setdefault(source["path"], []).append(
@@ -599,7 +606,8 @@ def _syntax_manifest(
                 if (capsules := sorted({
                     index for start, end, index in by_path.get(path, ())
                     if start <= fn.end_line and end >= fn.start_line
-                }))
+                })) or any(start <= fn.start_line <= fn.end_line <= end
+                           for start, end in reference_ranges.get(path, ()))
             ],
         }
         for path, (functions, status) in syntax_by_path.items()
