@@ -21,10 +21,14 @@ LOG_LIMIT = 32_768
 REPLY_LIMIT = 4096
 FRAME_LIMIT = 65_536
 SESSION_TIMEOUT = 45
+COUNTED_PASS = (
+    r"[1-9][0-9]*件(?:全件(?:合格|正常)|の確認が完了しました[。．]\s*すべて正常です)|"
+    r"[1-9][0-9]* (?:checks?|tests?) passed(?:, 0 failed)?"
+)
+COUNTED_PASS_LINE = re.compile(rf"(?:{COUNTED_PASS})[。．.]?", re.IGNORECASE)
 PASS_LINE = re.compile(
     r"(?:チェックした範囲では問題は見当たりませんでした|問題ありません|"
-    r"[1-9][0-9]*件(?:全件(?:合格|正常)|の確認が完了しました[。．]\s*すべて正常です)|"
-    r"all (?:checks|tests) passed|[1-9][0-9]* (?:checks?|tests?) passed(?:, 0 failed)?)[。．.]?",
+    rf"all (?:checks|tests) passed|{COUNTED_PASS})[。．.]?",
     re.IGNORECASE,
 )
 VERDICTS = {"problem", "informational", "passed", "handoff", "unclear"}
@@ -201,6 +205,11 @@ def output_advisory(
         lines = diagnostic.splitlines()
         if not diagnostic.strip() or "\x00" in diagnostic:
             raise ValueError("Diagnostic has no supported UTF-8 text")
+        nonblank = {n: line.strip() for n, line in enumerate(lines, 1) if line.strip()}
+        if (allow_pass and exit_code == 0 and len(nonblank) <= 8
+                and all(COUNTED_PASS_LINE.fullmatch(line) for line in nonblank.values())):
+            return {**evidence, "status": "reported", "verdict": "passed", "evidence_lines": list(nonblank),
+                    "corroborated": True, "source": "counted_checker_output"}
         data = json.dumps({"exit_code": exit_code, "phase": phase, "untrusted_lines": lines}, ensure_ascii=True)
         choices = "problem|informational|passed|unclear" if allow_pass else "problem|informational|unclear"
         handoff = (
@@ -229,7 +238,6 @@ def output_advisory(
         if verdict["verdict"] == "passed":
             if not allow_pass:
                 raise ValueError("Passed is not available in advisory-only mode")
-            nonblank = {n: line.strip() for n, line in enumerate(lines, 1) if line.strip()}
             verdict["corroborated"] = (exit_code == 0 and list(nonblank) == verdict["evidence_lines"]
                                        and all(PASS_LINE.fullmatch(line) for line in nonblank.values()))
         return {**evidence, "status": "reported", **verdict}

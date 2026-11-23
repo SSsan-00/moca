@@ -139,6 +139,33 @@ class CheckerAdvisoryTests(unittest.TestCase):
                         decision = advisory.checker_advisory(root, code, allow_pass=True)
                     self.assertEqual(decision["corroborated"], result)
 
+    def test_counted_success_skips_junie_only_for_exit_zero_and_unmixed_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "checker.log"
+            for output, code, enabled, direct in (
+                ("20件の確認が完了しました。すべて正常です。", 0, True, True),
+                ("12 tests passed, 0 failed.\n\n4 checks passed.", 0, True, True),
+                ("12 tests passed.", 0, False, False),
+                ("12 tests passed.", 1, True, False),
+                ("0 tests passed.", 0, True, False),
+                ("12 tests passed.\n検査は未実施です。", 0, True, False),
+                ("問題ありません", 0, True, False),
+                ("12 tests passed.\n" * 9, 0, True, False),
+            ):
+                with self.subTest(output=output, code=code, enabled=enabled):
+                    log.write_text(output, encoding="utf-8")
+                    with patch.object(advisory, "run_text_advisory",
+                                      return_value='{"verdict":"unclear","evidence_lines":[]}') as model:
+                        result = advisory.checker_advisory(root, code, allow_pass=enabled)
+                    if direct:
+                        model.assert_not_called()
+                        self.assertEqual(result["verdict"], "passed")
+                        self.assertTrue(result["corroborated"])
+                    else:
+                        model.assert_called_once()
+                        self.assertEqual(result["verdict"], "unclear")
+
     def test_acp_launcher_receives_model_and_effort_without_prompt_or_brave(self):
         launched = []
 
