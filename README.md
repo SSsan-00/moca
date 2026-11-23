@@ -214,6 +214,16 @@ max_repair_attempts = 2
 
 チェッカーはプロジェクト共通の `[checker].command` で設定します。CLIの `--checker-command` が指定されていれば、CLIを優先します。どちらも未指定ならチェッカーは実行しません。`{target}` を引数に渡すと、共通のチェッカーで対象ファイルを判別できます。`max_repair_attempts` はRun全体の共通上限です。
 
+ルール別の独立検査に対応したチェッカーを使う場合は、`[checker].rule_evidence = true` を指定できます（既定は無効）。チェッカーは環境変数 `MIGRATION_RULE_CHECK_REQUEST` が指す今回の依頼JSONと、`MIGRATION_RULE_CHECK_RECEIPT` が指す今回の結果ファイルを使います。終了コード0だけではルールの反映確認にはなりません。
+
+依頼には `schema`、`request_id`、資料と対象の版、ルールIDごとの `sha256` と `saved_file_lines` が含まれます。チェッカーは実際に検査したものだけを、同じ `request_id` とともに以下の形式でUTF-8の結果ファイルに書きます。
+
+```json
+{"schema":1,"request_id":"<依頼のID>","results":[{"rule":"rule-0001.txt","sha256":"<依頼のハッシュ>","start_line":1,"end_line":4,"status":"passed","evidence":"shipping case: zero-rate order"}]}
+```
+
+`status` は `passed`、`failed`、`not_checked` のいずれかです。自動反映するのは今回の依頼と一致し、ルールの全文を検査した明示結果だけです。未記載・部分確認・不正な結果は人による確認に残り、同じ版での再実行でも前回の自動結果を流用しません。これらの判定にJunieは使いません。
+
 チェッカーと `[scripts]` の通常コマンドには、実行時に絶対パスへ展開する次の別名を指定できます。Run IDを設定ファイルに書く必要はありません。ダッシュボードの引数欄や `--checker-command` でも使えます。
 
 | 別名 | 展開先 |

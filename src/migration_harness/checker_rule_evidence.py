@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from .capsules import load_capsule_manifest
 from .files import safe_target
@@ -94,3 +99,49 @@ def parse_rule_receipt(
             "reference": evidence.strip(),
         }
     return covered
+
+
+@contextmanager
+def rule_checker_exchange(run_path: Path, worktree: Path, record: dict, *, enabled: bool):
+    if not enabled:
+        yield {}, None
+        return
+    try:
+        scope = checker_rule_context(run_path, worktree, record)
+    except (OSError, ValueError, KeyError):
+        record["checker_rule_evidence_error"] = "verification context unavailable"
+        scope = None
+    if not scope:
+        yield {}, None
+        return
+    with TemporaryDirectory(prefix="rule-check-", dir=run_path) as temporary:
+        directory = Path(temporary)
+        request_id = uuid.uuid4().hex
+        request = directory / "request.json"
+        response = directory / "receipt.json"
+        request.write_text(json.dumps({
+            "schema": 1, "request_id": request_id, **scope,
+            "rules": {name: {field: item[field] for field in ("sha256", "saved_file_lines")}
+                      for name, item in scope["rules"].items()},
+        }, ensure_ascii=False), encoding="utf-8")
+
+        def collect():
+            if not response.exists():
+                return
+            try:
+                if not stat.S_ISREG(response.lstat().st_mode):
+                    raise ValueError("checker rule receipt: not a regular file")
+                with response.open("rb") as stream:
+                    data = stream.read(MAX_RECEIPT_BYTES + 1)
+                results = parse_rule_receipt(data, request_id, scope["rules"])
+                if checker_rule_context(run_path, worktree, record) != scope:
+                    raise ValueError("checker rule receipt: input changed")
+            except (OSError, ValueError, KeyError, RecursionError):
+                record["checker_rule_evidence_error"] = "receipt invalid or verification inputs changed"
+                return
+            if results:
+                record["checker_rule_evidence"] = {"request_id": request_id, "scope": scope, "results": results}
+
+        yield {"env": {
+            **os.environ, "MIGRATION_RULE_CHECK_REQUEST": str(request), "MIGRATION_RULE_CHECK_RECEIPT": str(response),
+        }}, collect
