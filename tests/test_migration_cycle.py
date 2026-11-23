@@ -376,8 +376,8 @@ class CycleRecoveryTests(SavedRunFixture):
             self.assertIn(diagnostic + "\n", bundle.values())
             self.assertIn(instruction + "\n", bundle.values())
             target, = targets
-            self.assertIn("Manual = 11", target.read_text())
-            target.write_text(target.read_text().replace("Requested = 0", "Requested = 29"))
+            self.assertIn("Manual = 11", target.read_text(encoding="utf-8-sig"))
+            target.write_text(target.read_text(encoding="utf-8-sig").replace("Requested = 0", "Requested = 29"), encoding="utf-8")
             completion.write_text(token)
             return 0
 
@@ -386,7 +386,7 @@ class CycleRecoveryTests(SavedRunFixture):
             result = workflow.resume_with_junie(self.config, self.run_id, checker_instruction=instruction)
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual(len(calls), 2)
-        self.assertIn("Manual = 11; const int Requested = 29", self.target.read_text())
+        self.assertIn("Manual = 11; const int Requested = 29", self.target.read_text(encoding="utf-8-sig"))
 
     def test_fewer_checker_findings_continue_in_same_run_then_rebuild_and_check(self):
         self.config["max_repair_attempts"] = 2
