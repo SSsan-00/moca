@@ -47,6 +47,8 @@ class RuleHoldoutTests(unittest.TestCase):
             holdout.prepare(root, "conflict")
             trace = Path(temp) / "trace.log"
             project = f"JunieCli - Using the specified project directory: {root}"
+            other = root.parent / "other-project"
+            other.mkdir()
             event = "AnalyticsClientImpl - [ANALYTICS:EVENT] type="
             start = event + "task_request_started properties=prompt=/harness-optimize-rules Review inputs"
             read = event + "agent_step_finished properties=step_type=agent_skill_read_doc "
@@ -58,7 +60,7 @@ class RuleHoldoutTests(unittest.TestCase):
             for name, lines in {
                 "still running": [project, start, skill, policy],
                 "failed": [project, start, skill, policy, finish.replace("Success", "Failure")],
-                "other fixture": [project + "-elsewhere", start, skill, policy, finish],
+                "other fixture": [project.replace(str(root), str(other)), start, skill, policy, finish],
                 "missing read": [project, start, skill, finish],
                 "failed read": [project, start, skill, policy.replace("SUBMIT", "FAILED"), finish],
                 "another task's reads": [project, start, finish, start, skill, policy, finish],
@@ -69,7 +71,9 @@ class RuleHoldoutTests(unittest.TestCase):
             quote = "The retention rule (export.md:92) contradicts replacement (export-rehearsal.md:2)."
             summary = json.dumps({"solution_summary": quote})
             submit = event + f"agent_step_finished properties=step_type=submit ToolRequestArgumentSchema(rawJsonObject={summary}), step_result=SUBMIT"
-            trace.write_text("\n".join([project, start, skill, policy, submit, finish]), encoding="utf-8")
+            alias = root.parent / other.name / ".." / root.name
+            same_project = project.replace(str(root), str(alias))
+            trace.write_text("\n".join([same_project, start, skill, policy, submit, finish]), encoding="utf-8")
             for evidence in ({}, {"reviewed_hold_reason": quote + " Added later."},
                              {"reviewed_hold_reason": "replacement (export-rehearsal.md:2)."}):
                 self.assertEqual(holdout.score(root, "conflict", trace, evidence)["outcome"], "hold_reason_needs_review")

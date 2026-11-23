@@ -113,7 +113,10 @@ def _trial_evidence(root, transcript):
                     path = args.get("path", "SKILL.md")
                     if isinstance(path, str):
                         reads.add(path)
-    same_trial = project == root.resolve() and starts == 1
+    try:
+        same_trial = starts == 1 and project is not None and project.samefile(root)
+    except (OSError, ValueError):
+        same_trial = False
     return (same_trial and {"SKILL.md", "references/loading-policy.md"} <= reads,
             same_trial and finishes == 1 and completed, submitted if isinstance(submitted, str) else "")
 
