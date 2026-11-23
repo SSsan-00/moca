@@ -706,6 +706,10 @@ async function loadMigrationLedger() {
   }
 }
 
+document.addEventListener("harnessrunselect", () => {
+  ++migrationLedgerRequest;
+  if (migrationLedgerDialog.open) migrationLedgerDialog.close();
+});
 migrationLedgerButton.addEventListener("click", () => {
   operatorThrough = null;
   operatorScope.value = "";
