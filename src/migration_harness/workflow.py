@@ -23,6 +23,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory, mkdtemp
 from time import monotonic
 from typing import Any
 
+from .log_text import decode_log_text
 from .junie import junie_cli
 from .junie.acp_permissions import PinnedReferenceReads
 from .verification.build_receipt import build_artifacts, build_inputs
@@ -493,8 +494,12 @@ def _run_script_phase(
         if not isinstance(exc, KeyboardInterrupt):
             try:
                 with log_path.open("rb") as stream:
-                    stream.seek(max(0, os.fstat(stream.fileno()).st_size - 65_536))
-                    message += "\n" + stream.read(65_536).decode("utf-8", errors="replace")
+                    start = max(0, os.fstat(stream.fileno()).st_size - 65_536)
+                    stream.seek(start)
+                    tail = stream.read(65_536)
+                if start and b"\n" in tail:
+                    tail = tail.split(b"\n", 1)[1]
+                message += "\n" + decode_log_text(tail)
             except OSError:
                 pass
         run_id = None
