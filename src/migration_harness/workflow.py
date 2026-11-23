@@ -316,7 +316,8 @@ def _run_script_phase(
         _block_unknown_script(record)
     configured = config.get("scripts", {}).get(phase, [])
     commands = [*configured, *extra_commands]
-    if not commands or (record is not None and once and phase in record.get("completed_script_phases", [])):
+    pending = record.get("script_decisions_pending", {}).get(phase) if once and record is not None else None
+    if not pending and (not commands or (record is not None and once and phase in record.get("completed_script_phases", []))):
         return
 
     run_path.mkdir(parents=True, exist_ok=True)
@@ -347,9 +348,10 @@ def _run_script_phase(
     number = start + 1
     invocation = commands[start] if start < len(commands) else []
     try:
-        pending = record.get("script_decisions_pending", {}).get(phase) if record is not None else None
-        if once and apply_decisions and pending:
+        if pending:
             number = pending["command_number"]
+            if not apply_decisions:
+                raise ValueError("Re-enable script output review and decisions to resolve the saved response; the command was not repeated")
             if not 1 <= number <= start or command_ids[number - 1] != pending["command_sha256"]:
                 raise ValueError("The configured script changed while its response was pending")
             _resolve_script_decision(config, run_path, cwd, record, pending)

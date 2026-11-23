@@ -33,12 +33,12 @@ def _read_handoff(run_path: Path) -> list:
     return rows
 
 
-def _operator_note_id(fields):
+def _content_hash(fields):
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 
-def _rule_decisions_hash(overrides):
-    return hashlib.sha256(json.dumps(overrides, sort_keys=True).encode()).hexdigest()
+def _matches_note_id(row):
+    return row.get("id") == _content_hash({key: value for key, value in row.items() if key != "id"})
 
 
 def _reference_version(run_path: Path):
@@ -51,7 +51,7 @@ def _version(run_path: Path, target_root: Path, targets: tuple[Path, ...], overr
     return {
         "reference_version": _reference_version(run_path),
         "target_hashes": {target.as_posix(): target_hash(safe_target(target_root, target)) for target in targets},
-        "rule_decisions_sha256": _rule_decisions_hash(overrides),
+        "rule_decisions_sha256": _content_hash(overrides),
     }
 
 
@@ -68,7 +68,7 @@ def record_handoff(
         "source_sha256": evidence["sha256"], "note": note, "supersedes": supersedes,
         **_version(run_path, target_root, targets, overrides),
     }
-    record["id"] = _operator_note_id(record)
+    record["id"] = _content_hash(record)
     path = safe_target(run_path, Path(_FILENAME))
     safe_target(run_path, Path("context-handoff.lock"))
     safe_target(run_path, Path("context-handoff.json.tmp"))
@@ -108,7 +108,7 @@ def context_handoff(
             and isinstance(note, str) and len(note) <= _MAX_NOTE and note.strip()
             and isinstance(row.get("source_id"), str) and type(start) is int and type(end) is int
             and (predecessor is None or isinstance(predecessor, str) and predecessor in known)
-            and identity == _operator_note_id({key: value for key, value in row.items() if key != "id"})
+            and _matches_note_id(row)
         )
         current = (valid and all(row.get(key) == value for key, value in version.items())
                    and isinstance(row.get("source_sha256"), str)
@@ -200,6 +200,7 @@ def _valid_junie_memo_row(row):
         and isinstance(row.get("target_hashes"), dict) and isinstance(row.get("rule_decisions_sha256"), str)
         and "reference_version" in row and (row["reference_version"] is None or isinstance(row["reference_version"], str))
         and (predecessor is None or isinstance(predecessor, str) and len(predecessor) == 64 and predecessor != row["id"])
+        and _matches_note_id(row)
     )
 
 
@@ -256,12 +257,12 @@ def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *,
                 "start_line": start, "end_line": end, "source_sha256": evidence["sha256"],
                 "supersedes": replaces, "phase": phase, "capsule": through,
                 "target_hashes": dict(record["target_hashes"] if draft is None else draft["targets"]),
-                "rule_decisions_sha256": _rule_decisions_hash(_junie_rule_state(record)),
+                "rule_decisions_sha256": _content_hash(_junie_rule_state(record)),
                 "reference_version": reference_version,
             }
             if draft is not None:
                 row["draft_snapshot"] = draft["snapshot"]
-            identity = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+            identity = _content_hash(row)
             if identity not in known:
                 prepared.append({**row, "id": identity})
                 known.add(identity)
@@ -371,11 +372,8 @@ def stopped_memo_prompt(run_path, target_root, record, through, draft):
             raise ValueError("stopped targets differ from memo")
         notes = []
         for row in rows:
-            payload = {key: value for key, value in row.items() if key != "id"}
-            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-            if (row["id"] != digest or row["draft_snapshot"] != draft["snapshot"] or row["capsule"] != through
-                    or any(row.get(key) != value for key, value in version.items())
-                    or not isinstance(row["note"], str) or not 1 <= len(row["note"]) <= _MAX_NOTE):
+            if (not _valid_junie_memo_row(row) or row["draft_snapshot"] != draft["snapshot"] or row["capsule"] != through
+                    or any(row.get(key) != value for key, value in version.items())):
                 raise ValueError("stopped memo version differs")
             evidence = read_context(run_path, row["source_id"], row["start_line"], row["end_line"],
                                     through=through, max_chars=1)

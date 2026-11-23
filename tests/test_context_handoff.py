@@ -195,15 +195,17 @@ class ContextHandoffTests(unittest.TestCase):
         memo.save_junie_memo(draft, self.run, record, phase="migration", through=1)
         original, = record["junie_memos"]
         bad_successor = {**original, "id": "1" * 64, "supersedes": original["id"], "kind": "decision"}
-        del bad_successor["note"]
+        malformed = {k: v for k, v in bad_successor.items() if k != "note"}
+        altered = {**original, "note": "do not trust this altered text"}
 
-        for invalid in (42, {"id": "incomplete"}, bad_successor):
+        for invalid in (42, {"id": "incomplete"}, malformed, bad_successor, altered):
             with self.subTest(invalid=invalid):
                 damaged = {**record, "junie_memos": [original, invalid]}
                 self.record.write_text(json.dumps(damaged), encoding="utf-8")
                 reopened = json.loads(self.record.read_bytes())
                 prompt = handoff_prompt(self.run, self.root, self.targets, reopened, through=1)
                 self.assertIn(entry["note"], prompt)
+                self.assertNotIn("do not trust this altered text", prompt)
                 self.assertIn("1 damaged", prompt)
                 [pending] = memo.unresolved_junie_memos(self.run, self.root, self.targets, reopened, through=1)
                 self.assertEqual(original["id"], pending["id"])
@@ -248,12 +250,14 @@ class ContextHandoffTests(unittest.TestCase):
         record = {"target_hashes": {"Demo.cs": target_hash(self.target)}}
         draft, _ = memo.junie_memo_request(self.root, "fixture")
         for text in ("old stale item", "earliest current item", "new item one", "new item two", "new item three"):
+            if text == "earliest current item":
+                self.target.write_text("class Revised {}", encoding="utf-8")
+                record["target_hashes"]["Demo.cs"] = target_hash(self.target)
             draft.write_text(json.dumps([{
                 "kind": "pending", "source_path": "demo.php", "start_line": 2, "end_line": 2, "note": text,
             }]), encoding="utf-8")
             memo.save_junie_memo(draft, self.run, record, phase="migration", through=1)
         stale = record["junie_memos"][0]
-        stale["source_sha256"] = "0" * 64
         prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1)
         self.assertIn("1 additional current", prompt)
         self.assertIn(stale["id"], prompt)
