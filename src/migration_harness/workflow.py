@@ -30,7 +30,6 @@ from .verification.verification_files import verification_files
 from .context import php_literals
 from .context.capsules import is_php_input, load_capsule_manifest, prepare_context
 from .verification.checker_advisory import (
-    LOG_LIMIT,
     bounded_advisory_text,
     checker_advisory,
     matching_evidence,
@@ -257,6 +256,8 @@ def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str,
 
 
 _RECOVERABLE_ONCE_PHASES = frozenset({"after_prepare", "before_migration", "after_migration"})
+_LEGACY_SCRIPT_HASH_BYTES = 32_769
+_SAVED_SCRIPT_OUTPUT_CHANGED = "The saved script output is missing or changed; inspect the logs before starting a new Run"
 
 
 def _script_digest(value):
@@ -411,10 +412,8 @@ def _run_script_phase(
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
                     if (apply_decisions and settled_once) or repeatable_review:
-                        with log_path.open("rb") as current:
-                            current.seek(start_output)
-                            content = current.read(min(length, LOG_LIMIT + 1))
-                        decision["log_sha256"] = hashlib.sha256(content).hexdigest()
+                        decision["log_sha256"] = _script_output_sha256(run_path, decision)
+                        decision["log_hash_scope"] = "full_range"
                     if apply_decisions and settled_once:
                         decision["previous_status"], decision["previous_stage"] = previous_status, previous_stage
                         record.setdefault("script_decisions_pending", {})[phase] = decision
@@ -496,6 +495,31 @@ def _script_decision_item(phase, command, number, exit_code, offset, length):
     }
 
 
+def _script_output_sha256(run_path: Path, item: dict[str, Any]) -> str:
+    digest = hashlib.sha256()
+    remaining = item["byte_length"]
+    try:
+        with safe_target(run_path, Path(item["log"])).open("rb") as stream:
+            stream.seek(item["byte_offset"])
+            while remaining:
+                block = stream.read(min(remaining, 64 * 1024))
+                if not block:
+                    raise EOFError
+                digest.update(block)
+                remaining -= len(block)
+    except (OSError, ValueError, OverflowError, EOFError) as exc:
+        raise ValueError(_SAVED_SCRIPT_OUTPUT_CHANGED) from exc
+    return digest.hexdigest()
+
+
+def _verify_saved_script_output(run_path, item):
+    legacy_complete = "log_hash_scope" not in item and item["byte_length"] <= _LEGACY_SCRIPT_HASH_BYTES
+    if not legacy_complete and item.get("log_hash_scope") != "full_range":
+        raise ValueError("The saved script output has no verifiable full-range hash; inspect the logs and start a new Run")
+    if _script_output_sha256(run_path, item) != item["log_sha256"]:
+        raise ValueError(_SAVED_SCRIPT_OUTPUT_CHANGED)
+
+
 def _script_decision_versions(cwd, record):
     return {path: review_target_hash(cwd, Path(path)) for path in record.get("targets", [record["target"]])}
 
@@ -534,6 +558,9 @@ def _review_script_output(config, run_path, record, item, *, apply_decisions):
         item.update(advisory)
         if apply_decisions:
             item["applied"] = "continued" if advisory.get("corroborated") else "review_required"
+            if advisory.get("reason") == "input_too_large":
+                raise ValueError("出力が Junie の参考判定上限（32 KiB）を超えたため送信しませんでした"
+                                 f"（終了コード {item['exit_code']}）。保存済みログを確認してください。")
     except KeyboardInterrupt:
         item["status"] = "interrupted"
         raise
@@ -3320,9 +3347,8 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
             advisory.get("status") == "reported" and all(advisory.get(key) == value for key, value in item.items())
             for advisory in history
         )
+        _verify_saved_script_output(run_path, item)
         if explicit_build and (legacy_basis or target_changed or reviewed_failure):
-            if bounded_advisory_text(run_path, {**item, "status": "reported"}) is None:
-                raise ValueError("The saved script output is missing or changed; inspect the logs before starting a new Run")
             reason = "rebuild_unverified_target" if legacy_basis else (
                 "rebuild_edited_target" if target_changed else "rebuild_after_script_failure"
             )

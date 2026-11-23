@@ -248,7 +248,7 @@ def output_advisory(
     }
     try:
         if byte_length is not None and byte_length > LOG_LIMIT:
-            raise ValueError("Diagnostic exceeds the Junie advisory input limit")
+            return {**evidence, "status": "unavailable", "reason": "input_too_large"}
         with safe_target(run_path, Path(name)).open("rb") as stream:
             stream.seek(byte_offset)
             raw = stream.read(LOG_LIMIT + 1 if byte_length is None else byte_length)
