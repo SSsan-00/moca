@@ -1297,6 +1297,13 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
         junie_cli.reference_read_scope.reset(reference_token)
         junie_cli.permission_observer.reset(permission_token)
         if counts != initial_counts:
+            if reads is not None and reads.last_delivery is not None:
+                previous = record.get("junie_reference_delivery")
+                prior_bytes = previous.get("utf8_bytes") if isinstance(previous, dict) else None
+                record["junie_reference_delivery"] = {
+                    "utf8_bytes": (prior_bytes if type(prior_bytes) is int and prior_bytes >= 0 else 0) + reads.provided_bytes,
+                    "last_response": {**reads.last_delivery, "phase": phase, "capsule": record.get("current_capsule")},
+                }
             record["junie_permission_counts"] = counts
             write_run_record(record_path, record, timing_stage=record.get("active_stage"))
             reads = counts.get("read", {}).get("pinned_reference_read", 0)
