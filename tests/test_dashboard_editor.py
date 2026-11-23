@@ -328,7 +328,7 @@ class DashboardEditorTests(HarnessCase):
             if len(calls) == 1:
                 targets[0].write_text(BASE.replace("First = 1", "First = 2"))
             else:
-                self.assertIn("Last = 42", targets[0].read_text())
+                self.assertIn("Last = 42", targets[0].read_text(encoding="utf-8-sig"))
                 self.assertIn("operator's follow-up instructions", command[-1])
             completion.write_text(token)
             return 0

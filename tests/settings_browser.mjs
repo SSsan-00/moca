@@ -16,6 +16,41 @@ async function eventually(read, label) {
   }
   throw new Error("Timed out: " + label);
 }
+async function cdp(method, params = {}, waitMs = 10_000) {
+  const id = ++sequence;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error("Browser command timed out: " + method));
+    }, waitMs);
+    pending.set(id, message => {
+      clearTimeout(timeout);
+      pending.delete(id);
+      if (message.error) reject(new Error(message.error.message));
+      else resolve(message.result);
+    });
+    socket.send(JSON.stringify({id, method, params}));
+  });
+}
+
+async function connectPage(debuggerUrl, deadline) {
+  socket = new WebSocket(debuggerUrl);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Chromium DevTools socket did not open")),
+      Math.max(1, deadline - performance.now()));
+    socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, {once: true});
+    socket.addEventListener("error", () => {
+      clearTimeout(timer);
+      reject(new Error("Chromium DevTools socket failed to open"));
+    }, {once: true});
+  });
+  socket.addEventListener("message", event => {
+    const message = JSON.parse(event.data);
+    pending.get(message.id)?.(message);
+  });
+  await cdp("Page.enable", {}, Math.max(1, deadline - performance.now()));
+}
+
 // Launch Chromium with a fresh profile and wait for the DevTools endpoint.
 async function startBrowser() {
   const failures = [];
@@ -50,8 +85,9 @@ async function startBrowser() {
             .catch(() => null);
           const page = pages?.find(item => item.type === "page" && item.webSocketDebuggerUrl);
           if (page) {
+            await connectPage(page.webSocketDebuggerUrl, deadline);
             ready = true;
-            return {chrome, debuggerUrl: page.webSocketDebuggerUrl};
+            return chrome;
           }
         }
         await pause(100);
@@ -60,39 +96,18 @@ async function startBrowser() {
     } catch (error) {
       failures.push(`Attempt ${attempt}: ${error.message}\n${stderr.trim() || "(no browser stderr)"}`);
     } finally {
-      if (!ready && chrome.exitCode === null && chrome.signalCode === null) chrome.kill();
+      if (!ready) {
+        socket?.close();
+        socket = null;
+        if (chrome.exitCode === null && chrome.signalCode === null) chrome.kill();
+      }
     }
   }
   throw new Error(`Chromium did not start:\n${failures.join("\n")}`);
 }
 
-const {chrome, debuggerUrl} = await startBrowser();
+const chrome = await startBrowser();
 try {
-  socket = new WebSocket(debuggerUrl);
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, {once: true});
-    socket.addEventListener("error", reject, {once: true});
-  });
-  socket.addEventListener("message", event => {
-    const message = JSON.parse(event.data);
-    pending.get(message.id)?.(message);
-  });
-  async function cdp(method, params = {}) {
-    const id = ++sequence;
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        pending.delete(id);
-        reject(new Error("Browser command timed out: " + method));
-      }, 10_000);
-      pending.set(id, message => {
-        clearTimeout(timeout);
-        pending.delete(id);
-        if (message.error) reject(new Error(message.error.message));
-        else resolve(message.result);
-      });
-      socket.send(JSON.stringify({id, method, params}));
-    });
-  }
   function pageLoaded() {
     return new Promise((resolve, reject) => {
       const receive = event => {
@@ -135,7 +150,6 @@ try {
   const save = 'document.querySelector("#workspace-config-form button[type=submit]")';
   const toml = field("workspace-config");
   console.log("Browser:", (await cdp("Browser.getVersion")).product);
-  await cdp("Page.enable");
   await cdp("Page.addScriptToEvaluateOnNewDocument", {source: "(" + function () {
     if (!new URL(location.href).searchParams.has("notice")) return;
     const NativeEventSource = window.EventSource;
