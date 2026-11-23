@@ -38,6 +38,7 @@ from ..execution import (
     report_activity,
 )
 from ..files import has_symlink_component, safe_target
+from ..log_text import decode_log_text
 from .junie_process import JunieProcess
 from .junie_thoughts import JunieThoughts
 
@@ -467,8 +468,9 @@ class _JunieSessionEvents:
                 terminal_failure = False
                 startup_matches = False
                 cwd_matches = False
-                with path.open(encoding="utf-8", errors="replace") as stream:
-                    for line in stream:
+                with path.open("rb") as stream:
+                    for raw in stream:
+                        line = decode_log_text(raw).replace("\r\n", "\n")
                         startup = re.search(r"\] INFO\s+JunieRunner - Startup: Junie .* \(pid=(\d+)\); log file: (.+)", line)
                         if startup:
                             startup_matches = (

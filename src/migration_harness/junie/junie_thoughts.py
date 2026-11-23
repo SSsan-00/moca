@@ -13,6 +13,7 @@ from threading import Thread
 
 from ..errors import safe_command
 from ..files import safe_target
+from ..log_text import decode_log_text
 
 
 FILENAME = "junie-thoughts.jsonl"
@@ -27,7 +28,7 @@ _THOUGHT_LIMIT = 32_000
 def _entry(line: bytes, token: str) -> dict | None:
     if b"AssistantTrajectoryElement" not in line:
         return None
-    text = line.decode("utf-8", errors="replace")
+    text = decode_log_text(line)
     _, separator, payload = text.partition(_TRAJECTORY)
     if not separator:
         return None
@@ -67,7 +68,7 @@ class JunieThoughts:
         # Junie のラッパーと実プロセスの PID は異なる。起動したプロセス自身の出力から特定する。
         with stderr:
             for raw in stderr:
-                line = raw.decode("utf-8", errors="replace")
+                line = decode_log_text(raw)
                 match = _STARTUP.fullmatch(line.rstrip()) if self.source is None else None
                 if match:
                     candidate = Path(match[2])

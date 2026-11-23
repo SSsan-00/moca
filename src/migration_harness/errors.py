@@ -9,6 +9,8 @@ import traceback
 from collections.abc import Sequence
 from os import PathLike
 
+from .log_text import decode_log_text
+
 
 Command = str | bytes | PathLike[str] | Sequence[str | bytes | PathLike[str]]
 _REDACTED = "[REDACTED]"
@@ -20,7 +22,7 @@ _VALUE = re.compile(
 
 def _text(value: object) -> str:
     """例外や値を安全に表示できる文字列へ変換する。"""
-    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
+    return decode_log_text(value) if isinstance(value, bytes) else str(value)
 
 
 def _sensitive(flag: str) -> bool:
