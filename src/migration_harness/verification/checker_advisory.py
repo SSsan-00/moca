@@ -20,6 +20,7 @@ from ..files import safe_target
 LOG_LIMIT = 32_768
 REPLY_LIMIT = 4096
 FRAME_LIMIT = 65_536
+STARTUP_TIMEOUT = 75
 SESSION_TIMEOUT = 45
 COUNTED_PASS = (
     r"[1-9][0-9]*件(?:全件(?:合格|正常)|の確認が完了しました[。．]\s*すべて正常です)|"
@@ -86,13 +87,19 @@ def _write_requests(pipe, requests: Queue) -> None:
         return
 
 
-def _exchange(process, project: Path, prompt: str, timeout: float) -> str:
+class AdvisoryTimeout(TimeoutError):
+    def __init__(self, stage: str):
+        super().__init__(f"Junie advisory timed out during {stage}")
+        self.stage = stage
+
+
+def _exchange(process, project: Path, prompt: str, timeout: float, *, startup_timeout: float | None = None) -> str:
     updates, requests = Queue(), Queue()
     reader = Thread(target=_read_frames, args=(process.stdout, updates), daemon=True)
     writer = Thread(target=_write_requests, args=(process.stdin, requests), daemon=True)
     reader.start()
     writer.start()
-    deadline = monotonic() + timeout
+    deadline = monotonic() + (timeout if startup_timeout is None else startup_timeout)
     reply: list[str] = []
     reply_bytes = 0
     session = None
@@ -107,7 +114,7 @@ def _exchange(process, project: Path, prompt: str, timeout: float) -> str:
             check_cancelled()
             remaining = deadline - monotonic()
             if remaining <= 0:
-                raise TimeoutError("Junie advisory timed out")
+                raise AdvisoryTimeout(("initialization", "session_setup", "model_response")[stage - 1])
             try:
                 raw = updates.get(timeout=min(remaining, 0.2))
             except Empty:
@@ -151,6 +158,8 @@ def _exchange(process, project: Path, prompt: str, timeout: float) -> str:
             elif stage == 2 and isinstance(result.get("sessionId"), str) and result["sessionId"]:
                 session = result["sessionId"]
                 stage = 3
+                if startup_timeout is not None:
+                    deadline = monotonic() + timeout
                 request("session/prompt", sessionId=session, prompt=[{"type": "text", "text": prompt}])
             elif stage == 3 and result.get("stopReason") == "end_turn":
                 return "".join(reply)
@@ -161,7 +170,7 @@ def _exchange(process, project: Path, prompt: str, timeout: float) -> str:
 
 
 def run_text_advisory(
-    prompt: str, *, timeout: float = SESSION_TIMEOUT, model: str | None = None, effort: str | None = None,
+    prompt: str, *, timeout: float | None = None, model: str | None = None, effort: str | None = None,
 ) -> str:
     with TemporaryDirectory(prefix="harness-junie-advisory-") as folder:
         project = Path(folder).resolve()
@@ -170,7 +179,9 @@ def run_text_advisory(
             command, owned=True, cwd=project, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
         try:
-            return _exchange(process, project, prompt, timeout)
+            if timeout is not None:
+                return _exchange(process, project, prompt, timeout)
+            return _exchange(process, project, prompt, SESSION_TIMEOUT, startup_timeout=STARTUP_TIMEOUT)
         finally:
             try:
                 junie_cli._close_junie(process)
@@ -241,6 +252,8 @@ def output_advisory(
             verdict["corroborated"] = (exit_code == 0 and list(nonblank) == verdict["evidence_lines"]
                                        and all(PASS_LINE.fullmatch(line) for line in nonblank.values()))
         return {**evidence, "status": "reported", **verdict}
+    except AdvisoryTimeout as exc:
+        return {**evidence, "status": "unavailable", "reason": "TimeoutError", "timeout_stage": exc.stage}
     except (OSError, ValueError, RuntimeError) as exc:
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
             raise
