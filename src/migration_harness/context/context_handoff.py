@@ -256,11 +256,22 @@ def _junie_memo_rows(run_path, target_root, targets, record, through):
         digest = verify_span(row["source_id"], row["start_line"], row["end_line"])
         return digest is not None and row["source_sha256"] == digest
 
-    active = {row["supersedes"] for row in rows if row.get("supersedes")
-              and all(row.get(k) == v for k, v in version.items()) and current_evidence(row)}
+    by_id = {row["id"]: (position, row) for position, row in enumerate(rows)}
+    superseded = set()
+    for position, row in enumerate(rows):
+        predecessor = row.get("supersedes")
+        if not predecessor or any(row.get(k) != v for k, v in version.items()) or not current_evidence(row):
+            continue
+        while predecessor in by_id and predecessor not in superseded:
+            prior_position, prior = by_id[predecessor]
+            if prior_position >= position or not current_evidence(prior):
+                break
+            superseded.add(predecessor)
+            position, predecessor = prior_position, prior.get("supersedes")
+
     pending, stale = [], []
     for row in reversed(rows):
-        if row["id"] in active:
+        if row["id"] in superseded:
             continue
         if any(row.get(key) != value for key, value in version.items()):
             if row["kind"] != "decision":
