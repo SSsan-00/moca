@@ -780,6 +780,20 @@ reference_read_scope: ContextVar[PinnedReferenceReads | None] = ContextVar("refe
 permission_observer: ContextVar[Callable[[str, str], None] | None] = ContextVar("permission_observer", default=None)
 
 
+def acp_effort_option(session: dict) -> dict | None:
+    options = session.get("configOptions")
+    if not isinstance(options, list):
+        return None
+    return next((option for option in options if isinstance(option, dict)
+                 and (option.get("category") == "thought_level" or option.get("id") == "thought_level")), None)
+
+
+def acp_confirms_effort(option: dict | None, effort: str, model: str | None = None) -> bool:
+    if option is not None:
+        return option.get("currentValue") == effort
+    return effort == "none" and model == "junie-lite"
+
+
 class _AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
@@ -1049,12 +1063,6 @@ class _AcpSession:
         flags = self.command[:-2]
         return flags[flags.index(flag) + 1] if flag in flags else None
 
-    @staticmethod
-    def _effort_option(session: dict) -> dict | None:
-        return next((option for option in (session.get("configOptions") or [])
-                     if isinstance(option, dict)
-                     and (option.get("category") == "thought_level" or option.get("id") == "thought_level")), None)
-
     def _effort_not_confirmed(self, effort: str) -> JunieSessionError:
         return JunieSessionError(
             self.command, 1,
@@ -1067,9 +1075,8 @@ class _AcpSession:
         if effort is None:
             self._mark_session_ready()
             return
-        option = self._effort_option(session)
-        if (option is not None and option.get("currentValue") == effort
-                or option is None and effort == "none" and self._requested_option("--model") == "junie-lite"):
+        option = acp_effort_option(session)
+        if acp_confirms_effort(option, effort, self._requested_option("--model")):
             self._mark_session_ready()
             return
         if option is None or not isinstance(option.get("id"), str) or not option["id"]:
@@ -1093,9 +1100,9 @@ class _AcpSession:
         assert self.pending_effort is not None
         _, effort, _ = self.pending_effort
         result = message.get("result")
-        option = self._effort_option(result) if isinstance(result, dict) else None
+        option = acp_effort_option(result) if isinstance(result, dict) else None
         error = message.get("error")
-        if "error" in message or option is None or option.get("currentValue") != effort:
+        if "error" in message or not acp_confirms_effort(option, effort):
             self._retry_effort_configuration(error if isinstance(error, dict) else None)
             return
         self.pending_effort = None
