@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from fixtures import HarnessCase
 from migration_harness.context import capsules
+from migration_harness.context.context_evidence import find_feature, read_context
 from migration_harness import cli, workflow
 from migration_harness.junie import junie_cli
 from migration_harness.web import review_anchors
@@ -133,7 +134,7 @@ class CapsulePreparationTests(HarnessCase):
         shared_inputs = [
             {"path": "common.md", "role": "migration_rules"},
             {"path": "razor.md", "role": "migration_rules"},
-            {"path": "orders/example.php", "role": "reference_php", "shared": True},
+            {"path": "orders/example.php", "role": "reference_php", "shared": True, "symbol": "受注金額"},
             {"path": "orders/Example.cs", "role": "reference_csharp", "shared": True},
             {"path": "search/example.php", "role": "reference_php", "shared": True},
             {"path": "search/Example.cshtml", "role": "reference_razor", "shared": True},
@@ -148,7 +149,8 @@ class CapsulePreparationTests(HarnessCase):
             '[[project.migration_rules]]\npath = "common.md"\nstart_line = 2\nend_line = 2',
             *[
                 "[[project.references]]\n" + "\n".join(
-                    f"{key} = {json.dumps(item[key])}" for key in ("role", "path")
+                    f"{key} = {json.dumps(item[key], ensure_ascii=False)}"
+                    for key in ("role", "path", "symbol") if key in item
                 ) + "\nstart_line = 1\nend_line = 1"
                 for item in shared_inputs[2:]
             ],
@@ -178,6 +180,14 @@ class CapsulePreparationTests(HarnessCase):
             prompt = workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
             self.assertTrue((agent / ".migration-materials/guidelines.md").is_file())
             self.assertIn("references.json", prompt)
+            staged = self.read_json(agent / ".migration-materials" / "references.json")
+            self.assertEqual(staged[0].get("symbol"), "受注金額")
+            match, = find_feature(capsule.parent, "受注金額", through=1)["matches"]
+            self.assertEqual(match["path"], "orders/example.php")
+            span, = match["declared_ranges"]
+            self.assertEqual(span["role"], "reference")
+            evidence = read_context(capsule.parent, match["id"], span["start_line"], span["end_line"], through=1)
+            self.assertEqual(evidence["text"], "first 2\nlast 2")
             self.assertIn("last 5", (agent / ".migration-materials" / references[-1]["file"]).read_text())
             rules = "".join((agent / ".migration-materials" / entry["file"]).read_text(encoding="utf-8") for entry in manifest["rule_files"])
             for part in manifest["parts"]:
