@@ -402,9 +402,9 @@ def _run_script_phase(
                 if review_output and completed.returncode >= 0:
                     log.flush()
                     length = os.fstat(log.fileno()).st_size - start_output
+                repeatable_review = length > 0 and apply_decisions and verification_hashes is not None
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
-                    repeatable_review = apply_decisions and verification_hashes is not None
                     if (apply_decisions and settled_once) or repeatable_review:
                         with log_path.open("rb") as current:
                             current.seek(start_output)
@@ -424,12 +424,6 @@ def _run_script_phase(
                                 **decision, "target_versions": verification_hashes.copy(), "target_basis": "verification",
                             }
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
-                        if repeatable_review and completed.returncode == 0 and decision.get("applied") == "continued":
-                            if verification_hashes != _script_decision_versions(cwd, record):
-                                decision["applied"] = "review_required"
-                                raise ValueError("The target changed during verification; review the script response and explicitly rebuild")
-                            record.pop("verification_script_pending")
-                            write_run_record(record_path, record)
                         if apply_decisions and completed.returncode == 0:
                             _save_script_handoff(run_path, cwd, record, decision)
                         if apply_decisions and completed.returncode == 0 and decision.get("applied") not in {"continued", "handed_off"}:
@@ -438,6 +432,14 @@ def _run_script_phase(
                     write_run_record(record_path, record)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
+                if verification_hashes is not None and (phase != "before_build" or repeatable_review):
+                    if verification_hashes != _script_decision_versions(cwd, record):
+                        if repeatable_review:
+                            decision["applied"] = "review_required"
+                        raise ValueError("The target changed during verification; inspect the script log and explicitly rebuild")
+                if repeatable_review and decision.get("applied") == "continued":
+                    record.pop("verification_script_pending")
+                    write_run_record(record_path, record)
     except (KeyboardInterrupt, OSError, ValueError) as exc:
         reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else format_error(exc, command=invocation, cwd=cwd)
         message = f"スクリプト {phase} の {number} 番目で停止しました。ログ {log_path}\n{reason}"

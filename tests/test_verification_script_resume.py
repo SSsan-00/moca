@@ -253,3 +253,50 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
             record["verification_script_pending"]["target_versions"][self.target.name],
             original_hash,
         )
+
+
+    def test_silent_hooks_cannot_accept_verification_of_previous_target(self):
+        for phase in ("after_build", "before_checker", "after_checker"):
+            with self.subTest(phase=phase):
+                self.configure(phase)
+                self.target.write_text("class Original {}", encoding="utf-8")
+                self.config["scripts"][phase][0][2] = (
+                    "from pathlib import Path; Path('Example.cs').write_text('class Changed {}')"
+                )
+                with self.controlled_commands([]) as (builds, judge):
+                    with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
+                        self.resume_run()
+                    self.assertEqual((len(builds), judge.call_count), (1, 0))
+                self.assertEqual(self.record()["status"], "script_failed")
+
+    def test_silent_before_build_hook_may_generate_the_target_that_is_then_built(self):
+        self.configure("before_build")
+        self.config["scripts"]["before_build"][0][2] = (
+            "from pathlib import Path; Path('Example.cs').write_text('class Generated {}')"
+        )
+        with self.controlled_commands([]) as (builds, judge):
+            self.assertEqual(self.resume_run()["status"], "checker_succeeded")
+            self.assertEqual((len(builds), judge.call_count), (1, 0))
+        self.assertEqual(
+            self.record()["verification"]["target_hashes"][self.target.name],
+            hashlib.sha256(b"class Generated {}").hexdigest(),
+        )
+
+
+    def test_explicit_build_revalidates_silent_hook_even_without_advisory_review(self):
+        self.configure("after_build")
+        self.config["junie_apply_output_decisions"] = False
+        self.config["junie_review_script_output"] = False
+        hook = self.config["scripts"]["after_build"][0]
+        hook[2] = (
+            "from pathlib import Path; p=Path('Example.cs'); "
+            "p.write_text('class Original {}' if 'Changed' in p.read_text() else 'class Changed {}')"
+        )
+        with self.controlled_commands([]) as (builds, judge):
+            with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
+                self.resume_run()
+            with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
+                self.explicit_build()
+            hook[2] = "pass"
+            self.assertEqual(self.explicit_build()["status"], "build_succeeded")
+            self.assertEqual((len(builds), judge.call_count), (3, 0))
