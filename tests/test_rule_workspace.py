@@ -6,11 +6,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 from migration_harness.web.dashboard import _save_settings
 from migration_harness.rules.rule_workspace import RuleWorkspace
-from migration_harness.rules.rule_chat import RuleChat
+from migration_harness.rules.rule_chat import RuleChat, decode_reply
 
 
 class RuleWorkspaceTests(unittest.TestCase):
@@ -199,6 +200,52 @@ end_line = 1
         accepted = self.send(reopened, "accept")
         self.assertEqual(len(accepted["files"]), 2)
         self.assertIn("new rule", self.workspace.file_text(draft["id"], accepted["files"][1]["source"])["text"])
+
+    def test_stop_between_reply_and_commit_does_not_save_proposal(self):
+        entered, release = Event(), Event()
+        class FakeChat:
+            offered_skill = False
+
+            def __init__(self, project, *_):
+                self.project = project
+
+            def begin(self, _):
+                pass
+
+            def wait(self, *, ready=False, **_):
+                return "" if ready else json.dumps({
+                    "message": "Do not save after stop", "unresolved": [],
+                    "edit": {"source": "new", "name": "late.md", "text": "rule"},
+                })
+
+            def shutdown(self):
+                pass
+
+        def paused_decode(text):
+            entered.set()
+            release.wait(5)
+            return decode_reply(text)
+
+        original = self.config_path.read_bytes()
+        draft = self.workspace.start()
+        with patch("migration_harness.rules.rule_workspace.RuleChat", FakeChat), patch(
+            "migration_harness.rules.rule_workspace.decode_reply", paused_decode
+        ):
+            self.send(draft, "message", text="Stop this turn")
+            worker = self.workspace.worker
+            try:
+                self.assertTrue(entered.wait(3))
+                self.send(draft, "stop")
+            finally:
+                release.set()
+                if worker:
+                    worker.join(5)
+        saved = self.workspace.snapshot(draft["id"])
+        self.assertEqual([item["role"] for item in saved["messages"]], ["operator"])
+        self.assertNotIn("proposal", saved)
+        self.assertIsNone(self.workspace.chat)
+        self.assertIsNone(self.workspace.worker)
+        self.assertEqual(self.config_path.read_bytes(), original)
 
     def test_rule_workspace_answers_only_current_permission_and_keeps_toml_unchanged(self):
         mock = """import json,sys
