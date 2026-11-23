@@ -177,7 +177,7 @@ def _save_settings(path: Path, content: str, version: str, *, manager=None, veri
         normalized["config_path"] = str(path)
         with manager.settings_switch(normalized) if manager else nullcontext():
             if verify_origins:
-                verify_origins()
+                verify_origins(Path(normalized["project_root"]))
             if _read_settings(path)[1] != version:
                 raise ValueError("設定ファイルが更新されています。最新の設定を読み込み、変更を反映し直してください。")
             candidate.replace(path)

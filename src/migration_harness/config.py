@@ -134,21 +134,21 @@ def _config_relative_path(config_path: Path, value: str) -> Path:
     return (config_path.parent / Path(value).expanduser()).resolve()
 
 
-def _project_settings(project: Any, config_path: Path) -> dict[str, Any]:
+def resolve_project_root(project: Any, config_path: Path) -> Path:
     if not isinstance(project, dict):
         raise ValueError("[project] must be a table")
     root_value = project.get("root")
     if not isinstance(root_value, str) or not root_value.strip():
         raise ValueError("[project].root is required")
 
-    root = Path(root_value).expanduser()
-    if not root.is_absolute():
-        root = (config_path.parent / root).resolve()
-    else:
-        root = root.resolve()
+    root = _config_relative_path(config_path, root_value)
     if not root.is_dir() or not (root / ".git").exists():
         raise ValueError(f"project root must be an existing Git worktree: {root}")
+    return root
 
+
+def _project_settings(project: Any, config_path: Path) -> dict[str, Any]:
+    root = resolve_project_root(project, config_path)
     base_ref = project.get("base_ref", "HEAD")
     if not isinstance(base_ref, str) or not base_ref.strip():
         raise ValueError("[project].base_ref must be a non-empty Git ref")

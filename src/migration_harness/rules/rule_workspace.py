@@ -19,7 +19,7 @@ import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
 from . import rule_pack
-from ..config import load_config, validate_rule_usage
+from ..config import load_config, resolve_project_root, validate_rule_usage
 from ..files import harness_asset, has_symlink_component, safe_target, sha256_file
 from .rule_chat import RuleChat, decode_reply
 
@@ -55,6 +55,16 @@ def _directory(root, relative):
 
 def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _require_same_project(root: Path, expected: Path) -> None:
+    if str(root) == str(expected):
+        return
+    if root == expected:
+        with suppress(OSError):
+            if root.samefile(expected):
+                return
+    raise ValueError("プロジェクトのルートが変わりました。設定画面で現在の設定を保存するか、ダッシュボードを再起動してください。")
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -128,7 +138,9 @@ class RuleWorkspace:
         data = path.read_bytes()
         parsed = tomllib.loads(data.decode("utf-8"))
         project = parsed.get("project", {})
-        return path, data, project.get("migration_rules", [])
+        root = resolve_project_root(project, path)
+        _require_same_project(root, Path(self.config["project_root"]))
+        return root, data, project.get("migration_rules", [])
 
     def _new_file(self, path, meta, name, data, *, baseline=False, usage="required", description=""):
         _decode(data)
@@ -146,9 +158,9 @@ class RuleWorkspace:
 
     def start(self):
         self._check_idle()
+        project_root, content, rules = self._config()
         if self.active_id:
             self._disconnect()
-        _, content, rules = self._config()
         identifier = uuid4().hex
         path = self.root() / identifier
         path.mkdir()
@@ -156,7 +168,7 @@ class RuleWorkspace:
         try:
             (path / "sources").mkdir()
             (path / "baseline").mkdir()
-            old = self._managed_active(rules, origins=meta["origins"])
+            old = self._managed_active(project_root, rules, origins=meta["origins"])
             if old:
                 previous = rule_pack.read_json(old / "state.json")
                 for item, file in self._files(old / "published", previous):
@@ -164,7 +176,7 @@ class RuleWorkspace:
                                    usage=item["usage"], description=item["description"])
             else:
                 for item in rules:
-                    value = (Path(self.config["project_root"]) / item["path"]).expanduser()
+                    value = (project_root / item["path"]).expanduser()
                     if value.is_symlink() or not value.is_file() or value.stat().st_size > _MAX_SOURCE:
                         raise ValueError("既存ルールは上限内の通常のUTF-8ファイルを指定してください。")
                     data = value.read_bytes()
@@ -178,11 +190,11 @@ class RuleWorkspace:
             raise
         return self.snapshot(identifier)
 
-    def _registered_versions(self, rules):
+    def _registered_versions(self, project_root, rules):
         versions = {}
         for item in rules:
             name = item["path"]
-            path = (Path(self.config["project_root"]) / name).expanduser()
+            path = (project_root / name).expanduser()
             try:
                 if path.is_symlink() or not path.is_file():
                     raise OSError
@@ -191,13 +203,13 @@ class RuleWorkspace:
                 raise ValueError(f"登録元のルールを読み取れません: {name}。原本を確認して新しい下書きに取り込み直してください。") from exc
         return versions
 
-    def _verify_origins(self, state, rules):
+    def _verify_origins(self, state, project_root, rules):
         expected = state.get("origins")
-        if expected is None or expected != self._registered_versions(rules):
+        if expected is None or expected != self._registered_versions(project_root, rules):
             raise ValueError("登録元のルールの版が一致しません。下書きは保持されています。新しい下書きに取り込み直してください。")
 
-    def _managed_active(self, rules, *, origins=None):
-        paths = [(Path(self.config["project_root"]) / item["path"]).resolve() for item in rules]
+    def _managed_active(self, project_root, rules, *, origins=None):
+        paths = [(project_root / item["path"]).resolve() for item in rules]
         if not paths:
             return None
         root = self.root().resolve()
@@ -214,7 +226,7 @@ class RuleWorkspace:
             return None
         try:
             if origins is not None:
-                origins.update(self._registered_versions(rules))
+                origins.update(self._registered_versions(project_root, rules))
             rule_pack.verify(export)
         except (OSError, ValueError) as exc:
             if origins is None:
@@ -417,10 +429,10 @@ class RuleWorkspace:
     def _preview(self, path, state):
         if state["unresolved"]:
             raise ValueError("未解決の指摘があります。Junieと続けて確認してください。")
-        _, config, rules = self._config()
+        project_root, config, rules = self._config()
         if state["base"] != _digest(config):
             raise ValueError("TOMLが更新されています。新しい下書きに変更を取り込み直してください。")
-        self._verify_origins(state, rules)
+        self._verify_origins(state, project_root, rules)
         export = _directory(path, Path("published"))
         if export.exists():
             shutil.rmtree(export)
@@ -469,7 +481,7 @@ class RuleWorkspace:
     def _apply(self, path, state, action, apply_config):
         if action.get("confirmed") is not True or state.get("unresolved"):
             raise ValueError("原文の条件・例外・優先順位を確認してから反映してください。")
-        _, config, rules = self._config()
+        project_root, config, rules = self._config()
         if state["base"] != _digest(config):
             raise ValueError("TOMLが更新されています。上書きは行いませんでした。")
         export = _directory(path, Path("published"))
@@ -479,16 +491,19 @@ class RuleWorkspace:
         version = self._preview_version(path, state, export, candidate.encode())
         if action.get("preview") != version or (state.get("preview") or {}).get("token") != version:
             raise ValueError("差分が更新されました。再確認してください。")
-        # バックアップも削除せず、失敗時は設定を差し替えない既存処理を使う。
-        apply_config(candidate, state["base"], lambda: self._verify_origins(state, rules))
+        def verify_origins(normalized_root):
+            _require_same_project(normalized_root, project_root)
+            self._verify_origins(state, project_root, rules)
+
+        apply_config(candidate, state["base"], verify_origins)
         state["applied"] = True
         state.pop("preview", None)
         if self.active_id == state["id"]:
             self._disconnect()
 
     def _archives(self):
-        _, _, rules = self._config()
-        active = self._managed_active(rules)
+        project_root, _, rules = self._config()
+        active = self._managed_active(project_root, rules)
         if active is None:
             return []
         entries = []

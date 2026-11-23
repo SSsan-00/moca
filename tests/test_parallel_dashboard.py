@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 from contextlib import redirect_stdout
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -96,8 +97,9 @@ class ParallelDashboardTests(HarnessCase):
             with urlopen(Request(url + endpoint, json.dumps(body).encode(), headers), timeout=3) as response:
                 return response.status, json.load(response)
 
-        def get(endpoint, run_id):
-            with urlopen(Request(url + endpoint, headers={"X-Run-ID": run_id}), timeout=3) as response:
+        def get(endpoint, run_id=None):
+            headers = {"X-Run-ID": run_id} if run_id is not None else {}
+            with urlopen(Request(url + endpoint, headers=headers), timeout=3) as response:
                 return json.load(response)
 
         return post, get
@@ -657,6 +659,73 @@ class ParallelDashboardTests(HarnessCase):
         view.failed(ValueError("Junieを起動できません"))
         self.manager.workspace()
         self.assertIn("Junieを起動できません", view.state["error_details"])
+
+    def test_rules_do_not_mix_externally_changed_project_with_live_settings(self):
+        post, get = self.open_http_dashboard()
+        path = Path(self.settings["config_path"])
+        original, version = dashboard._read_settings(path)
+        (self.project / "original.md").write_bytes(b"PROJECT_A_RULE\n")
+        project_b = self.root / "app-b"
+        project_b.mkdir()
+        subprocess.run(["git", "init", "-q", str(project_b)], check=True, capture_output=True)
+        (project_b / "source.php").write_bytes(b"<?php echo 22;\n")
+        original_b = project_b / "original.md"
+        original_b.write_bytes(b"PROJECT_B_RULE\n")
+
+        def save(content, version):
+            return post("settings", {"content": content, "version": version, "revision": self.view.revision})
+
+        def rule(action, draft=None, **fields):
+            if draft:
+                fields.update(id=draft["id"], revision=draft["revision"])
+            return post("rule-workspace", {"action": action, **fields})
+
+        def apply(draft):
+            return rule("apply", draft, confirmed=True, preview=draft["preview"]["token"])
+
+        def rejected(request, message):
+            with self.assertRaises(HTTPError) as response:
+                request()
+            with response.exception as error:
+                self.assertEqual(error.code, 409)
+                self.assertIn(message, error.read().decode())
+
+        toml_a = original.decode() + '\n[[project.migration_rules]]\npath = "original.md"\n'
+        self.assertEqual(save(toml_a, version)[0], 200)
+        live_a = self.settings["project_root"]
+        capsule = Path(workflow.prepare_run(self.settings, "sample")["capsule_path"])
+        manifest = json.loads((capsule / "manifest.json").read_bytes())
+        pinned = capsule / "materials" / manifest["rule_files"][0]["file"]
+        pinned_a = pinned.read_bytes()
+        self.assertIn(b"PROJECT_A_RULE", pinned_a)
+        old_draft = rule("preview", rule("start")[1])[1]
+        toml_b = toml_a.replace('root = "app"', 'root = "app-b"')
+        path.write_bytes(toml_b.encode())
+        rejected(lambda: rule("start"), "設定画面で")
+        rejected(lambda: apply(old_draft), "設定画面で")
+        self.assertEqual(path.read_bytes(), toml_b.encode())
+        self.assertEqual(self.settings["project_root"], live_a)
+        self.assertEqual([draft["id"] for draft in get("rule-workspace")["drafts"]],
+                         [old_draft["id"]])
+
+        self.assertEqual(save(toml_b, dashboard._read_settings(path)[1])[0], 200)
+        self.assertEqual(Path(self.settings["project_root"]), project_b)
+        new_draft = rule("start")[1]
+        source = f'rule-workspace?id={new_draft["id"]}&source=rule-0001.md'
+        self.assertEqual(get(source)["text"], "PROJECT_B_RULE\n")
+        original_b.write_bytes(b"PROJECT_B_RULE\nEDITED_BEFORE_PREVIEW\n")
+        rejected(lambda: rule("preview", new_draft), "登録元")
+        preview = rule("preview", rule("start")[1])[1]
+        original_b.write_bytes(b"PROJECT_B_RULE\nEDITED_AFTER_PREVIEW\n")
+        rejected(lambda: apply(preview), "登録元")
+        self.assertEqual(path.read_bytes(), toml_b.encode())
+        preview = rule("preview", rule("start")[1])[1]
+        self.assertTrue(apply(preview)[1]["applied"])
+        rules = tomllib.loads(path.read_text(encoding="utf-8"))["project"]["migration_rules"]
+        published = Path(rules[0]["path"]).read_text(encoding="utf-8")
+        self.assertIn("EDITED_AFTER_PREVIEW", published)
+        self.assertNotIn("PROJECT_A_RULE", published)
+        self.assertEqual(pinned.read_bytes(), pinned_a)
 
     def test_http_selection_editor_and_questions_are_scoped_to_run(self):
         ids = self.manager.submit({"action": "run", "unit_ids": ["unit-0", "unit-1"]})["run_ids"]
