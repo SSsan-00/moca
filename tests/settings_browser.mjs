@@ -508,12 +508,19 @@ try {
   await wait(englishPoliteLog);
   assert.equal(await evaluate(log + ".documentElement.lang"), "en");
   assert.equal(await evaluate(logText("#junie-log-title")), "Junie detailed log");
-  assert.match(await evaluate(logText("[data-log-description]")), /^You can review /);
+  assert.match(await evaluate(logText("[data-log-description]")), /new progress updates and reports/);
   assert.deepEqual(await evaluate(rawLog), originalEntries);
+  for (const [tone, expected] of [["concise", "1 entry"], ["friendly", "You’ve got 1 entry so far."]]) {
+    await change("settings-junie-log-tone", tone, "input");
+    await wait(save + ".matches(':enabled')");
+    await evaluate(save + ".click()");
+    await wait(logStatus + " === " + JSON.stringify(expected));
+    assert.deepEqual(await evaluate(rawLog), originalEntries);
+  }
   await evaluate(log + ".defaultView.close()");
   await click("tab-progress");
   await evaluate(logButton + ".click()", true);
-  await wait(englishPoliteLog);
+  await wait(logStatus + " === 'You’ve got 1 entry so far.'");
   assert.deepEqual(await evaluate(rawLog), originalEntries);
   await evaluate(log + ".defaultView.close()");
   console.log("Browser demo: saved language and tone change log framing without changing original entries");

@@ -30,10 +30,10 @@ max_context_chars = 250000
 # path = "docs/examples/menu/Menu.cs"
 
 [junie]
-# 詳細ログの画面が付ける状況説明の言語と口調。Junie・ビルド・チェッカーの原文は変更しません。
+# Junieが新しく書く利用者向けの進捗・報告の言語と口調。既存ログやビルド・チェッカー出力は書き換えません。
 # log_language = "ja" # ja / en
 # log_tone = "neutral" # neutral / polite / concise / friendly / custom
-# log_tone_instruction = "関西弁で、専門用語を短く補足して" # custom のときだけJunieへの文体指示に使う # neutral / polite
+# log_tone_instruction = "関西弁で、専門用語を短く補足して" # custom のときだけ使用
 # ACPの直接読み取りに利用中のJunieが対応する場合のみ有効にします。既定は変更しません。
 # pinned_reference_reads = true
 # 既定はfalse。下記のスクリプト判定、または [checker] の出力判定を別途有効化すること。

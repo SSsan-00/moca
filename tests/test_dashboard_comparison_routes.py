@@ -388,6 +388,11 @@ targets = ["Page.cshtml", "Page.cshtml.cs"]
 
 [diff_viewer]
 html = "viewer.html"
+
+[junie]
+log_language = "en"
+log_tone = "custom"
+log_tone_instruction = "Use nautical greetings."
 """
         config_path.write_text(settings, encoding="utf-8")
         config = load_config(config_path)
@@ -400,15 +405,18 @@ html = "viewer.html"
         record.update(status="build_succeeded", completed_capsules=run_a["capsule_count"], build_exit_code=0)
         record_path.write_text(json.dumps(record), encoding="utf-8")
 
-        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False):
-            self.assertTrue(prefer_task)
+        sent = []
+
+        def junie(command, completion, token, targets, **kwargs):
+            sent.append(command)
             proposal, = targets
             proposal.write_text('[{"leftLineNo": 1, "rightLineNo": 1}]', encoding="utf-8")
             completion.write_text(token, encoding="ascii")
 
         with (
             patch.object(junie_cli, "require_interactive_cli"),
-            patch.object(junie_cli, "run_interactive", side_effect=junie),
+            patch.object(junie_cli, "_supports_task", return_value=True),
+            patch.object(junie_cli, "_run_session", side_effect=junie),
             self.live_dashboard(config, run_a_id) as url,
         ):
             revision, state = self.ready_event(url)
@@ -418,6 +426,10 @@ html = "viewer.html"
             self.assertEqual([part["fileName"] for part in plain["leftSegments"]], ["source.php"])
             anchored = self.post(url, "control", {"action": "anchors", "revision": revision}, 201)
             self.assertEqual(anchored["count"], 1)
+            command, = sent
+            self.assertEqual(command[-2], "--task")
+            self.assertIn("Use nautical greetings.", command[-1])
+            self.assertIn("英語", command[-1])
             with urlopen(url + "migration-ledger", timeout=3) as response:
                 ledger = json.load(response)
             mapping = ledger["capsules"][0]["sources"][0]["mapping"]

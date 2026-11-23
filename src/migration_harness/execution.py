@@ -31,6 +31,7 @@ class ExecutionControl:
     junie_steering: bool = False
     operation_id: str | None = None
     junie_thoughts_path: Path | None = None
+    junie_progress_style: str | None = None
     _build_lock: Lock = field(default_factory=Lock, repr=False)
     _building: bool = False
 

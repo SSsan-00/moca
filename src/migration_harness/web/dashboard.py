@@ -46,7 +46,7 @@ from migration_harness.runs.editor_queue import (
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import harness_asset, safe_target
-from migration_harness.junie.junie_cli import list_models, unconfirmed_junie_stop
+from migration_harness.junie.junie_cli import dashboard_progress_style, list_models, unconfirmed_junie_stop
 from migration_harness.junie.junie_conversation import (
     fail_pending_after_unconfirmed_stop,
     finish_instruction,
@@ -1475,6 +1475,7 @@ def execute_dashboard_action(view, config, action):
     try:
         with control_scope(view.control):
             if view.control is not None:
+                view.control.junie_progress_style = dashboard_progress_style(config)
                 # ログの保存先を決められない場合も、実行側の通常の検証とエラー表示を使う。
                 with suppress(KeyError, OSError, ValueError):
                     validate_run_id(run_id)
