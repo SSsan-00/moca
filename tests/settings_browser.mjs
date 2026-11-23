@@ -6,7 +6,7 @@ import {fileURLToPath, pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
 
-const [executable, profile, url, notificationUrl, expectedRun] = process.argv.slice(2);
+const [executable, profile, url, notificationUrl, expectedRun, liveLogPath] = process.argv.slice(2);
 let socket, sequence = 0;
 const pending = new Map();
 async function eventually(read, label) {
@@ -192,6 +192,67 @@ try {
     throw new Error(`${error.message}; last dashboard state: ${JSON.stringify(observed)}`, {cause: error});
   }
   console.log("Browser notification: opaque activation showed the failed Run in Progress");
+  const liveLog = "junieLog.windows.get(" + JSON.stringify(expectedRun) + ")?.popup.document";
+  const logRow = index => liveLog + "?.querySelector('[data-log-entries] li:nth-child(" + index + ")')";
+  const logAt = "2026-11-14T01:42:03Z";
+  const fence = String.fromCharCode(96).repeat(3);
+  const afterUpdate = "<SOURCE>構造化されていない追記</SOURCE>";
+  const update = [
+    "<UPDATE><PREVIOUS_STEP>",
+    "注文の移行を確認。",
+    '<UNKNOWN name="literal">原文</UNKNOWN>',
+    "<em>XMLタグは文字として表示</em>",
+    fence + "xml",
+    '<UPDATE><DATA priority="1">コード内のXML</DATA></UPDATE>',
+    fence,
+    "</PREVIOUS_STEP>",
+    "<EXTERNAL>確認結果をまとめています。</EXTERNAL>",
+    "</UPDATE>",
+    afterUpdate,
+  ].join("\r\n");
+  const formattedBody = update.slice(update.indexOf("\r\n") + 2, update.lastIndexOf("\r\n</PREVIOUS_STEP>"));
+  const code = fence + "xml\n<UPDATE><PREVIOUS_STEP>XMLの例</PREVIOUS_STEP></UPDATE>\n" + fence;
+  const unfinished = "<UPDATE><PREVIOUS_STEP>閉じていない更新";
+  const literal = "<UPDATE><UNKNOWN>仕様外の要素</UNKNOWN></UPDATE>";
+  const records = ["通常のログ", update, code, unfinished, literal];
+  const jsonLine = thought => JSON.stringify({at: logAt, thought}) + "\n";
+  await fs.writeFile(liveLogPath, jsonLine(records[0]), "utf8");
+  await evaluate("(" + function () {
+    const request = window.fetch;
+    window.receivedLogPolls = 0;
+    window.fetch = async (...args) => {
+      const response = await request(...args);
+      if (String(args[0]).includes("/junie-thoughts?")) window.receivedLogPolls++;
+      return response;
+    };
+  }.toString() + ")()");
+  await evaluate("document.querySelector('.junie-log-trigger').click()", true);
+  await wait(logRow(1) + "?.textContent.includes('通常のログ')");
+  const json = jsonLine(update);
+  const split = json.indexOf("PREVIOUS_STEP") + 5;
+  await fs.appendFile(liveLogPath, json.slice(0, split));
+  const polls = await evaluate("window.receivedLogPolls");
+  await wait("window.receivedLogPolls > " + polls);
+  assert.equal(await evaluate("!!" + logRow(2)), false, "partial records must not reach the DOM");
+  const rest = json.slice(split) + records.slice(2).map(jsonLine).join("");
+  await fs.appendFile(liveLogPath, rest);
+  await wait(logRow(5) + "?.textContent.includes('仕様外の要素')");
+  const structured = logRow(2);
+  const sections = await evaluate("Array.from(" + structured + ".querySelectorAll('section'), node => [node.querySelector('h3').textContent, node.querySelector('p').textContent])");
+  assert.deepEqual(sections, [["前の工程", formattedBody], ["利用者向けの進捗", "確認結果をまとめています。"]]);
+  assert.equal(await evaluate(structured + ".querySelector('section + p').textContent"), "\r\n" + afterUpdate);
+  assert.equal(await evaluate(structured + ".innerText.includes('<PREVIOUS_STEP>')"), false);
+  assert.equal(await evaluate(structured + ".querySelector('em,unknown,source') === null"), true, "model text must never become DOM markup");
+  assert.equal(await evaluate(structured + ".querySelector('details').open"), false);
+  assert.equal(await evaluate(structured + ".querySelector('details pre').textContent"), update);
+  await evaluate(structured + ".querySelector('details summary').click()");
+  assert((await evaluate(structured + ".innerText")).includes("<UPDATE><PREVIOUS_STEP>"));
+  for (const [offset, original] of records.slice(2).entries()) {
+    assert.equal(await evaluate(logRow(3 + offset) + ".querySelector('p').textContent"), original);
+  }
+  assert.equal(await fs.readFile(liveLogPath, "utf8"), records.map(jsonLine).join(""));
+  await evaluate(liveLog + ".defaultView.close()");
+  console.log("Browser Junie log: complete updates have headings; partial, unknown, and code remain literal and storage unchanged");
   await navigate("Page.navigate", {url});
   await wait(`document.readyState === "complete" && document.documentElement.dataset.liveReady === "true" && typeof window.harnessEditorCanSwitch === "function" && !!window.harnessRuns && ${field("tab-settings")}?.offsetWidth`);
   await click("tab-progress");

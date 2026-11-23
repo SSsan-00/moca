@@ -2154,6 +2154,10 @@ function showMigrationLedger(ledger, snapshot, compare) {
   .junie-log time { color: var(--muted); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
   .junie-log h2 { margin: 0; color: var(--green); font-size: 13px; }
   .junie-log li p { max-width: 65ch; margin: 2px 0 0; white-space: pre-wrap; }
+  .junie-log h3 { margin: 8px 0 0; font-size: 13px; color: var(--ink); }
+  .junie-log-entry-raw { margin-top: 7px; color: var(--muted); font-size: 12px; }
+  .junie-log-entry-raw summary { cursor: pointer; }
+  .junie-log-entry-raw pre { margin: 4px 0; padding: 6px 8px; background: var(--paper); white-space: pre-wrap; }
   .junie-log [data-log-empty] { margin: 22px 8px; color: var(--muted); }
   .junie-log-footer {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -2176,28 +2180,68 @@ function showMigrationLedger(ledger, snapshot, compare) {
   .junie-log-body:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 </style>
 <script>
+function setJunieEntryLabels(root, english) {
+  const labels = english
+    ? {update: "Progress update", PREVIOUS_STEP: "Previous step", EXTERNAL: "User-facing progress", raw: "Show original"}
+    : {update: "進捗更新", PREVIOUS_STEP: "前の工程", EXTERNAL: "利用者向けの進捗", raw: "原文を表示"};
+  for (const label of root.querySelectorAll("[data-log-entry-label]")) {
+    label.textContent = labels[label.dataset.logEntryLabel];
+  }
+}
+
+function createJunieLogEntry(doc, {title, at, thought}, english) {
+  const element = (tag, text) => {
+    const node = doc.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const row = element("li");
+  const time = element("time");
+  const timestamp = new Date(at);
+  if (Number.isFinite(timestamp.getTime())) {
+    time.textContent = timestamp.toLocaleTimeString(english ? "en-GB" : "ja-JP", {hour12: false});
+    time.dateTime = timestamp.toISOString();
+  }
+  const content = element("div");
+  const heading = element("h2", title);
+  content.append(heading);
+  const formatted = harnessLogSections(thought);
+  if (!formatted) {
+    heading.hidden = !title;
+    content.append(element("p", thought));
+  } else {
+    if (!title) heading.dataset.logEntryLabel = "update";
+    for (const {key, content: message} of formatted.sections) {
+      const section = element("section");
+      const label = element("h3");
+      label.dataset.logEntryLabel = key;
+      section.append(label, element("p", message));
+      content.append(section);
+    }
+    if (formatted.trailing.trim()) content.append(element("p", formatted.trailing));
+    const raw = element("details");
+    raw.className = "junie-log-entry-raw";
+    const summary = element("summary");
+    summary.dataset.logEntryLabel = "raw";
+    raw.append(summary, element("pre", thought));
+    content.append(raw);
+    setJunieEntryLabels(content, english);
+  }
+  row.append(time, content);
+  return row;
+}
+
 function renderJunieLog(view, {entries = [], status, live = false, reset = false, log_language, log_tone}) {
   const {body, list, statusLabel, empty} = view;
-  view.logLanguage = log_language || view.logLanguage || "ja";
+  const previousLanguage = view.logLanguage;
+  view.logLanguage = log_language || previousLanguage || "ja";
   view.logTone = log_tone || view.logTone || "neutral";
   const english = view.logLanguage === "en";
   const follow = reset || body.scrollHeight - body.scrollTop - body.clientHeight < 24;
   statusLabel.toggleAttribute("data-live", live);
   if (reset) list.replaceChildren();
-  for (const {title, at, thought} of entries) {
-    const row = list.ownerDocument.createElement("li");
-    row.innerHTML = "<time></time><div><h2></h2><p></p></div>";
-    const timestamp = new Date(at);
-    if (Number.isFinite(timestamp.getTime())) {
-      row.querySelector("time").textContent = timestamp.toLocaleTimeString(english ? "en-GB" : "ja-JP", {hour12: false});
-      row.querySelector("time").dateTime = timestamp.toISOString();
-    }
-    const heading = row.querySelector("h2");
-    heading.hidden = !title;
-    heading.textContent = title || "";
-    row.querySelector("p").textContent = thought;
-    list.append(row);
-  }
+  else if (view.logLanguage !== previousLanguage) setJunieEntryLabels(list, english);
+  for (const entry of entries) list.append(createJunieLogEntry(list.ownerDocument, entry, english));
   const summary = harnessLogPresentation(view.logLanguage, view.logTone, list.childElementCount, live);
   const child = body.ownerDocument;
   const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };

@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from migration_harness.web import dashboard
 from migration_harness.junie.junie_notifications import RunNotice
+from migration_harness.junie.junie_thoughts import FILENAME as JUNIE_LOG_NAME
 from ui_dependencies import node_executable, require_ui_dependency
 
 
@@ -109,7 +110,8 @@ max_bytes = 9007199254740993 # preserve this value
                 ]
                 with patch.object(dashboard, "list_models", return_value=catalog):
                     result = subprocess.run(
-                        [*node_args, str(helper), chrome, str(root / "browser"), url, notification_url, run_id],
+                        [*node_args, str(helper), chrome, str(root / "browser"), url, notification_url, run_id,
+                         str(run / JUNIE_LOG_NAME)],
                         capture_output=True, text=True, encoding="utf-8", timeout=110,
                     )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
