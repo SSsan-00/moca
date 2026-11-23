@@ -4,7 +4,7 @@ import socket
 import subprocess
 import sys
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -160,48 +160,60 @@ class ModelCliTests(unittest.TestCase):
         close.assert_called_once_with(process)
 
     def test_model_catalog_closes_inheriting_child_after_exit_or_timeout(self):
-        child = "import socket, sys; s=socket.create_connection(('127.0.0.1', int(sys.argv[1])), 8); s.sendall(b'r'); s.recv(1)"
+        child = """
+import socket, sys
+with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10) as connection:
+    connection.settimeout(None)
+    connection.sendall(b"r")
+    connection.recv(1)
+"""
         launcher = """
 import json, subprocess, sys, time
 from pathlib import Path
-port, held, child, ready = sys.argv[1:]
+port, child, release = sys.argv[1:]
 subprocess.Popen([sys.executable, "-c", child, port])
 print(json.dumps({"models": [{"id": "one", "displayName": "Model One"}]}), flush=True)
-if held == "True":
-    time.sleep(12)
-else:
-    while not Path(ready).exists():
-        time.sleep(.01)
+while not Path(release).exists():
+    time.sleep(.01)
 """
         own_launch = junie_cli._launch_process
         for held in (False, True):
-            with self.subTest(held=held), socket.socket() as listener, TemporaryDirectory() as directory:
-                ready = Path(directory) / "ready"
+            with self.subTest(held=held), socket.socket() as listener, TemporaryDirectory() as directory, ExitStack() as sockets:
+                release = Path(directory) / "release"
                 listener.bind(("127.0.0.1", 0))
                 listener.listen()
-                listener.settimeout(8)
+                listener.settimeout(20)
                 port = listener.getsockname()[1]
+                connection = None
 
                 def launch(_command, **streams):
-                    return own_launch([sys.executable, "-c", launcher, str(port), str(held), child, str(ready)], **streams)
+                    nonlocal connection
+                    process = own_launch([sys.executable, "-c", launcher, str(port), child, str(release)], **streams)
+                    try:
+                        accepted, _ = listener.accept()
+                        connection = sockets.enter_context(accepted)
+                        connection.settimeout(20)
+                        self.assertEqual(connection.recv(1), b"r")
+                        # プロセスの終了待ちを計測する。テスト用の子プロセスの起動時間は含めない。
+                        if not held:
+                            release.touch()
+                    except BaseException:
+                        process.stop()
+                        raise
+                    return process
 
-                with (
-                    patch.object(junie_cli, "_launch_process", side_effect=launch),
-                    patch.object(junie_cli, "MODEL_LIST_TIMEOUT", 3),
-                    ThreadPoolExecutor(max_workers=1) as pool,
-                ):
-                    future = pool.submit(junie_cli.list_models)
-                    conn, _ = listener.accept()
-                    with conn:
-                        conn.settimeout(8)
-                        self.assertEqual(conn.recv(1), b"r")
-                        ready.touch()
+                try:
+                    with patch.object(junie_cli, "_launch_process", side_effect=launch), patch.object(
+                        junie_cli, "MODEL_LIST_TIMEOUT", .25 if held else 10,
+                    ):
                         if held:
                             with self.assertRaisesRegex(ValueError, "タイムアウト"):
-                                future.result(timeout=8)
+                                junie_cli.list_models()
                         else:
-                            self.assertEqual(future.result(timeout=8), [{"id": "one", "name": "Model One"}])
-                        try:
-                            self.assertEqual(conn.recv(1), b"")
-                        except ConnectionResetError:
-                            pass
+                            self.assertEqual(junie_cli.list_models(), [{"id": "one", "name": "Model One"}])
+                    try:
+                        self.assertEqual(connection.recv(1), b"")
+                    except ConnectionResetError:
+                        pass
+                finally:
+                    release.touch()
