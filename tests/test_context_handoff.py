@@ -99,6 +99,41 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertEqual(len(record["junie_memos"]), 1)
         self.assertEqual(record["completed_capsules"], 0)
 
+    def test_corrupt_persisted_memo_does_not_hide_valid_sibling_or_advance_progress(self):
+        from migration_harness.context import context_handoff as memo
+        from migration_harness.runs.worktree_targets import target_hash
+
+        record = {"completed_capsules": 0, "verification_passed": False,
+                  "target_hashes": {"Demo.cs": target_hash(self.target)}}
+        draft, _ = memo.junie_memo_request(self.root, "fixture")
+        entry = {"kind": "pending", "source_id": "php-0001", "start_line": 2, "end_line": 2,
+                 "note": "verified pending source"}
+        draft.write_text(json.dumps([entry]), encoding="utf-8")
+        memo.save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        original, = record["junie_memos"]
+        bad_successor = {**original, "id": "1" * 64, "supersedes": original["id"], "kind": "decision"}
+        del bad_successor["note"]
+
+        for invalid in (42, {"id": "incomplete"}, bad_successor):
+            with self.subTest(invalid=invalid):
+                damaged = {**record, "junie_memos": [original, invalid]}
+                self.record.write_text(json.dumps(damaged), encoding="utf-8")
+                reopened = json.loads(self.record.read_bytes())
+                prompt = handoff_prompt(self.run, self.root, self.targets, reopened, through=1)
+                self.assertIn(entry["note"], prompt)
+                self.assertIn("1 damaged", prompt)
+                [pending] = memo.unresolved_junie_memos(self.run, self.root, self.targets, reopened, through=1)
+                self.assertEqual(original["id"], pending["id"])
+                self.assertEqual("current", pending["state"])
+                self.assertEqual(damaged, json.loads(self.record.read_bytes()))
+
+                draft.write_text(json.dumps([{**entry, "note": "a new valid note"}]), encoding="utf-8")
+                memo.save_junie_memo(draft, self.run, reopened, phase="migration", through=1)
+                self.assertEqual([original, invalid], reopened["junie_memos"][:2])
+                self.assertEqual("a new valid note", reopened["junie_memos"][-1]["note"])
+                self.assertEqual(0, reopened["completed_capsules"])
+                self.assertFalse(reopened["verification_passed"])
+
     def test_fourth_memo_and_older_stale_note_do_not_silently_disappear(self):
         from migration_harness.context import context_handoff as memo
         from migration_harness.runs.worktree_targets import target_hash
