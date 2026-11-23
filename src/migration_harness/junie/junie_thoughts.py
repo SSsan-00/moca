@@ -108,7 +108,7 @@ class JunieThoughts:
             message = message.replace(self.token, "[REDACTED]")
         if message:
             self.append([{"at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                          "title": "Junie", "thought": message}])
+                          "title": "Junie", "thought": message[:2000]}])
 
     def append(self, rows: list[dict]) -> None:
         target = safe_target(self.target.parent.parent, Path(self.target.parent.name, FILENAME))

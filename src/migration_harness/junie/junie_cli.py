@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import codecs
 import errno
 import json
 import ntpath
@@ -797,6 +798,23 @@ def acp_confirms_effort(option: dict | None, effort: str, model: str | None = No
     return effort == "none" and model == "junie-lite"
 
 
+def _acp_message(line: bytes):
+    try:
+        return json.loads(line)
+    except UnicodeDecodeError:
+        if line.startswith(codecs.BOM_UTF8):
+            raise
+        message = json.loads(line.decode("cp932"))
+        params = message.get("params") if isinstance(message, dict) else None
+        update = params.get("update") if isinstance(params, dict) else None
+        content = update.get("content") if isinstance(update, dict) else None
+        if (not isinstance(content, dict) or content.get("type") != "text" or not isinstance(content.get("text"), str)
+                or "id" in message or message.get("jsonrpc") != "2.0" or message.get("method") != "session/update"
+                or update.get("sessionUpdate") != "agent_message_chunk" or not isinstance(params.get("sessionId"), str)):
+            raise ValueError("Non-UTF-8 ACP control frame")
+        return message
+
+
 class _AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
@@ -1219,7 +1237,7 @@ class _AcpSession:
                     return True
                 raise JunieSessionError(self.command, self.process.returncode or 1, "JunieのACP接続が終了しました。")
             try:
-                message = json.loads(line)
+                message = _acp_message(line)
                 if not isinstance(message, dict):
                     raise ValueError
             except (UnicodeError, ValueError):
@@ -1450,6 +1468,8 @@ def _run_session(
                     raise JunieSessionError(
                         command, exit_code, events.startup_diagnostics(process.pid, command),
                     )
+                if headless and thoughts is not None and accept_result is None and events.result:
+                    collect_thoughts(lambda: thoughts.append_progress(events.result))
                 result_ready = result_files_ready()
                 return exit_code
     except JunieStopError:

@@ -319,6 +319,9 @@ end_line = 1
         self.assertGreater(chat._connection_timeout(), junie_cli.ACP_TIMEOUT)
 
     def test_chat_proposals_are_not_written_until_accepted(self):
+        live = []
+        workspace = self.workspace
+
         class FakeChat:
             offered_skill = False
 
@@ -328,9 +331,15 @@ end_line = 1
             def begin(self, _):
                 pass
 
-            def wait(self, *, ready=False, **_):
-                return "" if ready else json.dumps({"message": "案です", "unresolved": [],
-                    "edit": {"source": "new", "name": "chat.md", "text": "new rule\n"}})
+            def wait(self, *, ready=False, publish, cancelled):
+                if ready:
+                    return ""
+                text = "\ufeff```json\r\n" + json.dumps({"message": "案です", "unresolved": [],
+                    "edit": {"source": "new", "name": "chat.md", "text": "new rule\n"}}) + "\r\n```"
+                for chunk in (text[:1], text[:20], text):
+                    publish(None, chunk)
+                    live.append(workspace.live["text"])
+                return text
 
             def shutdown(self):
                 pass
@@ -342,7 +351,8 @@ end_line = 1
                 worker.join(3)
         reopened = RuleWorkspace(self.config).snapshot(draft["id"])
         self.assertEqual(len(reopened["files"]), 1)
-        self.assertEqual(len(reopened["messages"]), 2)
+        self.assertEqual(reopened["messages"][-1]["text"], "案です")
+        self.assertFalse(any("\\u" in part or "edit" in part or "{" in part for part in live))
         accepted = self.send(reopened, "accept")
         self.assertEqual(len(accepted["files"]), 2)
         self.assertIn("new rule", self.workspace.file_text(draft["id"], accepted["files"][1]["source"])["text"])
@@ -478,8 +488,12 @@ for line in sys.stdin:
         result={'sessionId':'same'}
     elif m=='session/prompt':
         assert req['params']['sessionId']=='same'
-        print(json.dumps({'method':'session/update','params':{'sessionId':'same','update':{
-            'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':req['params']['prompt'][0]['text']}}}}),flush=True)
+        text=req['params']['prompt'][0]['text']
+        frame={'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'same','update':{
+            'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':text}}}}
+        codec=text.partition(':')[0]
+        sys.stdout.buffer.write((json.dumps(frame,ensure_ascii=False)+'\\n').encode(codec))
+        sys.stdout.buffer.flush()
         result={'stopReason':'end_turn'}
     else: continue
     print(json.dumps({'id':req['id'],'result':result}),flush=True)
@@ -497,7 +511,7 @@ for line in sys.stdin:
                 control = self.workspace.cancelled
                 update = lambda *_: None
                 chat.wait(ready=True, cancelled=control, publish=update)
-                for word in ("first", "second"):
+                for word in ("utf-8:日本語🍣", "cp932:伝票を表示", "utf-8-sig:再確認"):
                     chat.begin(word)
                     self.assertEqual(chat.wait(cancelled=control, publish=update), word)
                 self.assertTrue(chat.offered_skill)

@@ -319,6 +319,8 @@ class RuleWorkspace:
 
     def _turn(self, path, state, text, optimize):
         def publish(permission, chunk):
+            if chunk.lstrip().removeprefix("\ufeff").lstrip().startswith(("{", "[", "`")):
+                chunk = "Junie の回答を受信しています。"
             with self.lock:
                 self.live = {"status": "running", "permission": permission, "text": chunk, "new_session": new_session}
 

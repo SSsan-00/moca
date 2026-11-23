@@ -12,6 +12,22 @@ from migration_harness.execution import OperationCancelled, control_scope
 
 
 class JunieDashboardAcpTests(unittest.TestCase):
+    def test_cp932_is_accepted_only_for_display_text_not_control_or_damaged_frames(self):
+        import codecs
+        import json
+
+        permission = {"jsonrpc": "2.0", "id": 4, "method": "session/request_permission",
+                      "params": {"sessionId": "chat", "text": "表の更新"}}
+        frame = json.dumps(permission, ensure_ascii=False).encode("cp932")
+        with self.assertRaises(ValueError):
+            junie_cli._acp_message(frame)
+        display = {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "chat",
+                   "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "表"}}}}
+        with self.assertRaises(ValueError):
+            junie_cli._acp_message(codecs.BOM_UTF8 + json.dumps(display, ensure_ascii=False).encode("cp932"))
+        with self.assertRaises(ValueError):
+            junie_cli._acp_message(b'{"text":"\x81"}')
+
     def test_steering_budget_measures_final_text_and_requeues_blocked_input(self):
         from types import SimpleNamespace
         from unittest.mock import Mock

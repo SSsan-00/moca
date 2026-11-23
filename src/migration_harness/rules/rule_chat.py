@@ -117,9 +117,10 @@ class RuleChat(junie_cli._AcpSession):
 
 
 def decode_reply(text):
-    cleaned = text.strip()
-    if cleaned.startswith("```json\n") and cleaned.endswith("```"):
-        cleaned = cleaned[8:-3].strip()
+    cleaned = text.strip().removeprefix("\ufeff").strip()
+    lines = cleaned.splitlines()
+    if len(lines) >= 2 and lines[0] in {"```json", "```"} and lines[-1] == "```":
+        cleaned = "\n".join(lines[1:-1]).strip()
     try:
         payload = json.loads(cleaned)
     except ValueError:
