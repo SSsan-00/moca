@@ -264,6 +264,65 @@ target = "One.cs"
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertEqual(config.read_bytes(), candidate.read_bytes())
 
+    def test_new_registration_rejects_identical_original_under_new_path(self):
+        self.config()
+        config = self.root / "test.toml"
+        original = config.read_bytes().replace(
+            b'\n[[units]]', b'\n[[project.migration_rules]]\npath = "existing.md"\n\n[[units]]', 1,
+        )
+        config.write_bytes(original)
+        quote = "Keep the approved reconciliation code on every migrated record."
+        existing = self.project / "existing.md"
+        existing.write_bytes((quote + "\r\n").encode())
+        clone = self.project / "identical renamed.md"
+        clone.write_bytes(existing.read_bytes())
+        candidate = self.root / "candidate.toml"
+        candidate.write_bytes(original.replace(
+            b'\n[[units]]', b'\n[[project.migration_rules]]\npath = "identical renamed.md"\n\n[[units]]', 1,
+        ))
+        pack = self.root / "review"
+        tool = Path(__file__).resolve().parents[1] / "tools/rule_review.py"
+
+        def run(action, *arguments, script=tool):
+            return subprocess.run([sys.executable, str(script), action, str(pack), *map(str, arguments)],
+                                  capture_output=True, encoding="utf-8",
+                                  env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+
+        self.assertEqual(run("start", config).returncode, 0)
+        self.assertEqual(run("read", 1).returncode, 0)
+        reading = {"1": {"end": quote, "note": "Required reconciliation obligation", "required_lines": [1]}}
+        self.assertEqual(run("record", json.dumps(reading)).returncode, 0)
+        template = run("meaning", candidate, "--register-new")
+        if template.returncode == 0:
+            evidence = json.loads(template.stdout)
+            evidence["entries"] = [self.evidence("obligation", clone, 1, quote, clone)]
+            (pack / "meaning-review.json").write_text(json.dumps(evidence), encoding="utf-8")
+        results = {"meaning": template, "apply": run("apply", candidate, "--register-new")}
+        for action, result in results.items():
+            with self.subTest(action=action):
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("同一バイトの原文", result.stderr)
+                self.assertIn("identical renamed.md", result.stderr)
+        self.assertEqual(config.read_bytes(), original)
+
+        sources = pack / "sources"
+        sources.mkdir()
+        (sources / clone.name).write_bytes(clone.read_bytes())
+        (pack / "plan.json").write_text(json.dumps({"documents": [
+            {"path": "Agent.md", "title": "Renamed reconciliation rules",
+             "parts": [{"source": clone.name, "start": 1, "end": 1}]},
+        ]}), encoding="utf-8")
+        for action in ("snapshot", "build", "verify"):
+            result = run(action, script=tool.with_name("rule_pack.py"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+        generated = (pack / "generated/rules.toml").read_bytes()
+        candidate.write_bytes(original.replace(b"\n[[units]]", b"\n" + generated + b"\n[[units]]", 1))
+        result = run("meaning", candidate, "--register-new")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("同一バイトの原文", result.stderr)
+        self.assertIn(clone.name, result.stderr)
+        self.assertEqual(config.read_bytes(), original)
+
     def test_fixed_exception_must_stay_with_the_obligation_after_pack_split(self):
         from migration_harness import workflow
         from migration_harness.config import load_config
