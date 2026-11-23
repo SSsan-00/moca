@@ -55,8 +55,11 @@ class JunieAcpEffortTests(unittest.TestCase):
             clock.return_value = 100.0
             stalled = junie_cli._AcpSession(Mock(), ["junie"], Path.cwd(), Mock(), Path("completion.json"),
                                            "run-token", None)
-            clock.return_value = 160.0
-            with self.assertRaises(junie_cli.JunieSessionError):
+            clock.return_value = 189.0
+            self.assertFalse(stalled.advance())
+            self.assertFalse(stalled.session_ready)
+            clock.return_value = 190.0
+            with self.assertRaisesRegex(junie_cli.JunieSessionError, "ACP接続がタイムアウト"):
                 stalled.advance()
 
     def test_migration_waits_for_effort_ack_before_prompt(self):
