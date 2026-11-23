@@ -308,6 +308,8 @@ class RuleWorkspace:
             self.chat.begin(prompt)
             answer = decode_reply(self.chat.wait(cancelled=self.cancelled, publish=publish))
             with self.lock:
+                if self.cancelled.is_set():
+                    raise InterruptedError("Junieとの整理を中断しました。")
                 current = rule_pack.read_json(path / "state.json")
                 current["messages"].append({"role": "junie", "text": answer["message"]})
                 if isinstance(answer.get("unresolved"), list) and all(isinstance(item, str) for item in answer["unresolved"]):
