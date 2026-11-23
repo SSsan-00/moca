@@ -141,14 +141,18 @@ def _is_digest(value):
     return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
 
 
+def _optional_digest(value):
+    return value is None or _is_digest(value)
+
+
 def _operator_version_shape(row, target_hashes):
     recorded = row.get("target_hashes")
     return (
         "reference_version" in row
-        and (row["reference_version"] is None or _is_digest(row["reference_version"]))
+        and _optional_digest(row["reference_version"])
         and _is_digest(row.get("rule_decisions_sha256"))
         and isinstance(recorded, dict) and recorded.keys() == target_hashes.keys()
-        and all(digest is None or _is_digest(digest) for digest in recorded.values())
+        and all(_optional_digest(digest) for digest in recorded.values())
     )
 
 
@@ -178,6 +182,8 @@ def operator_notes_from_receipt(run_path, targets, record, receipt_id, *, throug
     if not _is_digest(receipt_id) or not isinstance(receipt, dict):
         raise ValueError(error)
     scope, count, ids = (receipt.get(key) for key in ("through", "history_count", "note_ids"))
+    names = sorted(target.as_posix() for target in targets)
+    digests = receipt.get("target_digests")
     if (
         type(receipt.get("schema")) is not int or receipt["schema"] != 1 or receipt.get("run_id") != record["run_id"]
         or receipt.get("id") != receipt_id or through is not None and through != scope
@@ -186,7 +192,8 @@ def operator_notes_from_receipt(run_path, targets, record, receipt_id, *, throug
         or not isinstance(ids, list) or not _PROMPT_NOTES < len(ids) <= count
         or not all(_is_digest(item) for item in ids)
         or not _is_digest(receipt.get("manifest_sha256"))
-        or not _operator_version_shape(receipt, {target.as_posix(): None for target in targets})
+        or receipt.get("target_layout_sha256") != _content_hash(names)
+        or not isinstance(digests, list) or len(digests) != len(names) or not all(_optional_digest(d) for d in digests)
         or not _matches_note_id(receipt)
     ):
         raise ValueError(error)
@@ -200,7 +207,10 @@ def operator_notes_from_receipt(run_path, targets, record, receipt_id, *, throug
         rows = _read_handoff(run_path)
         if len(rows) < count:
             raise ValueError(error)
-        version = {key: receipt[key] for key in ("reference_version", "target_hashes", "rule_decisions_sha256")}
+        version = {
+            "reference_version": receipt["reference_version"], "rule_decisions_sha256": receipt["rule_decisions_sha256"],
+            "target_hashes": dict(zip(names, digests, strict=True)),
+        }
         pending = _pending_rows(_operator_handoff_rows(run_path, rows[:count], version, scope))
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         raise ValueError(error) from None
@@ -223,10 +233,13 @@ def handoff_prompt(
         pending = _pending_rows(_operator_handoff_rows(run_path, history, version, through))
         receipt_tip = ""
         if len(pending) > _PROMPT_NOTES and capture_operator_receipt:
+            hashes = version["target_hashes"]
+            names = sorted(hashes)
             receipt = {
                 "schema": 1, "run_id": record["run_id"], "through": through, "history_count": len(history),
                 "note_ids": [row["id"] for row in pending], "manifest_sha256": _operator_receipt_manifest(run_path),
-                **version,
+                "reference_version": version["reference_version"], "rule_decisions_sha256": version["rule_decisions_sha256"],
+                "target_layout_sha256": _content_hash(names), "target_digests": [hashes[name] for name in names],
             }
             receipt_id = _content_hash(receipt)
             record["operator_handoff_receipt"] = {**receipt, "id": receipt_id}
