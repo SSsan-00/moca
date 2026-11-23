@@ -244,3 +244,29 @@ class BeforeBuildVersionTests(SavedRunFixture):
             self.assertEqual(self.explicit_build()["status"], "build_succeeded")
             repair.assert_not_called()
             self.assertEqual(len(builds), 2)
+
+
+    def test_missing_secondary_target_is_not_proof_of_an_unchanged_version(self):
+        self.add_generated_target().unlink()
+        self.configure_hooks(self.target, "print('T001 Example.cs:1 warning: inspect variant')")
+        with self.commands([]) as (builds, repair):
+            with self.assertRaisesRegex(workflow.RunScriptError, "no verified target version"):
+                self.resume_run()
+            self.assertEqual(builds, [])
+            repair.assert_not_called()
+        record = self.record()
+        self.assertIsNone(record["verification_script_pending"]["target_versions_match"])
+        self.assertEqual(record["script_advisories"][-1]["reason"], "target_unverified")
+
+    def test_silent_generation_can_create_missing_target_before_read_only_verification(self):
+        target = self.add_generated_target()
+        target.unlink()
+        self.configure_hooks(
+            target,
+            "from pathlib import Path; Path('Generated.cs').write_text('class Generated {}')",
+            "from pathlib import Path; assert 'Generated' in Path('Generated.cs').read_text(); print('1 test passed')",
+        )
+        with self.commands([PASSED]) as (builds, repair):
+            self.assertEqual(self.resume_run()["status"], "checker_succeeded")
+            self.assertEqual(builds, ["class Generated {}"])
+            repair.assert_not_called()
