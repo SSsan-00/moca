@@ -602,7 +602,9 @@ def _syntax_manifest(
             "scanner": "php-lexical-functions-v1",
             "status": status,
             "functions": [
-                {"name": fn.name, "start_line": fn.start_line, "end_line": fn.end_line, "capsules": capsules}
+                {"name": fn.name, "start_line": fn.start_line, "end_line": fn.end_line, "capsules": capsules,
+                 "name_visible_from": max((part for start, end, part in by_path.get(path, ())
+                                           if start <= fn.name_line <= end), default=None)}
                 for fn in functions
                 if (capsules := sorted({
                     index for start, end, index in by_path.get(path, ())

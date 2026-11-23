@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from bisect import bisect_left
 from pathlib import Path
 from typing import Any
 
@@ -64,12 +65,24 @@ def inspect_context(run_path: Path, through: int | None = None) -> dict[str, Any
 def _inspect_manifest(manifest: dict[str, Any], through: int | None) -> dict[str, Any]:
     sources = _catalog(manifest, through)
     index = manifest.get("syntax_boundaries", {})
+    future_ends: dict[str, dict[int, int]] = {}
+    if through is not None:
+        for part in manifest["parts"][through:]:
+            for row in part["sources"]:
+                for span in row.get("character_slices", []):
+                    ends = future_ends.setdefault(row["path"], {})
+                    line = span["line"]
+                    ends[line] = max(ends.get(line, 0), span["focus_end_column"])
     items = []
     for source in sources:
         structural = index.get(source["path"], {}) if isinstance(index, dict) else {}
         names = structural.get("functions", []) if isinstance(structural, dict) else []
         if not isinstance(names, list):
             names = []
+        ends = future_ends.get(source["path"], {})
+        sliced = {span["line"] for row in source["ranges"] for span in row.get("character_slices", [])} if ends else set()
+        incomplete = sorted(line for line in ends.keys() & sliced
+                            if not _whole_line_assigned(source["ranges"], line, ends[line]))
         items.append({
             "id": source["id"], "path": source["path"], "sha256": source["sha256"],
             "encoding": source["encoding"], "ranges": source["ranges"],
@@ -80,6 +93,7 @@ def _inspect_manifest(manifest: dict[str, Any], through: int | None) -> dict[str
                 and type(name.get("start_line")) is int and type(name.get("end_line")) is int
                 and 0 < name["start_line"] <= name["end_line"]
                 and _covering_ranges(source["ranges"], name["start_line"], name["end_line"])
+                and bisect_left(incomplete, name["start_line"]) == bisect_left(incomplete, name["end_line"] + 1)
             ],
         })
     return {"version": 1, "unit_id": manifest["unit_id"], "through_capsule": through, "sources": items}
@@ -249,6 +263,9 @@ def boundary_hints(manifest: dict[str, Any], capsule_index: int) -> str:
                 continue
             capsules = fn["capsules"]
             if len(capsules) < 2 or capsule_index not in capsules:
+                continue
+            visible_from = fn.get("name_visible_from")
+            if type(visible_from) is not int or not 1 <= visible_from <= capsule_index:
                 continue
             if not isinstance(fn.get("name"), str) or not all(
                 type(fn.get(key)) is int for key in ("start_line", "end_line")
