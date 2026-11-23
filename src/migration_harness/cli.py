@@ -113,7 +113,7 @@ def main() -> None:
         except (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
             if args.command not in {"dashboard", "view"} and not getattr(args, "dashboard", False):
                 raise
-            from migration_harness.dashboard import run_dashboard
+            from migration_harness.web.dashboard import run_dashboard
 
             # 初回のdashboardは設定例から作り始める。既存設定の読み込み失敗は表示する。
             first_setup = args.command == "dashboard" and isinstance(exc, FileNotFoundError) and not args.config.exists()
@@ -123,7 +123,7 @@ def main() -> None:
             )
             return
         if args.command == "dashboard":
-            from migration_harness.dashboard import run_dashboard
+            from migration_harness.web.dashboard import run_dashboard
 
             run_dashboard(config)
             return
@@ -134,7 +134,7 @@ def main() -> None:
             config["checker_command"] = checker_command
             config["checker_from_cli"] = True
         if args.command == "dry-run":
-            from migration_harness.dry_run import plan_dry_run
+            from migration_harness.runs.dry_run import plan_dry_run
             from migration_harness.execution import ExecutionControl, control_scope
 
             progress = ExecutionControl(on_activity=lambda event: print(event["message"], file=sys.stderr, flush=True))
@@ -146,7 +146,7 @@ def main() -> None:
             return
         if args.command == "preview-context":
             from migration_harness.execution import ExecutionControl, control_scope
-            from migration_harness.source_context import preview_target_context
+            from migration_harness.context.source_context import preview_target_context
 
             unit = find_unit(config, args.unit)
             progress = ExecutionControl(on_activity=lambda event: print(event["message"], file=sys.stderr, flush=True))
@@ -155,8 +155,8 @@ def main() -> None:
             print(json.dumps(preview, ensure_ascii=False, indent=2))
             return
         if args.command == "context-handoff":
-            from migration_harness.context_handoff import context_handoff, record_handoff
-            from migration_harness.run_records import load_saved_run
+            from migration_harness.context.context_handoff import context_handoff, record_handoff
+            from migration_harness.runs.run_records import load_saved_run
 
             run_path, worktree, record, unit = load_saved_run(config, args.run_id)
             arguments = (run_path, worktree, target_paths(unit), record.get("detail_overrides", {}))
@@ -170,10 +170,10 @@ def main() -> None:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return
         if args.command == "context-evidence":
-            from migration_harness.capsules import load_capsule_manifest
-            from migration_harness.context_evidence import find_feature, inspect_context, read_context
-            from migration_harness.target_evidence import read_target_reference, related_target_references, target_references
-            from migration_harness.run_records import load_dashboard_record
+            from migration_harness.context.capsules import load_capsule_manifest
+            from migration_harness.context.context_evidence import find_feature, inspect_context, read_context
+            from migration_harness.context.target_evidence import read_target_reference, related_target_references, target_references
+            from migration_harness.runs.run_records import load_dashboard_record
 
             run_path, record = load_dashboard_record(config, args.run_id)
             requested = (args.source_id, args.start_line, args.end_line)
@@ -214,7 +214,7 @@ def main() -> None:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return
         if args.command == "junie-input":
-            from migration_harness.run_records import load_dashboard_record
+            from migration_harness.runs.run_records import load_dashboard_record
 
             _, record = load_dashboard_record(config, args.run_id)
             print(json.dumps({
@@ -225,7 +225,7 @@ def main() -> None:
             }, ensure_ascii=False, indent=2))
             return
         if args.command == "rule-review":
-            from migration_harness.rule_review import review_rules
+            from migration_harness.rules.rule_review import review_rules
 
             report = review_rules(config, args.run_id, rule=args.rule, kind=args.record, version=args.version,
                                   start=args.start_line, end=args.end_line, reason=args.reason, reference=args.reference)
@@ -258,7 +258,7 @@ def main() -> None:
             _print_migration_progress(migration_ledger(config, args.run_id)["completion"])
             return
         if args.command == "anchors":
-            from migration_harness.review_anchors import generate_anchors
+            from migration_harness.web.review_anchors import generate_anchors
 
             output, count = generate_anchors(config, args.run_id, args.reference)
             print(f"Diff Viewer workspace ({count} anchors): {output}")
@@ -274,7 +274,7 @@ def main() -> None:
         if args.command == "prepare":
             result = prepare_run(config, args.unit)
         elif args.command == "view" or args.dashboard:
-            from migration_harness.dashboard import run_dashboard
+            from migration_harness.web.dashboard import run_dashboard
 
             if args.command != "run":
                 if getattr(args, "start_stage", None):

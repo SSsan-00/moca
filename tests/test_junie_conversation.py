@@ -13,11 +13,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from migration_harness import dashboard, run_manager, workflow
-from migration_harness.editor_queue import editor_queue
+from migration_harness.web import dashboard
+from migration_harness.runs import run_manager
+from migration_harness import workflow
+from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.execution import check_cancelled, current_operation_id
-from migration_harness.junie_conversation import _intent
-from migration_harness.run_manager import RunManager
+from migration_harness.junie.junie_conversation import _intent
+from migration_harness.runs.run_manager import RunManager
 from fixtures import SavedRunFixture
 
 
@@ -1704,7 +1706,7 @@ class JunieConversationTests(SavedRunFixture):
                 release.set()
 
     def test_live_repair_instruction_uses_existing_steering_queue(self):
-        from migration_harness.editor_queue import LivePrompts, finish_prompts
+        from migration_harness.runs.editor_queue import LivePrompts, finish_prompts
 
         view = self.manager.get(self.run_id)
         view.begin_operation()
@@ -1844,7 +1846,7 @@ class JunieConversationTests(SavedRunFixture):
             run.assert_not_called()
 
     def test_saved_edits_and_junie_followup_request_the_existing_safe_handoff(self):
-        from migration_harness.editor_queue import LivePrompts
+        from migration_harness.runs.editor_queue import LivePrompts
 
         view = self.manager.get(self.run_id)
         view.begin_operation()

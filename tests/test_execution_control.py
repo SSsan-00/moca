@@ -9,10 +9,11 @@ from threading import Thread
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import run_records, workflow
-from migration_harness.dashboard import Dashboard
+from migration_harness.runs import run_records
+from migration_harness import workflow
+from migration_harness.web.dashboard import Dashboard
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope, run_process
-from migration_harness.timings import freeze_timings, update_timings
+from migration_harness.runs.timings import freeze_timings, update_timings
 
 
 class TimingTests(unittest.TestCase):

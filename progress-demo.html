@@ -1514,7 +1514,7 @@
       <label>ルール <select id="rule-verification-rule" required></select></label>
       <p id="rule-verification-context"></p>
       <label>判定
-        <select name="kind" required><option value="">選択してください</option><option value="include">このルールを適用する</option><option value="exclude">このルールを適用しない</option><option value="passed">反映を確認</option><option value="failed">未反映を確認</option></select>
+        <select id="rule-verification-kind" name="kind" required><option value="">選択してください</option><option value="include">このルールを適用する</option><option value="exclude">このルールを適用しない</option><option value="passed">反映を確認</option><option value="failed">未反映を確認</option></select>
       </label>
       <label>ルール本文の開始行 <input name="start" type="number" min="1" required></label>
       <label>終了行 <input name="end" type="number" min="1" required></label>
@@ -2041,9 +2041,9 @@ function showMigrationLedger(ledger, snapshot, compare) {
   }
 
 </script>
-<script src="./src/migration_harness/dashboard_runs.js"></script>
-<script src="./src/migration_harness/dashboard_settings.js"></script>
-<script src="./src/migration_harness/dashboard_log_presentation.js"></script>
+<script src="./src/migration_harness/web/dashboard_runs.js"></script>
+<script src="./src/migration_harness/web/dashboard_settings.js"></script>
+<script src="./src/migration_harness/web/dashboard_log_presentation.js"></script>
 <template id="junie-log">
   <main class="junie-log" aria-labelledby="junie-log-title">
     <header class="junie-log-head">
@@ -2309,7 +2309,7 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
   });
 })();
 </script>
-<script src="./src/migration_harness/dashboard_runs_demo.js"></script>
+<script src="./src/migration_harness/web/dashboard_runs_demo.js"></script>
 <script>
   const steps = [...document.querySelectorAll(".step")];
   const activity = document.querySelector("#activity");
@@ -3382,9 +3382,9 @@ setTimeout(() => clearInterval(demoImportTimer), 15000);<\/script>`;
   demoRuns.select(demoRunID);
 
 </script>
-<script src="./src/migration_harness/dashboard_editor_demo.js" defer></script>
-<script src="./src/migration_harness/dashboard_rule_workspace_demo.js" defer></script>
-<script src="./src/migration_harness/dashboard_rule_workspace.js" defer></script>
-<script src="./src/migration_harness/dashboard_editor.js" defer></script>
+<script src="./src/migration_harness/web/dashboard_editor_demo.js" defer></script>
+<script src="./src/migration_harness/web/dashboard_rule_workspace_demo.js" defer></script>
+<script src="./src/migration_harness/web/dashboard_rule_workspace.js" defer></script>
+<script src="./src/migration_harness/web/dashboard_editor.js" defer></script>
 </body>
 </html>

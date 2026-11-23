@@ -120,20 +120,31 @@ Junieには資料と書き戻すファイルを限定します。プロセス自
 
 ## 実装の入口
 
+src/migration_harness の直下に CLI・設定・工程制御と共通処理を置き、責務のまとまりは次のサブパッケージに分ける。
+
+| フォルダ | 役割 |
+| --- | --- |
+| [context/](src/migration_harness/context/) | PHP原文・参考資料の固定、分割、取得。 |
+| [runs/](src/migration_harness/runs/) | Runの保存・再開、実行キューと作業ツリー。 |
+| [junie/](src/migration_harness/junie/) | 実Junieの起動・ACP通信・許可と通知。 |
+| [rules/](src/migration_harness/rules/) | ルール整理・検索・適用とレビュー。 |
+| [verification/](src/migration_harness/verification/) | ビルド・チェッカーの結果照合、修正用の証拠。 |
+| [web/](src/migration_harness/web/) | ローカル画面、設定・比較の窓口、配布用のJavaScriptとMonaco。 |
+
 | モジュール | 担当 |
 | --- | --- |
 | [cli.py](src/migration_harness/cli.py)・[config.py](src/migration_harness/config.py) | コマンドの入口、TOML検証と正規化。 |
 | [workflow.py](src/migration_harness/workflow.py) | 準備・移行・再開の順序、Junieへの指示、ビルド・チェッカーの実行と修正、移行台帳。 |
-| [checker_output.py](src/migration_harness/checker_output.py) | チェッカー出力の解析、成功文言の判定、指摘ID・修正用識別子の生成、対象ファイルの版にひも付く承認の照合。 |
-| [capsules.py](src/migration_harness/capsules.py)・[rule_materials.py](src/migration_harness/rule_materials.py) | 入力の固定、分割、資料・manifestの生成と読み戻し。 |
-| [run_records.py](src/migration_harness/run_records.py)・[timings.py](src/migration_harness/timings.py) | Runの検証・保存と工程計測。 |
-| [worktree_targets.py](src/migration_harness/worktree_targets.py) | 移行先のUTF-8・サイズ検証、BOM付き保存、版の照合、Junie出力の反映と復旧。 |
-| [source_context.py](src/migration_harness/source_context.py) | 移行先周辺の参照ファイルの固定と復元。 |
-| [junie_cli.py](src/migration_harness/junie_cli.py)・[execution.py](src/migration_harness/execution.py) | Junieの起動・ACP・イベント・通信再試行、外部プロセスの実行とキャンセル。 |
-| [dashboard.py](src/migration_harness/dashboard.py) | ローカルHTTPとSSE、設定・進捗・レビュー・エディタの操作窓口。 |
-| [run_manager.py](src/migration_harness/run_manager.py) | 最大5件の並列実行、待機キューの保存・復元、Runごとの状態と操作の振り分け。 |
-| [editor_queue.py](src/migration_harness/editor_queue.py) | 手修正と追加指示の保存・送信待ち、変更の合流と競合判定。移行先ソースの読み書きは `worktree_targets.py` に集約する。 |
-| [diff_viewer.py](src/migration_harness/diff_viewer.py)・[review_anchors.py](src/migration_harness/review_anchors.py) | 一貫した比較スナップショットの作成、対応行の提案と検証。 |
+| [checker_output.py](src/migration_harness/verification/checker_output.py) | チェッカー出力の解析、成功文言の判定、指摘ID・修正用識別子の生成、対象ファイルの版にひも付く承認の照合。 |
+| [capsules.py](src/migration_harness/context/capsules.py)・[rule_materials.py](src/migration_harness/rules/rule_materials.py) | 入力の固定、分割、資料・manifestの生成と読み戻し。 |
+| [run_records.py](src/migration_harness/runs/run_records.py)・[timings.py](src/migration_harness/runs/timings.py) | Runの検証・保存と工程計測。 |
+| [worktree_targets.py](src/migration_harness/runs/worktree_targets.py) | 移行先のUTF-8・サイズ検証、BOM付き保存、版の照合、Junie出力の反映と復旧。 |
+| [source_context.py](src/migration_harness/context/source_context.py) | 移行先周辺の参照ファイルの固定と復元。 |
+| [junie_cli.py](src/migration_harness/junie/junie_cli.py)・[execution.py](src/migration_harness/execution.py) | Junieの起動・ACP・イベント・通信再試行、外部プロセスの実行とキャンセル。 |
+| [dashboard.py](src/migration_harness/web/dashboard.py) | ローカルHTTPとSSE、設定・進捗・レビュー・エディタの操作窓口。 |
+| [run_manager.py](src/migration_harness/runs/run_manager.py) | 最大5件の並列実行、待機キューの保存・復元、Runごとの状態と操作の振り分け。 |
+| [editor_queue.py](src/migration_harness/runs/editor_queue.py) | 手修正と追加指示の保存・送信待ち、変更の合流と競合判定。移行先ソースの読み書きは `worktree_targets.py` に集約する。 |
+| [diff_viewer.py](src/migration_harness/web/diff_viewer.py)・[review_anchors.py](src/migration_harness/web/review_anchors.py) | 一貫した比較スナップショットの作成、対応行の提案と検証。 |
 
 回帰テストは `python -m pip install -e .` の後に `python -m unittest discover -s tests -v` で実行します。入力規模、ルール、再開・修正の検証シナリオは [evaluations/](evaluations/) にあります。
 

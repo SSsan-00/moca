@@ -16,10 +16,13 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, junie_cli, run_manager, workflow
+from migration_harness.web import dashboard
+from migration_harness.junie import junie_cli
+from migration_harness.runs import run_manager
+from migration_harness import workflow
 from migration_harness.execution import check_cancelled, report_activity
-from migration_harness.run_manager import RunManager
-from migration_harness.run_records import execution_lock, load_saved_run, write_run_record
+from migration_harness.runs.run_manager import RunManager
+from migration_harness.runs.run_records import execution_lock, load_saved_run, write_run_record
 
 
 class ParallelDashboardTests(HarnessCase):

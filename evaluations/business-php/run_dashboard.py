@@ -16,7 +16,7 @@ from uuid import UUID
 
 def serve(root, run_id=None):
     from migration_harness.config import load_config
-    from migration_harness.dashboard import run_dashboard
+    from migration_harness.web.dashboard import run_dashboard
     run_dashboard(load_config(root / "harness.toml"), **({"run_id": run_id} if run_id else {"unit_id": "business-scale"}))
 
 

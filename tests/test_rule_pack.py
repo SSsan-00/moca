@@ -225,7 +225,7 @@ class RulePackHarnessTests(HarnessCase):
         self.assertIn(entry["path"], guidelines)
         self.assertIn(".migration-materials/" + entry["file"], guidelines)
         self.assertIn("DETAIL: SQL rollback rules.", (agent / ".migration-materials" / entry["file"]).read_text(encoding="utf-8"))
-        from migration_harness.rule_materials import render_guidelines
+        from migration_harness.rules.rule_materials import render_guidelines
 
         selected = render_guidelines(capsule / "materials", manifest, selected=frozenset({entry["file"]}))
         self.assertEqual(selected.count("DETAIL: SQL rollback rules."), 1)

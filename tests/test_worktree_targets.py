@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from migration_harness import editor_queue, worktree_targets
+from migration_harness.runs import editor_queue, worktree_targets
 
 
 class TargetFileTests(unittest.TestCase):

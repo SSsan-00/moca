@@ -6,7 +6,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness import checker_output, junie_cli, workflow
+from migration_harness.verification import checker_output
+from migration_harness.junie import junie_cli
+from migration_harness import workflow
 from fixtures import SavedRunFixture
 
 

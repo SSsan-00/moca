@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from migration_harness.config import load_config
-from migration_harness.capsules import input_encoding
+from migration_harness.context.capsules import input_encoding
 
 
 def inspect_rules(config_path: Path) -> dict:

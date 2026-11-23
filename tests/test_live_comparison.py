@@ -6,8 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import diff_viewer, junie_cli, review_anchors, run_records, workflow
-from migration_harness.diff_viewer import capture_workspace, create_snapshot, snapshot_bytes
+from migration_harness.web import diff_viewer, review_anchors
+from migration_harness.junie import junie_cli
+from migration_harness.runs import run_records
+from migration_harness import workflow
+from migration_harness.web.diff_viewer import capture_workspace, create_snapshot, snapshot_bytes
 
 
 class LiveComparisonTests(HarnessCase):

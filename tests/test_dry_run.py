@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from migration_harness.dry_run import plan_dry_run
+from migration_harness.runs.dry_run import plan_dry_run
 
 
 def make_config(tmp_path):
@@ -69,7 +69,7 @@ class DryRunTests(unittest.TestCase):
             for requested, expected in ((script, "confirmed"), (Path("generated.py"), "unchecked")):
                 with self.subTest(prefix=prefix, requested=requested):
                     config["checker_command"] = [*prefix, str(requested), "{target}"]
-                    with patch("migration_harness.dry_run.shutil.which", return_value="checked-only"):
+                    with patch("migration_harness.runs.dry_run.shutil.which", return_value="checked-only"):
                         checks = [item for item in plan_dry_run(config, config["units"][0]["id"])["checks"]
                                   if item["phase"] == "checker"]
                     self.assertTrue(any("command" in item and item["state"] == "confirmed" for item in checks))
@@ -84,7 +84,7 @@ class DryRunTests(unittest.TestCase):
                         ["--unknown", "checker.py"], ["-X", "utf8"], ["-X"]):
             with self.subTest(options=options):
                 config["checker_command"] = ["python", *options]
-                with patch("migration_harness.dry_run.shutil.which", return_value="checked-only"):
+                with patch("migration_harness.runs.dry_run.shutil.which", return_value="checked-only"):
                     checks = [item for item in plan_dry_run(config, config["units"][0]["id"])["checks"]
                               if item["phase"] == "checker"]
                 self.assertTrue(any("command" in item for item in checks))
@@ -116,7 +116,7 @@ class DryRunTests(unittest.TestCase):
 
         from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 
-        with patch("migration_harness.dry_run._probe_git", side_effect=subprocess.TimeoutExpired("git", 5)):
+        with patch("migration_harness.runs.dry_run._probe_git", side_effect=subprocess.TimeoutExpired("git", 5)):
             plan = plan_dry_run(self.config, "注文")
         self.assertFalse(plan["configuration_ok"])
         self.assertTrue(any(row["phase"] == "git" and row["state"] == "unchecked" for row in plan["checks"]))

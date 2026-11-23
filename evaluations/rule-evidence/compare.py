@@ -9,7 +9,7 @@ import time
 from migration_harness import workflow
 from migration_harness.config import load_config, target_paths
 from migration_harness.execution import ExecutionControl, control_scope
-from migration_harness.source_context import stage_target_context
+from migration_harness.context.source_context import stage_target_context
 
 variant, output = sys.argv[1], Path(sys.argv[2])
 root = Path(mkdtemp(prefix="harness-live-111-"))

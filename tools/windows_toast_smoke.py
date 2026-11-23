@@ -8,7 +8,7 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from urllib.parse import parse_qs, urlsplit
 
-from migration_harness.junie_notifications import JunieNotifications, RequestKey, WindowsToast, notification_settings
+from migration_harness.junie.junie_notifications import JunieNotifications, RequestKey, WindowsToast, notification_settings
 
 
 def main():

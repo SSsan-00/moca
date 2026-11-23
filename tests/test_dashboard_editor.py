@@ -16,7 +16,10 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, editor_queue, junie_cli, run_records, workflow, worktree_targets
+from migration_harness.web import dashboard
+from migration_harness.runs import editor_queue, run_records, worktree_targets
+from migration_harness.junie import junie_cli
+from migration_harness import workflow
 from migration_harness.config import load_config
 from migration_harness.execution import control_scope
 

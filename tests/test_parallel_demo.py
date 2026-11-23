@@ -11,5 +11,5 @@ class ParallelDemoTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         subprocess.run([
             node_executable(self), str(root / "tests/parallel_demo.cjs"),
-            str(root / "src/migration_harness/dashboard_runs_demo.js"),
+            str(root / "src/migration_harness/web/dashboard_runs_demo.js"),
         ], check=True, capture_output=True, text=True, timeout=10)

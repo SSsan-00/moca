@@ -12,8 +12,8 @@ from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 
-from migration_harness import dashboard
-from migration_harness.junie_notifications import RunNotice
+from migration_harness.web import dashboard
+from migration_harness.junie.junie_notifications import RunNotice
 from ui_dependencies import node_executable, require_ui_dependency
 
 

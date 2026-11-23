@@ -9,7 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness import checker_advisory as advisory, junie_cli
+from migration_harness.verification import checker_advisory as advisory
+from migration_harness.junie import junie_cli
 
 
 FAKE_ACP = r"""

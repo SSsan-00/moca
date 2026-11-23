@@ -23,46 +23,92 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory, mkdtemp
 from time import monotonic
 from typing import Any
 
-from . import junie_cli
-from .acp_permissions import PinnedReferenceReads
-from .build_receipt import build_artifacts, build_inputs
-from .verification_files import verification_files
-from .capsules import is_php_input, load_capsule_manifest, prepare_context
-from .checker_advisory import LOG_LIMIT, bounded_advisory_text, checker_advisory, matching_evidence, output_advisory
-from .checker_rule_evidence import rule_checker_exchange
-from .checker_output import (
-    CHECKER_SUCCESS_MESSAGE, CheckerFinding, accepted_findings, checker_findings, checker_response_status,
+from .junie import junie_cli
+from .junie.acp_permissions import PinnedReferenceReads
+from .verification.build_receipt import build_artifacts, build_inputs
+from .verification.verification_files import verification_files
+from .context import php_literals
+from .context.capsules import is_php_input, load_capsule_manifest, prepare_context
+from .verification.checker_advisory import (
+    LOG_LIMIT,
+    bounded_advisory_text,
+    checker_advisory,
+    matching_evidence,
+    output_advisory,
+)
+from .verification.checker_rule_evidence import rule_checker_exchange
+from .verification.checker_output import (
+    CHECKER_SUCCESS_MESSAGE,
+    CheckerFinding,
+    accepted_findings,
+    checker_findings,
+    checker_response_status,
     parse_checker_diagnostics,
 )
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
-from .context_evidence import boundary_hints
-from .context_handoff import handoff_prompt, junie_memo_request, save_junie_memo
-from .context_plan import navigation_plan
-from .repair_context import diagnostic_php_ranges
-from .target_evidence import diagnostic_references
+from .context.context_evidence import boundary_hints
+from .context.context_handoff import handoff_prompt, junie_memo_request, save_junie_memo
+from .context.context_plan import navigation_plan
+from .verification.repair_context import diagnostic_php_ranges
+from .context.target_evidence import diagnostic_references
 from .config import find_unit, target_paths
-from .grounded_evidence import grounded_diagnostic, has_environment_diagnostic
-from .script_handoff import make_script_handoff, script_handoff_context
-from .editor_queue import (
-    EDITOR_TARGET_SUFFIXES, LivePrompts, dispatch_prompts, editor_queue, editor_target, finish_prompts, merge_edit,
+from .verification.grounded_evidence import grounded_diagnostic, has_environment_diagnostic
+from .verification.script_handoff import make_script_handoff, script_handoff_context
+from .runs.editor_queue import (
+    EDITOR_TARGET_SUFFIXES,
+    LivePrompts,
+    dispatch_prompts,
+    editor_queue,
+    editor_target,
+    finish_prompts,
+    merge_edit,
     record_operator_edit,
 )
 from .errors import format_error
-from .execution import build_process_scope, check_cancelled, current_operation_id, junie_dashboard_control, report_activity, run_process
-from .detail_review_evidence import stage_review_evidence
+from .execution import (
+    build_process_scope,
+    check_cancelled,
+    current_operation_id,
+    junie_dashboard_control,
+    report_activity,
+    run_process,
+)
+from .rules.detail_review_evidence import stage_review_evidence
 from .files import harness_asset, safe_target, sha256_file
-from .rule_materials import (
-    InvalidDetailContextEvidence, detail_index, effective_details, render_guidelines, selected_details,
+from .rules.rule_materials import (
+    InvalidDetailContextEvidence,
+    detail_index,
+    effective_details,
+    render_guidelines,
+    selected_details,
 )
-from .rule_search import review_hint
-from .run_records import edit_run_record, execution_lock, junie_usage_recorder, load_saved_run, validate_run_id, write_run_record
-from .source_context import (
-    activate_target_context, compare_target_context, stage_target_context, target_context_inventory, target_context_snapshot,
+from .rules.rule_search import review_hint
+from .runs.run_records import (
+    edit_run_record,
+    execution_lock,
+    junie_usage_recorder,
+    load_saved_run,
+    validate_run_id,
+    write_run_record,
 )
-from .timings import freeze_timings
-from .worktree_targets import (
-    EDIT_BYTES, apply_agent_targets, finish_pending_targets, read_target, review_target_hash,
-    save_target_edit, target_hash, target_newline, worktree_source_lock,
+from .context.source_context import (
+    activate_target_context,
+    compare_target_context,
+    stage_target_context,
+    target_context_inventory,
+    target_context_snapshot,
+)
+from .runs.timings import freeze_timings
+from .runs.worktree_targets import (
+    EDIT_BYTES,
+    apply_agent_targets,
+    finish_pending_targets,
+    read_target,
+    review_target_hash,
+    save_target_edit,
+    target_hash,
+    target_newline,
+    worktree_source_lock,
 )
 
 
@@ -589,7 +635,7 @@ def _stage_migration_materials(
         guidelines.unlink(missing_ok=True)
     helper = safe_target(agent_root, Path(".migration-materials/php_literals.py"))
     helper.parent.mkdir(exist_ok=True)
-    shutil.copyfile(Path(__file__).with_name("php_literals.py"), helper)
+    shutil.copyfile(Path(php_literals.__file__), helper)
     scratch = agent_root / ".migration-scratch"
     if scratch.is_symlink():
         raise ValueError("scratch directory must not be a symbolic link")
@@ -2903,7 +2949,7 @@ def _repair_from_checker_instruction(config, targets, worktree, run_path, record
 
 def _apply_verification_edits(run_path, worktree, unit, request):
     """検証依頼に含まれる編集を対象版と照合して反映する。"""
-    from .junie_conversation import saved_edits, target_versions
+    from .junie.junie_conversation import saved_edits, target_versions
 
     targets = target_paths(unit)
     apply_error = None
@@ -3794,7 +3840,7 @@ def can_resume_build(record):
 
 def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     """ビルドのみの明示再開を保存版と結び付ける。"""
-    from .junie_conversation import saved_edits, target_versions
+    from .junie.junie_conversation import saved_edits, target_versions
 
     run_path, worktree, _, unit = load_saved_run(config, run_id)
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
@@ -3816,7 +3862,7 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
 def plan_migration_resume(
     config: dict[str, Any], run_id: str, through_capsule: int | None, *, rewind_to: int | None = None,
 ) -> dict[str, Any]:
-    from .junie_conversation import target_versions
+    from .junie.junie_conversation import target_versions
 
     run_path, worktree, _, unit = load_saved_run(config, run_id)
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):

@@ -11,11 +11,8 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import fromstring
 
-from migration_harness.dashboard import Dashboard
-from migration_harness.junie_notifications import (
-    JunieNotifications, RequestKey, RunNotice, WindowsToast, answer_pending, notification_settings, pending_requests,
-    run_notice, toast_xml,
-)
+from migration_harness.web.dashboard import Dashboard
+from migration_harness.junie.junie_notifications import JunieNotifications, RequestKey, RunNotice, WindowsToast, answer_pending, notification_settings, pending_requests, run_notice, toast_xml
 
 
 class JunieRequestTests(unittest.TestCase):
@@ -236,7 +233,7 @@ class JunieNotificationTests(unittest.TestCase):
 
     def test_windows_process_receives_only_opaque_link_not_dashboard_secret_or_run_details(self):
         url = "http://127.0.0.1:9234/junie-open/" + "T" * 32
-        with patch("migration_harness.junie_notifications.subprocess.run") as command:
+        with patch("migration_harness.junie.junie_notifications.subprocess.run") as command:
             WindowsToast()("show", "tag", url)
         args, kwargs = command.call_args
         self.assertTrue(str(args[0][0]).endswith("powershell.exe"))
@@ -247,7 +244,7 @@ class JunieNotificationTests(unittest.TestCase):
 
     def test_windows_show_retries_a_timeout_once_with_identical_tag_and_payload(self):
         expired = subprocess.TimeoutExpired("powershell.exe", 5)
-        with patch("migration_harness.junie_notifications.subprocess.run", side_effect=[expired, None]) as command:
+        with patch("migration_harness.junie.junie_notifications.subprocess.run", side_effect=[expired, None]) as command:
             WindowsToast()("show", "stable-tag", "http://127.0.0.1:9234/junie-open/token", "failed")
         self.assertEqual(command.call_count, 2)
         self.assertEqual(command.call_args_list[0].args, command.call_args_list[1].args)
@@ -259,7 +256,7 @@ class JunieNotificationTests(unittest.TestCase):
         rejected = subprocess.CalledProcessError(3, "powershell.exe")
         for action, error, calls in (("show", expired, 2), ("show", rejected, 1), ("remove", expired, 1)):
             with self.subTest(action=action, error=type(error).__name__):
-                with patch("migration_harness.junie_notifications.subprocess.run", side_effect=error) as command:
+                with patch("migration_harness.junie.junie_notifications.subprocess.run", side_effect=error) as command:
                     with self.assertRaises(type(error)):
                         WindowsToast()(action, "stable-tag", "")
                 self.assertEqual(command.call_count, calls)

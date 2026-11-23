@@ -8,7 +8,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from migration_harness import build_receipt, files
+from migration_harness.verification import build_receipt
+from migration_harness import files
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 
 

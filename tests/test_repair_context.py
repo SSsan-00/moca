@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from migration_harness.repair_context import diagnostic_php_ranges
+from migration_harness.verification.repair_context import diagnostic_php_ranges
 
 
 class DiagnosticPhpRangeTests(unittest.TestCase):

@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from migration_harness import junie_cli
-from migration_harness.dashboard import Dashboard
+from migration_harness.junie import junie_cli
+from migration_harness.web.dashboard import Dashboard
 from migration_harness.execution import OperationCancelled, control_scope
 
 

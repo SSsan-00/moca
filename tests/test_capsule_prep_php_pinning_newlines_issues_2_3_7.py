@@ -12,9 +12,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import capsules, cli, junie_cli, review_anchors, workflow
+from migration_harness.context import capsules
+from migration_harness import cli, workflow
+from migration_harness.junie import junie_cli
+from migration_harness.web import review_anchors
 from migration_harness.config import load_config
-from migration_harness.diff_viewer import capture_workspace
+from migration_harness.web.diff_viewer import capture_workspace
 
 
 PHP = {"path": "Source.php", "role": "php", "start_line": 1, "end_line": 2}

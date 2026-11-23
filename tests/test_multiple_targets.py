@@ -5,8 +5,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import junie_cli, run_records, workflow
-from migration_harness.diff_viewer import capture_workspace
+from migration_harness.junie import junie_cli
+from migration_harness.runs import run_records
+from migration_harness import workflow
+from migration_harness.web.diff_viewer import capture_workspace
 
 
 class RazorTargetConfigTest(HarnessCase):
@@ -124,7 +126,7 @@ class MultipleTargetsTest(HarnessCase):
 
     # 中断時の編集が残り、再開後に両方のファイルを比較できることを検証する。
     def test_partial_edits_are_kept_and_both_targets_are_compared(self):
-        from migration_harness import junie_cli
+        from migration_harness.junie import junie_cli
 
         def cancelled_while_editing(args, *rest, **kwargs):
             self.assertIn("reread the target and make a fresh, smaller patch", args[-1])

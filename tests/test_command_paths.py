@@ -10,7 +10,7 @@ from fixtures import HarnessCase
 from migration_harness import workflow
 from migration_harness.command_paths import expand_command_paths
 from migration_harness.config import load_config
-from migration_harness.settings_form import build_settings_draft
+from migration_harness.web.settings_form import build_settings_draft
 
 
 class CommandPathsTests(HarnessCase):

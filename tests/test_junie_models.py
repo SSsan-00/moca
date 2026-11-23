@@ -12,10 +12,11 @@ from unittest.mock import Mock, patch
 import tomlkit
 
 from fixtures import HarnessCase
-from migration_harness import junie_cli, workflow
+from migration_harness.junie import junie_cli
+from migration_harness import workflow
 from migration_harness.config import load_config
-from migration_harness.dashboard import _read_settings, _save_settings
-from migration_harness.settings_form import build_settings_draft
+from migration_harness.web.dashboard import _read_settings, _save_settings
+from migration_harness.web.settings_form import build_settings_draft
 
 
 class ModelSettingsTests(HarnessCase):

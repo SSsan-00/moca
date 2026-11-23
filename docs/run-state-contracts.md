@@ -6,9 +6,9 @@
 
 | 領域 | 現行の責務・保存境界 |
 | --- | --- |
-| Run工程 | [workflow.py](../src/migration_harness/workflow.py) が `run.json` の準備、カプセル、ビルド、チェッカー、修正、検証記録を更新する。ダッシュボード表示用の `ready` や `queued` は工程の成否とは別。実行待ちは [RunManager](../src/migration_harness/run_manager.py) が FIFO 順に扱い、`dashboard-queue.json` に操作IDと起動済み状態を保存する。 |
-| 編集 | [dashboard.py](../src/migration_harness/dashboard.py) と [editor_queue.py](../src/migration_harness/editor_queue.py) が Run・対象・編集版を照合し、手修正と追加指示を `editor.json` に保存する。即時保存できない編集は保留され、workflow の境界で適用する。対象の版が異なる場合は上書きせず停止し、競合と編集内容を残す。Junie結果の複数ファイル反映は `target_apply_pending` のハッシュで中断後の続きと外部変更を識別する。 |
-| 会話 | [junie_conversation.py](../src/migration_harness/junie_conversation.py) が受信本文を `editor.json` に記録してからHTTP 202を返す。照会、確認への回答、ビルド後チェッカー、Junieへの追加指示を振り分ける。回答は元の質問ID、検証依頼は対象版と先行ビルドの操作IDに結び付ける。実行開始は `running`、結果は指示ID・対象ハッシュ・ログとともに保存する。 |
+| Run工程 | [workflow.py](../src/migration_harness/workflow.py) が `run.json` の準備、カプセル、ビルド、チェッカー、修正、検証記録を更新する。ダッシュボード表示用の `ready` や `queued` は工程の成否とは別。実行待ちは [RunManager](../src/migration_harness/runs/run_manager.py) が FIFO 順に扱い、`dashboard-queue.json` に操作IDと起動済み状態を保存する。 |
+| 編集 | [dashboard.py](../src/migration_harness/web/dashboard.py) と [editor_queue.py](../src/migration_harness/runs/editor_queue.py) が Run・対象・編集版を照合し、手修正と追加指示を `editor.json` に保存する。即時保存できない編集は保留され、workflow の境界で適用する。対象の版が異なる場合は上書きせず停止し、競合と編集内容を残す。Junie結果の複数ファイル反映は `target_apply_pending` のハッシュで中断後の続きと外部変更を識別する。 |
+| 会話 | [junie_conversation.py](../src/migration_harness/junie/junie_conversation.py) が受信本文を `editor.json` に記録してからHTTP 202を返す。照会、確認への回答、ビルド後チェッカー、Junieへの追加指示を振り分ける。回答は元の質問ID、検証依頼は対象版と先行ビルドの操作IDに結び付ける。実行開始は `running`、結果は指示ID・対象ハッシュ・ログとともに保存する。 |
 | 検証・完了 | workflow がビルドと必要なチェッカーを別々に記録する。 [migration_ledger](../src/migration_harness/workflow.py) は対象ハッシュ、構成、フック、カプセル、検証結果と理由付きの範囲レビューを照合する。検証成功だけでは移行完了にならず、全範囲の確認または理由付き除外が必要。 |
 
 待機ジョブは再起動時に未起動分だけ復元する。起動済みジョブは再実行せず、保存されたRunから利用者が再開する。実行中にJunieの終了を確認できなかった場合、同じRunの会話依頼を保留し、`blocked_conversations` に理由を保存する。保留依頼の失敗記録を書けない間もメモリ上の保留を解除せず、保存を再試行する。保留理由または起動済み印が残っていれば再起動後もそのRunを止める。両方の永続記録が失われた場合の再起動後の保証はないため、残存プロセスと記録を確認してから新しい依頼を送る。別Runは個別の保存が可能なら継続する。
@@ -30,10 +30,10 @@ Junie のセッションは `_run_session()` がプロセス、資源、終了�
 
 | ロック | 保護範囲と注意点 |
 | --- | --- |
-| `execution_lock` ([run_records.py](../src/migration_harness/run_records.py)) | OSファイルロック。同じRunの再開・レビューの競合を防ぐ。準備はRunロックの後に共有 `prepare` ロックを取り、共有入力の固定後に解放する。RunManagerの `dashboard` 所有ロックは同じ保存先のダッシュボードを1プロセスに制限する。 |
+| `execution_lock` ([run_records.py](../src/migration_harness/runs/run_records.py)) | OSファイルロック。同じRunの再開・レビューの競合を防ぐ。準備はRunロックの後に共有 `prepare` ロックを取り、共有入力の固定後に解放する。RunManagerの `dashboard` 所有ロックは同じ保存先のダッシュボードを1プロセスに制限する。 |
 | `run.lock` / `editor.lock` | JSON本体とは別のファイルをロックし、読取・変更・置換を直列化する。Run observerへの通知は `run.lock` の解放後。WindowsのJSON置換は共有違反に対して短い上限付き再試行を行う。 |
 | `RunManager.condition` | 1ダッシュボード内のRun一覧、ジョブ、操作ID、会話スレッドと画面イベントを守る。待機依頼の保存・登録は会話履歴ロックからconditionへ進む。conditionを保持したまま外部コマンドやスレッド終了を待たない。 |
-| `worktree_source_lock` ([worktree_targets.py](../src/migration_harness/worktree_targets.py)) | 同一プロセス内で編集・反映を直列化する再入可能ロック。別プロセスには効かないため、保存版と現物のハッシュを照合する。 |
+| `worktree_source_lock` ([worktree_targets.py](../src/migration_harness/runs/worktree_targets.py)) | 同一プロセス内で編集・反映を直列化する再入可能ロック。別プロセスには効かないため、保存版と現物のハッシュを照合する。 |
 | ビルド停止ロック ([execution.py](../src/migration_harness/execution.py)) | 個々の `ExecutionControl` で停止要求とビルド本体の有効期間を同期する。ロック中に外部コマンドや操作者の応答を待たない。 |
 
 JSON用ロックと工程ロックは別物。ファイルのロック順やconditionを保持する範囲を変える場合は、CLI・HTTP・ワーカー・再起動の各経路でデッドロックと更新消失を再評価する。

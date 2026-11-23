@@ -15,9 +15,11 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, junie_cli, workflow
+from migration_harness.web import dashboard
+from migration_harness.junie import junie_cli
+from migration_harness import workflow
 from migration_harness.config import load_config
-from migration_harness.diff_viewer import review_html
+from migration_harness.web.diff_viewer import review_html
 
 
 class DashboardComparisonRoutesTests(HarnessCase):

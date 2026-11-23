@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from migration_harness import php_literals
+from migration_harness.context import php_literals
 
 
 class PhpLiteralTests(unittest.TestCase):
