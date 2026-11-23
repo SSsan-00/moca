@@ -126,6 +126,58 @@ class RuleMaterialsTests(HarnessCase):
         self.assertEqual(row["verification_state"], "human_review_needed")
         self.assertEqual(row["history"][-1]["kind"], "passed")
 
+    def test_independent_checker_requires_fresh_evidence_even_on_same_version(self):
+        import sys
+
+        from migration_harness.rule_review import review_rules
+
+        (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
+        for name in ("first.md", "second.md"):
+            (self.project / name).write_text("Match the example.", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config["checker_rule_evidence"] = True
+        for name in ("first.md", "second.md"):
+            config["units"][0]["inputs"].append({
+                "path": name, "role": "migration_rules", "usage": "required", "encoding": "utf-8",
+                "start_line": 1, "end_line": None, "shared": True,
+            })
+        run = workflow.prepare_run(config, "sample")
+        record = json.loads((Path(run["run_path"]) / "run.json").read_text(encoding="utf-8"))
+        checker = Path(run["worktree_path"]) / "mock_checker.py"
+        checker.write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "if sys.argv[1] != 'omit':\n"
+            " q = json.loads(Path(os.environ['MIGRATION_RULE_CHECK_REQUEST']).read_text(encoding='utf-8'))\n"
+            " name, rule = next(iter(q['rules'].items()))\n"
+            " row = dict(rule=name, sha256=rule['sha256'], start_line=1, end_line=rule['saved_file_lines'],"
+            " status='passed' if sys.argv[1] == 'incomplete' else sys.argv[1], evidence='independent fixture check')\n"
+            " Path(os.environ['MIGRATION_RULE_CHECK_RECEIPT']).write_text(json.dumps("
+            "dict(schema=1, request_id=q['request_id'], results=[row])), encoding='utf-8')\n"
+            "if sys.argv[1] == 'incomplete': print('Error: No checks were performed.')\n",
+            encoding="utf-8",
+        )
+        for verdict, expected, overall in (
+            ("passed", "passed", "checker_succeeded"),
+            ("omit", "human_review_needed", "checker_succeeded"),
+            ("incomplete", "human_review_needed", "checker_needs_review"),
+            ("failed", "failed", "checker_needs_review"),
+        ):
+            with self.subTest(verdict=verdict):
+                result, _, _ = workflow._run_checker(
+                    [sys.executable, str(checker), verdict], run, record, None, rule_evidence=True,
+                )
+                self.assertEqual(result["status"], overall)
+                rows = review_rules(config, run["run_id"])["rules"]
+                self.assertEqual([row["verification_state"] for row in rows], [expected, "human_review_needed"])
+                if expected == "human_review_needed":
+                    self.assertNotIn("checker_rule_evidence", record)
+                    self.assertEqual(record["previous_checker_rule_evidence"]["results"]["rule-0001.txt"]["kind"], "passed")
+                else:
+                    self.assertEqual(rows[0]["independent_verification"]["source"], "checker")
+
     def test_hundreds_of_rules_keep_every_line_and_manifest_range(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         config = self.config()

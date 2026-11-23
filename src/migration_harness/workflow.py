@@ -29,6 +29,7 @@ from .build_receipt import build_artifacts, build_inputs
 from .verification_files import verification_files
 from .capsules import is_php_input, load_capsule_manifest, prepare_context
 from .checker_advisory import LOG_LIMIT, bounded_advisory_text, checker_advisory, matching_evidence, output_advisory
+from .checker_rule_evidence import rule_checker_exchange
 from .checker_output import (
     CHECKER_SUCCESS_MESSAGE, CheckerFinding, accepted_findings, checker_findings, checker_response_status,
     parse_checker_diagnostics,
@@ -1947,7 +1948,7 @@ def _checker_repair_reason(error: BaseException) -> str:
 
 def _run_checker(
     command: list[str], result: dict[str, Any], record: dict[str, Any],
-    build_project: str | None, *, require_zero_for_success: bool = False,
+    build_project: str | None, *, require_zero_for_success: bool = False, rule_evidence: bool = False,
 ) -> tuple[dict[str, Any], list[CheckerFinding], bool]:
     run_path = Path(result["run_path"])
     record_path = run_path / "run.json"
@@ -1959,6 +1960,9 @@ def _run_checker(
     record.pop("checker_review_reason", None)
     record.pop("checker_success_message", None)
     record.pop("checker_advisory", None)
+    if previous_evidence := record.pop("checker_rule_evidence", None):
+        record["previous_checker_rule_evidence"] = previous_evidence
+    record.pop("checker_rule_evidence_error", None)
     write_run_record(record_path, record)
     _print_progress(f"Running checker in {result['worktree_path']} (log: {log_path})")
     report_activity("独自チェッカーで確認しています", kind="phase",
@@ -1968,9 +1972,14 @@ def _run_checker(
         with log_path.open("wb") as log:
             try:
                 command = expand_command_paths(command, Path(result["worktree_path"]), build_project, record["target"])
-                completed = run_process(
-                    command, label="チェッカー", cwd=result["worktree_path"], stdout=log, stderr=subprocess.STDOUT, check=False,
-                )
+                with rule_checker_exchange(run_path, Path(result["worktree_path"]), record,
+                                           enabled=rule_evidence) as (checker_options, collect):
+                    completed = run_process(
+                        command, label="チェッカー", cwd=result["worktree_path"], stdout=log,
+                        stderr=subprocess.STDOUT, check=False, **checker_options,
+                    )
+                    if collect is not None and completed.returncode == 0:
+                        collect()
             except (OSError, ValueError) as exc:
                 log.write((format_error(exc, command=command, cwd=result["worktree_path"]) + "\n").encode("utf-8"))
                 raise
@@ -2008,6 +2017,16 @@ def _run_checker(
         write_run_record(record_path, record)
         raise RunInterrupted(record["run_id"]) from None
 
+    rule_results = record.get("checker_rule_evidence", {}).get("results", {})
+    if any(item["kind"] == "failed" for item in rule_results.values()):
+        record.update(status="checker_needs_review", checker_review_reason="rule_not_reflected",
+                      error="独立チェッカーが未反映のルールを検出しました。移行台帳で確認してください。")
+        use_raw_output = False
+    if rule_results and record["status"] != "checker_succeeded":
+        for name in [name for name, item in rule_results.items() if item["kind"] == "passed"]:
+            del rule_results[name]
+        if not rule_results:
+            record.pop("checker_rule_evidence", None)
     write_run_record(record_path, record, timing_stage=5)
     return {
         **result,
@@ -3294,6 +3313,7 @@ def _run_verification(
         review_free_output = bool(config.get("checker_review_free_output"))
         checked, findings, use_raw_output = _run_checker(
             command, verified, record, config["build_project"], require_zero_for_success=review_free_output,
+            rule_evidence=bool(config.get("checker_rule_evidence")),
         )
         check_cancelled()
         if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
@@ -3965,6 +3985,7 @@ def _resume_checker(config, unit, result, record, plan, request_id):
                   **{key: record.get(key) for key in ("junie_exit_code", "agent_workspace_path", "completed_capsules",
                                                      "build_exit_code", "build_log_path", "verification")}},
         record, config["build_project"], require_zero_for_success=bool(config.get("checker_review_free_output")),
+        rule_evidence=bool(config.get("checker_rule_evidence")),
     )
     try:
         _check_build_receipt(config, worktree, record)

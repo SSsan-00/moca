@@ -192,6 +192,9 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     checker_command = checker.get("command")
     if "command" in checker:
         validate_checker_command(checker_command)
+    rule_evidence = checker.get("rule_evidence", False)
+    if type(rule_evidence) is not bool:
+        raise ValueError("[checker].rule_evidence must be a boolean")
     checker_files = checker.get("verification_files", [])
     if not isinstance(checker_files, list):
         raise ValueError("[checker].verification_files must be an array of file paths")
@@ -297,6 +300,7 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     return {
         "build_project": build_project,
         "checker_command": checker_command,
+        "checker_rule_evidence": rule_evidence,
         "checker_verification_files": checker_files,
         "scripts": scripts,
         "diff_viewer_html": viewer_html if viewer_enabled else None,
