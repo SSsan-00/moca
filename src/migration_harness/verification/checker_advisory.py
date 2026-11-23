@@ -20,8 +20,7 @@ from ..files import safe_target
 LOG_LIMIT = 32_768
 REPLY_LIMIT = 4096
 FRAME_LIMIT = 65_536
-STARTUP_TIMEOUT = 75
-SESSION_TIMEOUT = 45
+SESSION_TIMEOUT = 75
 COUNTED_PASS = (
     r"[1-9][0-9]*件(?:全件(?:合格|正常)|の確認が完了しました[。．]\s*すべて正常です)|"
     r"[1-9][0-9]* (?:checks?|tests?) passed(?:, 0 failed)?"
@@ -181,7 +180,7 @@ def run_text_advisory(
         try:
             if timeout is not None:
                 return _exchange(process, project, prompt, timeout)
-            return _exchange(process, project, prompt, SESSION_TIMEOUT, startup_timeout=STARTUP_TIMEOUT)
+            return _exchange(process, project, prompt, SESSION_TIMEOUT, startup_timeout=junie_cli.ACP_STARTUP_TIMEOUT)
         finally:
             try:
                 junie_cli._close_junie(process)
