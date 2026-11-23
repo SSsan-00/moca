@@ -99,6 +99,76 @@ class ContextHandoffTests(unittest.TestCase):
             row["id"] for row in unresolved_operator_notes(self.run, self.root, self.targets, {})
         ])
 
+    def test_transitive_operator_supersession_across_target_restore(self):
+        initial = self.target.read_bytes()
+        early, a = self.add("Independent early"), self.add("Original first explanation")
+        self.target.write_text("class Changed {}", encoding="utf-8")
+        b = self.add("Interim replacement", supersedes=a["id"])
+        self.target.write_bytes(initial)
+        c = self.add("Final replacement", supersedes=b["id"])
+        late = self.add("Independent late")
+        old_run = self.record.read_bytes()
+        rows = context_handoff(self.run, self.root, self.targets, {}, through=1)
+        self.assertEqual(
+            [(row["id"], state) for row, state in zip((late, c, b, a, early),
+               ("pending", "pending", "superseded", "superseded", "pending"), strict=True)],
+            [(row["id"], row["state"]) for row in rows],
+        )
+        prompt = handoff_prompt(self.run, self.root, self.targets, {}, through=1)
+        for item in (early, c, late):
+            self.assertIn(item["note"], prompt)
+        for item in (a, b):
+            self.assertNotIn(item["note"], prompt)
+        self.assertNotIn("omitted", prompt)
+        self.assertEqual(old_run, self.record.read_bytes())
+
+        path = self.run / "context-handoff.json"
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        for changes in ({"start_line": 777, "end_line": 777}, {"source_sha256": "0" * 64},
+                        {"target_hashes": {"not-a-configured-path.cs": None}}):
+            with self.subTest(changes=changes):
+                def identify(row, **changes):
+                    fields = {**{key: value for key, value in row.items() if key != "id"}, **changes}
+                    return {**fields, "id": hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()}
+                bad = identify(b, **changes)
+                replacement = identify(c, supersedes=bad["id"])
+                path.write_text(json.dumps({**saved, "notes": [early, a, bad, replacement, late]}), encoding="utf-8")
+                rows = context_handoff(self.run, self.root, self.targets, {}, through=1)
+                states = {row["id"]: row["state"] for row in rows}
+                self.assertEqual("pending", states[a["id"]])
+                self.assertEqual("needs_review", states[bad["id"]])
+
+    def test_operator_launch_receipt_is_exact_read_only_and_verifies_live_inputs(self):
+        from migration_harness.context.context_handoff import operator_notes_from_receipt
+
+        record = {"run_id": "test", "detail_overrides": {}}
+        notes = [self.add(f"First target note {i}") for i in range(4)]
+        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1, capture_operator_receipt=True)
+        receipt = record["operator_handoff_receipt"]["id"]
+        self.assertIn(receipt, prompt)
+        self.assertIn(notes[0]["id"], prompt)
+        self.assertNotIn(notes[0]["note"], prompt)
+        self.add("A late edit after prompt", supersedes=notes[0]["id"])
+        self.target.write_text("class Changed {}", encoding="utf-8")
+        self.add("An unrelated note for the currently adopted target")
+        before = json.dumps(record)
+        lookup = lambda **kwargs: operator_notes_from_receipt(self.run, self.targets, record, receipt, **kwargs)
+        self.assertEqual([row["id"] for row in reversed(notes)], [row["id"] for row in lookup()])
+        self.assertEqual(before, json.dumps(record))
+        with self.assertRaises(ValueError):
+            lookup(through=2)
+        for field, invalid in (("run_id", "another run"), ("detail_overrides", {"new-rule": False})):
+            original = record[field]
+            record[field] = invalid
+            with self.assertRaises(ValueError):
+                lookup()
+            record[field] = original
+        with self.assertRaises(ValueError):
+            operator_notes_from_receipt(self.run, self.targets, record, "0" * 64)
+        (self.run / "capsule/php-sources/0001.php").write_text("not the fixed version", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            lookup()
+
     def test_changed_corrupt_or_out_of_scope_replacement_does_not_hide_pending_predecessor(self):
         from migration_harness.context.context_handoff import unresolved_operator_notes
 

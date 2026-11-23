@@ -1489,10 +1489,12 @@
     <p><button class="review-action" id="open-rule-verification" type="button" disabled>ルールの反映を確認</button></p>
     <form id="operator-note-scope">
       <label>利用者メモの根拠範囲：カプセル <input id="operator-note-through" type="number" min="1" step="1" placeholder="全範囲"> まで</label>
+      <label>起動時メモの参照ID <input id="operator-note-receipt" type="text" maxlength="64" pattern="[0-9a-f]{64}" placeholder="現在版は空欄" autocomplete="off"></label>
       <button type="submit">表示</button>
     </form>
     <details id="unresolved-operator-notes" hidden>
       <summary>利用者の未解決メモ</summary>
+      <p id="operator-note-receipt-active" hidden>指定したJunie起動時点のメモです。現在の移行先の状態や完了判定とは別です。</p>
       <p>現在の資料・移行先と版が一致する確認事項です。Junieへの本文の引き継ぎは最新3件までです。</p>
       <ul></ul>
     </details>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -23,6 +24,83 @@ from migration_harness.web.diff_viewer import review_html
 
 
 class DashboardComparisonRoutesTests(HarnessCase):
+    def test_rewind_prompt_and_ledger_agree_on_launch_target_before_adoption(self):
+        from migration_harness.context.context_handoff import record_handoff
+
+        t0, t1 = b"class Page {}\n", "class Adopted {}\n".encode("utf-8-sig")
+        (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
+        (self.project / "Page.cs").write_bytes(t0)
+        self.commit_project()
+        config = self.config()
+        run_id = "00000000-0000-4000-8000-000000000164"
+        run = Path(config["run_root"]) / run_id
+        record_path = run / "run.json"
+        notes = []
+        calls = 0
+        dashboard_url = ""
+
+        def junie(command, completion, token, targets, **_kwargs):
+            nonlocal calls
+            calls += 1
+            agent, = targets
+            record = json.loads(record_path.read_bytes())
+            worktree = Path(record["worktree_path"])
+            adopted = worktree / "Page.cs"
+            self.assertEqual(t0, agent.read_bytes())
+            if calls == 1:
+                self.assertEqual(t0, adopted.read_bytes())
+                for i in range(4):
+                    notes.append(record_handoff(run, worktree, (Path("Page.cs"),), {}, "php-0001", 1, 1, f"operator memo {i}"))
+                self.assertEqual(4, len(workflow.migration_ledger(config, run_id)["unresolved_operator_notes"]))
+                agent.write_bytes(t1)
+            else:
+                self.assertEqual(t1, adopted.read_bytes())
+                prompt = command[-1]
+                self.assertIn("1 additional pending operator note", prompt)
+                self.assertIn(notes[0]["id"], prompt)
+                self.assertNotIn(notes[0]["note"], prompt)
+                match = re.search(r"launch memo reference ID ([0-9a-f]{64})", prompt)
+                self.assertIsNotNone(match)
+                receipt = match.group(1)
+                junie_cli.launch_input_observer.get()(prompt)
+                before = record_path.read_bytes()
+                with urlopen(dashboard_url + "migration-ledger?operator_through=1", timeout=3) as response:
+                    current = json.load(response)
+                path = dashboard_url + "migration-ledger?operator_through=1&operator_receipt="
+                with urlopen(path + receipt, timeout=3) as response:
+                    historical = json.load(response)
+                self.assertEqual([], current["unresolved_operator_notes"])
+                self.assertEqual([n["id"] for n in reversed(notes)], [r["id"] for r in historical["unresolved_operator_notes"]])
+                self.assertEqual(current["completion"], historical["completion"])
+                for invalid in ("0" * 64, receipt + "&operator_receipt=" + receipt):
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(path + invalid, timeout=3)
+                    self.assertEqual(409, error.exception.code)
+                    error.exception.close()
+                self.assertEqual(before, record_path.read_bytes())
+                self.assertEqual(t1, adopted.read_bytes())
+                self.assertEqual(t0, agent.read_bytes())
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        def skip_external_build(_config, _unit, result, record):
+            record["status"] = "build_succeeded"
+            workflow.write_run_record(record_path, record)
+            return result
+
+        with (
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie),
+            patch.object(workflow, "_verify_worktree", side_effect=skip_external_build),
+        ):
+            workflow.run_with_junie(config, "sample", run_id=run_id)
+            plan = workflow.plan_migration_resume(config, run_id, 1, rewind_to=1)
+            with self.live_dashboard(config, run_id) as dashboard_url:
+                self.ready_event(dashboard_url)
+                result = workflow.resume_with_junie(config, run_id, verification_request={**plan, "id": "rewind"})
+        self.assertEqual(2, calls)
+        self.assertEqual(1, result["completed_capsules"])
+
     def test_omitted_operator_note_can_be_retrieved_from_the_same_capsule_scope(self):
         from migration_harness.context.context_handoff import handoff_prompt, record_handoff
 

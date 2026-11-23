@@ -669,19 +669,23 @@ function showUnresolvedNotes(selector, rows) {
 }
 
 const operatorScope = element("#operator-note-through");
-let operatorThrough = null;
+const operatorReceipt = element("#operator-note-receipt");
+let operatorSelection = null;
 element("#operator-note-scope").addEventListener("submit", event => {
   event.preventDefault();
-  operatorThrough = {run: snapshot.run_id, value: operatorScope.value};
+  operatorSelection = {run: snapshot.run_id, through: operatorScope.value, receipt: operatorReceipt.value.trim()};
   showUnresolvedNotes("#unresolved-operator-notes", []);
   loadMigrationLedger();
 });
 
 async function loadMigrationLedger() {
   const request = ++migrationLedgerRequest;
+  const selected = migrationLedgerDialog.open && operatorSelection?.run === snapshot.run_id ? operatorSelection : null;
   try {
-    const through = migrationLedgerDialog.open && operatorThrough?.run === snapshot.run_id && operatorThrough.value;
-    const path = through ? `migration-ledger?operator_through=${encodeURIComponent(through)}` : "migration-ledger";
+    const query = new URLSearchParams();
+    if (selected?.through) query.set("operator_through", selected.through);
+    if (selected?.receipt) query.set("operator_receipt", selected.receipt);
+    const path = query.size ? `migration-ledger?${query}` : "migration-ledger";
     const response = await runFetch(path, {cache: "no-store"});
     if (!response.ok) throw await responseError(response);
     const ledger = await response.json();
@@ -690,6 +694,7 @@ async function loadMigrationLedger() {
     render();
     if (!migrationLedgerDialog.open) return;
     operatorScope.max = ledger.capsules.length;
+    element("#operator-note-receipt-active").hidden = !selected?.receipt;
     showUnresolvedNotes("#unresolved-junie-memos", ledger.unresolved_junie_memos || []);
     showUnresolvedNotes("#unresolved-operator-notes", ledger.unresolved_operator_notes || []);
     showMigrationLedger(ledger, snapshot, id => {
@@ -698,9 +703,11 @@ async function loadMigrationLedger() {
     });
   } catch (error) {
     if (request !== migrationLedgerRequest) return;
-    migrationCompletion = undefined;
+    if (!selected?.receipt) migrationCompletion = undefined;
     render();
     if (!migrationLedgerDialog.open) return;
+    showUnresolvedNotes("#unresolved-operator-notes", []);
+    element("#operator-note-receipt-active").hidden = true;
     migrationLedgerMessage.hidden = false;
     migrationLedgerMessage.textContent = `移行台帳を読み込めませんでした。\n${error.message}`;
   }
@@ -711,9 +718,11 @@ document.addEventListener("harnessrunselect", () => {
   if (migrationLedgerDialog.open) migrationLedgerDialog.close();
 });
 migrationLedgerButton.addEventListener("click", () => {
-  operatorThrough = null;
+  operatorSelection = null;
   operatorScope.value = "";
   operatorScope.removeAttribute("max");
+  operatorReceipt.value = "";
+  element("#operator-note-receipt-active").hidden = true;
   showUnresolvedNotes("#unresolved-junie-memos", []);
   showUnresolvedNotes("#unresolved-operator-notes", []);
   openMigrationLedger("移行台帳を読み込み中");

@@ -93,10 +93,20 @@ def context_handoff(
     if not rows:
         return []
     version = _version(run_path, target_root, targets, overrides)
+    return _operator_handoff_rows(run_path, rows, version, through)
+
+
+def _operator_handoff_rows(run_path, rows, version, through):
     verify_span = pinned_span_verifier(run_path, through)
-    known = set()
-    superseded = set()
+    known = {}
     result = []
+    matches = []
+
+    def verified(row):
+        digest = row.get("source_sha256")
+        return (_is_digest(digest)
+                and verify_span(row["source_id"], row["start_line"], row["end_line"]) == digest)
+
     for row in rows:
         if not isinstance(row, dict):
             result.append({"state": "needs_review"})
@@ -108,24 +118,46 @@ def context_handoff(
             and isinstance(note, str) and len(note) <= _MAX_NOTE and note.strip()
             and isinstance(row.get("source_id"), str) and type(start) is int and type(end) is int
             and (predecessor is None or isinstance(predecessor, str) and predecessor in known)
+            and _operator_version_shape(row, version["target_hashes"])
             and _matches_note_id(row)
         )
-        current = (valid and all(row.get(key) == value for key, value in version.items())
-                   and isinstance(row.get("source_sha256"), str)
-                   and verify_span(row["source_id"], start, end) == row["source_sha256"])
         if valid:
-            known.add(identity)
-        if current and predecessor is not None:
-            superseded.add(predecessor)
+            known[identity] = len(result)
+        current = valid and all(row.get(key) == value for key, value in version.items()) and verified(row)
+        if current:
+            matches.append(predecessor)
         result.append({**row, "state": "pending" if current else "needs_review"})
-    for row in result:
-        if isinstance(row.get("id"), str) and row["id"] in superseded:
-            row["state"] = "superseded"
+    for predecessor in matches:
+        while predecessor is not None:
+            prior = result[known[predecessor]]
+            if prior["state"] == "superseded" or not verified(prior):
+                break
+            prior["state"] = "superseded"
+            predecessor = prior.get("supersedes")
     return result[::-1]
+
+
+def _is_digest(value):
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _operator_version_shape(row, target_hashes):
+    recorded = row.get("target_hashes")
+    return (
+        "reference_version" in row
+        and (row["reference_version"] is None or _is_digest(row["reference_version"]))
+        and _is_digest(row.get("rule_decisions_sha256"))
+        and isinstance(recorded, dict) and recorded.keys() == target_hashes.keys()
+        and all(digest is None or _is_digest(digest) for digest in recorded.values())
+    )
 
 
 def _pending_operator_notes(run_path, target_root, targets, record, through=None):
     rows = context_handoff(run_path, target_root, targets, record.get("detail_overrides", {}), through=through)
+    return _pending_rows(rows)
+
+
+def _pending_rows(rows):
     return [{**_memo_location(row), "note": row["note"]} for row in rows if row["state"] == "pending"]
 
 
@@ -136,13 +168,69 @@ def unresolved_operator_notes(run_path, target_root, targets, record, *, through
         return []
 
 
+def _operator_receipt_manifest(run_path):
+    return target_hash(safe_target(run_path, Path("capsule/manifest.json")))
+
+
+def operator_notes_from_receipt(run_path, targets, record, receipt_id, *, through=None):
+    error = "指定されたJunie起動時のメモを確認できません。参照ID、カプセル、資料の版を確認してください。"
+    receipt = record.get("operator_handoff_receipt")
+    if not _is_digest(receipt_id) or not isinstance(receipt, dict):
+        raise ValueError(error)
+    scope, count, ids = (receipt.get(key) for key in ("through", "history_count", "note_ids"))
+    if (
+        type(receipt.get("schema")) is not int or receipt["schema"] != 1 or receipt.get("run_id") != record["run_id"]
+        or receipt.get("id") != receipt_id or through is not None and through != scope
+        or scope is not None and (type(scope) is not int or scope < 1)
+        or type(count) is not int or not _PROMPT_NOTES < count <= _MAX_NOTES
+        or not isinstance(ids, list) or not _PROMPT_NOTES < len(ids) <= count
+        or not all(_is_digest(item) for item in ids)
+        or not _is_digest(receipt.get("manifest_sha256"))
+        or not _operator_version_shape(receipt, {target.as_posix(): None for target in targets})
+        or not _matches_note_id(receipt)
+    ):
+        raise ValueError(error)
+    try:
+        if (
+            receipt.get("manifest_sha256") != _operator_receipt_manifest(run_path)
+            or receipt["reference_version"] != _reference_version(run_path)
+            or receipt["rule_decisions_sha256"] != _content_hash(record.get("detail_overrides", {}))
+        ):
+            raise ValueError(error)
+        rows = _read_handoff(run_path)
+        if len(rows) < count:
+            raise ValueError(error)
+        version = {key: receipt[key] for key in ("reference_version", "target_hashes", "rule_decisions_sha256")}
+        pending = _pending_rows(_operator_handoff_rows(run_path, rows[:count], version, scope))
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        raise ValueError(error) from None
+    if [row["id"] for row in pending] != ids:
+        raise ValueError(error)
+    return pending
+
+
 def handoff_prompt(
-    run_path: Path, target_root: Path, targets: tuple[Path, ...], record: dict[str, Any], *, through: int | None = None, draft=None,
+    run_path: Path, target_root: Path, targets: tuple[Path, ...], record: dict[str, Any], *,
+    through: int | None = None, draft=None, capture_operator_receipt: bool = False,
 ) -> str:
     junie = _junie_memo_prompt(run_path, target_root, targets, record, through)
     junie += stopped_memo_prompt(run_path, target_root, record, through, draft)
     try:
-        pending = _pending_operator_notes(run_path, target_root, targets, record, through)
+        history = _read_handoff(run_path)
+        if not history:
+            return junie
+        version = _version(run_path, target_root, targets, record.get("detail_overrides", {}))
+        pending = _pending_rows(_operator_handoff_rows(run_path, history, version, through))
+        receipt_tip = ""
+        if len(pending) > _PROMPT_NOTES and capture_operator_receipt:
+            receipt = {
+                "schema": 1, "run_id": record["run_id"], "through": through, "history_count": len(history),
+                "note_ids": [row["id"] for row in pending], "manifest_sha256": _operator_receipt_manifest(run_path),
+                **version,
+            }
+            receipt_id = _content_hash(receipt)
+            record["operator_handoff_receipt"] = {**receipt, "id": receipt_id}
+            receipt_tip = f" and enter Junie launch memo reference ID {receipt_id} (起動時メモの参照ID)"
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         return "Saved context handoff is unreadable. Recheck the original source and existing records. " + junie
     if not pending:
@@ -159,6 +247,7 @@ def handoff_prompt(
             + json.dumps([_memo_location(row) for row in remaining[:_PROMPT_NOTES]], ensure_ascii=False)
             + ". Ask the operator to check this run's migration ledger (移行台帳 → 利用者の未解決メモ) "
             + (f"through capsule {through}" if through is not None else "with the capsule field blank (all capsules)")
+            + receipt_tip
             + " for the full list if needed; do not guess their contents. "
         )
     return (

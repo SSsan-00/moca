@@ -48,7 +48,8 @@ from .verification.checker_output import (
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
 from .context.context_evidence import boundary_hints
 from .context.context_handoff import (
-    handoff_prompt, junie_memo_request, save_junie_memo, unresolved_junie_memos, unresolved_operator_notes,
+    handoff_prompt, junie_memo_request, operator_notes_from_receipt, save_junie_memo, unresolved_junie_memos,
+    unresolved_operator_notes,
 )
 from .context.context_plan import navigation_plan
 from .verification.repair_context import diagnostic_php_ranges
@@ -1402,7 +1403,7 @@ def _run_editor_followup(
         f"When finished, write exactly {token} to {completion.name} as the final file action."
     )
     prompt = context + handoff_prompt(record_path.parent, agent_root, targets, record,
-                           draft=record.get("stopped_migration_draft")) + memo_request + prompt
+                           draft=record.get("stopped_migration_draft"), capture_operator_receipt=True) + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
                                       guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -1733,7 +1734,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
             run_path, record, config.get("scripts", {}), _script_decision_versions(worktree_root, record),
         )
     prompt = context + plan_hint + scripted_handoff + handoff_prompt(run_path, agent_root, relative_targets, record, through=index,
-                       draft=record.get("stopped_migration_draft")) + memo_request + prompt
+                       draft=record.get("stopped_migration_draft"), capture_operator_receipt=True) + memo_request + prompt
     other_files = _unlisted_workspace_files(agent_root, allowed, verified_sources)
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
@@ -2658,7 +2659,7 @@ def _repair_target(
         )
     record["last_context_plan"] = plan
     prompt = context + plan_hint + handoff_prompt(run_path, agent_root, targets, record,
-                       draft=stopped_draft if resume_draft else None) + memo_request + prompt
+                       draft=stopped_draft if resume_draft else None, capture_operator_receipt=True) + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -3481,7 +3482,9 @@ def run_with_junie(config: dict[str, Any], unit_id: str, *, run_id: str | None =
         return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
 
 
-def migration_ledger(config: dict[str, Any], run_id: str, *, operator_through: int | None = None) -> dict[str, Any]:
+def migration_ledger(
+    config: dict[str, Any], run_id: str, *, operator_through: int | None = None, operator_receipt: str | None = None,
+) -> dict[str, Any]:
     """保存した対応と判断を現在の移行先で照合し、閲覧用の状態をまとめる。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     _, manifest = load_capsule_manifest(run_path)
@@ -3491,7 +3494,13 @@ def migration_ledger(config: dict[str, Any], run_id: str, *, operator_through: i
         raise ValueError("メモのカプセル番号がこのRunの範囲外です。")
     mappings = record.get("migration_mappings", {})
     reviews = record.get("migration_reviews", {})
-    targets = [path.as_posix() for path in target_paths(unit)]
+    target_names = target_paths(unit)
+    targets = [path.as_posix() for path in target_names]
+    operator_notes = (
+        operator_notes_from_receipt(run_path, target_names, record, operator_receipt, through=operator_through)
+        if operator_receipt is not None
+        else unresolved_operator_notes(run_path, worktree, target_names, record, through=operator_through)
+    )
     hashes: dict[str, str | None] = {}
 
     def current_hash(path: str) -> str | None:
@@ -3621,9 +3630,7 @@ def migration_ledger(config: dict[str, Any], run_id: str, *, operator_through: i
         "unresolved_junie_memos": unresolved_junie_memos(
             run_path, worktree, tuple(Path(path) for path in targets), record,
         ),
-        "unresolved_operator_notes": unresolved_operator_notes(
-            run_path, worktree, tuple(Path(path) for path in targets), record, through=operator_through,
-        ),
+        "unresolved_operator_notes": operator_notes,
         "completion": {
             # ビルド・チェッカーの成功に加え、すべてのPHP範囲に根拠付きの判断が必要。
             "complete": verification_passed and total > 0 and reviewed == total,
