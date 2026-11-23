@@ -663,20 +663,33 @@ function showUnresolvedNotes(selector, rows) {
     item.textContent = row.state === "needs_review"
       ? `${location}：資料または対象の版が異なるため再確認`
       : `${location}：${row.note}`;
+    if (selector === "#unresolved-operator-notes") item.append(` (ID: ${row.id})`);
     list.append(item);
   }
 }
 
+const operatorScope = element("#operator-note-through");
+let operatorThrough = null;
+element("#operator-note-scope").addEventListener("submit", event => {
+  event.preventDefault();
+  operatorThrough = {run: snapshot.run_id, value: operatorScope.value};
+  showUnresolvedNotes("#unresolved-operator-notes", []);
+  loadMigrationLedger();
+});
+
 async function loadMigrationLedger() {
   const request = ++migrationLedgerRequest;
   try {
-    const response = await runFetch("migration-ledger", {cache: "no-store"});
+    const through = migrationLedgerDialog.open && operatorThrough?.run === snapshot.run_id && operatorThrough.value;
+    const path = through ? `migration-ledger?operator_through=${encodeURIComponent(through)}` : "migration-ledger";
+    const response = await runFetch(path, {cache: "no-store"});
     if (!response.ok) throw await responseError(response);
     const ledger = await response.json();
     if (request !== migrationLedgerRequest || ledger.run_id !== snapshot.run_id) return;
     migrationCompletion = ledger.completion;
     render();
     if (!migrationLedgerDialog.open) return;
+    operatorScope.max = ledger.capsules.length;
     showUnresolvedNotes("#unresolved-junie-memos", ledger.unresolved_junie_memos || []);
     showUnresolvedNotes("#unresolved-operator-notes", ledger.unresolved_operator_notes || []);
     showMigrationLedger(ledger, snapshot, id => {
@@ -694,6 +707,9 @@ async function loadMigrationLedger() {
 }
 
 migrationLedgerButton.addEventListener("click", () => {
+  operatorThrough = null;
+  operatorScope.value = "";
+  operatorScope.removeAttribute("max");
   showUnresolvedNotes("#unresolved-junie-memos", []);
   showUnresolvedNotes("#unresolved-operator-notes", []);
   openMigrationLedger("移行台帳を読み込み中");

@@ -590,7 +590,10 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 run_id = self.dashboard.state.get("run_id")
                 if run_id and self.dashboard.state.get("worktree_path"):
                     try:
-                        ledger = migration_ledger(config, run_id)
+                        scope = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get("operator_through")
+                        if scope is not None and (len(scope) != 1 or not scope[0].isascii() or not scope[0].isdecimal()):
+                            raise ValueError("メモのカプセル番号は正の整数で指定してください。")
+                        ledger = migration_ledger(config, run_id, operator_through=int(scope[0]) if scope else None)
                     except _ERRORS as exc:
                         self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
                     else:

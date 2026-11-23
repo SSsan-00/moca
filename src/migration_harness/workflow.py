@@ -3472,10 +3472,14 @@ def run_with_junie(config: dict[str, Any], unit_id: str, *, run_id: str | None =
         return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
 
 
-def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+def migration_ledger(config: dict[str, Any], run_id: str, *, operator_through: int | None = None) -> dict[str, Any]:
     """保存した対応と判断を現在の移行先で照合し、閲覧用の状態をまとめる。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     _, manifest = load_capsule_manifest(run_path)
+    if operator_through is not None and (
+        type(operator_through) is not int or not 1 <= operator_through <= len(manifest["parts"])
+    ):
+        raise ValueError("メモのカプセル番号がこのRunの範囲外です。")
     mappings = record.get("migration_mappings", {})
     reviews = record.get("migration_reviews", {})
     targets = [path.as_posix() for path in target_paths(unit)]
@@ -3609,7 +3613,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             run_path, worktree, tuple(Path(path) for path in targets), record,
         ),
         "unresolved_operator_notes": unresolved_operator_notes(
-            run_path, worktree, tuple(Path(path) for path in targets), record,
+            run_path, worktree, tuple(Path(path) for path in targets), record, through=operator_through,
         ),
         "completion": {
             # ビルド・チェッカーの成功に加え、すべてのPHP範囲に根拠付きの判断が必要。

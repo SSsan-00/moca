@@ -23,6 +23,48 @@ from migration_harness.web.diff_viewer import review_html
 
 
 class DashboardComparisonRoutesTests(HarnessCase):
+    def test_omitted_operator_note_can_be_retrieved_from_the_same_capsule_scope(self):
+        from migration_harness.context.context_handoff import handoff_prompt, record_handoff
+
+        (self.project / "source.php").write_text("<?php\n" + ("echo 2;" + " " * 75 + "\n") * 30, encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config["max_context_chars"] = 650
+        config["units"][0]["inputs"][0]["end_line"] = None
+        prepared = workflow.prepare_run(config, "sample")
+        run_id = prepared["run_id"]
+        run = Path(prepared["run_path"])
+        args = (run, Path(prepared["worktree_path"]), (Path("Page.cs"),), {})
+        earlier = record_handoff(*args, "php-0001", 1, 1, "earlier scope only")
+        for i in range(3):
+            record_handoff(*args, "php-0001", 1, 1, f"other note {i}")
+        later = record_handoff(*args, "php-0001", 30, 30, "later scope only", supersedes=earlier["id"])
+        before = (run / "run.json").read_bytes()
+        prompt = handoff_prompt(*args, through=1)
+        self.assertIn("through capsule 1", prompt)
+        self.assertIn(earlier["id"], prompt)
+        for item in (earlier, later):
+            self.assertNotIn(item["note"], prompt)
+        with self.live_dashboard(config, run_id) as url:
+            self.ready_event(url)
+            with urlopen(url + "migration-ledger?operator_through=1", timeout=3) as response:
+                scoped = json.load(response)
+            with urlopen(url + "migration-ledger", timeout=3) as response:
+                full = json.load(response)
+            for ledger, expected, excluded in ((scoped, earlier, later), (full, later, earlier)):
+                rows = ledger["unresolved_operator_notes"]
+                self.assertEqual(4, len(rows))
+                self.assertIn((expected["id"], expected["note"]), [(row["id"], row["note"]) for row in rows])
+                self.assertNotIn(excluded["id"], [row["id"] for row in rows])
+            self.assertEqual(scoped["completion"], full["completion"])
+            for query in ("0", "9999", "", "one", "1&operator_through=2"):
+                with self.subTest(query=query), self.assertRaises(HTTPError) as error:
+                    urlopen(url + "migration-ledger?operator_through=" + query, timeout=3)
+                self.assertEqual(409, error.exception.code)
+                error.exception.close()
+        self.assertEqual(before, (run / "run.json").read_bytes())
+
     @unittest.skipUnless(shutil.which("node"), "JavaScript runtime is required for the import race regression")
     def test_autoimport_waits_for_async_viewer_initialization_and_dispatches_once(self):
         viewer = self.project / "viewer.html"
