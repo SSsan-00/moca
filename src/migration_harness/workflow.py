@@ -1664,8 +1664,10 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         )
     context, report = _operator_edit_context(run_path, agent_root, completion_token, inputs, record.get("operator_question"))
     guidelines, supplied = _task_guidelines(agent_root, inputs)
+    draft = record.get("stopped_migration_draft")
     plan, plan_hint = navigation_plan(
         manifest, record, "resume" if resuming else "migration", relative_targets, current=index,
+        staged_versions=draft["targets"] if draft else record.get("target_hashes"),
     )
     record["last_context_plan"] = plan
     scripted_handoff = ""
@@ -2504,7 +2506,7 @@ def _repair_target(
     material_instructions += stage_target_context(
         worktree, targets, capsule, agent_root, policy=find_unit(config, record["unit_id"]).get("target_context"),
     )
-    stopped_draft, before, agent_targets, resume_draft = _sync_repair_workspace(
+    stopped_draft, before, agent_targets, resume_draft, staged_versions = _sync_repair_workspace(
         run_path, worktree, agent_root, targets, repair_targets, attempt,
     )
     token = uuid.uuid4().hex
@@ -2574,7 +2576,7 @@ def _repair_target(
     guidelines, supplied = _task_guidelines(agent_root, inputs)
     memo, memo_request = junie_memo_request(agent_root, token)
     plan, plan_hint = navigation_plan(
-        manifest, record, "repair", repair_targets, diagnostic=findings_path,
+        manifest, record, "repair", repair_targets, diagnostic=findings_path, staged_versions=staged_versions,
     )
     references = diagnostic_references(capsule, findings)
     plan["diagnostic_references"] = references
@@ -2713,7 +2715,8 @@ def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targe
             if sha256_file(destination) != before[path.as_posix()]:
                 raise ValueError(f"worktree target changed while synchronizing repair inputs: {path}")
     agent_targets = tuple(agent_files[path] for path in repair_targets)
-    return draft, before, agent_targets, resume_draft
+    staged_versions = {**before, **{path.as_posix(): draft_targets[path.as_posix()] for path in preserved}}
+    return draft, before, agent_targets, resume_draft, staged_versions
 
 
 def _adopt_repair_result(run_path, worktree, agent_root, repair_targets, record, attempt, before,

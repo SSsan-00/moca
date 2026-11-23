@@ -99,6 +99,29 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertEqual(len(record["junie_memos"]), 1)
         self.assertEqual(record["completed_capsules"], 0)
 
+    def test_invalid_successor_does_not_hide_verified_unresolved_note(self):
+        from migration_harness.context_handoff import junie_memo_request, save_junie_memo
+        from migration_harness.worktree_targets import target_hash
+
+        record = {"target_hashes": {"Demo.cs": target_hash(self.target)}}
+        draft, _ = junie_memo_request(self.root, "fixture")
+        original = {"kind": "pending", "source_path": "demo.php", "start_line": 2,
+                    "end_line": 2, "note": "verify the failure path"}
+        draft.write_text(json.dumps([original]), encoding="utf-8")
+        save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        first = record["junie_memos"][0]
+        replacement = {**original, "kind": "decision", "note": "no further review",
+                       "supersedes": first["id"]}
+        draft.write_text(json.dumps([replacement]), encoding="utf-8")
+        save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1)
+        self.assertIn("no further review", prompt)
+        self.assertNotIn("verify the failure path", prompt)
+        record["junie_memos"][1]["source_sha256"] = "0" * 64
+        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1)
+        self.assertNotIn("no further review", prompt)
+        self.assertIn("verify the failure path", prompt)
+
 
 class JunieMemoLifecycleTests(HarnessCase):
     def test_capsule_seam_passes_adopted_memo_but_does_not_save_unfinished_output(self):

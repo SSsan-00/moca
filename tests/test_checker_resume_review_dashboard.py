@@ -1214,6 +1214,10 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
                     def fail(command, completion, token, targets, *, report_usage, **kwargs):
                         self.assertEqual(targets[0].read_bytes(), saved_draft)
+                        junie_cli.launch_input_observer.get()(command[-1])
+                        entry, = self.record()["last_context_plan"]["targets"]
+                        self.assertEqual(workflow.target_hash(targets[0]), entry["staged_sha256"])
+                        self.assertNotEqual(workflow.target_hash(self.target), entry["staged_sha256"])
                         targets[0].write_bytes(b"class Unconfirmed {}\n")
                         completion.write_text(token, encoding="utf-8")
                         try:

@@ -215,7 +215,21 @@ def _junie_memo_prompt(run_path, target_root, targets, record, through):
         if not isinstance(rows, list) or len(rows) > _MAX_NOTES:
             raise ValueError("invalid memo history")
         version = _version(target_root, targets, _junie_rule_state(record))
-        active = {row["supersedes"] for row in rows if all(row.get(k) == v for k, v in version.items())}
+        checked_sources = {}
+
+        def current_evidence(row):
+            key = (row["source_id"], row["start_line"], row["end_line"])
+            if key not in checked_sources:
+                try:
+                    evidence = read_context(run_path, *key, through=through, max_chars=1)
+                except (OSError, ValueError):
+                    checked_sources[key] = None
+                else:
+                    checked_sources[key] = evidence["sha256"]
+            return checked_sources[key] is not None and row["source_sha256"] == checked_sources[key]
+
+        active = {row["supersedes"] for row in rows if row.get("supersedes")
+                  and all(row.get(k) == v for k, v in version.items()) and current_evidence(row)}
         pending, stale = [], []
         for row in reversed(rows):
             if row["id"] in active:
@@ -226,13 +240,7 @@ def _junie_memo_prompt(run_path, target_root, targets, record, through):
                 continue
             if len(pending) == 3:
                 break
-            try:
-                evidence = read_context(run_path, row["source_id"], row["start_line"], row["end_line"],
-                                        through=through, max_chars=1)
-            except ValueError:
-                stale.append(row)
-                continue
-            if row["source_sha256"] != evidence["sha256"]:
+            if not current_evidence(row):
                 stale.append(row)
                 continue
             pending.append({key: row[key] for key in ("id", "kind", "note", "source_id", "start_line", "end_line")})
