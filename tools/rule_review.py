@@ -203,6 +203,15 @@ def without_rules(data: bytes) -> dict:
     return doc
 
 
+def _reject_duplicate_originals(existing, additions):
+    by_hash = {item["sha256"]: item["path"] for item in existing}
+    for item in additions:
+        digest, path = item["sha256"], item["path"]
+        if digest in by_hash:
+            raise ValueError(f"同一バイトの原文は新規登録できません: {path}（既存の原文: {by_hash[digest]}）")
+        by_hash[digest] = path
+
+
 def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: Path, *,
           collect_evidence: bool = False, register_new: bool = False) -> None:
     pack = pack.resolve()
@@ -257,6 +266,10 @@ def apply(pack: Path, config: Path, original: bytes, mandatory: set, candidate: 
             if not any(line in lines for lines in required.values()):
                 raise ValueError(f"必須登録に原文がありません: {path}:{number}")
         evidence = evidence_inputs(pack, data, before, after, register_new)
+        if register_new:
+            originals = [item for item in after["rules"]
+                         if Path(item["path"]) not in old_paths and Path(item["path"]) not in registered]
+            _reject_duplicate_originals(before["rules"], [*originals, *evidence[0].get("snapshots", [])])
         if collect_evidence:
             versions, _, _, placements, _, relevant = evidence
             print(json.dumps({"format_version": 2, "versions": versions, "unresolved": [], "entries": []},
