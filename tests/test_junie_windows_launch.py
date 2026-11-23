@@ -156,7 +156,6 @@ class JunieLaunchTests(unittest.TestCase):
             executable = r"C:\Junie Tools\Junie" + extension
             with (
                 self.subTest(extension=extension),
-                patch.object(junie_cli.sys, "platform", "win32"),
                 patch.object(junie_cli, "_resolve_executable", return_value=executable),
                 patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
                 patch.object(junie_cli.subprocess, "Popen") as launch,
@@ -205,7 +204,6 @@ class JunieLaunchTests(unittest.TestCase):
     def test_missing_cmd_is_actionable_and_prevents_launch(self):
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch.object(junie_cli.sys, "platform", "win32"),
             patch.object(junie_cli, "_resolve_executable", return_value=r"C:\Junie.BAT"),
             patch.object(junie_cli.subprocess, "Popen") as launch,
             self.assertRaisesRegex(junie_cli.JunieLaunchError, "SystemRoot/COMSPEC"),
@@ -405,7 +403,6 @@ class JunieLaunchTests(unittest.TestCase):
                 self.assertEqual(junie_cli._run_session(["junie"], completion, "token", ()), 0)
 
 
-@unittest.skipUnless(sys.platform == "win32", "requires the real Windows cmd.exe")
 class WindowsBatchIntegrationTests(unittest.TestCase):
     def test_path_lookup_and_batch_forwarding_preserve_metacharacters_and_exit_code(self):
         for extension in ("BAT", "CMD"):

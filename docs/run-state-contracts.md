@@ -56,7 +56,7 @@ HTTP エディタは取得時に Run ID と表示版を照合します。同じ�
 | 並行Runと同時編集 | [test_parallel_dashboard.py](../tests/test_parallel_dashboard.py): `test_five_workers_queue_stop_isolation_and_resume`、`test_same_target_runs_keep_editor_files_php_and_prompts_separate`。 [test_junie_conversation.py](../tests/test_junie_conversation.py): `test_razor_pair_verifies_both_saved_targets_while_another_run_builds` |
 | 台帳とレビューの版照合 | [test_migration_ledger.py](../tests/test_migration_ledger.py): `test_keeps_review_reason_and_flags_stale_after_edit`、`test_anchor_usage_keeps_reviews_written_by_another_cli`、`test_completion_requires_verification_record_but_no_worktree_fingerprint` |
 
-横断ケースはHTTP受付・RunManager・保存と再読込・workflowを通す。Junieや.NETの実サービスは置換する統合テストがあるため、実環境の検証結果とは区別する。Windows Job Object、macOSの `waitid` 不在時の `/bin/ps` 観測などOS固有の保証は、実行したOSとPython版の結果に限る。
+横断ケースはHTTP受付・RunManager・保存と再読込・workflowを通す。Junieや.NETの実サービスは置換する統合テストがあるため、実環境の検証結果とは区別する。外部プロセスの停止は、WindowsのJob Objectでランチャーとその子孫を管理し、実プロセスを使ったテストで確認する。
 
 明示再開は `_validate_resume_plan()` が保存版と実行条件を再計算し、`_load_resume_context()` がカプセルと進捗を照合してから工程を選びます。移行の巻き戻し、修正、停止下書きは `_save_target_snapshot()` と同じ形式を共有します。復元前に記録、内容ハッシュ、復元対象を確認します。
 

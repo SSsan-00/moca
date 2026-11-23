@@ -1,6 +1,6 @@
 # PHP → C# Migration Harness
 
-Pythonで、PHPからC#やASP.NET Core Razor Pagesへの移行を支援するローカル実行用ハーネスです。コード移行はJunieに依頼し、ハーネスが対象範囲、作業場所、実行記録を管理します。
+Pythonで、PHPからC#やASP.NET Core Razor Pagesへの移行を支援するWindows専用のローカル実行ハーネスです。コード移行はJunieに依頼し、ハーネスが対象範囲、作業場所、実行記録を管理します。
 
 Windowsでの導入・操作手順は [Windowsユーザーガイド](docs/windows-user-guide.md)、実行順序・保存形式・再開の条件は [技術仕様](SPEC.md) を参照してください。
 

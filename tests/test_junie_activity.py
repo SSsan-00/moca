@@ -3,10 +3,8 @@ from __future__ import annotations
 import io
 import json
 import os
-import signal
 import subprocess
 import sys
-import time
 import unittest
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
@@ -540,70 +538,11 @@ class JunieControlTests(unittest.TestCase):
         process = Mock(pid=123)
         process.poll.return_value = None
         process.wait.return_value = 1
-        # Construct Path before mocking os.name (Path chooses its platform at construction).
-        system_root = Path(self.root)
-        with (patch.object(junie_cli.os, "name", "nt"), patch.dict(os.environ, {"SystemRoot": str(system_root)}),
-              patch.object(junie_cli, "Path", return_value=system_root),
+        with (patch.dict(os.environ, {"SystemRoot": str(self.root)}),
               patch.object(junie_cli.subprocess, "run") as kill):
             self.assertEqual(junie_cli._close_junie(process), 1)
-        self.assertEqual(kill.call_args.args[0][1:], ["/PID", "123", "/T", "/F"])
+        self.assertEqual(kill.call_args.args[0], [str(self.root / "System32/taskkill.exe"), "/PID", "123", "/T", "/F"])
         self.assertTrue(kill.call_args.kwargs["check"])
-
-    @unittest.skipIf(os.name == "nt", "POSIX descendant cleanup")
-    def test_posix_cleanup_kills_descendants_but_not_siblings(self):
-        process = Mock(pid=100)
-        process.poll.return_value = None
-        process.wait.return_value = -15
-        listing = "100 50\n200 100\n300 200\n400 50\n"
-        with (patch.object(junie_cli.subprocess, "run", return_value=Mock(stdout=listing)),
-              patch.object(junie_cli.os, "kill") as kill):
-            self.assertEqual(junie_cli._close_junie(process), -15)
-        self.assertEqual([call.args for call in kill.call_args_list], [
-            (300, signal.SIGKILL), (200, signal.SIGKILL),
-        ])
-        process.terminate.assert_called_once_with()
-
-    @unittest.skipIf(os.name == "nt", "POSIX descendant cleanup")
-    def test_real_posix_launcher_and_child_stop_on_dashboard_cancellation(self):
-        marker = self.root / "child.pid"
-        child_script = (
-            "import os, signal, time; from pathlib import Path; "
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            f"Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(30)"
-        )
-        launcher_script = (
-            "import subprocess, sys; "
-            f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}]); child.wait()"
-        )
-        child_pid = None
-        process = subprocess.Popen([sys.executable, "-c", launcher_script])
-        try:
-            deadline = time.monotonic() + 5
-            while not marker.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            self.assertTrue(marker.exists(), "test child did not start")
-            child_pid = int(marker.read_text())
-
-            def launch(_, **streams):
-                self.control.cancelled.set()
-                return process
-
-            with patch.object(junie_cli, "_launch_process", side_effect=launch), self.assertRaises(execution.OperationCancelled):
-                self.run_session()
-            self.assertIsNotNone(process.poll())
-            # A killed descendant can briefly remain as a zombie until the launcher/OS reaps it.
-            result = subprocess.run(["ps", "-p", str(child_pid), "-o", "stat="], capture_output=True, text=True)
-            self.assertTrue(not result.stdout.strip() or result.stdout.strip().startswith("Z"), result.stdout)
-            self.restored.assert_called_once_with()
-        finally:
-            if child_pid is not None:
-                try:
-                    os.kill(child_pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=5)
 
 
 if __name__ == "__main__":

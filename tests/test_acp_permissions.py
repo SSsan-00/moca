@@ -114,7 +114,7 @@ send(id=3,result={"stopReason":"end_turn"})
             while not session.advance():
                 self.assertLess(time.monotonic(), deadline)
                 time.sleep(0.005)
-            process.wait_for_launcher(timeout=5)
+            process.wait(timeout=5)
         finally:
             try:
                 junie_cli._close_junie(process)

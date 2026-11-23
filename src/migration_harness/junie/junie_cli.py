@@ -10,7 +10,6 @@ import ntpath
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -206,7 +205,7 @@ def list_models() -> list[dict[str, Any]]:
         process = _launch_process(["junie", "list-models"], owned=True, stdin=subprocess.DEVNULL,
                                   stdout=output, stderr=subprocess.DEVNULL)
         try:
-            process.wait_for_launcher(timeout=MODEL_LIST_TIMEOUT)
+            process.wait(timeout=MODEL_LIST_TIMEOUT)
         except subprocess.TimeoutExpired:
             raise ValueError("Junieのモデル一覧の取得がタイムアウトしました。") from None
         finally:
@@ -283,7 +282,7 @@ def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]
     return line, interpreter, environment
 
 
-def _launch_process(command: list[str], *, owned=False, terminal=False, cwd: Path | None = None, **streams: Any) -> subprocess.Popen:
+def _launch_process(command: list[str], *, owned=False, cwd: Path | None = None, **streams: Any) -> subprocess.Popen:
     check_cancelled()
     executable = None
     interpreter = None
@@ -293,7 +292,7 @@ def _launch_process(command: list[str], *, owned=False, terminal=False, cwd: Pat
             raise ValueError("Junie command is empty")
         executable = _resolve_executable(command[0])
         resolved = [executable, *command[1:]]
-        if sys.platform == "win32" and ntpath.splitext(executable)[1].lower() in {".bat", ".cmd"}:
+        if ntpath.splitext(executable)[1].lower() in {".bat", ".cmd"}:
             resolved, interpreter, environment = _windows_batch_command(resolved)
             streams["executable"] = interpreter
         else:
@@ -301,7 +300,7 @@ def _launch_process(command: list[str], *, owned=False, terminal=False, cwd: Pat
         # JunieのPythonツールが補助モジュールを読んでも、読み取り専用資料の隣にキャッシュを作らせない。
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         if owned:
-            return JunieProcess(resolved, terminal=terminal, cwd=cwd, env=environment, **streams)
+            return JunieProcess(resolved, cwd=cwd, env=environment, **streams)
         return subprocess.Popen(resolved, cwd=cwd, env=environment, **streams)
     except (OSError, ValueError) as exc:
         raise JunieLaunchError(command, cwd, executable, exc, interpreter=interpreter) from exc
@@ -327,34 +326,12 @@ def _close_junie(process: subprocess.Popen) -> int:
     if process.poll() is not None:
         return process.returncode
     try:
-        if os.name == "nt":
-            # Windowsのランチャーが起動した子プロセスも閉じてから次へ進む。
-            taskkill = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
-            subprocess.run(
-                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
-                check=True, capture_output=True, timeout=10,
-            )
-        else:
-            # 端末の前景グループは共有したまま、同じ端末の他プロセスを巻き込まずJunieの子孫だけを止める。
-            listing = subprocess.run(
-                ["ps", "-eo", "pid=,ppid="], check=True, capture_output=True, text=True, timeout=10,
-            )
-            children: dict[int, list[int]] = {}
-            for row in listing.stdout.splitlines():
-                pid, parent = map(int, row.split())
-                children.setdefault(parent, []).append(pid)
-            descendants = []
-            pending = [process.pid]
-            while pending:
-                nested = children.get(pending.pop(), [])
-                descendants.extend(nested)
-                pending.extend(nested)
-            for pid in reversed(descendants):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            process.terminate()
+        # Windowsのランチャーが起動した子プロセスも閉じてから次へ進む。
+        taskkill = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
+        subprocess.run(
+            [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+            check=True, capture_output=True, timeout=10,
+        )
         return process.wait(timeout=10)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         if process.poll() is not None:
@@ -1260,7 +1237,7 @@ def _launch_session_process(command, *, headless, dashboard, thought_path):
         return _launch_process(command, owned=True, stdin=subprocess.DEVNULL, **streams)
     if dashboard is None:
         # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
-        return _launch_process(command, owned=True, terminal=True)
+        return _launch_process(command, owned=True)
     # ACPの指示は初期化後に送るため、起動時の引数から外す。
     return _launch_process(acp_command(command), owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
 
@@ -1378,13 +1355,9 @@ def _run_session(
                 report_activity("保存した編集と追加指示を反映するため、現在のJunie修正を切り替えます。")
                 raise JunieEditHandoff()
             try:
+                exit_code = process.wait(timeout=0.25)
                 if isinstance(process, JunieProcess):
-                    process.wait_for_launcher(timeout=0.25)
                     exit_code = stop()
-                    if process.terminal_interrupted():
-                        raise KeyboardInterrupt
-                else:
-                    exit_code = process.wait(timeout=0.25)
             except subprocess.TimeoutExpired:
                 check_cancelled()
                 # 完了記録での早期終了は対話・ACPだけ。非対話モードはプロセスの自然終了を待つ。
@@ -1484,37 +1457,22 @@ def _run_session(
 
 def _save_terminal_mode() -> Callable[[], None]:
     """強制終了で端末設定が残る場合に備えて、起動前の復元処理を作る。"""
-    if os.name == "nt":
-        import ctypes
-        import msvcrt
-        from ctypes import wintypes
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
 
-        kernel = ctypes.windll.kernel32
-        modes = []
-        for stream in (sys.stdin, sys.stdout, sys.stderr):
-            if stream.isatty():
-                handle = wintypes.HANDLE(msvcrt.get_osfhandle(stream.fileno()))
-                mode = wintypes.DWORD()
-                if kernel.GetConsoleMode(handle, ctypes.byref(mode)):
-                    modes.append((handle, mode))
-
-        def restore() -> None:
-            """Junieを起動する前の端末設定に戻す。"""
-            for handle, mode in modes:
-                kernel.SetConsoleMode(handle, mode)
-
-        return restore
-
-    import termios
-
-    fd = sys.stdin.fileno()
-    try:
-        mode = termios.tcgetattr(fd)
-    except termios.error:
-        return lambda: None
+    kernel = ctypes.windll.kernel32
+    modes = []
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if stream.isatty():
+            handle = wintypes.HANDLE(msvcrt.get_osfhandle(stream.fileno()))
+            mode = wintypes.DWORD()
+            if kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+                modes.append((handle, mode))
 
     def restore() -> None:
         """Junieを起動する前の端末設定に戻す。"""
-        termios.tcsetattr(fd, termios.TCSANOW, mode)
+        for handle, mode in modes:
+            kernel.SetConsoleMode(handle, mode)
 
     return restore

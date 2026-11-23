@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
-import os
+import msvcrt
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -24,27 +25,13 @@ def execution_lock(config: dict[str, Any], name: str, *, wait: bool = False) -> 
     directory = Path(config["run_root"]) / ".execution-locks"
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / (name + ".lock")).open("a+b") as lock:
-        if os.name == "nt":
-            import msvcrt
-            # Windowsはロック領域の読み取りも拒否する。EOF以降もロックできるので初期化は不要。
-            def acquire():
-                lock.seek(0)
-                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-            def release():
-                lock.seek(0)
-                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            def acquire():
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            def release():
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        # EOF以降の先頭1バイトをロックできるので、ファイルの初期化は不要。
         while True:
             try:
-                acquire()
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
                 break
             except OSError as exc:
-                import errno
                 if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
                     raise
                 if not wait:
@@ -55,27 +42,20 @@ def execution_lock(config: dict[str, Any], name: str, *, wait: bool = False) -> 
         try:
             yield
         finally:
-            release()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 @contextmanager
 def lock_run_record(path: Path) -> Iterator[None]:
     # 置き換わるJSON本体とは別のファイルをロックする。run.jsonとeditor.jsonは別々にロックする。
     with path.with_suffix(".lock").open("ab") as lock:
-        if os.name == "nt":
-            import msvcrt
-
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
-            try:
-                yield
-            finally:
-                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        try:
             yield
+        finally:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def replace_run_record(path: Path, record: dict[str, Any]) -> None:

@@ -8,6 +8,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+if sys.platform != "win32":
+    raise SystemExit("このハーネスの対応OSはWindowsのみです。")
+
 from migration_harness.config import find_unit, load_config, target_paths, validate_checker_command
 from migration_harness.errors import format_error
 from migration_harness.workflow import (

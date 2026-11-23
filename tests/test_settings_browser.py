@@ -34,7 +34,7 @@ class SettingsBrowserTests(unittest.TestCase):
             node_args.append("--experimental-websocket")
             supported = subprocess.run([*node_args, "-e", probe], capture_output=True, timeout=10).returncode == 0
             require_ui_dependency(self, supported, "WebSocket support in Node.js is required for the browser test")
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=os.name == "nt") as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             root = Path(temporary)
             project = root / "app"
             project.mkdir()

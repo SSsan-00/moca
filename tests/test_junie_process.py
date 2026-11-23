@@ -54,11 +54,6 @@ class JunieProcessTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 self.check_child(mode=mode)
 
-    @unittest.skipIf(os.name == "nt", "requires POSIX process-group monitoring")
-    def test_launcher_exit_without_waitid_preserves_group_ownership(self):
-        with patch.object(os, "waitid", None, create=True):
-            self.check_child(mode="--task")
-
     def test_live_launcher_cancellation_confirms_child_exit(self):
         self.check_child(mode="--prompt", cancel="live")
 
@@ -71,96 +66,6 @@ class JunieProcessTests(unittest.TestCase):
     def test_connection_retry_starts_only_after_the_previous_child_exits(self):
         self.check_child(mode="--task", retry=True)
 
-    @unittest.skipIf(os.name == "nt", "requires a POSIX controlling terminal")
-    def test_terminal_input_ctrl_c_and_foreground_restoration(self):
-        root = Path(self.enterContext(TemporaryDirectory())).resolve()
-        launcher = root / "launcher.py"
-        launcher.write_text("""
-import os, signal, sys, time
-from pathlib import Path
-
-value = input("READY> ")
-if value == "finish":
-    Path(sys.argv[1]).write_text("token", encoding="ascii")
-else:
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    print("INTERRUPT>", flush=True)
-    time.sleep(8)
-""", encoding="utf-8")
-        harness = root / "terminal_harness.py"
-        harness.write_text("""
-import os, sys
-from pathlib import Path
-from migration_harness.junie import junie_cli
-
-try:
-    completion = Path(sys.argv[2])
-    junie_cli._run_session([sys.executable, sys.argv[1], sys.argv[2], "--prompt", "fixture"],
-                           completion, "token", ())
-    print("RESULT", junie_cli.has_completion_record(completion, "token"), flush=True)
-except KeyboardInterrupt:
-    print("CANCELLED", flush=True)
-print("FOREGROUND", os.getpgrp() == os.tcgetpgrp(0), flush=True)
-""", encoding="utf-8")
-        # pty.fork creates the controlling terminal in a separate, single-threaded interpreter.
-        driver = r"""
-import errno, os, pty, select, signal, sys, time
-
-pid, fd = pty.fork()
-if pid == 0:
-    os.execv(sys.executable, [sys.executable, *sys.argv[1:4]])
-
-def read_until(marker):
-    data = bytearray()
-    deadline = time.monotonic() + 8
-    while marker not in data:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
-            raise TimeoutError(repr(data))
-        try:
-            chunk = os.read(fd, 4096)
-        except OSError as error:
-            if error.errno != errno.EIO:
-                raise
-            chunk = b""
-        if not chunk:
-            raise AssertionError(repr(data))
-        data.extend(chunk)
-    return data
-
-try:
-    read_until(b"READY>")
-    if sys.argv[4] == "cancel":
-        os.write(fd, b"wait\n")
-        read_until(b"INTERRUPT>")
-        os.write(fd, b"\x03")
-    else:
-        os.write(fd, b"finish\n")
-    print(read_until(b"FOREGROUND True").decode("ascii"))
-    _, status = os.waitpid(pid, 0)
-    pid = None
-    sys.exit(os.waitstatus_to_exitcode(status))
-finally:
-    os.close(fd)
-    if pid is not None:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        os.waitpid(pid, 0)
-"""
-        for operation, expected in (("finish", "RESULT True"), ("cancel", "CANCELLED")):
-            with self.subTest(operation=operation):
-                completion = root / operation
-                completed = subprocess.run(
-                    [sys.executable, "-c", driver, str(harness), str(launcher), str(completion), operation],
-                    env={**os.environ, "JUNIE_HOME": str(root)}, capture_output=True, text=True, timeout=12,
-                )
-                self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertIn(expected, completed.stdout)
-                self.assertIn("FOREGROUND True", completed.stdout)
-
-    @unittest.skipUnless(os.name == "nt", "requires Windows Job Objects and cmd.exe")
     def test_windows_batch_launcher_owns_descendants_after_it_exits(self):
         self.check_child(mode="--task", batch=True)
 
@@ -197,7 +102,7 @@ finally:
         connection = None
         parent = None
         launch = junie_cli._launch_process
-        wait_for_launcher = JunieProcess.wait_for_launcher
+        wait_for_launcher = subprocess.Popen.wait
 
         def start(argv, **streams):
             nonlocal connection, parent
@@ -216,23 +121,20 @@ finally:
                 control.cancelled.set()
             elif cancel is None:
                 # The launcher must be known to have exited before any token-based early stop.
-                if isinstance(parent, JunieProcess):
-                    wait_for_launcher(parent, 5)
-                else:
-                    parent.wait(timeout=5)
+                parent.wait(timeout=5)
             return parent
 
         def wait_then_cancel(process, timeout):
-            wait_for_launcher(process, timeout)
+            code = wait_for_launcher(process, timeout)
             control.cancelled.set()
+            return code
 
         def wait_for_disconnect():
             try:
                 self.assertEqual(connection.recv(1), b"")
             except ConnectionResetError:
                 # TerminateJobObject can reset the socket instead of sending EOF.
-                if os.name != "nt":
-                    raise
+                pass
 
         accepted = Mock()
         closed = Mock()
@@ -260,7 +162,7 @@ finally:
                     self.assertEqual(launches.call_count, 2)
                 elif cancel:
                     if cancel == "after_exit":
-                        self.enterContext(patch.object(JunieProcess, "wait_for_launcher", wait_then_cancel))
+                        self.enterContext(patch.object(JunieProcess, "wait", wait_then_cancel))
                     with self.assertRaises(execution.OperationCancelled):
                         junie_cli.run_interactive(command, completion, "token", (target,))
                 else:

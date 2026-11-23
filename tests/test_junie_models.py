@@ -153,7 +153,7 @@ class ModelCliTests(unittest.TestCase):
         process.returncode = 1
         with patch.object(junie_cli, "_launch_process", side_effect=launch_model), patch.object(junie_cli, "_close_junie"), self.assertRaisesRegex(ValueError, "取得できません"):
             junie_cli.list_models()
-        process.wait_for_launcher.side_effect = subprocess.TimeoutExpired("junie", 10)
+        process.wait.side_effect = subprocess.TimeoutExpired("junie", 10)
         with patch.object(junie_cli, "_launch_process", return_value=process), patch.object(junie_cli, "_close_junie") as close:
             with self.assertRaisesRegex(ValueError, "タイムアウト"):
                 junie_cli.list_models()

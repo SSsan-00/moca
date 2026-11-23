@@ -133,7 +133,7 @@ class JunieNotifications:
         self.settings = settings
         self.origin = origin
         self.prefix = prefix
-        self.backend = backend if backend is not None else (WindowsToast() if os.name == "nt" else None)
+        self.backend = backend if backend is not None else WindowsToast()
         self.now = now
         self.active = {}
         self.links = {}
@@ -147,9 +147,8 @@ class JunieNotifications:
         self.thread = None
 
     def start(self):
-        if self.backend is not None:
-            self.thread = Thread(target=self.run, name="junie-notifications", daemon=True)
-            self.thread.start()
+        self.thread = Thread(target=self.run, name="junie-notifications", daemon=True)
+        self.thread.start()
 
     def run(self):
         while not self.stop.is_set():
@@ -170,7 +169,7 @@ class JunieNotifications:
         return hashlib.sha256(toast.token.encode("ascii")).hexdigest()[:16]
 
     def post(self, notice):
-        if notice and self.backend is not None and not self.stop.is_set():
+        if notice and not self.stop.is_set():
             self.run_queue.put(notice)
 
     def mark_visible(self):

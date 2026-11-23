@@ -1,5 +1,4 @@
 import json
-import os
 import shutil
 import stat
 import tempfile
@@ -434,12 +433,6 @@ class TargetContextTests(unittest.TestCase):
                         self.stage()
                 finally:
                     setattr(self, output, original)
-
-    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO test requires POSIX")
-    def test_special_files_fail_instead_of_being_skipped_or_blocking(self):
-        os.mkfifo(self.worktree / "Pages/Orders/pipe")
-        with self.assertRaisesRegex(ValueError, "regular file"):
-            self.stage()
 
 
 if __name__ == "__main__":
