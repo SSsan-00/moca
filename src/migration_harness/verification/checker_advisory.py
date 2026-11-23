@@ -92,7 +92,14 @@ class AdvisoryTimeout(TimeoutError):
         self.stage = stage
 
 
-def _exchange(process, project: Path, prompt: str, timeout: float, *, startup_timeout: float | None = None) -> str:
+class AdvisoryEffortUnavailable(ValueError):
+    pass
+
+
+def _exchange(
+    process, project: Path, prompt: str, timeout: float, *,
+    startup_timeout: float | None = None, model: str | None = None, effort: str | None = None,
+) -> str:
     updates, requests = Queue(), Queue()
     reader = Thread(target=_read_frames, args=(process.stdout, updates), daemon=True)
     writer = Thread(target=_write_requests, args=(process.stdin, requests), daemon=True)
@@ -103,9 +110,25 @@ def _exchange(process, project: Path, prompt: str, timeout: float, *, startup_ti
     reply_bytes = 0
     session = None
     stage = 1
+    effort_request = None
+    config_id = None
 
-    def request(method: str, **params: Any) -> None:
-        requests.put({"jsonrpc": "2.0", "id": stage, "method": method, "params": params})
+    def request(method: str, *, message_id: int | None = None, **params: Any) -> None:
+        requests.put({"jsonrpc": "2.0", "id": message_id if message_id is not None else stage,
+                      "method": method, "params": params})
+
+    def begin_prompt() -> None:
+        nonlocal stage, deadline
+        stage = 3
+        if startup_timeout is not None:
+            deadline = monotonic() + timeout
+        request("session/prompt", sessionId=session, prompt=[{"type": "text", "text": prompt}])
+
+    def configure_effort(message_id: int) -> None:
+        nonlocal effort_request
+        effort_request = message_id
+        request("session/set_config_option", message_id=message_id,
+                sessionId=session, configId=config_id, value=effort)
 
     request("initialize", protocolVersion=1, clientCapabilities={})
     try:
@@ -113,7 +136,8 @@ def _exchange(process, project: Path, prompt: str, timeout: float, *, startup_ti
             check_cancelled()
             remaining = deadline - monotonic()
             if remaining <= 0:
-                raise AdvisoryTimeout(("initialization", "session_setup", "model_response")[stage - 1])
+                raise AdvisoryTimeout("effort_confirmation" if effort_request is not None else
+                                      ("initialization", "session_setup", "model_response")[stage - 1])
             try:
                 raw = updates.get(timeout=min(remaining, 0.2))
             except Empty:
@@ -129,15 +153,17 @@ def _exchange(process, project: Path, prompt: str, timeout: float, *, startup_ti
                 if message["method"] != "session/update" or "id" in message:
                     raise ValueError("Junie advisory tried to request an unsupported operation")
                 params = message.get("params")
-                if not isinstance(params, dict) or not session or params.get("sessionId") != session or stage != 3:
+                if not isinstance(params, dict) or not session or params.get("sessionId") != session:
                     raise ValueError("Unexpected Junie advisory session update")
                 update = params.get("update")
                 if not isinstance(update, dict):
                     raise ValueError("Invalid Junie advisory update")
                 kind = update.get("sessionUpdate")
-                if kind in {"agent_thought_chunk", "available_commands_update", "config_option_update", "session_info_update", "usage_update"}:
+                if kind in {"available_commands_update", "config_option_update", "session_info_update"}:
                     continue
-                if kind != "agent_message_chunk":
+                if stage == 3 and kind in {"agent_thought_chunk", "usage_update"}:
+                    continue
+                if stage != 3 or kind != "agent_message_chunk":
                     raise ValueError("Junie advisory attempted a non-text operation")
                 content = update.get("content")
                 if not isinstance(content, dict) or content.get("type") != "text" or not isinstance(content.get("text"), str):
@@ -149,6 +175,21 @@ def _exchange(process, project: Path, prompt: str, timeout: float, *, startup_ti
                 reply.append(part)
                 continue
             result = message.get("result")
+            if effort_request is not None:
+                if type(message.get("id")) is not int or message["id"] != effort_request:
+                    raise AdvisoryEffortUnavailable("Unexpected Junie advisory effort reply")
+                option = junie_cli.acp_effort_option(result) if isinstance(result, dict) else None
+                if "error" not in message and junie_cli.acp_confirms_effort(option, effort):
+                    effort_request = None
+                    begin_prompt()
+                    continue
+                error = message.get("error")
+                if effort_request == junie_cli._ACP_RETRY_EFFORT_REQUEST or (
+                    isinstance(error, dict) and error.get("code") in (-32601, -32602)
+                ):
+                    raise AdvisoryEffortUnavailable("Junie advisory did not confirm the requested effort")
+                configure_effort(junie_cli._ACP_RETRY_EFFORT_REQUEST)
+                continue
             if type(message.get("id")) is not int or message["id"] != stage or "error" in message or not isinstance(result, dict):
                 raise ValueError("Junie advisory rejected or returned an invalid response")
             if stage == 1 and result.get("protocolVersion") == 1:
@@ -156,10 +197,14 @@ def _exchange(process, project: Path, prompt: str, timeout: float, *, startup_ti
                 request("session/new", cwd=str(project), mcpServers=[])
             elif stage == 2 and isinstance(result.get("sessionId"), str) and result["sessionId"]:
                 session = result["sessionId"]
-                stage = 3
-                if startup_timeout is not None:
-                    deadline = monotonic() + timeout
-                request("session/prompt", sessionId=session, prompt=[{"type": "text", "text": prompt}])
+                option = junie_cli.acp_effort_option(result)
+                if effort is None or junie_cli.acp_confirms_effort(option, effort, model):
+                    begin_prompt()
+                else:
+                    config_id = option.get("id") if option is not None else None
+                    if not isinstance(config_id, str) or not config_id:
+                        raise AdvisoryEffortUnavailable("Junie advisory does not expose the requested effort")
+                    configure_effort(junie_cli._ACP_SET_EFFORT_REQUEST)
             elif stage == 3 and result.get("stopReason") == "end_turn":
                 return "".join(reply)
             else:
@@ -179,8 +224,9 @@ def run_text_advisory(
         )
         try:
             if timeout is not None:
-                return _exchange(process, project, prompt, timeout)
-            return _exchange(process, project, prompt, SESSION_TIMEOUT, startup_timeout=junie_cli.ACP_STARTUP_TIMEOUT)
+                return _exchange(process, project, prompt, timeout, model=model, effort=effort)
+            return _exchange(process, project, prompt, SESSION_TIMEOUT, startup_timeout=junie_cli.ACP_STARTUP_TIMEOUT,
+                             model=model, effort=effort)
         finally:
             try:
                 junie_cli._close_junie(process)

@@ -28,7 +28,22 @@ assert not list(Path.cwd().iterdir())
 assert receive('initialize', 1)['clientCapabilities'] == {}
 send(id=1, result={'protocolVersion': 1})
 assert receive('session/new', 2) == {'cwd': str(Path.cwd()), 'mcpServers': []}
-send(id=2, result={'sessionId': '1'})
+mode = sys.argv[1]
+option = lambda value: {'category': 'thought_level', 'id': 'reasoning', 'currentValue': value}
+session = {'sessionId': '1'}
+if mode.startswith('effort-') and mode != 'effort-missing':
+    session['configOptions'] = [option('high' if mode == 'effort-current' else 'low')]
+send(id=2, result=session)
+if mode in ('effort-apply', 'effort-retry', 'effort-unconfirmed', 'effort-tool'):
+    assert receive('session/set_config_option', -2) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
+    if mode == 'effort-tool':
+        update('tool_call', kind='execute')
+    else:
+        update('config_option_update', configOptions=[])
+    send(id=-2, result={'configOptions': [option('high' if mode == 'effort-apply' else 'low')]})
+    if mode in ('effort-retry', 'effort-unconfirmed'):
+        assert receive('session/set_config_option', -3) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
+        send(id=-3, result={'configOptions': [option('high' if mode == 'effort-retry' else 'low')]})
 if sys.argv[1] == 'auth-notice':
     send(method='_auth/status_update', params={'state': 'ready'})
     update("available_commands_update", availableCommands=[])
@@ -220,6 +235,21 @@ class CheckerAdvisoryTests(unittest.TestCase):
                         model.assert_called_once()
                         self.assertEqual(result["verdict"], "unclear")
 
+    def test_advisory_applies_and_confirms_explicit_effort_in_a_real_pipe(self):
+        for mode in ("effort-current", "effort-apply", "effort-retry", "effort-unconfirmed", "effort-missing", "effort-tool"):
+            with self.subTest(mode=mode):
+                def launch(command, *, owned, cwd, **streams):
+                    self.assertEqual(command[-5:], ["--model", "fixture-model", "--effort", "high", "--acp=true"])
+                    return junie_cli.JunieProcess([sys.executable, "-c", FAKE_ACP, mode], cwd=cwd, **streams)
+
+                with patch.object(junie_cli, "_launch_process", side_effect=launch):
+                    if mode in ("effort-current", "effort-apply", "effort-retry"):
+                        reply = advisory.run_text_advisory("sample only", model="fixture-model", effort="high", timeout=5)
+                        self.assertEqual(advisory.parse_advisory(reply, 1)["verdict"], "informational")
+                    else:
+                        with self.assertRaises(ValueError):
+                            advisory.run_text_advisory("sample only", model="fixture-model", effort="high", timeout=5)
+
     def test_acp_launcher_receives_model_and_effort_without_prompt_or_brave(self):
         launched = []
 
@@ -227,7 +257,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
             self.assertTrue(owned)
             self.assertEqual(command, ["junie", "--project", str(cwd),
                                        "--model", "fixture-model", "--effort", "high", "--acp=true"])
-            process = subprocess.Popen([sys.executable, "-c", FAKE_ACP, "complete"], cwd=cwd, **streams)
+            process = subprocess.Popen([sys.executable, "-c", FAKE_ACP, "effort-current"], cwd=cwd, **streams)
             launched.append(process)
             return process
 
