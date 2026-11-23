@@ -124,6 +124,7 @@ async function checkDashboard() {
   const page = new Element();
   Object.assign(page, {
     querySelector: dashboardElement,
+    getElementById: id => dashboardNodes.get("#" + id) ?? null,
     createElement: () => new Element(), documentElement: new Element(), body: new Element(), dispatchEvent() {},
   });
   let actions;
@@ -169,6 +170,7 @@ async function checkDashboard() {
       return Promise.resolve({ok: true, json: async () => ({run_id: body.run_id})});
     },
   });
+  runtime.window.fetch = runtime.fetch;
   vm.runInContext(fs.readFileSync(process.argv[3], "utf8"), runtime);
   const progress = (stream, runId) => stream.onmessage({data: JSON.stringify({run_id: runId, status: "idle", ready: false, diff_viewer_enabled: true, worktree_path: runId})});
   progress(streams[0], "A");

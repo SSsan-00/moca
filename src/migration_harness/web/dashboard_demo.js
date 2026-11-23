@@ -108,9 +108,12 @@ window.harnessDemoTransport = (() => {
           const editor = await window.harnessEditorDemo.request("editor", body && {kind: "prompt", run_id: id, text: body.text});
           return json({run_id: id, timing: !editor.can_prompt ? null : editor.queued ? "checkpoint" : "resume", prompts: editor.prompts});
         }
-        case "junie-thoughts": return json({entries: Number(query.get("cursor")) ? [] : [
-          {title: "入力を確認", thought: "移行元のPHPと仮C#を確認しました。", time: "10:42:03"}],
-          cursor: 1, live: !run.ready, more: false});
+        case "junie-thoughts": {
+          const {log_language, log_tone} = settings.read().form.junie;
+          return json({entries: Number(query.get("cursor")) ? [] : [
+            {title: "入力を確認", thought: "移行元のPHPと仮C#を確認しました。", at: "2026-11-14T01:42:03Z"}],
+            cursor: 1, live: !run.ready && !run.queued, more: false, log_language, log_tone});
+        }
         case "checker-output": return json({output: finding, truncated: false});
         case "resume-plan": return json({version: "demo-checkpoint", targets: {[target]: "sample"}, edits: {},
           invalidates: ["build", "checker", "reviews"], repair: false});

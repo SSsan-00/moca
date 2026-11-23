@@ -130,8 +130,8 @@ try {
   async function navigate(method, params) {
     await Promise.all([pageLoaded(), cdp(method, params)]);
   }
-  async function evaluate(expression) {
-    const result = await cdp("Runtime.evaluate", {expression, returnByValue: true, awaitPromise: true});
+  async function evaluate(expression, userGesture = false) {
+    const result = await cdp("Runtime.evaluate", {expression, returnByValue: true, awaitPromise: true, userGesture});
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result.value;
   }
@@ -473,6 +473,42 @@ try {
   await change("settings-junie-log-tone", "custom", "input");
   await wait(`${toneExample}.offsetWidth > 0 && ${exampleVisibility} === 'visible'`);
   assert.equal(await evaluate(exampleAnimation), "prompt-type");
+
+  await click("tab-progress");
+  const logButton = "document.querySelector('.junie-log-trigger')";
+  await wait(logButton + ".matches(':enabled')");
+  await evaluate(logButton + ".click()", true);
+  const log = "junieLog.windows.values().next().value?.popup.document";
+  const logText = selector => log + "?.querySelector(" + JSON.stringify(selector) + ")?.textContent";
+  const logStatus = logText("[data-log-status]");
+  const rawLog = `Array.from(${log}.querySelectorAll("[data-log-entries] li"), row => [
+    row.querySelector("h2").textContent, row.querySelector("p").textContent, row.querySelector("time").dateTime,
+  ])`;
+  await wait(logText("[data-log-entries] li p"));
+  assert.equal(await evaluate(log + ".documentElement.lang"), "ja");
+  assert.equal(await evaluate(logStatus), "表示中のログ：1 件。");
+  const originalEntries = await evaluate(rawLog);
+  assert.deepEqual(originalEntries, [["入力を確認", "移行元のPHPと仮C#を確認しました。", "2026-11-14T01:42:03.000Z"]]);
+
+  await click("tab-settings");
+  await change("settings-junie-log-language", "en", "input");
+  await change("settings-junie-log-tone", "polite", "input");
+  await wait(save + ".matches(':enabled')");
+  await evaluate(save + ".click()");
+  await wait(`${field("workspace-config-feedback")}.textContent.includes("設定を保存しました")`);
+  const englishPoliteLog = logStatus + " === 'Showing 1 entry.'";
+  await wait(englishPoliteLog);
+  assert.equal(await evaluate(log + ".documentElement.lang"), "en");
+  assert.equal(await evaluate(logText("#junie-log-title")), "Junie detailed log");
+  assert.match(await evaluate(logText("[data-log-description]")), /^You can review /);
+  assert.deepEqual(await evaluate(rawLog), originalEntries);
+  await evaluate(log + ".defaultView.close()");
+  await click("tab-progress");
+  await evaluate(logButton + ".click()", true);
+  await wait(englishPoliteLog);
+  assert.deepEqual(await evaluate(rawLog), originalEntries);
+  await evaluate(log + ".defaultView.close()");
+  console.log("Browser demo: saved language and tone change log framing without changing original entries");
 
   await showRuleWorkspace();
   await click("rules-start");
