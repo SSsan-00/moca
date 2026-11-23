@@ -308,7 +308,7 @@ sequenceDiagram
 ### Junie が読む内容
 
 - 初回の作業領域作成前に `before_migration` と単位別の `draft_imports` を実行します。初回編集前に詳細ルールの説明を全移行範囲と照合し、判定に詳細本文が必要な場合はハッシュを検証して読ませます。全件の ID・適用可否・理由を検証して `detail_applicability` に保存します。毎回必須のルールは本文を渡し、適用対象と移行先が明記された詳細の原文や、参考実装の索引を作業領域に配置します。 [workflow.py](../src/migration_harness/workflow.py) · [rule_materials.py](../src/migration_harness/rules/rule_materials.py)
-- 移行先周辺の参照は、移行先の親、親と同階層の `inc`、その上の階層にある `Libs`・`Extensions` を起点に収集します。フック実行後の worktree から `capsule/target-context/` に初回固定し、以降はハッシュを照合して復元します。 [source_context.py](../src/migration_harness/context/source_context.py)
+- 移行先周辺の参照は、移行先の親、親と同階層の `inc`、その上の階層にある `Libs`・`Extensions` を起点に収集します。フック実行後の worktree から `capsule/target-context/` に初回固定します。通常の再開時だけ、保存済みの収集条件で worktree の参考ファイルを照合します。変更があれば新しい版とルール判定を用いて既存の移行先を見直し、手修正との競合は人に戻します。元PHPの読み直しや、ビルドのみ・チェッカーのみ・区間巻き戻しでの収集し直しは行いません。 [source_context.py](../src/migration_harness/context/source_context.py)
 - カプセルごとに `.migration-context.md`、必要なら `.migration-boundary.md`、分割時は処理中の区間までの担当原文を渡します。境界資料は前後関係の参照用です。最終区間では関数をまたいだ分割箇所も原文と合わせて照合するよう指示します。Junie に指示する検証はソースの静的確認で、ビルドと設定済みの外部チェッカーは後段でハーネスが実行します。 [workflow.py](../src/migration_harness/workflow.py) · [php_literals.py](../src/migration_harness/context/php_literals.py)
 
 ### プロセスと成果物の受け渡し
@@ -316,7 +316,7 @@ sequenceDiagram
 | 経路 | 振る舞い |
 | --- | --- |
 | 端末での移行 | 端末の対話 CLI を使います。セッションを監視し、完了ファイルとプロセスの状態を確認します。 |
-| ダッシュボードでの移行 | ACP（Agent Communication Protocol）を標準入出力で使用します。`initialize` → `session/new` → `session/prompt` と進み、`session/update` を処理し、許可要求への回答を画面から受け付けます。ACP でモデルが利用できない場合は、対応 CLI と利用者の承認があれば `--task` で今回の呼び出しを再試行します。 |
+| ダッシュボードでの移行 | ACP（Agent Communication Protocol）を標準入出力で使用します。初期化・セッション作成の後、明示指定された推論の強さを確認してから `session/prompt` を送り、`session/update` を処理し、許可要求への回答を画面から受け付けます。ACP でモデルが利用できない場合は、対応 CLI と利用者の承認があれば `--task` で今回の呼び出しを再試行します。 |
 | 通信失敗と停止 | モデル通信に失敗すると、同じ作業領域と完了トークンで 1 秒、3 秒の間隔を置いて最大 2 回再試行します。停止境界ではプロセス群の終了を確認します。終了を確認できない場合は `JunieStopError` で止まり、利用者による残存プロセスの確認が必要です。 |
 
 実装は [junie_cli.py](../src/migration_harness/junie/junie_cli.py)、子プロセスや Windows の Job Object は [junie_process.py](../src/migration_harness/junie/junie_process.py) と [windows_job.py](../src/migration_harness/windows_job.py) を参照してください。
@@ -402,7 +402,7 @@ flowchart TD
 ```
 
 1. Diff Viewer は固定済み PHP と取得時点の移行先を比較します。通常の比較スナップショットは worktree を使い、移行実行中のライブ比較では条件に応じて Junie の下書きを使います。固定比較は `review-snapshots/<ID>.json` に保存します。Junie のアンカー生成では対応行の座標を検証し、比較スナップショットと対象ハッシュにひも付く対応候補を記録します。固定済み PHP を持たない旧 Run は manifest の入力パスの現行ファイルを読みます。 [diff_viewer.py](../src/migration_harness/web/diff_viewer.py) · [review_anchors.py](../src/migration_harness/web/review_anchors.py)
-2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。Diff Viewer で内容を確認し、CLI の `ledger-review` で `confirmed`・`excluded`・`needs_review` と理由を記録します。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [cli.py](../src/migration_harness/cli.py) · [workflow.py](../src/migration_harness/workflow.py)
+2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。ダッシュボードの移行台帳で範囲を確認し、必要なら Diff Viewer で比較して、 `confirmed`・`excluded`・`needs_review` と理由を記録します。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [cli.py](../src/migration_harness/cli.py) · [workflow.py](../src/migration_harness/workflow.py)
 3. `verification_passed` には、反映保留がないこと、全カプセル完了、ビルド成功、必要なチェッカーの成功または有効な承認、検証フックの成功、対象ハッシュと設定の一致が必要です。照合する設定はビルド先、チェッカーコマンド、検証フックです。`completion.complete` はこれに加えて、PHP 範囲が 1 件以上あり、全件に有効な確認または理由付き除外がある場合に成立します。 [workflow.py](../src/migration_harness/workflow.py)
 
 `run.json` の `build_succeeded`、`checker_succeeded`、`checker_accepted` は検証工程の状態です。移行の完了判定は台帳を参照してください。通常の台帳判定は移行先と検証設定を照合します。チェッカー単独再開に対応した構成では、`build_receipt.py` が作業ツリー、.NET 起動ファイルと SDK 参照パック、成果物を照合し、その再開結果を台帳に表示する際にも確認します。依存ソースやコマンド実体を変更した場合は再検証が必要です。実行時の振る舞いを検証するテストは、プロジェクトのフックやチェッカーで指定できます。 [技術仕様](../SPEC.md)
