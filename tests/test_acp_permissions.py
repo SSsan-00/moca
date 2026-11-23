@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
@@ -129,6 +129,36 @@ send(id=3,result={"stopReason":"end_turn"})
                 requests, metrics = self._exchange(program, reads)
                 self.assertEqual(requests, [])
                 self.assertEqual(metrics, [("read", "client_read_unavailable"), ("unknown", "no_permission_options")])
+
+    def test_permission_dialog_requires_the_current_initialized_session(self):
+        show_request = Mock(return_value=None)
+        with patch.object(junie_cli, "Thread"):
+            session = junie_cli._AcpSession(Mock(), ["junie"], self.workspace, show_request,
+                                           self.workspace / "complete", "token", None)
+        session.send = Mock()
+        params = {
+            "toolCall": {"toolCallId": "sample", "kind": "execute"},
+            "options": [{"optionId": "ask", "name": "Allow once", "kind": "allow_once"}],
+        }
+
+        for session_id, request_session in ((None, {}), (None, {"sessionId": None}),
+                                            ("bound", {}), ("bound", {"sessionId": "other"})):
+            with self.subTest(session_id=session_id, request_session=request_session):
+                show_request.reset_mock()
+                session.send.reset_mock()
+                session.session_id = session_id
+                session._receive_message({"id": 20, "method": "session/request_permission",
+                                          "params": {**params, **request_session}})
+                show_request.assert_not_called()
+                session.send.assert_called_once_with(id=20, error={"code": -32601, "message": "Method not supported"})
+
+        show_request.reset_mock()
+        session.send.reset_mock()
+        session.session_id = "bound"
+        session._receive_message({"id": 21, "method": "session/request_permission",
+                                  "params": {**params, "sessionId": "bound"}})
+        show_request.assert_called_once()
+        session.send.assert_called_once_with(id=21, result={"outcome": {"outcome": "cancelled"}})
 
     def _exchange(self, program, reads):
         launch = junie_cli._launch_process

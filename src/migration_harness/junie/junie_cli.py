@@ -1140,7 +1140,8 @@ class _AcpSession:
         if not method and request_id == self.steering_waiting and request_id is not None:
             self._accept_steering_response(request_id, message)
         elif method and request_id is not None:
-            if method == "session/request_permission" and params.get("sessionId") == self.session_id:
+            if (method == "session/request_permission" and self.session_id is not None
+                    and params.get("sessionId") == self.session_id):
                 self.permission(request_id, params)
             elif (method == "fs/read_text_file" and self.session_id is not None
                   and params.get("sessionId") == self.session_id):
