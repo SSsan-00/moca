@@ -10,6 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from migration_harness.context import php_literals
 from migration_harness.junie import junie_cli
 from migration_harness.errors import format_error
 
@@ -65,7 +66,7 @@ class JunieLaunchTests(unittest.TestCase):
             root = Path(directory)
             materials = root / ".migration-materials"
             materials.mkdir()
-            original = Path(junie_cli.__file__).with_name("php_literals.py").read_bytes()
+            original = Path(php_literals.__file__).read_bytes()
             helper = materials / "php_literals.py"
             helper.write_bytes(original)
             child = f"import sys; sys.path.insert(0, {str(materials)!r}); import php_literals; assert callable(php_literals.decode_literal)"
