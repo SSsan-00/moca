@@ -91,7 +91,7 @@ else:
         harness.write_text("""
 import os, sys
 from pathlib import Path
-from migration_harness import junie_cli
+from migration_harness.junie import junie_cli
 
 try:
     completion = Path(sys.argv[2])
