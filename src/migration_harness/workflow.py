@@ -77,7 +77,7 @@ from .execution import (
     run_process,
 )
 from .rules.detail_review_evidence import stage_review_evidence
-from .files import harness_asset, safe_target, sha256_file
+from .files import safe_target, sha256_file
 from .rules.rule_materials import (
     InvalidDetailContextEvidence,
     detail_index,

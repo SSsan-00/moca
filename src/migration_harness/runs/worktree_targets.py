@@ -86,10 +86,8 @@ def save_target_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, 
             if original is None:
                 raise ValueError("対象ファイルが見つかりません。作業ツリーで確認してください。")
             version = hashlib.sha256(original).hexdigest()
-        # 画面を開いてから更新されたファイルを、古い編集内容で上書きしない。
         if version != edit["version"]:
             raise ValueError("編集を開いた後に対象ファイルが更新されました。最新の内容を読み込み、編集を反映し直してください。")
-        # ブラウザーから来る改行を元の形式にそろえ、BOM付きUTF-8で保存する。
         text = edit["content"].replace("\r\n", "\n").replace("\r", "\n")
         text = text.replace("\n", target_newline(original))
         data = text.encode("utf-8-sig")
