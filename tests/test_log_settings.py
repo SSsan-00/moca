@@ -104,6 +104,34 @@ class DetailLogSettingsTests(HarnessCase):
                 rows = read_junie_thoughts(root, identifier, 0)["entries"]
                 self.assertEqual([row["thought"] for row in rows], ["標準の回答"] if accept_result is None else [])
 
+    def test_headless_final_report_is_masked_once_but_structured_output_is_not_logged(self):
+        from io import BytesIO
+        from unittest.mock import Mock, patch
+        from migration_harness.execution import ExecutionControl, control_scope
+        from migration_harness.junie import junie_cli
+        from migration_harness.junie.junie_thoughts import FILENAME, read_junie_thoughts
+
+        for accept_result in (None, Mock()):
+            run = self.root / ("anchors" if accept_result is None else "rule-review")
+            run.mkdir()
+            control = ExecutionControl(lambda _: None, on_junie_request=lambda _: None,
+                                       trusted_junie_workspaces={str(run.resolve())}, junie_thoughts_path=run / FILENAME)
+            process = Mock(stderr=BytesIO(), returncode=0)
+            process.wait.return_value = 0
+            result = "日本語で完了 token-to-mask" if accept_result is None else '{"machine":"結果"}'
+            events = Mock(logs=run, existing_logs=set(), path=run, result=result, usage=[0] * 5)
+            events.read_new_events.return_value = False
+            with (control_scope(control),
+                  patch.object(junie_cli, "_launch_session_process", return_value=process),
+                  patch.object(junie_cli, "_JunieSessionEvents", return_value=events),
+                  patch.object(junie_cli, "_close_junie", return_value=0)):
+                junie_cli.run_interactive(["junie", "--task", "作業"], run / "done", "token-to-mask", (),
+                                          accept_result=accept_result, report_usage=lambda _: None)
+            rows = read_junie_thoughts(self.root, run.name, 0)["entries"]
+            self.assertEqual([row["thought"] for row in rows], ["日本語で完了 [REDACTED]"] if accept_result is None else [])
+            if accept_result is not None:
+                accept_result.assert_called_once_with(result)
+
     def test_acp_visible_progress_is_recorded_without_thought_chunks(self):
         from migration_harness.junie.junie_cli import _AcpSession
         from migration_harness.junie.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
