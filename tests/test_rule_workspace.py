@@ -188,6 +188,36 @@ end_line = 1
         fresh = self.workspace.start()
         self.assertIn("new published obligation", self.workspace.file_text(fresh["id"], "rule-0001.md")["text"])
 
+    def test_apply_rejects_different_normalized_root_while_toml_bytes_match(self):
+        ready = self.send(self.workspace.start(), "preview")
+        before = self.config_path.read_bytes()
+
+        def shifted_root(candidate):
+            return {**load_config(candidate), "project_root": str(self.root / "another-worktree")}
+
+        with patch("migration_harness.web.dashboard.load_config", side_effect=shifted_root):
+            with self.assertRaisesRegex(ValueError, "設定画面で"):
+                self.send(ready, "apply", confirmed=True, preview=ready["preview"]["token"])
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertEqual(self.workspace.snapshot(ready["id"])["preview"], ready["preview"])
+
+    def test_absolute_registered_original_uses_same_project_snapshot(self):
+        external = self.root / "external.md"
+        external.write_bytes(b"ABSOLUTE_RULE\n")
+        content = self.config_path.read_text(encoding="utf-8").replace(
+            "'original.md'", json.dumps(external.as_posix()),
+        )
+        self.config_path.write_text(content, encoding="utf-8")
+        draft = self.workspace.start()
+        self.assertEqual(self.workspace.file_text(draft["id"], "rule-0001.md")["text"], "ABSOLUTE_RULE\n")
+        self.assertTrue(self.apply(draft)["applied"])
+        self.assertEqual(external.read_bytes(), b"ABSOLUTE_RULE\n")
+
+    def test_project_root_case_alias_still_uses_the_live_project(self):
+        content = self.config_path.read_text(encoding="utf-8").replace("root = 'app'", "root = 'APP'")
+        self.config_path.write_text(content, encoding="utf-8")
+        self.assertTrue(self.apply(self.workspace.start())["applied"])
+
     def test_old_draft_without_origin_versions_is_preserved_not_silently_rebased(self):
         draft = self.workspace.start()
         metadata = self.workspace.draft(draft["id"]) / "state.json"
