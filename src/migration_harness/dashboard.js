@@ -699,7 +699,17 @@ const ruleVerificationDialog = element("#rule-verification-dialog");
 const ruleVerificationForm = element("#rule-verification-form");
 const ruleVerificationSelect = element("#rule-verification-rule");
 const ruleVerificationStatus = element("#rule-verification-status");
-const ruleVerificationLabels = {passed: "反映確認済み", failed: "未反映", human_review_needed: "要確認"};
+const ruleVerificationLabels = {
+  passed: "反映確認済み", failed: "未反映", human_review_needed: "要確認",
+  applicability_pending: "適用判断待ち", not_applicable: "適用外",
+};
+const ruleVerificationKind = ruleVerificationForm.elements.namedItem("kind");
+
+function updateRuleVerificationRequirement() {
+  ruleVerificationForm.elements.namedItem("reference").required =
+    ["passed", "failed"].includes(ruleVerificationKind.value);
+}
+ruleVerificationKind.addEventListener("change", updateRuleVerificationRequirement);
 let ruleVerificationReport;
 let ruleVerificationRequest = 0;
 
@@ -712,9 +722,10 @@ function renderRuleVerification(report, preferredRule) {
   ruleVerificationForm.hidden = !rules.length;
   const pending = rules.filter(rule => rule.verification_state === "human_review_needed").length;
   const failed = rules.filter(rule => rule.verification_state === "failed").length;
-  const passed = rules.length - pending - failed;
+  const passed = rules.filter(rule => rule.verification_state === "passed").length;
+  const applicabilityPending = rules.filter(rule => rule.applicability_needs_review).length;
   ruleVerificationStatus.textContent = rules.length
-    ? `要確認: ${pending} 件 / 未反映: ${failed} 件 / 反映確認済み: ${passed} 件`
+    ? `要確認: ${pending} 件 / 未反映: ${failed} 件 / 反映確認済み: ${passed} 件 / 適用判断待ち: ${applicabilityPending} 件`
     : "確認対象のルールがありません。";
   renderRuleVerificationContext();
 }
@@ -728,10 +739,18 @@ function renderRuleVerificationContext() {
     context.textContent = "";
     return;
   }
+  for (const option of ruleVerificationKind.options) {
+    if (["include", "exclude"].includes(option.value)) {
+      option.hidden = option.disabled = rule.usage !== "reference";
+    }
+  }
+  if (ruleVerificationKind.selectedOptions[0]?.disabled) ruleVerificationKind.value = "";
+  updateRuleVerificationRequirement();
   const decision = rule.operator_decision || rule.model_decision;
   const last = rule.independent_verification;
   const sources = rule.applicability_evidence.map(span => `${span.path}:${span.lines.join("–")}`);
-  context.textContent = [rule.description, decision?.reason, sources.length ? `選別の根拠: ${sources.join("、")}` : "",
+  context.textContent = [rule.description, rule.applicability_needs_review ? "適用の根拠が不足しています。確認してください。" : "",
+    decision?.reason, sources.length ? `選別の根拠: ${sources.join("、")}` : "",
     last?.reason, last?.reference]
     .filter(Boolean).join(" / ");
   for (const field of ["start", "end"]) ruleVerificationForm.elements.namedItem(field).max = rule.saved_file_lines;

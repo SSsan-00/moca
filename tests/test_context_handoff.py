@@ -99,6 +99,38 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertEqual(len(record["junie_memos"]), 1)
         self.assertEqual(record["completed_capsules"], 0)
 
+    def test_new_reference_revision_invalidates_notes_without_changing_php_or_target(self):
+        from migration_harness.context_handoff import junie_memo_request, save_junie_memo
+        from migration_harness.source_context import activate_target_context
+        from migration_harness.worktree_targets import target_hash
+
+        capsule = self.run / "capsule"
+        previous = capsule / "target-context"
+        previous.mkdir()
+        (previous / "manifest.json").write_text('{"files":[]}', encoding="utf-8")
+        operator = self.add("check the reference helper")
+        record = {"target_hashes": {"Demo.cs": target_hash(self.target)}}
+        draft, _ = junie_memo_request(self.root, "fixture")
+        draft.write_text(json.dumps([{
+            "kind": "pending", "source_path": "demo.php", "start_line": 2,
+            "end_line": 2, "note": "check the helper for cancellation",
+        }]), encoding="utf-8")
+        save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1)
+        self.assertIn("check the reference helper", prompt)
+        self.assertIn("check the helper for cancellation", prompt)
+        changed = capsule / ("target-context-" + "1" * 32)
+        changed.mkdir()
+        (changed / "manifest.json").write_text('{"files":[{"path":"Shared.cs"}]}', encoding="utf-8")
+        activate_target_context(capsule, changed)
+        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1)
+        self.assertNotIn("check the reference helper", prompt)
+        self.assertNotIn("check the helper for cancellation", prompt)
+        self.assertIn(record["junie_memos"][0]["id"], prompt)
+        saved, = context_handoff(self.run, self.root, self.targets, {})
+        self.assertEqual(operator["id"], saved["id"])
+        self.assertEqual("needs_review", saved["state"])
+
     def test_invalid_successor_does_not_hide_verified_unresolved_note(self):
         from migration_harness.context_handoff import junie_memo_request, save_junie_memo
         from migration_harness.worktree_targets import target_hash

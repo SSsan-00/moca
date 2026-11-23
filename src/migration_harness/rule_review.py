@@ -57,7 +57,13 @@ def _review_state(config, run_id):
         independent = _latest_evidence(entries, targets, decision, reference_version, {"passed", "failed"})
         if independent is None and name in checker_results:
             independent = {**checker_results[name], "source": "checker", "reason": "独立チェッカーがルール全体を検査"}
-        if applicability == "required" or applicability is True or (included and name not in overrides):
+        unresolved_applicability = (
+            applicability != "required" and name not in overrides
+            and (model_decision is None or model_decision.get("insufficient_context") is True)
+        )
+        if unresolved_applicability and (not independent or independent["kind"] != "failed"):
+            verification_state = "applicability_pending"
+        elif applicability == "required" or applicability is True or (included and name not in overrides):
             verification_state = independent["kind"] if independent else "human_review_needed"
         else:
             verification_state = "not_applicable" if applicability is False else "applicability_pending"
@@ -66,7 +72,8 @@ def _review_state(config, run_id):
             "saved_file_lines": len(body.splitlines()), "snapshot": f"capsule/materials/{name}",
             "model_decision": model_decision, "operator_decision": overrides.get(name),
             "applicability_evidence": _decision_spans(model_decision, evidence),
-            "applicability": applicability, "included_for_last_launch": included,
+            "applicability": applicability, "applicability_needs_review": unresolved_applicability,
+            "included_for_last_launch": included,
             "read": _latest_evidence(entries, targets, decision, reference_version, {"read"}),
             "application": _latest_evidence(entries, targets, decision, reference_version, {"applied"}),
             "independent_verification": independent, "verification_state": verification_state,
