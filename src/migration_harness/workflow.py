@@ -389,6 +389,11 @@ def _run_script_phase(
                         "previous_status": previous_status, "previous_stage": previous_stage,
                     }
                     write_run_record(record_path, record)
+                command_target_versions = (
+                    _script_decision_versions(cwd, record)
+                    if phase == "before_build" and not once and apply_decisions and review_output
+                    else verification_hashes
+                )
                 completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
                 if tracked:
                     if completed.returncode < 0:
@@ -402,7 +407,7 @@ def _run_script_phase(
                 if review_output and completed.returncode >= 0:
                     log.flush()
                     length = os.fstat(log.fileno()).st_size - start_output
-                repeatable_review = length > 0 and apply_decisions and verification_hashes is not None
+                repeatable_review = length > 0 and apply_decisions and command_target_versions is not None
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
                     if (apply_decisions and settled_once) or repeatable_review:
@@ -421,7 +426,8 @@ def _run_script_phase(
                             write_run_record(record_path, record)
                         if repeatable_review:
                             record["verification_script_pending"] = {
-                                **decision, "target_versions": verification_hashes.copy(), "target_basis": "verification",
+                                **decision, "target_versions": command_target_versions.copy(),
+                                "target_basis": _verification_target_basis(phase),
                             }
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
                         if apply_decisions and completed.returncode == 0:
@@ -432,8 +438,8 @@ def _run_script_phase(
                     write_run_record(record_path, record)
                 if completed.returncode:
                     raise ValueError(f"終了コード {completed.returncode}")
-                if verification_hashes is not None and (phase != "before_build" or repeatable_review):
-                    if verification_hashes != _script_decision_versions(cwd, record):
+                if command_target_versions is not None and (phase != "before_build" or repeatable_review):
+                    if command_target_versions != _script_decision_versions(cwd, record):
                         if repeatable_review:
                             decision["applied"] = "review_required"
                         raise ValueError("The target changed during verification; inspect the script log and explicitly rebuild")
@@ -476,6 +482,10 @@ def _advisory_model_options(config, record):
     if effort:
         options["effort"] = effort
     return options
+
+
+def _verification_target_basis(phase):
+    return "before_build_command" if phase == "before_build" else "verification"
 
 
 def _script_decision_item(phase, command, number, exit_code, offset, length):
@@ -3298,7 +3308,7 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
         if not hashes or not all(hashes.values()) or pending["target_versions"].keys() != hashes.keys():
             raise ValueError("Cannot verify the expected target files; inspect the saved response and targets")
         item = {key: value for key, value in pending.items() if key not in {"target_versions", "target_basis"}}
-        legacy_basis = pending.get("target_basis") != "verification"
+        legacy_basis = pending.get("target_basis") != _verification_target_basis(phase)
         target_changed = pending["target_versions"] != hashes
         if not explicit_build:
             if legacy_basis:
@@ -3343,11 +3353,12 @@ def _verification_script(config, phase, worktree, run_path, record, targets, has
         _run_script_phase(config, phase, worktree, run_path, record, verification_hashes=hashes)
     except RunScriptError as exc:
         advice = (record.get("script_advisories") or [None])[-1]
-        if (exc.interrupted or request or not config.get("junie_apply_output_decisions") or advice is None
+        pending = record.get("verification_script_pending")
+        if (exc.interrupted or request or pending is None or advice is None
                 or advice is previous or advice.get("applied") != "review_required"):
             raise
         try:
-            if not _repair_script_advice(config, run_path, worktree, record, advice, targets, hashes):
+            if not _repair_script_advice(config, run_path, worktree, record, advice, targets, pending["target_versions"]):
                 raise exc from None
             record.pop("verification_script_pending", None)
             write_run_record(run_path / "run.json", record)
@@ -3415,12 +3426,8 @@ def _run_verification(
             except KeyboardInterrupt:
                 raise RunInterrupted(record["run_id"]) from None
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
-        before_build_hashes = (
-            _script_decision_versions(worktree, record) if config.get("junie_apply_output_decisions")
-            and config.get("junie_review_script_output") and config.get("scripts", {}).get("before_build") else {}
-        )
         input_files = verification_files(config, worktree, unit["target"], command, scripts)
-        if _verification_script(config, "before_build", worktree, run_path, record, targets, before_build_hashes, request):
+        if _verification_script(config, "before_build", worktree, run_path, record, targets, None, request):
             continue
         verified, hashes, inputs = _execute_verification_build(
             config, unit, result, record, run_path, worktree, targets, expected_targets=expected_targets,
