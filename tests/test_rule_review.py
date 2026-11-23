@@ -323,6 +323,57 @@ target = "One.cs"
         self.assertIn(clone.name, result.stderr)
         self.assertEqual(config.read_bytes(), original)
 
+    def test_same_words_in_another_scope_cannot_replace_mandatory_evidence(self):
+        self.config()
+        config = self.root / "test.toml"
+        original = config.read_bytes().replace(b"\n[[units]]", b'''
+[[project.migration_rules]]
+path = "invoice.md"
+[[project.migration_rules]]
+path = "demo.md"
+
+[[units]]''', 1)
+        config.write_bytes(original)
+        invoice = self.project / "invoice.md"
+        demo = self.project / "demo.md"
+        quote = "Preserve the identifier."
+        scope = "In production invoices, this is the original tax identifier."
+        invoice.write_text(scope + "\n" + quote + "\n", encoding="utf-8")
+        demo.write_text("In demonstration exports, this is a sample row identifier.\n" + quote + "\n", encoding="utf-8")
+        candidate = self.root / "candidate.toml"
+        pack = self.root / "review"
+        tool = Path(__file__).resolve().parents[1] / "tools/rule_review.py"
+        candidate.write_bytes(original.replace(b'path = "invoice.md"', b'''
+path = "invoice.md"
+usage = "reference"
+description = "For invoices"'''.strip(), 1))
+
+        def run(action, *arguments):
+            result = subprocess.run([sys.executable, str(tool), action, str(pack), *map(str, arguments)],
+                                    capture_output=True, encoding="utf-8",
+                                    env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+            return result
+
+        for action, arguments in (
+            ("start", (config,)), ("read", (1, 2)),
+            ("record", (json.dumps({
+                "1": {"end": quote, "note": "Production invoices retained by default", "required_lines": [2]},
+                "2": {"end": quote, "note": "Same wording applies to a different identifier", "required_lines": []},
+            }),)),
+        ):
+            result = run(action, *arguments)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        template = run("meaning", candidate)
+        self.assertEqual(template.returncode, 0, template.stderr)
+        review = json.loads(template.stdout)
+        review["entries"] = [self.evidence("description", invoice, 1, scope, invoice, description="For invoices")]
+        evidence = pack / "meaning-review.json"
+        evidence.write_text(json.dumps(review), encoding="utf-8")
+        result = run("apply", candidate)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("必須登録に原文の配置根拠がありません", result.stderr)
+        self.assertEqual(config.read_bytes(), original)
+
     def test_fixed_exception_must_stay_with_the_obligation_after_pack_split(self):
         from migration_harness import workflow
         from migration_harness.config import load_config
