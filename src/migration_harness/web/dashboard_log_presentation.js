@@ -31,3 +31,20 @@ globalThis.harnessLogPresentation = (language, tone, count, waiting = false) => 
     empty: polite ? "表示できるログはまだありません。" : "ログなし。"
   };
 };
+
+// Junie の既知の進捗ラッパーだけを解釈し、不完全な内容や一般の XML は原文のままにする。
+globalThis.harnessLogSections = text => {
+  const opener = /^\s*<UPDATE>/.exec(text);
+  if (!opener) return null;
+  const token = /\s*(?:<\/UPDATE>|<(PREVIOUS_STEP|EXTERNAL)>([\s\S]*?)<\/\1>)/gy;
+  token.lastIndex = opener[0].length;
+  const sections = [];
+  while (true) {
+    const match = token.exec(text);
+    if (!match) return null;
+    const [, key, content] = match;
+    if (!key) return sections.length ? {sections, trailing: text.slice(token.lastIndex)} : null;
+    if (sections.some(item => item.key === key) || content.includes("<" + key + ">")) return null;
+    sections.push({key, content: content.replace(/^\r?\n|\r?\n$/g, "")});
+  }
+};
