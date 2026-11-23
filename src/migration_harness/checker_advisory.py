@@ -206,7 +206,7 @@ def output_advisory(
         if not diagnostic.strip() or "\x00" in diagnostic:
             raise ValueError("Diagnostic has no supported UTF-8 text")
         nonblank = {n: line.strip() for n, line in enumerate(lines, 1) if line.strip()}
-        if (allow_pass and exit_code == 0 and len(nonblank) <= 8
+        if (phase == "checker" and allow_pass and exit_code == 0 and len(nonblank) <= 8
                 and all(COUNTED_PASS_LINE.fullmatch(line) for line in nonblank.values())):
             return {**evidence, "status": "reported", "verdict": "passed", "evidence_lines": list(nonblank),
                     "corroborated": True, "source": "counted_checker_output"}
