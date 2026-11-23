@@ -172,24 +172,5 @@ window.harnessEditorDemo = (() => {
     active.update(run);
   }
   select(window.harnessDemoSelectedRun || {run_id: "run-2026-11-14-001", status: "junie_running", worktree_path: "demo", current_capsule: 3, context_capsules: 5});
-  let promptTimer;
-  // 切り替え前のデモRunの取得結果を破棄する。
-  async function renderPrompts() {
-    const session = active;
-    const data = await session.request("editor");
-    if (session !== active) return;
-    promptDialog.render({timing: data.can_prompt ? (data.queued ? "checkpoint" : "resume") : null, prompts: data.prompts});
-  }
-  const promptDialog = bindProgressPromptDialog({
-    open() { renderPrompts(); clearInterval(promptTimer); promptTimer = setInterval(renderPrompts, 250); },
-    async submit(text) {
-      await active.request("editor", {kind: "prompt", run_id: active.progress.run_id, text});
-      promptDialog.input.value = "";
-      renderPrompts();
-    },
-    inputChanged: renderPrompts,
-  });
-  promptDialog.button.hidden = false;
-  promptDialog.dialog.addEventListener("close", () => clearInterval(promptTimer));
   return {get progress() { return active.progress; }, request: (...args) => active.request(...args), select};
 })();

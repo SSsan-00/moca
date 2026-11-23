@@ -1,5 +1,12 @@
 "use strict";
 
+const staticDemo = !!document.getElementById("static-demo");
+const dashboardIO = staticDemo ? window.harnessDemoTransport : {
+  fetch: (...args) => window.fetch(...args),
+  events: path => new EventSource(path),
+};
+if (!dashboardIO) throw new Error("デモを読み込めませんでした。ページを再読み込みしてください。");
+
 const element = selector => document.querySelector(selector);
 const dialog = element("#review-dialog");
 const note = element("#review-note");
@@ -61,7 +68,7 @@ const scriptStages = {
   before_build: 4, after_build: 4, before_checker: 5, after_checker: 5,
 };
 let snapshot = {status: "idle", ready: true};
-const junieLog = bindJunieLog(() => snapshot, tailJunieLog);
+const junieLog = bindJunieLog(() => snapshot, tailJunieLog, {demo: staticDemo});
 junieLog.button.disabled = true;
 let selectedRunId = new URLSearchParams(location.search).get("run") || "";
 const runInputDrafts = new Map();
@@ -82,7 +89,7 @@ document.title = "移行ハーネスの進捗";
 element("#elapsed").setAttribute("aria-label", "計測済み工程の合計経過時間");
 element("#elapsed").title = "計測済み工程の合計（停止中の待ち時間を除く）";
 element(".brand").href = "./";
-element(".top-links").hidden = true;
+element(".top-links").hidden = !staticDemo;
 const snapshotStatus = document.createElement("div");
 snapshotStatus.className = "run-detail";
 snapshotStatus.setAttribute("role", "status");
@@ -400,7 +407,7 @@ async function loadCheckerOutput() {
     if (request !== checkerOutputRequest) return;
     checkerOutput.textContent = data.output || "チェッカーの出力はありません。";
     checkerOutputStatus.textContent = data.truncated ? "出力の末尾 64 KiB を表示しています。" : "";
-    checkerDownload.href = `${path}&download=1`;
+    checkerDownload.href = staticDemo ? "data:text/plain;charset=utf-8," + encodeURIComponent(data.output || "") : `${path}&download=1`;
     checkerDownload.hidden = !data.output;
   } catch {
     if (request === checkerOutputRequest) checkerOutputStatus.textContent =
@@ -520,7 +527,7 @@ function bindJunieConfirmation() {
     controls.forEach(control => { control.disabled = true; });
     status.textContent = "回答を送信しています。";
     try {
-      const response = await fetch("junie-requests", {
+      const response = await dashboardIO.fetch("junie-requests", {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({run_id: request.run_id, operation_id: request.operation_id,
           request_id: request.id, option_id: option}),
@@ -565,7 +572,7 @@ function bindJunieConfirmation() {
   function refresh() {
     if (loading) return loading;
     loading = (async () => {
-      const response = await fetch("junie-requests", {cache: "no-store",
+      const response = await dashboardIO.fetch("junie-requests", {cache: "no-store",
         headers: {"X-Dashboard-Visible": document.visibilityState === "visible" && document.hasFocus() ? "1" : "0"}});
       if (!response.ok) throw await responseError(response);
       const next = await response.json();
@@ -741,7 +748,7 @@ function runFetch(path, options = {}) {
   const headers = new Headers(options.headers);
   const runId = selectedRunId;
   if (runId && !["workspace", "token-runs", "settings", "junie-models"].includes(path)) headers.set("X-Run-ID", runId);
-  return fetch(path, {...options, headers});
+  return dashboardIO.fetch(path, {...options, headers});
 }
 
 const ruleVerificationDialog = element("#rule-verification-dialog");
@@ -891,7 +898,7 @@ function tailJunieLog(view) {
     let delay = 750;
     try {
       url.searchParams.set("cursor", cursor);
-      const response = await fetch(url, {cache: "no-store"});
+      const response = await dashboardIO.fetch(url, {cache: "no-store"});
       if (!response.ok) throw new Error("Junie thought log is unavailable");
       const batch = await response.json();
       if (view.popup.closed) return;
@@ -1223,7 +1230,7 @@ function renderRecovery(data, force = false) {
   if (changedRun) panel.hidden = true;
   if (!key) return;
 
-  fetch(`recovery?run_id=${encodeURIComponent(data.run_id)}`, {cache: "no-store"})
+  dashboardIO.fetch(`recovery?run_id=${encodeURIComponent(data.run_id)}`, {cache: "no-store"})
     .then(response => {
       if (!response.ok) throw new Error("復旧情報を取得できませんでした。");
       return response.json();
@@ -1288,7 +1295,7 @@ function render() {
   const stopped = data.ready && !verificationFinished && (data.resumable || showReview || showBuildReview
     || ["checker_failed", "script_failed", "interrupted", "junie_failed", "preparation_interrupted", "preparation_failed"].includes(data.status));
   const done = verificationFinished && migrationCompletion?.complete;
-  element(".demo-badge").textContent = savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
+  element(".demo-badge").textContent = staticDemo ? "模擬データ" : savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
   element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : data.status === "idle" ? "移行ハーネス" : "移行を準備中";
   element(".run-detail").textContent = data.run_id ? `Run ID ${data.run_id} · ${data.target || ""}` : "";
   element("#workspace-progress-feedback").textContent = progressFeedback(data);
@@ -1652,8 +1659,8 @@ function connectRun(runId = "", {removed = false} = {}) {
   syncActions();
   const url = new URL(location.href);
   if (runId) url.searchParams.set("run", runId); else url.searchParams.delete("run");
-  history.replaceState(null, "", url);
-  stream = new EventSource(runId ? `events?run_id=${encodeURIComponent(runId)}` : "events");
+  if (location.protocol !== "file:") history.replaceState(null, "", url);
+  stream = dashboardIO.events(runId ? `events?run_id=${encodeURIComponent(runId)}` : "events");
   return new Promise((resolve, reject) => {
     let received = false;
     stream.onopen = () => {
@@ -1725,7 +1732,7 @@ function receiveProgress(event) {
   selectedRunId = data.run_id || "";
   const selectedUrl = new URL(location.href);
   if (selectedRunId) selectedUrl.searchParams.set("run", selectedRunId); else selectedUrl.searchParams.delete("run");
-  if (selectedUrl.href !== location.href) history.replaceState(null, "", selectedUrl);
+  if (location.protocol !== "file:" && selectedUrl.href !== location.href) history.replaceState(null, "", selectedUrl);
   window.harnessRuns?.setSelected(data.run_id);
   if (progressChanged) {
     migrationLedgerRequest++;

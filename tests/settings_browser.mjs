@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
+import {createServer} from "node:http";
 import {fileURLToPath, pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
@@ -46,8 +47,10 @@ async function connectPage(debuggerUrl, deadline) {
   });
   socket.addEventListener("message", event => {
     const message = JSON.parse(event.data);
+    if (message.method === "Runtime.exceptionThrown") console.error("Browser error", message.params.exceptionDetails?.exception?.description || message.params.exceptionDetails?.text);
     pending.get(message.id)?.(message);
   });
+  await cdp("Runtime.enable");
   await cdp("Page.enable", {}, Math.max(1, deadline - performance.now()));
 }
 
@@ -106,6 +109,7 @@ async function startBrowser() {
   throw new Error(`Chromium did not start:\n${failures.join("\n")}`);
 }
 
+let staticServer;
 const chrome = await startBrowser();
 try {
   function pageLoaded() {
@@ -396,8 +400,54 @@ try {
   await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 650, deviceScaleFactor: 1, mobile: false});
   await showRuleWorkspace();
   assert(await evaluate(ruleViewport), "live rules fit the available viewport");
+  const liveTabs = await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)");
+  const liveSteps = await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)");
+  assert.equal(liveTabs.length, 6); assert.equal(liveSteps.length, 7);
   const demoUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "progress-demo.html"));
   await navigate("Page.navigate", {url: demoUrl.href});
+  const ready = 'document.documentElement.dataset.liveReady === "true" && document.querySelector(".run-detail").textContent.includes("run-2026-11-14-001")';
+  await wait(ready);
+  const nested = "/php-to-csharp-migration-harness/";
+  const files = path.dirname(fileURLToPath(demoUrl));
+  const network = [];
+  await cdp("Network.enable");
+  const onRequest = event => {
+    const m = JSON.parse(event.data);
+    if (m.method === "Network.requestWillBeSent") network.push(m.params.request);
+  };
+  socket.addEventListener("message", onRequest);
+  staticServer = createServer(async (req, res) => {
+    const asset = new URL(req.url, "http://localhost").pathname.slice(nested.length);
+    if (!req.url.startsWith(nested) || req.method !== "GET" ||
+        !(asset === "progress-demo.html" || /^src\/migration_harness\/web\/[\w.\/-]+$/.test(asset)) ||
+        asset.split("/").includes("..")) {
+      res.writeHead(404).end(); return;
+    }
+    try {
+      const bytes = await fs.readFile(path.join(files, asset));
+      res.writeHead(200, {"Content-Type": asset.endsWith(".html") ? "text/html; charset=utf-8" :
+        asset.endsWith(".css") ? "text/css" : "application/javascript"}).end(bytes);
+    } catch { res.writeHead(404).end(); }
+  });
+  await new Promise(resolve => staticServer.listen(0, "127.0.0.1", resolve));
+  const staticOrigin = "http://127.0.0.1:" + staticServer.address().port;
+  await navigate("Page.navigate", {url: staticOrigin + nested + "progress-demo.html"});
+  await wait(ready);
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)"), liveTabs);
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)"), liveSteps);
+  await click("stop");
+  await wait(field("state-label") + ".textContent === '中断'");
+  await wait("!" + field("recovery-summary") + ".hidden");
+  await click("open-migration-ledger");
+  await wait(field("migration-ledger-dialog") + ".open && !" + field("migration-ledger-compare") + ".hidden");
+  await evaluate(field("migration-ledger-dialog") + ".close()");
+  await click("tab-editor");
+  await wait("!" + field("workspace-editor") + ".hidden");
+  await click("tab-runs");
+  await wait("!" + field("workspace-runs") + ".hidden");
+  await click("tab-tokens");
+  await wait("!" + field("workspace-tokens") + ".hidden");
+  await click("tab-progress");
   const demoDialog = field("demo-notice-dialog");
   await wait(`!!${field("demo-notice")}?.offsetWidth`);
   await click("demo-notice");
@@ -409,6 +459,16 @@ try {
   assert.match(await evaluate(`${field("demo-notice-state")}.textContent`), /回答を記録/);
   console.log("Browser demo: opening suppresses reminders without answering the confirmation");
   await click("tab-settings");
+  await wait(field("settings-junie-log-tone") + ".matches(':disabled')");
+  await click("tab-runs");
+  const activeAction = "document.querySelector('tr [data-action=cancel-queued], tr [data-action=stop]')";
+  while (await evaluate(activeAction + " !== null")) {
+    const row = await evaluate(activeAction + ".closest('tr').dataset.runId");
+    await evaluate(activeAction + ".click()");
+    await wait("!Array.from(document.querySelectorAll('tr [data-action=cancel-queued],tr [data-action=stop]')).some(b => b.closest('tr').dataset.runId === " + JSON.stringify(row) + ")");
+  }
+  await click("tab-settings");
+  await wait(field("settings-junie-log-tone") + ".matches(':enabled')");
   await evaluate('document.querySelector("#settings-project-details").open = true');
   await change("settings-junie-log-tone", "custom", "input");
   await wait(`${toneExample}.offsetWidth > 0 && ${exampleVisibility} === 'visible'`);
@@ -470,8 +530,21 @@ try {
   }
   console.log("Browser review: findings scroll while instructions and actions stay visible");
 
+  assert.equal(await evaluate("harnessDemoTransport.fetch('unimplemented-operation', {method: 'POST'}).then(r => r.status)"), 404);
+  assert.equal(await evaluate("harnessDemoTransport.fetch('https://example.invalid/outside').then(r => r.status)"), 404);
+  socket.removeEventListener("message", onRequest);
+  const unexpected = network.filter(({url, method}) => {
+    if (/^(data|blob):/.test(url)) return false;
+    const location = new URL(url);
+    return method !== "GET" || location.origin !== staticOrigin ||
+      !(location.pathname === nested + "progress-demo.html" || location.pathname === "/favicon.ico" ||
+        location.pathname.startsWith(nested + "src/migration_harness/web/"));
+  });
+  assert.deepEqual(unexpected.map(({method, url}) => [method, url]), []);
+  console.log("Browser demo: file and Pages subpath use live tabs, progress, stop, recovery and ledger without API traffic");
   await cdp("Browser.close").catch(() => {});
 } finally {
+  staticServer?.close();
   socket?.close();
   if (chrome.exitCode === null) chrome.kill();
 }
