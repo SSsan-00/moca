@@ -300,3 +300,114 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
             hook[2] = "pass"
             self.assertEqual(self.explicit_build()["status"], "build_succeeded")
             self.assertEqual((len(builds), judge.call_count), (3, 0))
+
+    def configure_raw_failure(self, failure="b'x'*140000+b'\\n'"):
+        self.configure_dependency_hook()
+        self.config["scripts"]["after_build"][0][2] = (
+            "from pathlib import Path; import sys; p=Path('calls.txt'); "
+            "p.write_text((p.read_text() if p.exists() else '')+'x'); "
+            "ready=Path('dependency.ready').exists(); "
+            f"sys.stdout.buffer.write(b'1 test passed\\n' if ready else {failure}); "
+            "sys.exit(0 if ready else 1)"
+        )
+
+    def stop_on_failure_then_edit(self):
+        with self.assertRaises(workflow.RunScriptError):
+            self.resume_run()
+        self.target.write_text("class OperatorCorrection {}")
+        return self.record()["verification_script_pending"]
+
+    def test_explicit_build_checks_whole_large_output_without_sending_it_to_junie(self):
+        self.configure_raw_failure()
+        with self.controlled_commands(['{"verdict":"passed","evidence_lines":[1]}']) as (builds, judge):
+            first = self.stop_on_failure_then_edit()
+            old_advice = self.record()["script_advisories"][-1]
+            judge.assert_not_called()
+            self.dependency.touch()
+            log = self.run_path / first["log"]
+            original = log.read_bytes()
+            with log.open("ab") as out:
+                out.write(b"later output outside the recorded command\n")
+            self.assertEqual(self.explicit_build()["status"], "build_succeeded")
+            self.assertEqual((len(builds), self.counter.read_text()), (2, "xx"))
+            judge.assert_called_once()
+            self.assertEqual(json.loads(judge.call_args.args[0].split("\n", 1)[1])["untrusted_lines"], ["1 test passed"])
+            self.assertTrue(log.read_bytes().startswith(original))
+            self.assertIn(old_advice, self.record()["script_advisories"])
+            self.assertEqual(old_advice["reason"], "input_too_large")
+            self.assertNotIn("verification_script_pending", self.record())
+
+    def test_large_output_tampering_blocks_rebuild_and_failed_retry_keeps_both_diagnostics(self):
+        self.configure_raw_failure()
+        with self.controlled_commands([]) as (builds, judge):
+            first = self.stop_on_failure_then_edit()
+            old_advice = self.record()["script_advisories"][-1]
+            log = self.run_path / first["log"]
+            original = log.read_bytes()
+            for name, cut in (("middle", first["byte_offset"] + 70000), ("last", len(original) - 1),
+                              ("truncated", None), ("missing", None)):
+                with self.subTest(name):
+                    if name == "missing":
+                        log.unlink()
+                    elif cut is None:
+                        log.write_bytes(original[:-1])
+                    else:
+                        log.write_bytes(original[:cut] + b"!" + original[cut+1:])
+                    with self.assertRaisesRegex(workflow.RunScriptError, "missing or changed"):
+                        self.explicit_build()
+                    self.assertEqual(self.record()["verification_script_pending"], first)
+                    self.assertEqual(len(builds), 1)
+                    log.write_bytes(original)
+            with self.assertRaisesRegex(workflow.RunScriptError, "32 KiB"):
+                self.explicit_build()
+            second = self.record()["verification_script_pending"]
+            self.assertGreater(second["byte_offset"], first["byte_offset"])
+            self.assertEqual((len(builds), self.counter.read_text()), (2, "xx"))
+            self.assertIn(old_advice, self.record()["script_advisories"])
+            self.assertEqual(self.record()["status"], "script_failed")
+            judge.assert_not_called()
+
+    def test_old_prefix_digest_cannot_authorize_explicit_build_of_edited_target(self):
+        self.configure_raw_failure()
+        with self.controlled_commands([]) as (builds, judge):
+            self.stop_on_failure_then_edit()
+            record = self.record()
+            saved = record["verification_script_pending"]
+            saved.pop("log_hash_scope", None)
+            offset = saved["byte_offset"]
+            raw = (self.run_path / saved["log"]).read_bytes()
+            saved["log_sha256"] = hashlib.sha256(raw[offset:offset+32769]).hexdigest()
+            self.save_record(record)
+            with self.assertRaisesRegex(workflow.RunScriptError, "full-range hash"):
+                self.explicit_build()
+            self.assertEqual((len(builds), self.counter.read_text()), (1, "x"))
+            judge.assert_not_called()
+
+
+    def test_unedited_target_does_not_rerun_unreviewed_oversized_failure(self):
+        self.configure_raw_failure()
+        with self.controlled_commands([]) as (builds, judge):
+            with self.assertRaisesRegex(workflow.RunScriptError, "32 KiB"):
+                self.resume_run()
+            first = self.record()["verification_script_pending"]
+            self.dependency.touch()
+            with self.assertRaisesRegex(workflow.RunScriptError, "32 KiB"):
+                self.explicit_build()
+            (self.run_path / first["log"]).unlink()
+            with self.assertRaisesRegex(workflow.RunScriptError, "missing or changed"):
+                self.explicit_build()
+            self.assertEqual((len(builds), self.counter.read_text()), (1, "x"))
+            judge.assert_not_called()
+
+    def test_old_complete_binary_digest_allows_rebuild_without_decoding_or_sending_old_bytes(self):
+        self.configure_raw_failure("b'\\xff'*32769")
+        with self.controlled_commands(['{"verdict":"passed","evidence_lines":[1]}']) as (builds, judge):
+            self.stop_on_failure_then_edit()
+            record = self.record()
+            record["verification_script_pending"].pop("log_hash_scope")
+            self.save_record(record)
+            self.dependency.touch()
+            self.assertEqual(self.explicit_build()["status"], "build_succeeded")
+            self.assertEqual((len(builds), self.counter.read_text()), (2, "xx"))
+            judge.assert_called_once()
+            self.assertIn("1 test passed", judge.call_args.args[0])
