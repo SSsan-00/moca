@@ -144,7 +144,12 @@ class ContextHandoffTests(unittest.TestCase):
         record = {"run_id": "test", "detail_overrides": {}}
         notes = [self.add(f"First target note {i}") for i in range(4)]
         prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1, capture_operator_receipt=True)
-        receipt = record["operator_handoff_receipt"]["id"]
+        saved_receipt = record["operator_handoff_receipt"]
+        receipt = saved_receipt["id"]
+        raw = json.dumps(saved_receipt)
+        for text in ("Demo.cs", "demo.php", "php-0001", "First target note"):
+            self.assertNotIn(text, raw)
+        self.assertEqual({row["target_hashes"]["Demo.cs"] for row in notes}, set(saved_receipt["target_digests"]))
         self.assertIn(receipt, prompt)
         self.assertIn(notes[0]["id"], prompt)
         self.assertNotIn(notes[0]["note"], prompt)
@@ -165,6 +170,8 @@ class ContextHandoffTests(unittest.TestCase):
             record[field] = original
         with self.assertRaises(ValueError):
             operator_notes_from_receipt(self.run, self.targets, record, "0" * 64)
+        with self.assertRaises(ValueError):
+            operator_notes_from_receipt(self.run, (Path("Different.cs"),), record, receipt)
         (self.run / "capsule/php-sources/0001.php").write_text("not the fixed version", encoding="utf-8")
         with self.assertRaises(ValueError):
             lookup()
