@@ -312,6 +312,7 @@ def _run_script_phase(
     config: dict[str, Any], phase: str, cwd: Path, run_path: Path,
     record: dict[str, Any] | None = None, *, once: bool = False,
     extra_commands: tuple[list[str], ...] = (), retry_attempt: dict[str, Any] | None = None,
+    verification_hashes: dict[str, str | None] | None = None,
 ) -> None:
     if record is not None and retry_attempt is None:
         _block_unknown_script(record)
@@ -403,7 +404,7 @@ def _run_script_phase(
                     length = os.fstat(log.fileno()).st_size - start_output
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
-                    repeatable_review = apply_decisions and not once and phase in _REPAIRABLE_SCRIPT_PHASES
+                    repeatable_review = apply_decisions and verification_hashes is not None
                     if (apply_decisions and settled_once) or repeatable_review:
                         with log_path.open("rb") as current:
                             current.seek(start_output)
@@ -420,10 +421,13 @@ def _run_script_phase(
                             write_run_record(record_path, record)
                         if repeatable_review:
                             record["verification_script_pending"] = {
-                                **decision, "target_versions": _script_decision_versions(cwd, record),
+                                **decision, "target_versions": verification_hashes.copy(), "target_basis": "verification",
                             }
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
                         if repeatable_review and completed.returncode == 0 and decision.get("applied") == "continued":
+                            if verification_hashes != _script_decision_versions(cwd, record):
+                                decision["applied"] = "review_required"
+                                raise ValueError("The target changed during verification; review the script response and explicitly rebuild")
                             record.pop("verification_script_pending")
                             write_run_record(record_path, record)
                         if apply_decisions and completed.returncode == 0:
@@ -3291,16 +3295,31 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
         hashes = _script_decision_versions(worktree, record)
         if not hashes or not all(hashes.values()) or pending["target_versions"].keys() != hashes.keys():
             raise ValueError("Cannot verify the expected target files; inspect the saved response and targets")
-        item = {key: value for key, value in pending.items() if key != "target_versions"}
-        if pending["target_versions"] != hashes:
-            if not explicit_build:
+        item = {key: value for key, value in pending.items() if key not in {"target_versions", "target_basis"}}
+        legacy_basis = pending.get("target_basis") != "verification"
+        target_changed = pending["target_versions"] != hashes
+        if not explicit_build:
+            if legacy_basis:
+                raise ValueError("The saved script response has no verified target version; inspect it, then explicitly rebuild.")
+            if target_changed:
                 raise ValueError("The target changed. Inspect the saved script response, then explicitly rebuild the edited target.")
-            history = record.setdefault("script_advisories", [])
-            history.append({**item, "status": "superseded", "applied": "rebuild_edited_target"})
+        history = record.setdefault("script_advisories", [])
+        reviewed_failure = explicit_build and item["exit_code"] != 0 and any(
+            advisory.get("status") == "reported" and all(advisory.get(key) == value for key, value in item.items())
+            for advisory in history
+        )
+        if explicit_build and (legacy_basis or target_changed or reviewed_failure):
+            if bounded_advisory_text(run_path, {**item, "status": "reported"}) is None:
+                raise ValueError("The saved script output is missing or changed; inspect the logs before starting a new Run")
+            reason = "rebuild_unverified_target" if legacy_basis else (
+                "rebuild_edited_target" if target_changed else "rebuild_after_script_failure"
+            )
+            history.append({**item, "status": "superseded", "applied": reason})
             del history[:-100]
         else:
             _review_script_output(config, run_path, record, item, apply_decisions=True)
             if hashes != _script_decision_versions(worktree, record):
+                item["applied"] = "review_required"
                 raise ValueError("The target changed while reviewing the saved script response")
             if not (item["exit_code"] == 0 and item.get("applied") == "continued"):
                 if explicit_build or not _repair_script_advice(config, run_path, worktree, record, item, targets, hashes):
@@ -3319,7 +3338,7 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
 def _verification_script(config, phase, worktree, run_path, record, targets, hashes, request):
     previous = (record.get("script_advisories") or [None])[-1]
     try:
-        _run_script_phase(config, phase, worktree, run_path, record)
+        _run_script_phase(config, phase, worktree, run_path, record, verification_hashes=hashes)
     except RunScriptError as exc:
         advice = (record.get("script_advisories") or [None])[-1]
         if (exc.interrupted or request or not config.get("junie_apply_output_decisions") or advice is None

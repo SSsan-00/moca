@@ -440,6 +440,8 @@ try {
   await wait("!" + field("recovery-summary") + ".hidden");
   await click("open-migration-ledger");
   await wait(field("migration-ledger-dialog") + ".open && !" + field("migration-ledger-compare") + ".hidden");
+  await wait("document.querySelector('#unresolved-junie-memos li')?.textContent");
+  const demoMemo = await evaluate("document.querySelector('#unresolved-junie-memos li').textContent");
   await evaluate(field("migration-ledger-dialog") + ".close()");
   await click("tab-editor");
   await wait("!" + field("workspace-editor") + ".hidden");
@@ -447,6 +449,12 @@ try {
   await wait("!" + field("workspace-runs") + ".hidden");
   await click("tab-tokens");
   await wait("!" + field("workspace-tokens") + ".hidden");
+  await wait(field("token-input") + ".textContent === '18,420'");
+  const demoInputs = await evaluate("Array.from(document.querySelectorAll('#token-input-breakdown span'), n => n.textContent)");
+  assert.deepEqual({demoMemo, demoInputs}, {
+    demoMemo: "1:1:1–2：日付の表示形式を原文と照合する。",
+    demoInputs: ["通常入力 14,740", "キャッシュ読み込み 3,200", "キャッシュ作成 480"],
+  });
   await click("tab-progress");
   const demoDialog = field("demo-notice-dialog");
   await wait(`!!${field("demo-notice")}?.offsetWidth`);
@@ -565,6 +573,52 @@ try {
     assert(await evaluate(reviewLayout), "checker instructions stay visible while findings scroll at " + width + "×" + height);
   }
   console.log("Browser review: findings scroll while instructions and actions stay visible");
+
+  const selectedDemo = "document.querySelector('.run-detail').textContent";
+  const runAction = (id, action) => "document.querySelector(" +
+    JSON.stringify('#run-rows tr[data-run-id="' + id + '"] [data-action="' + action + '"]') + ")";
+  async function openDemoRun(id) {
+    await click("tab-runs");
+    const button = runAction(id, "open-runprogress");
+    await wait(button + "?.matches(':enabled')");
+    await evaluate(button + ".click()");
+    await wait(selectedDemo + ".includes(" + JSON.stringify(id) + ")");
+  }
+  async function removeDemoRun(id) {
+    await click("tab-runs");
+    const button = runAction(id, "hide-run");
+    await wait(button + "?.matches(':enabled')");
+    await evaluate(button + ".click()");
+    await wait("!" + button + " && !" + selectedDemo + ".includes(" + JSON.stringify(id) + ")");
+  }
+
+  // All sample runs were stopped or cancelled before the settings test.
+  await evaluate("window.confirm = () => true");
+  await openDemoRun("run-2026-11-14-001");
+  await removeDemoRun("run-2026-11-14-001");
+  await pause(3100);
+  assert(!(await evaluate(selectedDemo)).includes("run-2026-11-14-001"), "the demo timer must not resurrect a deleted Run");
+  await openDemoRun("demo-customer");
+  await removeDemoRun("demo-customer");
+  await openDemoRun("demo-search");
+  await click("tab-runs");
+  const remaining = await evaluate("Array.from(document.querySelectorAll('#run-rows tr'), row => row.dataset.runId)");
+  assert.equal(remaining.length, 6);
+  await removeDemoRun("demo-partners");
+  assert((await evaluate(selectedDemo)).includes("demo-search"), "deleting another Run must keep the current selection");
+  for (const id of ["demo-search", ...remaining.filter(id => !["demo-search", "demo-partners"].includes(id))]) await removeDemoRun(id);
+  await wait("!" + field("runs-empty") + ".hidden && " + selectedDemo + " === ''");
+  await click("tab-editor");
+  await wait("!" + field("editor-empty") + ".hidden");
+  await click("tab-runs");
+  await wait("!!document.querySelector('#unit-options input:not(:disabled)')");
+  await evaluate("document.querySelector('#unit-picker').open = true; document.querySelector('#unit-options input:not(:disabled)').click()");
+  await wait(field("run-selected") + ".matches(':enabled')");
+  await click("run-selected");
+  const newRow = "document.querySelector('#run-rows tr[data-run-id^=demo-run-]')";
+  await wait("!!" + newRow);
+  await openDemoRun(await evaluate(newRow + ".dataset.runId"));
+  console.log("Browser demo: deletion does not resurrect Runs; empty state can start and open a new mock Run");
 
   assert.equal(await evaluate("harnessDemoTransport.fetch('unimplemented-operation', {method: 'POST'}).then(r => r.status)"), 404);
   assert.equal(await evaluate("harnessDemoTransport.fetch('https://example.invalid/outside').then(r => r.status)"), 404);

@@ -167,10 +167,18 @@ window.harnessEditorDemo = (() => {
   let active;
   // Runごとのデモ編集と会話を再利用し、表示を切り替える。
   function select(run) {
+    if (!run) {
+      active = undefined;
+      return;
+    }
     if (!sessions.has(run.run_id)) sessions.set(run.run_id, createRun(run.run_id));
     active = sessions.get(run.run_id);
     active.update(run);
   }
-  select(window.harnessDemoSelectedRun || {run_id: "run-2026-11-14-001", status: "junie_running", worktree_path: "demo", current_capsule: 3, context_capsules: 5});
-  return {get progress() { return active.progress; }, request: (...args) => active.request(...args), select};
+  const idle = {status: "idle"};
+  return {
+    get progress() { return active?.progress ?? idle; },
+    request: (...args) => active?.request(...args) ?? {targets: []},
+    select,
+  };
 })();
