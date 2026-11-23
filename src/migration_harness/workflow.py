@@ -411,16 +411,29 @@ def _run_script_phase(
                     length = os.fstat(log.fileno()).st_size - start_output
                 repeatable_review = length > 0 and apply_decisions and command_target_versions is not None
                 target_versions_match = None
+                target_read_error = None
                 if repeatable_review:
-                    after_command_versions = _script_decision_versions(cwd, record)
-                    versions = (command_target_versions, before_command_versions, after_command_versions)
-                    if all(snapshot and all(snapshot.values()) for snapshot in versions):
-                        target_versions_match = command_target_versions == before_command_versions == after_command_versions
+                    try:
+                        after_command_versions = _script_decision_versions(cwd, record)
+                    except OSError as exc:
+                        target_read_error = exc
+                    else:
+                        versions = (command_target_versions, before_command_versions, after_command_versions)
+                        if all(snapshot and all(snapshot.values()) for snapshot in versions):
+                            target_versions_match = command_target_versions == before_command_versions == after_command_versions
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
+                    output_read_error = None
                     if (apply_decisions and settled_once) or repeatable_review:
-                        decision["log_sha256"] = _script_output_sha256(run_path, decision)
-                        decision["log_hash_scope"] = "full_range"
+                        try:
+                            decision["log_sha256"] = _script_output_sha256(run_path, decision)
+                        except ValueError as exc:
+                            if not repeatable_review:
+                                raise
+                            decision["log_sha256"] = None
+                            output_read_error = exc
+                        else:
+                            decision["log_hash_scope"] = "full_range"
                     if apply_decisions and settled_once:
                         decision["previous_status"], decision["previous_stage"] = previous_status, previous_stage
                         record.setdefault("script_decisions_pending", {})[phase] = decision
@@ -431,17 +444,28 @@ def _run_script_phase(
                         if tracked:
                             write_run_record(record_path, record)
                         if repeatable_review:
+                            if target_read_error is not None:
+                                decision["target_read_error"] = type(target_read_error).__name__
                             record["verification_script_pending"] = {
                                 **decision, "target_versions": command_target_versions.copy(),
                                 "target_basis": _verification_target_basis(phase),
                                 "target_versions_match": target_versions_match,
                             }
-                            if target_versions_match is not True:
-                                reason = "target_changed" if target_versions_match is False else "target_unverified"
+                            if output_read_error is not None or target_versions_match is not True:
+                                if output_read_error is not None:
+                                    reason = "output_unverified"
+                                elif target_read_error is not None:
+                                    reason = "target_unreadable"
+                                else:
+                                    reason = "target_changed" if target_versions_match is False else "target_unverified"
                                 _append_script_advisory(record, {
                                     **decision, "status": "blocked", "applied": "review_required", "reason": reason,
                                 })
                                 write_run_record(record_path, record)
+                                if output_read_error is not None:
+                                    raise output_read_error
+                                if target_read_error is not None:
+                                    raise ValueError("The script response has no verified target version; target read failed after execution") from target_read_error
                                 if target_versions_match is None:
                                     raise ValueError("The script response has no verified target version; inspect the log and explicitly rebuild")
                                 raise ValueError("The target changed during verification; inspect the script log and explicitly rebuild")
@@ -465,10 +489,13 @@ def _run_script_phase(
     except (KeyboardInterrupt, OSError, ValueError) as exc:
         reason = "中断しました" if isinstance(exc, KeyboardInterrupt) else format_error(exc, command=invocation, cwd=cwd)
         message = f"スクリプト {phase} の {number} 番目で停止しました。ログ {log_path}\n{reason}"
-        if not isinstance(exc, KeyboardInterrupt) and log_path.is_file():
-            with log_path.open("rb") as stream:
-                stream.seek(max(0, os.fstat(stream.fileno()).st_size - 65_536))
-                message += "\n" + stream.read(65_536).decode("utf-8", errors="replace")
+        if not isinstance(exc, KeyboardInterrupt):
+            try:
+                with log_path.open("rb") as stream:
+                    stream.seek(max(0, os.fstat(stream.fileno()).st_size - 65_536))
+                    message += "\n" + stream.read(65_536).decode("utf-8", errors="replace")
+            except OSError:
+                pass
         run_id = None
         if record is not None:
             run_id = record["run_id"]
@@ -531,7 +558,7 @@ def _script_output_sha256(run_path: Path, item: dict[str, Any]) -> str:
 
 def _verify_saved_script_output(run_path, item):
     legacy_complete = "log_hash_scope" not in item and item["byte_length"] <= _LEGACY_SCRIPT_HASH_BYTES
-    if not legacy_complete and item.get("log_hash_scope") != "full_range":
+    if item.get("log_sha256") is None or (not legacy_complete and item.get("log_hash_scope") != "full_range"):
         raise ValueError("The saved script output has no verifiable full-range hash; inspect the logs and start a new Run")
     if _script_output_sha256(run_path, item) != item["log_sha256"]:
         raise ValueError(_SAVED_SCRIPT_OUTPUT_CHANGED)
@@ -3344,7 +3371,8 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
     try:
         if (not isinstance(phase, str) or phase not in _REPAIRABLE_SCRIPT_PHASES or type(number) is not int
                 or pending.get("log") != f"{phase}.log" or not isinstance(pending.get("target_versions"), dict)
-                or not re.fullmatch("[0-9a-f]{64}", str(pending.get("log_sha256")))
+                or "log_sha256" not in pending
+                or (pending["log_sha256"] is not None and not re.fullmatch("[0-9a-f]{64}", str(pending["log_sha256"])))
                 or type(pending.get("byte_offset")) is not int or pending["byte_offset"] < 0
                 or type(pending.get("byte_length")) is not int or pending["byte_length"] <= 0
                 or type(pending.get("exit_code")) is not int):
@@ -3353,13 +3381,14 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
         if (not config.get("junie_review_script_output") or not config.get("junie_apply_output_decisions")
                 or not 1 <= number <= len(commands) or _script_digest(commands[number - 1]) != pending.get("command_sha256")):
             raise ValueError("Restore the command and review settings to resolve the saved script response")
+        item = {key: value for key, value in pending.items() if key not in {"target_versions", "target_basis", "target_versions_match"}}
+        _verify_saved_script_output(run_path, item)
         hashes = _script_decision_versions(worktree, record)
         if not hashes or not all(hashes.values()) or pending["target_versions"].keys() != hashes.keys():
             raise ValueError("Cannot verify the expected target files; inspect the saved response and targets")
         target_versions_match = pending.get("target_versions_match")
         unverified_target = pending.get("target_basis") != _verification_target_basis(phase) or target_versions_match is not True
         target_changed = pending["target_versions"] != hashes
-        item = {key: value for key, value in pending.items() if key not in {"target_versions", "target_basis", "target_versions_match"}}
         if not explicit_build:
             if target_versions_match is False:
                 raise ValueError("The target changed during the saved script; inspect the original log, then explicitly rebuild.")
@@ -3372,7 +3401,6 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
             advisory.get("status") == "reported" and all(advisory.get(key) == value for key, value in item.items())
             for advisory in history
         )
-        _verify_saved_script_output(run_path, item)
         if explicit_build and (unverified_target or target_changed or reviewed_failure):
             reason = "rebuild_unverified_target" if unverified_target else (
                 "rebuild_edited_target" if target_changed else "rebuild_after_script_failure"
