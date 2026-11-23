@@ -28,6 +28,7 @@ class PhpFunction:
     name: str
     start_line: int
     end_line: int
+    name_line: int
 
 
 def function_boundaries(
@@ -141,5 +142,5 @@ def _functions(text: str, tokens: list[tuple[str, int, int]], *, partial: bool =
         end_line = bisect_right(line_starts, closing)
         following = line_starts[end_line] if end_line < len(line_starts) else len(text)
         if not text[covered_until:following].strip():
-            functions.append(PhpFunction(name, line, end_line))
+            functions.append(PhpFunction(name, line, end_line, bisect_right(line_starts, name_start)))
     return tuple(functions)

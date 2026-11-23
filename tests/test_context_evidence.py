@@ -179,6 +179,26 @@ class ContextEvidenceTests(unittest.TestCase):
         self.assertGreater(len(ids), 1)
         self.assertEqual(ids, function["ledger_range_ids"])
 
+    def test_scoped_catalog_and_prompt_do_not_name_a_declaration_in_a_future_slice(self):
+        source = b"<?php\r\nfunction\r\n" + b" " * 900 + b"LaterName() { return 1; }\r\n"
+        manifest = self.prepare(source, limit=450)
+        rows = [(part["index"], span) for part in manifest["parts"] for row in part["sources"]
+                for span in row["character_slices"] if span["line"] == 3]
+        first = rows[0][0]
+        last = rows[-1][0]
+        self.assertGreater(last, first)
+        self.assertLess(rows[0][1]["context_end_column"], 901)
+        for through in range(1, first + 1):
+            self.assertEqual([], inspect_context(self.run, through)["sources"][0]["functions"])
+            self.assertNotIn("LaterName", boundary_hints(manifest, through))
+        self.assertEqual(["LaterName"], [
+            row["name"] for row in inspect_context(self.run, last)["sources"][0]["functions"]
+        ])
+        self.assertIn("LaterName", boundary_hints(manifest, last))
+        self.assertEqual(source.decode(), read_context(self.run, "php-0001", 1, 3, through=last)["text"])
+        del manifest["syntax_boundaries"]["sample.php"]["functions"][0]["name_visible_from"]
+        self.assertNotIn("LaterName", boundary_hints(manifest, first))
+
     def test_through_scope_does_not_leak_future_characters_from_a_split_line(self):
         line = "e" * 2_000
         manifest = self.prepare(("<?php\n" + line + "\n").encode(), limit=450)
