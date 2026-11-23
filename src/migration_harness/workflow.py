@@ -403,20 +403,29 @@ def _run_script_phase(
                     length = os.fstat(log.fileno()).st_size - start_output
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
-                    if apply_decisions and settled_once:
-                        decision["previous_status"], decision["previous_stage"] = previous_status, previous_stage
-                        record.setdefault("script_decisions_pending", {})[phase] = decision
+                    repeatable_review = apply_decisions and not once and phase in _REPAIRABLE_SCRIPT_PHASES
+                    if (apply_decisions and settled_once) or repeatable_review:
                         with log_path.open("rb") as current:
                             current.seek(start_output)
                             content = current.read(min(length, LOG_LIMIT + 1))
                         decision["log_sha256"] = hashlib.sha256(content).hexdigest()
+                    if apply_decisions and settled_once:
+                        decision["previous_status"], decision["previous_stage"] = previous_status, previous_stage
+                        record.setdefault("script_decisions_pending", {})[phase] = decision
                         decision["target_versions"] = _script_decision_versions(cwd, record)
                         write_run_record(record_path, record)
                         _resolve_script_decision(config, run_path, cwd, record, decision)
                     else:
                         if tracked:
                             write_run_record(record_path, record)
+                        if repeatable_review:
+                            record["verification_script_pending"] = {
+                                **decision, "target_versions": _script_decision_versions(cwd, record),
+                            }
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
+                        if repeatable_review and completed.returncode == 0 and decision.get("applied") == "continued":
+                            record.pop("verification_script_pending")
+                            write_run_record(record_path, record)
                         if apply_decisions and completed.returncode == 0:
                             _save_script_handoff(run_path, cwd, record, decision)
                         if apply_decisions and completed.returncode == 0 and decision.get("applied") not in {"continued", "handed_off"}:
@@ -3260,6 +3269,53 @@ def _repair_script_advice(config, run_path, worktree, record, advisory, targets,
     return True
 
 
+def _resume_verification_script(config, run_path, worktree, record, targets, *, explicit_build):
+    pending = record.get("verification_script_pending")
+    if pending is None:
+        return
+    phase = pending.get("phase") if isinstance(pending, dict) else None
+    number = pending.get("command_number") if isinstance(pending, dict) else None
+    path = run_path / "run.json"
+    try:
+        if (not isinstance(phase, str) or phase not in _REPAIRABLE_SCRIPT_PHASES or type(number) is not int
+                or pending.get("log") != f"{phase}.log" or not isinstance(pending.get("target_versions"), dict)
+                or not re.fullmatch("[0-9a-f]{64}", str(pending.get("log_sha256")))
+                or type(pending.get("byte_offset")) is not int or pending["byte_offset"] < 0
+                or type(pending.get("byte_length")) is not int or pending["byte_length"] <= 0
+                or type(pending.get("exit_code")) is not int):
+            raise ValueError("Invalid saved verification script response; start a new Run")
+        commands = config.get("scripts", {}).get(phase, [])
+        if (not config.get("junie_review_script_output") or not config.get("junie_apply_output_decisions")
+                or not 1 <= number <= len(commands) or _script_digest(commands[number - 1]) != pending.get("command_sha256")):
+            raise ValueError("Restore the command and review settings to resolve the saved script response")
+        hashes = _script_decision_versions(worktree, record)
+        if not hashes or not all(hashes.values()) or pending["target_versions"].keys() != hashes.keys():
+            raise ValueError("Cannot verify the expected target files; inspect the saved response and targets")
+        item = {key: value for key, value in pending.items() if key != "target_versions"}
+        if pending["target_versions"] != hashes:
+            if not explicit_build:
+                raise ValueError("The target changed. Inspect the saved script response, then explicitly rebuild the edited target.")
+            history = record.setdefault("script_advisories", [])
+            history.append({**item, "status": "superseded", "applied": "rebuild_edited_target"})
+            del history[:-100]
+        else:
+            _review_script_output(config, run_path, record, item, apply_decisions=True)
+            if hashes != _script_decision_versions(worktree, record):
+                raise ValueError("The target changed while reviewing the saved script response")
+            if not (item["exit_code"] == 0 and item.get("applied") == "continued"):
+                if explicit_build or not _repair_script_advice(config, run_path, worktree, record, item, targets, hashes):
+                    raise ValueError("The saved script response needs operator review; the command was not repeated")
+        record.pop("verification_script_pending")
+        write_run_record(path, record)
+    except (KeyboardInterrupt, OSError, ValueError) as exc:
+        message = f"{phase} #{number}: {exc or 'script review interrupted'}"
+        record.update(status="script_failed", script_phase=phase, error=message)
+        write_run_record(path, record)
+        if junie_cli.unconfirmed_junie_stop(exc) is not None:
+            raise
+        raise RunScriptError(message, record["run_id"], interrupted=isinstance(exc, KeyboardInterrupt)) from None
+
+
 def _verification_script(config, phase, worktree, run_path, record, targets, hashes, request):
     previous = (record.get("script_advisories") or [None])[-1]
     try:
@@ -3272,6 +3328,8 @@ def _verification_script(config, phase, worktree, run_path, record, targets, has
         try:
             if not _repair_script_advice(config, run_path, worktree, record, advice, targets, hashes):
                 raise exc from None
+            record.pop("verification_script_pending", None)
+            write_run_record(run_path / "run.json", record)
         except KeyboardInterrupt:
             record.update(status="script_failed", error="repair interrupted; inspect Junie's workspace", script_phase=phase)
             write_run_record(run_path / "run.json", record)
@@ -3300,6 +3358,7 @@ def _run_verification(
         record.update(error=format_error(exc), checker_review_reason=exc.reason)
         write_run_record(record_path, record)
         return {**result, "status": record["status"], "error": record["error"]}
+    _resume_verification_script(config, run_path, worktree, record, targets, explicit_build=bool(explicit_build))
     _run_script_phase(config, "after_migration", worktree, run_path, record, once=True)
     mode = request["intent"].removeprefix("stop_") if request else None
     configured_checker = config["checker_command"]
@@ -4035,6 +4094,8 @@ def plan_checker_resume(config, run_id):
         raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
+        if record.get("verification_script_pending") is not None:
+            raise ValueError("Resolve the saved verification script response before running the checker alone")
         if (record["status"] not in VERIFIED_STATUSES | _CHECKER_RESUME_STATUSES
                 or not record.get("completed_capsules")
                 or record["completed_capsules"] != record.get("context_capsules")
