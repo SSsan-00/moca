@@ -99,6 +99,30 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertEqual(len(record["junie_memos"]), 1)
         self.assertEqual(record["completed_capsules"], 0)
 
+    def test_fourth_memo_and_older_stale_note_do_not_silently_disappear(self):
+        from migration_harness.context import context_handoff as memo
+        from migration_harness.runs.worktree_targets import target_hash
+
+        record = {"target_hashes": {"Demo.cs": target_hash(self.target)}}
+        draft, _ = memo.junie_memo_request(self.root, "fixture")
+        for text in ("old stale item", "earliest current item", "new item one", "new item two", "new item three"):
+            draft.write_text(json.dumps([{
+                "kind": "pending", "source_path": "demo.php", "start_line": 2, "end_line": 2, "note": text,
+            }]), encoding="utf-8")
+            memo.save_junie_memo(draft, self.run, record, phase="migration", through=1)
+        stale = record["junie_memos"][0]
+        stale["source_sha256"] = "0" * 64
+        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1)
+        self.assertIn("1 additional current", prompt)
+        self.assertIn(stale["id"], prompt)
+        self.assertNotIn("old stale item", prompt)
+        self.assertNotIn("earliest current item", prompt)
+        notes = memo.unresolved_junie_memos(self.run, self.root, self.targets, record, through=1)
+        self.assertEqual(len(notes), 5)
+        self.assertEqual(notes[-2]["note"], "earliest current item")
+        self.assertEqual(notes[-1]["state"], "needs_review")
+        self.assertNotIn("note", notes[-1])
+
     def test_new_reference_revision_invalidates_notes_without_changing_php_or_target(self):
         from migration_harness.context.context_handoff import junie_memo_request, save_junie_memo
         from migration_harness.context.source_context import activate_target_context

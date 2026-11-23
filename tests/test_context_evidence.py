@@ -3,7 +3,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from migration_harness.context import context_evidence
 from migration_harness.context.capsules import prepare_context
 from migration_harness.context.context_evidence import boundary_hints, find_feature, inspect_context, read_context
 
@@ -141,6 +143,24 @@ class ContextEvidenceTests(unittest.TestCase):
         self.assertTrue(all(part["chars"] <= 550 for part in manifest["parts"]))
         with self.assertRaisesRegex(ValueError, "outside"):
             read_context(self.run, "php-0001", 1, 73, through=1)
+
+    def test_span_verifier_checks_each_pinned_source_once_per_request(self):
+        data = b"<?php\r\nfunction large() {\r\n    return 42;\r\n}" + b" " * 900 + b"\r\n"
+        manifest = self.prepare(data, limit=450)
+        first_split = next(part["index"] for part in manifest["parts"] if any(
+            span["line"] == 4 for item in part["sources"] for span in item["character_slices"]
+        ))
+        expected = hashlib.sha256(data).hexdigest()
+        with patch.object(context_evidence, "read_pinned_php", wraps=context_evidence.read_pinned_php) as read:
+            scoped = context_evidence.pinned_span_verifier(self.run, first_split)
+            self.assertEqual(scoped("php-0001", 2, 3), expected)
+            self.assertIsNone(scoped("php-0001", 2, 4))
+            self.assertIsNone(scoped("php-9999", 2, 3))
+            self.assertEqual(scoped("php-0001", 1, 2), expected)
+            read.assert_called_once()
+        self.assertEqual(context_evidence.pinned_span_verifier(self.run)("php-0001", 2, 4), expected)
+        (self.run / "capsule/php-sources/0001.php").write_bytes(b"tampered")
+        self.assertIsNone(context_evidence.pinned_span_verifier(self.run)("php-0001", 2, 3))
 
     def test_feature_only_links_to_readable_function_ranges_and_ledger_ids(self):
         source = "<?php\nfunction large() {\n    return 42;\n}" + " " * 900 + "\n"

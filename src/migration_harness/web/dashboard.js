@@ -651,6 +651,22 @@ function describe(state) {
   return label;
 }
 
+function showUnresolvedJunieMemos(rows) {
+  const panel = element("#unresolved-junie-memos");
+  if (!panel) return;
+  const list = panel.querySelector("ul");
+  list.replaceChildren();
+  panel.hidden = !rows.length;
+  for (const row of rows) {
+    const item = document.createElement("li");
+    const location = `${row.source_id}:${row.start_line}–${row.end_line}`;
+    item.textContent = row.state === "needs_review"
+      ? `${location}：資料または対象の版が異なるため再確認`
+      : `${location}：${row.note}`;
+    list.append(item);
+  }
+}
+
 async function loadMigrationLedger() {
   const request = ++migrationLedgerRequest;
   try {
@@ -661,6 +677,7 @@ async function loadMigrationLedger() {
     migrationCompletion = ledger.completion;
     render();
     if (!migrationLedgerDialog.open) return;
+    showUnresolvedJunieMemos(ledger.unresolved_junie_memos || []);
     showMigrationLedger(ledger, snapshot, id => {
       const url = new URL(`${comparisonPath(ledger.run_id, id)}.html`, document.baseURI);
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
@@ -676,6 +693,7 @@ async function loadMigrationLedger() {
 }
 
 migrationLedgerButton.addEventListener("click", () => {
+  showUnresolvedJunieMemos([]);
   openMigrationLedger("移行台帳を読み込み中");
   loadMigrationLedger();
 });

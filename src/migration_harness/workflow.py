@@ -47,7 +47,7 @@ from .verification.checker_output import (
 )
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
 from .context.context_evidence import boundary_hints
-from .context.context_handoff import handoff_prompt, junie_memo_request, save_junie_memo
+from .context.context_handoff import handoff_prompt, junie_memo_request, save_junie_memo, unresolved_junie_memos
 from .context.context_plan import navigation_plan
 from .verification.repair_context import diagnostic_php_ranges
 from .context.target_evidence import diagnostic_references
@@ -3603,6 +3603,9 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         "target": unit["target"],
         "targets": targets,
         "capsules": capsules,
+        "unresolved_junie_memos": unresolved_junie_memos(
+            run_path, worktree, tuple(Path(path) for path in targets), record,
+        ),
         "completion": {
             # ビルド・チェッカーの成功に加え、すべてのPHP範囲に根拠付きの判断が必要。
             "complete": verification_passed and total > 0 and reviewed == total,

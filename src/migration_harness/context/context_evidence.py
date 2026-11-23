@@ -160,6 +160,40 @@ def _readable_functions(
     return results
 
 
+def pinned_span_verifier(run_path: Path, through: int | None = None):
+    capsule, manifest = load_capsule_manifest(run_path)
+    sources = {source["id"]: source for source in _catalog(manifest, through)}
+    verified = {}
+
+    def source_sha256(source_id: str, start: int, end: int) -> str | None:
+        source = sources.get(source_id)
+        if source is None or not 1 <= start <= end or not _covering_ranges(source["ranges"], start, end):
+            return None
+        if source_id not in verified:
+            try:
+                data = read_pinned_php(capsule, source)
+                with io.StringIO(data.decode(source["encoding"], errors="strict"), newline="") as stream:
+                    line_count = 0
+                    split_lines = {item["line"] for row in source["ranges"]
+                                   for item in row.get("character_slices", [])}
+                    restricted = set()
+                    for line_count, line in enumerate(stream, 1):
+                        if line_count in split_lines and not _whole_line_assigned(
+                            source["ranges"], line_count, len(line.rstrip("\r\n")),
+                        ):
+                            restricted.add(line_count)
+            except (OSError, ValueError):
+                verified[source_id] = None
+            else:
+                verified[source_id] = (line_count, frozenset(restricted))
+        version = verified[source_id]
+        if version is None or end > version[0] or any(start <= line <= end for line in version[1]):
+            return None
+        return source["sha256"]
+
+    return source_sha256
+
+
 def read_context(
     run_path: Path, source_id: str, start: int, end: int,
     *, through: int | None = None, offset: int = 0, max_chars: int = _MAX_PAGE,
