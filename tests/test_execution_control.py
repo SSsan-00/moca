@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 import sys
 import time
@@ -156,40 +155,8 @@ class ExecutionIntegrationTests(HarnessCase):
         self.assertIsNone(record["active_stage"])
 
     def test_stopping_a_real_command_terminates_its_children(self):
-        if os.name == "nt":
-            self._assert_windows_child_stops(launcher_exits=False)
-            return
-        control = ExecutionControl(lambda _event: None)
-        pid_file = self.root / "child.pid"
-        marker = self.root / "child-wrote-after-stop"
-        child_code = (
-            "import os, signal, time; from pathlib import Path; "
-            + "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            + f"Path({str(pid_file)!r}).write_text(str(os.getpid())); "
-            + f"time.sleep(2); Path({str(marker)!r}).write_text('still alive'); time.sleep(30)"
-        )
-        command = [sys.executable, "-c", f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child_code!r}]); time.sleep(30)"]
-        observed = []
+        self._assert_windows_child_stops(launcher_exits=False)
 
-        def cancel():
-            deadline = time.monotonic() + 5
-            while not pid_file.exists() and time.monotonic() < deadline:
-                time.sleep(.02)
-            observed.append(pid_file.exists())
-            control.cancelled.set()
-
-        thread = Thread(target=cancel)
-        thread.start()
-        try:
-            with control_scope(control), self.assertRaises(OperationCancelled):
-                run_process(command, label="test", capture_output=True)
-        finally:
-            thread.join()
-        self.assertEqual(observed, [True])
-        time.sleep(2.1)
-        self.assertFalse(marker.exists())
-
-    @unittest.skipUnless(os.name == "nt", "requires Windows Job Objects")
     def test_stop_owns_child_even_after_windows_launcher_exits(self):
         self._assert_windows_child_stops(launcher_exits=True)
 

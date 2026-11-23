@@ -1,7 +1,6 @@
 import hashlib
 import io
 import json
-import os
 import re
 import subprocess
 import sys
@@ -655,7 +654,6 @@ class CapsulePreparationTests(HarnessCase):
         self.assertEqual(resumed["status"], "interrupted")
 
     # Windowsの既定のテキスト出力で旧処理のCRLF重複を再現する。
-    @unittest.skipUnless(os.name == "nt", "observes Windows default text translation")
     def test_legacy_windows_writer_doubles_crlf(self):
         with tempfile.TemporaryDirectory() as directory:
             legacy = Path(directory) / "old-context.md"

@@ -125,7 +125,7 @@ def plan_dry_run(config, unit_id):
     def check_executable(phase, argv, cwd, *, may_be_generated=False):
         details = dict(command=safe_command(argv), cwd=str(cwd))
         executable = Path(argv[0])
-        if executable.is_absolute() or "/" in argv[0] or (os.name == "nt" and "\\" in argv[0]):
+        if executable.is_absolute() or "/" in argv[0] or "\\" in argv[0]:
             if not executable.is_absolute():
                 executable = cwd / executable
             if executable.is_relative_to(planned):

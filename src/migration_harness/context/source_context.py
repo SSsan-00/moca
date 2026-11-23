@@ -59,7 +59,7 @@ def _copy(source: Path, destination: Path, expected: str | None = None) -> str:
             raise ValueError(f"saved target context hash mismatch: {source}; prepare a new run")
         check_cancelled()
         temporary.chmod(0o444)
-        if os.name == "nt" and destination.exists():
+        if destination.exists():
             destination.chmod(0o600)
         temporary.replace(destination)
         return digest
