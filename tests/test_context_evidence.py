@@ -40,6 +40,7 @@ class ContextEvidenceTests(unittest.TestCase):
         declaration = find_feature(self.run, "ORDER TOTAL", 1)
         match, = declaration["matches"]
         self.assertEqual("Order total", match["declared_ranges"][0]["symbol"])
+        self.assertEqual("1:1", match["declared_ranges"][0]["ledger_range_id"])
         self.assertEqual([], match["lexical_functions"])
         lexical, = find_feature(self.run, "calculate")["matches"]
         self.assertEqual([], lexical["declared_ranges"])
@@ -131,6 +132,23 @@ class ContextEvidenceTests(unittest.TestCase):
         self.assertTrue(all(part["chars"] <= 550 for part in manifest["parts"]))
         with self.assertRaisesRegex(ValueError, "outside"):
             read_context(self.run, "php-0001", 1, 73, through=1)
+
+    def test_feature_only_links_to_readable_function_ranges_and_ledger_ids(self):
+        source = "<?php\nfunction large() {\n    return 42;\n}" + " " * 900 + "\n"
+        manifest = self.prepare(source.encode(), limit=450)
+        first_split = next(part["index"] for part in manifest["parts"] if any(
+            span["line"] == 4 for item in part["sources"] for span in item["character_slices"]
+        ))
+        self.assertEqual([], find_feature(self.run, "large", first_split)["matches"])
+        with self.assertRaisesRegex(ValueError, "unassigned character"):
+            read_context(self.run, "php-0001", 2, 4, through=first_split)
+        match, = find_feature(self.run, "large")["matches"]
+        function, = match["lexical_functions"]
+        result = read_context(self.run, "php-0001", function["start_line"], function["end_line"])
+        self.assertEqual(source.split("\n", 1)[1], result["text"])
+        ids = [row["ledger_range_id"] for row in result["ranges"]]
+        self.assertGreater(len(ids), 1)
+        self.assertEqual(ids, function["ledger_range_ids"])
 
     def test_through_scope_does_not_leak_future_characters_from_a_split_line(self):
         line = "e" * 2_000

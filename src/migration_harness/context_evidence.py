@@ -31,12 +31,13 @@ def _catalog(manifest: dict[str, Any], through: int | None) -> list[dict[str, An
     sources: dict[str, list[dict[str, Any]]] = {}
     for part in parts:
         if through is None or part["index"] <= through:
-            for source in part["sources"]:
+            for index, source in enumerate(part["sources"], 1):
                 if is_php_input(source):
                     sources.setdefault(source["path"], []).append({
                         "start_line": source["start_line"],
                         "end_line": source["end_line"],
                         "capsule": part["index"],
+                        "ledger_range_id": f"{part['index']}:{index}",
                         "character_slices": source.get("character_slices", []),
                         **({"symbol": source["symbol"]} if isinstance(source.get("symbol"), str) else {}),
                         "role": ("assigned" if through is None else "current" if part["index"] == through else "prior"),
@@ -95,8 +96,12 @@ def find_feature(run_path: Path, name: str, through: int | None = None) -> dict[
     for source in result["sources"]:
         declarations = [row for row in source["ranges"] if row.get("symbol", "").casefold() == query]
         lexical = [row for row in source["functions"] if row["name"].casefold() == query]
+        if not declarations and not lexical:
+            continue
+        data = read_pinned_php(capsule, pinned[source["path"]])
+        if lexical:
+            lexical = _readable_functions(lexical, source["ranges"], data.decode(source["encoding"]))
         if declarations or lexical:
-            read_pinned_php(capsule, pinned[source["path"]])
             matches.append({
                 "id": source["id"], "path": source["path"], "sha256": source["sha256"],
                 "declared_ranges": declarations, "lexical_functions": lexical,
@@ -125,6 +130,34 @@ def _whole_line_assigned(ranges: list[dict[str, Any]], line: int, width: int) ->
         if column > width:
             return True
     return width == 0 and bool(focus_ranges)
+
+
+def _readable_functions(
+    functions: list[dict[str, Any]], ranges: list[dict[str, Any]], text: str,
+) -> list[dict[str, Any]]:
+    split_lines = {item["line"] for row in ranges for item in row.get("character_slices", [])}
+    widths = {}
+    last_line = 0
+    limit = max(fn["end_line"] for fn in functions)
+    with io.StringIO(text, newline="") as stream:
+        for last_line, line in enumerate(stream, 1):
+            if last_line in split_lines:
+                widths[last_line] = len(line.rstrip("\r\n"))
+            if last_line == limit:
+                break
+    results = []
+    for fn in functions:
+        start, end = fn["start_line"], fn["end_line"]
+        if end > last_line or any(
+            start <= number <= end and not _whole_line_assigned(ranges, number, width)
+            for number, width in widths.items()
+        ):
+            continue
+        assigned = [row for row in ranges if "ledger_range_id" in row
+                    and row["start_line"] <= end and start <= row["end_line"]]
+        results.append({**fn, "capsules": sorted({row["capsule"] for row in assigned}),
+                        "ledger_range_ids": [row["ledger_range_id"] for row in assigned]})
+    return results
 
 
 def read_context(
