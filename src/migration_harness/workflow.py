@@ -390,11 +390,12 @@ def _run_script_phase(
                         "previous_status": previous_status, "previous_stage": previous_stage,
                     }
                     write_run_record(record_path, record)
-                command_target_versions = (
+                before_command_versions = (
                     _script_decision_versions(cwd, record)
-                    if phase == "before_build" and not once and apply_decisions and review_output
-                    else verification_hashes
+                    if not once and apply_decisions and review_output and phase in _REPAIRABLE_SCRIPT_PHASES
+                    else None
                 )
+                command_target_versions = before_command_versions if phase == "before_build" else verification_hashes
                 completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
                 if tracked:
                     if completed.returncode < 0:
@@ -409,6 +410,10 @@ def _run_script_phase(
                     log.flush()
                     length = os.fstat(log.fileno()).st_size - start_output
                 repeatable_review = length > 0 and apply_decisions and command_target_versions is not None
+                target_versions_match = (
+                    command_target_versions == before_command_versions == _script_decision_versions(cwd, record)
+                    if repeatable_review else False
+                )
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
                     if (apply_decisions and settled_once) or repeatable_review:
@@ -427,7 +432,14 @@ def _run_script_phase(
                             record["verification_script_pending"] = {
                                 **decision, "target_versions": command_target_versions.copy(),
                                 "target_basis": _verification_target_basis(phase),
+                                "target_versions_match": target_versions_match,
                             }
+                            if not target_versions_match:
+                                _append_script_advisory(record, {
+                                    **decision, "status": "blocked", "applied": "review_required", "reason": "target_changed",
+                                })
+                                write_run_record(record_path, record)
+                                raise ValueError("The target changed during verification; inspect the script log and explicitly rebuild")
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
                         if apply_decisions and completed.returncode == 0:
                             _save_script_handoff(run_path, cwd, record, decision)
@@ -538,15 +550,20 @@ def _resolve_script_decision(config, run_path, cwd, record, decision):
     write_run_record(run_path / "run.json", record)
 
 
-def _review_script_output(config, run_path, record, item, *, apply_decisions):
-    item["status"] = "pending"
+def _append_script_advisory(record, item):
     history = record.setdefault("script_advisories", [])
     history.append(item)
     del history[:-100]
+
+
+def _review_script_output(config, run_path, record, item, *, apply_decisions):
+    item["status"] = "pending"
+    _append_script_advisory(record, item)
     path = run_path / "run.json"
     write_run_record(path, record)
     phase, number = item["phase"], item["command_number"]
     try:
+        check_cancelled()
         report_activity(f"Junie に {phase} の {number} 番目の出力の参考判定を依頼しています。", kind="phase")
         advisory = output_advisory(
             run_path, item["log"], item["exit_code"], phase=phase, byte_offset=item["byte_offset"],
@@ -3334,11 +3351,14 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
         hashes = _script_decision_versions(worktree, record)
         if not hashes or not all(hashes.values()) or pending["target_versions"].keys() != hashes.keys():
             raise ValueError("Cannot verify the expected target files; inspect the saved response and targets")
-        item = {key: value for key, value in pending.items() if key not in {"target_versions", "target_basis"}}
-        legacy_basis = pending.get("target_basis") != _verification_target_basis(phase)
+        target_versions_match = pending.get("target_versions_match")
+        unverified_target = pending.get("target_basis") != _verification_target_basis(phase) or target_versions_match is not True
         target_changed = pending["target_versions"] != hashes
+        item = {key: value for key, value in pending.items() if key not in {"target_versions", "target_basis", "target_versions_match"}}
         if not explicit_build:
-            if legacy_basis:
+            if target_versions_match is False:
+                raise ValueError("The target changed during the saved script; inspect the original log, then explicitly rebuild.")
+            if unverified_target:
                 raise ValueError("The saved script response has no verified target version; inspect it, then explicitly rebuild.")
             if target_changed:
                 raise ValueError("The target changed. Inspect the saved script response, then explicitly rebuild the edited target.")
@@ -3348,12 +3368,11 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
             for advisory in history
         )
         _verify_saved_script_output(run_path, item)
-        if explicit_build and (legacy_basis or target_changed or reviewed_failure):
-            reason = "rebuild_unverified_target" if legacy_basis else (
+        if explicit_build and (unverified_target or target_changed or reviewed_failure):
+            reason = "rebuild_unverified_target" if unverified_target else (
                 "rebuild_edited_target" if target_changed else "rebuild_after_script_failure"
             )
-            history.append({**item, "status": "superseded", "applied": reason})
-            del history[:-100]
+            _append_script_advisory(record, {**item, "status": "superseded", "applied": reason})
         else:
             _review_script_output(config, run_path, record, item, apply_decisions=True)
             if hashes != _script_decision_versions(worktree, record):
@@ -3380,7 +3399,7 @@ def _verification_script(config, phase, worktree, run_path, record, targets, has
     except RunScriptError as exc:
         advice = (record.get("script_advisories") or [None])[-1]
         pending = record.get("verification_script_pending")
-        if (exc.interrupted or request or pending is None or advice is None
+        if (exc.interrupted or request or not pending or pending.get("target_versions_match") is not True or advice is None
                 or advice is previous or advice.get("applied") != "review_required"):
             raise
         try:

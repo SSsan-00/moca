@@ -14,13 +14,17 @@ GENERATED_DIAGNOSTIC = "T001 Generated.cs:1 warning: class Generated uses deprec
 
 
 class BeforeBuildVersionTests(SavedRunFixture):
-    def configure_hooks(self, target, *scripts):
+    def configure_hooks(self, target, *scripts, phase="before_build"):
         self.config.update(junie_review_script_output=True, junie_apply_output_decisions=True, max_repair_attempts=1)
-        self.config["scripts"] = {"before_build": [[sys.executable, "-c", script] for script in scripts]}
+        self.config["scripts"] = {phase: [[sys.executable, "-c", script] for script in scripts]}
         self.generator_output = target
 
     def resume_run(self):
         return workflow.resume_with_junie(self.config, self.run_id)
+
+    def explicit_build(self):
+        plan = workflow.plan_build_resume(self.config, self.run_id)
+        return workflow.resume_with_junie(self.config, self.run_id, verification_request={**plan, "id": "reviewed"})
 
     def add_generated_target(self):
         target = self.worktree / "Generated.cs"
@@ -142,3 +146,101 @@ class BeforeBuildVersionTests(SavedRunFixture):
                 self.resume_run()
             self.assertEqual(builds, [])
             repair.assert_not_called()
+
+    def test_hook_that_changes_one_of_two_targets_cannot_replay_its_diagnostic_after_restore(self):
+        target = self.add_generated_target()
+        self.configure_hooks(
+            target,
+            "from pathlib import Path; Path('Generated.cs').write_text('class Intermediate {}')",
+            "from pathlib import Path; p=Path('Generated.cs'); "
+            "assert 'Intermediate' in p.read_text(); p.write_text('class Generated {}'); "
+            f"assert 'Generated' in p.read_text(); print({GENERATED_DIAGNOSTIC!r})",
+        )
+        judge_calls = []
+
+        def judge(*args, **kwargs):
+            judge_calls.append(1)
+            if len(judge_calls) == 1:
+                raise KeyboardInterrupt
+            return PROBLEM
+
+        with self.commands(judge) as (builds, repair):
+            with self.assertRaises(workflow.RunScriptError):
+                self.resume_run()
+            self.assertEqual(target.read_text(), "class Generated {}")
+            target.write_text("class Intermediate {}")
+            with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
+                self.resume_run()
+            self.assertEqual(builds, [])
+            repair.assert_not_called()
+
+        self.assertEqual(judge_calls, [])
+        record = self.record()
+        pending = record["verification_script_pending"]
+        self.assertIs(pending["target_versions_match"], False)
+        self.assertEqual(pending["command_number"], 2)
+        self.assertEqual(pending["target_versions"][target.name], hashlib.sha256(b"class Intermediate {}").hexdigest())
+        self.assertEqual((self.run_path / pending["log"]).read_text().count(GENERATED_DIAGNOSTIC), 1)
+        self.assertEqual(record["script_advisories"][-1]["reason"], "target_changed")
+
+    def test_self_changing_nonzero_hook_needs_intact_log_and_new_build(self):
+        target = self.target
+        entry = target.read_bytes()
+        diagnostic = "T001 Example.cs:1 warning: changes made before a failed dependency check"
+        self.configure_hooks(
+            target,
+            "from pathlib import Path; import sys\n"
+            "if not Path('ready.flag').exists():\n"
+            " Path('Example.cs').write_text('class Changed {}')\n"
+            f" print({diagnostic!r}); sys.exit(1)\n"
+            "print('1 test passed')",
+            phase="after_build",
+        )
+
+        with self.commands([PASSED]) as (builds, repair):
+            with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
+                self.resume_run()
+            target.write_bytes(entry)
+            with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
+                self.resume_run()
+            failure = self.record()["script_advisories"][-1]
+            self.assertEqual(failure["exit_code"], 1)
+            (self.worktree / "ready.flag").touch()
+            log = self.run_path / "after_build.log"
+            old_log = log.read_bytes()
+            log.write_bytes(old_log.replace(b"failed dependency", b"FAILED dependency"))
+            with self.assertRaisesRegex(workflow.RunScriptError, "missing or changed"):
+                self.explicit_build()
+            log.write_bytes(old_log)
+            self.assertEqual(self.explicit_build()["status"], "build_succeeded")
+            self.assertEqual(builds, ["class Original {}\n", "class Original {}\n"])
+            repair.assert_not_called()
+
+        self.assertIn(failure, self.record()["script_advisories"])
+        self.assertTrue(log.read_bytes().startswith(old_log))
+        self.assertNotIn("verification_script_pending", self.record())
+
+    def test_old_saved_receipt_without_target_agreement_requires_explicit_new_build(self):
+        target = self.target
+        diagnostic = "T001 Example.cs:1 warning: class Original uses deprecated API"
+        self.configure_hooks(
+            target,
+            "from pathlib import Path; "
+            f"print('1 test passed' if Path('ready.flag').exists() else {diagnostic!r})",
+            phase="after_build",
+        )
+        with self.commands([KeyboardInterrupt, PASSED]) as (builds, repair):
+            with self.assertRaises(workflow.RunScriptError):
+                self.resume_run()
+            record = self.record()
+            receipt = record["verification_script_pending"]
+            receipt.pop("target_versions_match", None)
+            receipt.pop("log_hash_scope", None)
+            self.save_record(record)
+            with self.assertRaisesRegex(workflow.RunScriptError, "no verified target version"):
+                self.resume_run()
+            self.assertEqual(len(builds), 1)
+            (self.worktree / "ready.flag").touch()
+            self.assertEqual(self.explicit_build()["status"], "build_succeeded")
+            repair.assert_not_called()
+            self.assertEqual(len(builds), 2)

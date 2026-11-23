@@ -183,9 +183,8 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
                     " print('T001 Example.cs:1 warning: class Original uses deprecated API')\n"
                     " p.write_text('class AlreadyFixed {}')"
                 )
-                problem = '{"verdict":"problem","evidence_lines":[1]}'
                 passed = '{"verdict":"passed","evidence_lines":[1]}'
-                with self.controlled_commands([problem, problem, passed]) as (builds, judge), patch.object(
+                with self.controlled_commands([passed]) as (builds, judge), patch.object(
                     workflow.junie_cli, "require_interactive_cli"
                 ), patch.object(workflow, "_attempt_repair") as repair:
                     with self.assertRaises(workflow.RunScriptError):
@@ -196,10 +195,9 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
                     with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
                         self.resume_run()
                     repair.assert_not_called()
-                    self.assertEqual((len(builds), judge.call_count), (1, 1))
-                    judge.side_effect = [passed]
+                    self.assertEqual((len(builds), judge.call_count), (1, 0))
                     self.assertEqual(self.explicit_build()["status"], "build_succeeded")
-                    self.assertEqual((len(builds), judge.call_count), (2, 2))
+                    self.assertEqual((len(builds), judge.call_count), (2, 1))
                 self.assertEqual(changed.read_text(), "class AlreadyFixed {}")
 
     def test_operator_build_cannot_bypass_interrupted_or_modified_failure(self):
@@ -245,7 +243,7 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
         with self.controlled_commands(['{"verdict":"passed","evidence_lines":[1]}']) as (builds, judge):
             with self.assertRaisesRegex(workflow.RunScriptError, "target changed"):
                 self.resume_run()
-            self.assertEqual((len(builds), judge.call_count), (1, 1))
+            self.assertEqual((len(builds), judge.call_count), (1, 0))
         record = self.record()
         self.assertEqual(record["status"], "script_failed")
         self.assertEqual(record["script_advisories"][-1]["applied"], "review_required")
