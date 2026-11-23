@@ -947,12 +947,13 @@ class _AcpSession:
             {"id": option["optionId"], "label": option["name"], "kind": option["kind"]}
             for option in params["options"] if isinstance(option.get("optionId"), str)
         ]
+        if self.observe_permission is not None:
+            kind = metrics_kind(details.get("kind"))
+            reason = "agent_owned_unverified" if kind == "read" else "operator_decision"
+            self.observe_permission(kind, reason if options else "no_permission_options")
         if not options:
             self.send(id=request_id, error={"code": -32602, "message": "No permission options"})
             return
-        if self.observe_permission is not None:
-            kind = metrics_kind(details.get("kind"))
-            self.observe_permission(kind, "agent_owned_unverified" if kind == "read" else "operator_decision")
         reply = self.show_request({
             "title": "Junie の操作を確認",
             "detail": "\n\n".join([details.get("title") or "Junie が操作の許可を求めています。", *content]),
@@ -970,9 +971,12 @@ class _AcpSession:
         self.request(1, "initialize", protocolVersion=1, clientCapabilities=caps)
 
     def read_reference(self, request_id: int | str, params: dict) -> None:
+        if not self.reference_reads or not self.reference_reads.pins:
+            if self.observe_permission is not None:
+                self.observe_permission("read", "client_read_unavailable")
+            self.send(id=request_id, error={"code": -32601, "message": "Method not supported"})
+            return
         try:
-            if self.reference_reads is None:
-                raise ReadRefused("unavailable_reference")
             content = self.reference_reads.read(params)
         except ReadRefused as exc:
             if self.observe_permission is not None:
@@ -1139,7 +1143,7 @@ class _AcpSession:
             if method == "session/request_permission" and params.get("sessionId") == self.session_id:
                 self.permission(request_id, params)
             elif (method == "fs/read_text_file" and self.session_id is not None
-                  and params.get("sessionId") == self.session_id and self.reference_reads and self.reference_reads.pins):
+                  and params.get("sessionId") == self.session_id):
                 self.read_reference(request_id, params)
             else:
                 self.send(id=request_id, error={"code": -32601, "message": "Method not supported"})

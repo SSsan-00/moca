@@ -99,11 +99,43 @@ send(id=23,method="session/request_permission",params={"sessionId":"bound","tool
 assert read()["result"]["outcome"] == {"outcome":"cancelled"}
 send(id=3,result={"stopReason":"end_turn"})
 '''
+        requests, metrics = self._exchange(program, self.reads)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(metrics, [("read", "pinned_reference_read"), ("read", "target_not_pinned"),
+                                   ("read", "agent_owned_unverified")])
+        self.assertEqual(metrics_kind("untrusted tool command"), "unknown")
+
+    def test_rejected_requests_are_counted_without_opening_a_dialog_or_counting_other_sessions(self):
+        program = r'''
+import json, sys
+def read(): return json.loads(sys.stdin.readline())
+def send(**m): print(json.dumps({"jsonrpc":"2.0", **m}), flush=True)
+
+assert read()["params"]["clientCapabilities"] == {}
+send(id=1,result={"protocolVersion":1})
+assert read()["method"] == "session/new"
+send(id=2,result={"sessionId":"bound"})
+assert read()["method"] == "session/prompt"
+for id, session in ((20, "bound"), (21, "other")):
+    send(id=id,method="fs/read_text_file",params={"path":sys.argv[1], "sessionId":session})
+    assert read() == {"jsonrpc":"2.0", "id":id, "error":{"code":-32601,"message":"Method not supported"}}
+send(id=22,method="session/request_permission",params={"sessionId":"bound",
+    "toolCall":{"toolCallId":"sample","kind":"private-kind","rawInput":{"path":sys.argv[1]}}, "options":[]})
+assert read() == {"jsonrpc":"2.0", "id":22, "error":{"code":-32602,"message":"No permission options"}}
+send(id=3,result={"stopReason":"end_turn"})
+'''
+        for reads in (None, PinnedReferenceReads(self.workspace, {}, set())):
+            with self.subTest(reads_enabled=reads is not None):
+                requests, metrics = self._exchange(program, reads)
+                self.assertEqual(requests, [])
+                self.assertEqual(metrics, [("read", "client_read_unavailable"), ("unknown", "no_permission_options")])
+
+    def _exchange(self, program, reads):
         launch = junie_cli._launch_process
         process = launch([sys.executable, "-u", "-c", program, str(self.document)], owned=True,
                          stdin=junie_cli.subprocess.PIPE, stdout=junie_cli.subprocess.PIPE)
         requests, metrics = [], []
-        pin_token = junie_cli.reference_read_scope.set(self.reads)
+        pin_token = junie_cli.reference_read_scope.set(reads)
         counter_token = junie_cli.permission_observer.set(lambda *args: metrics.append(args))
         session = junie_cli._AcpSession(process, ["junie", "prompt"], self.workspace, requests.append,
                                        self.workspace / "complete", "token", None)
@@ -122,10 +154,7 @@ send(id=3,result={"stopReason":"end_turn"})
                 session.close()
                 junie_cli.reference_read_scope.reset(pin_token)
                 junie_cli.permission_observer.reset(counter_token)
-        self.assertEqual(len(requests), 1)
-        self.assertEqual(metrics, [("read", "pinned_reference_read"), ("read", "target_not_pinned"),
-                                   ("read", "agent_owned_unverified")])
-        self.assertEqual(metrics_kind("untrusted tool command"), "unknown")
+        return requests, metrics
 
     def test_pin_host_support_is_explicit_and_diagnostics_do_not_require_it(self):
         self.assertFalse(_execution_settings({}, self.run_path)["junie_pinned_reference_reads"])
