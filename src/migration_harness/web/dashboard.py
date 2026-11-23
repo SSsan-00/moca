@@ -189,6 +189,11 @@ def _save_settings(path: Path, content: str, version: str, *, manager=None, veri
 _junie_request_sequence = count(1)
 
 
+class _DashboardServer(ThreadingHTTPServer):
+    # Chromium can queue the UI bundles and the event stream together on a Run reopen.
+    request_queue_size = 32
+
+
 class Dashboard:
 
     def __init__(self) -> None:
@@ -406,7 +411,7 @@ class Dashboard:
         # ポート番号だけで操作できないようにし、他サイトからのPOSTも拒否する。
         prefix = "/" + secrets.token_urlsafe(24) + "/"
         handler = _dashboard_handler(self, config, html, script, prefix)
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server = _DashboardServer(("127.0.0.1", 0), handler)
         host = f"127.0.0.1:{server.server_port}"
         manager = getattr(self, "manager", None)
         notifications = JunieNotifications(
