@@ -410,10 +410,12 @@ def _run_script_phase(
                     log.flush()
                     length = os.fstat(log.fileno()).st_size - start_output
                 repeatable_review = length > 0 and apply_decisions and command_target_versions is not None
-                target_versions_match = (
-                    command_target_versions == before_command_versions == _script_decision_versions(cwd, record)
-                    if repeatable_review else False
-                )
+                target_versions_match = None
+                if repeatable_review:
+                    after_command_versions = _script_decision_versions(cwd, record)
+                    versions = (command_target_versions, before_command_versions, after_command_versions)
+                    if all(snapshot and all(snapshot.values()) for snapshot in versions):
+                        target_versions_match = command_target_versions == before_command_versions == after_command_versions
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
                     if (apply_decisions and settled_once) or repeatable_review:
@@ -434,11 +436,14 @@ def _run_script_phase(
                                 "target_basis": _verification_target_basis(phase),
                                 "target_versions_match": target_versions_match,
                             }
-                            if not target_versions_match:
+                            if target_versions_match is not True:
+                                reason = "target_changed" if target_versions_match is False else "target_unverified"
                                 _append_script_advisory(record, {
-                                    **decision, "status": "blocked", "applied": "review_required", "reason": "target_changed",
+                                    **decision, "status": "blocked", "applied": "review_required", "reason": reason,
                                 })
                                 write_run_record(record_path, record)
+                                if target_versions_match is None:
+                                    raise ValueError("The script response has no verified target version; inspect the log and explicitly rebuild")
                                 raise ValueError("The target changed during verification; inspect the script log and explicitly rebuild")
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
                         if apply_decisions and completed.returncode == 0:
