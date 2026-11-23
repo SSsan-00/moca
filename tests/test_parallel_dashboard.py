@@ -611,6 +611,45 @@ class ParallelDashboardTests(HarnessCase):
         with self.assertRaises(RuntimeError), execution_lock(self.settings, "dashboard"):
             pass
 
+    def test_settings_worktree_switch_keeps_owner_and_restores_waiting_job_after_commit(self):
+        post, _ = self.open_http_dashboard()
+        path = Path(self.settings["config_path"])
+        original, version = dashboard._read_settings(path)
+        owner, root, queue = self.manager.owner, self.manager.root, self.manager.queue_path
+        self.manager.limit = 0
+        old_id = str(uuid.uuid4())
+        self.manager.new_view(old_id, "unit-0")
+        self.manager.results[old_id] = {"status": "previous"}
+        run_id, operation = str(uuid.uuid4()), uuid.uuid4().hex
+        job = {"action": "prepare", "run_id": run_id, "unit_id": "sample", "operation_id": operation}
+        queue.write_text(json.dumps({"project_root": self.settings["project_root"], "jobs": [job]}), encoding="utf-8")
+        content = original.decode().replace('worktree_root = "trees"', 'worktree_root = "other-trees"')
+        seen = []
+        replace = Path.replace
+
+        def record_publish(candidate, destination):
+            if destination in {path, queue}:
+                seen.append(destination)
+            return replace(candidate, destination)
+
+        with patch.object(Path, "replace", record_publish):
+            status, _ = post("settings", {"content": content, "version": version, "revision": self.view.revision})
+        self.assertEqual(status, 200)
+        self.assertEqual(seen, [path, queue])
+        self.assertEqual(path.read_bytes(), content.encode())
+        self.assertEqual(Path(self.settings["worktree_root"]).name, "other-trees")
+        self.assertEqual(self.manager.root, root)
+        self.assertIs(self.manager.owner, owner)
+        self.assertNotIn(old_id, self.manager.views)
+        self.assertNotIn(old_id, self.manager.results)
+        self.assertEqual(list(self.manager.pending), [run_id])
+        self.assertEqual(self.manager.jobs[run_id], job)
+        self.assertTrue(self.manager.get(run_id).state["queued"])
+        self.assertEqual(json.loads(queue.read_bytes())["jobs"], [job])
+        self.assertFalse(self.manager.workers)
+        with self.assertRaises(RuntimeError), execution_lock(self.settings, "dashboard"):
+            pass
+
     def test_workspace_preserves_operation_failure_message(self):
         run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
