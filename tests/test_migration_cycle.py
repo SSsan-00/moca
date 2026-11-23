@@ -257,6 +257,19 @@ class CycleRecoveryTests(SavedRunFixture):
             workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
         saved = self.record()
         self.assertEqual(saved["script_decisions_pending"]["after_prepare"]["command_number"], 1)
+        for changed in ({"junie_apply_output_decisions": False}, {"scripts": {}}):
+            with (
+                self.subTest(changed=changed),
+                patch("migration_harness.verification.checker_advisory.run_text_advisory") as agent,
+                self.assertRaises(workflow.RunScriptError),
+            ):
+                workflow._run_script_phase({**self.config, **changed}, "after_prepare", self.run_path,
+                                           self.run_path, self.record(), once=True)
+            agent.assert_not_called()
+            self.assertNotIn("after_prepare", self.record().get("completed_script_phases", []))
+            self.assertEqual(saved["script_decisions_pending"], self.record()["script_decisions_pending"])
+            self.assertEqual(counter.read_text(encoding="utf-8"), "x")
+        saved = self.record()
         with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                    return_value='{"verdict":"passed","evidence_lines":[1]}') as agent:
             workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
