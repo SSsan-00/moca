@@ -58,12 +58,9 @@ def _digest(data: bytes) -> str:
 
 
 def _require_same_project(root: Path, expected: Path) -> None:
-    if str(root) == str(expected):
-        return
-    if root == expected:
-        with suppress(OSError):
-            if root.samefile(expected):
-                return
+    with suppress(OSError):
+        if root.samefile(expected):
+            return
     raise ValueError("プロジェクトのルートが変わりました。設定画面で現在の設定を保存するか、ダッシュボードを再起動してください。")
 
 

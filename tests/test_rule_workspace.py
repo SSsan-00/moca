@@ -1,4 +1,5 @@
 import base64
+import ctypes
 import json
 import os
 import subprocess
@@ -217,6 +218,25 @@ end_line = 1
         content = self.config_path.read_text(encoding="utf-8").replace("root = 'app'", "root = 'APP'")
         self.config_path.write_text(content, encoding="utf-8")
         self.assertTrue(self.apply(self.workspace.start())["applied"])
+
+    def test_project_root_win32_alias_uses_the_same_directory(self):
+        root = self.app.resolve()
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetShortPathNameW(str(root), buffer, len(buffer))
+        # 8.3 名を作らないボリュームでは、同じWin32パスの拡張形式で検証する。
+        alias = Path(buffer.value) if 0 < length < len(buffer) else root
+        if alias == root:
+            alias = Path("//?/" + root.as_posix())
+        self.assertNotEqual(alias, root)
+        self.assertTrue(alias.samefile(root))
+        self.config["project_root"] = str(alias)
+        self.assertTrue(self.apply(self.workspace.start())["applied"])
+
+    def test_missing_live_project_root_conflicts_without_a_new_draft(self):
+        self.config["project_root"] = str(self.root / "missing")
+        with self.assertRaisesRegex(ValueError, "設定画面で"):
+            self.workspace.start()
+        self.assertFalse(Path(self.config["run_root"]).exists())
 
     def test_old_draft_without_origin_versions_is_preserved_not_silently_rebased(self):
         draft = self.workspace.start()
