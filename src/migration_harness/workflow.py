@@ -42,6 +42,7 @@ from .verification.checker_output import (
     accepted_findings,
     checker_findings,
     checker_response_status,
+    decode_checker_output,
     parse_checker_diagnostics,
 )
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
@@ -2963,6 +2964,11 @@ def _review_log(run_path: Path, name: str) -> tuple[str, bool]:
         data = stream.read(65_536)
     if start and b"\n" in data:
         data = data.split(b"\n", 1)[1]
+    if name == "checker.log":
+        try:
+            return decode_checker_output(data), bool(start)
+        except UnicodeDecodeError:
+            pass
     return data.decode("utf-8-sig", errors="replace"), bool(start)
 
 
@@ -3274,7 +3280,7 @@ def _checker_repair_inputs(run_path, remaining, targets, use_raw_output):
         if len(raw) > 65_536:
             raise CheckerRepairBlocked("output_too_large", "checker output is too large for automatic repair")
         try:
-            diagnostic = raw.decode("utf-8-sig")
+            diagnostic = decode_checker_output(raw)
         except UnicodeDecodeError:
             raise CheckerRepairBlocked("output_encoding", "unrecognized checker output encoding; inspect checker.log") from None
         if not diagnostic.strip() or "\0" in diagnostic:
