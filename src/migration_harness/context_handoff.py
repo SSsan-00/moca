@@ -8,6 +8,7 @@ from typing import Any
 from .context_evidence import inspect_context, read_context
 from .files import safe_target
 from .run_records import lock_run_record, replace_run_record
+from .source_context import target_context_snapshot
 from .worktree_targets import target_hash
 
 
@@ -39,8 +40,15 @@ def _rule_decisions_hash(overrides):
     return hashlib.sha256(json.dumps(overrides, sort_keys=True).encode()).hexdigest()
 
 
-def _version(target_root: Path, targets: tuple[Path, ...], overrides: dict[str, Any]) -> dict[str, Any]:
+def _reference_version(run_path: Path):
+    capsule = safe_target(run_path, Path("capsule/manifest.json")).parent
+    snapshot = target_context_snapshot(capsule)
+    return target_hash(safe_target(snapshot, Path("manifest.json")))
+
+
+def _version(run_path: Path, target_root: Path, targets: tuple[Path, ...], overrides: dict[str, Any]) -> dict[str, Any]:
     return {
+        "reference_version": _reference_version(run_path),
         "target_hashes": {target.as_posix(): target_hash(safe_target(target_root, target)) for target in targets},
         "rule_decisions_sha256": _rule_decisions_hash(overrides),
     }
@@ -57,7 +65,7 @@ def record_handoff(
     record = {
         "source_id": source_id, "start_line": start, "end_line": end,
         "source_sha256": evidence["sha256"], "note": note, "supersedes": supersedes,
-        **_version(target_root, targets, overrides),
+        **_version(run_path, target_root, targets, overrides),
     }
     record["id"] = hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
     path = safe_target(run_path, Path(_FILENAME))
@@ -82,14 +90,12 @@ def context_handoff(
     rows = _read_handoff(run_path)
     if not rows:
         return []
-    version = _version(target_root, targets, overrides)
-    superseded = {row["supersedes"] for row in rows if isinstance(row.get("supersedes"), str)}
+    version = _version(run_path, target_root, targets, overrides)
+    superseded = set()
     result = []
     checked = 0
     for row in reversed(rows):
-        if row["id"] in superseded:
-            state = "superseded"
-        elif any(row.get(key) != value for key, value in version.items()):
+        if any(row.get(key) != value for key, value in version.items()):
             state = "needs_review"
         elif checked >= verify_limit:
             state = "not_checked"
@@ -101,7 +107,10 @@ def context_handoff(
                 state = "pending" if row.get("source_sha256") == evidence["sha256"] else "needs_review"
             except (OSError, ValueError, KeyError, TypeError):
                 state = "needs_review"
-        result.append({**row, "state": state})
+        visible_state = "superseded" if row["id"] in superseded else state
+        if state == "pending" and isinstance(row.get("supersedes"), str):
+            superseded.add(row["supersedes"])
+        result.append({**row, "state": visible_state})
     return result
 
 
@@ -164,6 +173,7 @@ def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *,
         resumable = record.get("stopped_migration_draft") or (record.get("repair_pending") or {}).get("draft") or {}
         replaceable = known | {r["id"] for r in record.get("junie_memos", []) + resumable.get("junie_memos", [])}
         prepared = []
+        reference_version = _reference_version(run_path)
         source_paths = None
         for entry in entries:
             allowed = {"kind", "note", "source_id", "source_path", "start_line", "end_line", "supersedes"}
@@ -191,6 +201,7 @@ def save_junie_memo(path: Path, run_path: Path, record: dict[str, Any], *,
                 "supersedes": replaces, "phase": phase, "capsule": through,
                 "target_hashes": dict(record["target_hashes"] if draft is None else draft["targets"]),
                 "rule_decisions_sha256": _rule_decisions_hash(_junie_rule_state(record)),
+                "reference_version": reference_version,
             }
             if draft is not None:
                 row["draft_snapshot"] = draft["snapshot"]
@@ -214,7 +225,7 @@ def _junie_memo_prompt(run_path, target_root, targets, record, through):
     try:
         if not isinstance(rows, list) or len(rows) > _MAX_NOTES:
             raise ValueError("invalid memo history")
-        version = _version(target_root, targets, _junie_rule_state(record))
+        version = _version(run_path, target_root, targets, _junie_rule_state(record))
         checked_sources = {}
 
         def current_evidence(row):
@@ -268,7 +279,7 @@ def stopped_memo_prompt(run_path, target_root, record, through, draft):
         names = draft["targets"]
         if not names or not names.keys() <= record["target_hashes"].keys():
             raise ValueError("unrecognized stopped target")
-        version = _version(target_root, tuple(Path(name) for name in names), _junie_rule_state(record))
+        version = _version(run_path, target_root, tuple(Path(name) for name in names), _junie_rule_state(record))
         if version["target_hashes"] != names:
             raise ValueError("stopped targets differ from memo")
         notes = []
@@ -276,7 +287,7 @@ def stopped_memo_prompt(run_path, target_root, record, through, draft):
             payload = {key: value for key, value in row.items() if key != "id"}
             digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
             if (row["id"] != digest or row["draft_snapshot"] != draft["snapshot"] or row["capsule"] != through
-                    or any(row[key] != value for key, value in version.items())
+                    or any(row.get(key) != value for key, value in version.items())
                     or not isinstance(row["note"], str) or not 1 <= len(row["note"]) <= _MAX_NOTE):
                 raise ValueError("stopped memo version differs")
             evidence = read_context(run_path, row["source_id"], row["start_line"], row["end_line"],

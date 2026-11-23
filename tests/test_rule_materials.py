@@ -84,6 +84,43 @@ class RuleMaterialsTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "saved rule changed"):
             review_rules(config, run_id)
 
+    def test_insufficient_applicability_is_not_resolved_by_verification_alone(self):
+        from migration_harness.rule_review import review_rules
+
+        (self.project / "source.php").write_text("<?php echo 1;", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
+        (self.project / "detail.md").write_text("Use opt-in formatting.", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config["units"][0]["inputs"].append({
+            "path": "detail.md", "role": "migration_rules", "usage": "reference",
+            "description": "Opt-in formatting", "encoding": "utf-8",
+            "start_line": 1, "end_line": None, "shared": True,
+        })
+        run = workflow.prepare_run(config, "sample")
+        run_id = run["run_id"]
+        path = Path(run["run_path"]) / "run.json"
+        record = json.loads(path.read_bytes())
+        rule = "rule-0001.txt"
+        record["detail_applicability"] = {rule: {
+            "applies": True, "insufficient_context": True, "reason": "Need the authoritative PHP mode.",
+        }}
+        workflow.write_run_record(path, record)
+        report = review_rules(config, run_id)
+        entry, = report["rules"]
+        self.assertTrue(entry["applicability"])
+        self.assertTrue(entry["applicability_needs_review"])
+        self.assertEqual("applicability_pending", entry["verification_state"])
+        args = {"rule": rule, "start": 1, "end": 1, "reason": "Compared pinned files."}
+        verified = review_rules(config, run_id, kind="passed", version=report["version"],
+                                reference="independent checker", **args)
+        self.assertEqual("passed", verified["rules"][0]["independent_verification"]["kind"])
+        self.assertEqual("applicability_pending", verified["rules"][0]["verification_state"])
+        decided = review_rules(config, run_id, kind="include", version=verified["version"], **args)
+        self.assertFalse(decided["rules"][0]["applicability_needs_review"])
+        self.assertTrue(decided["rules"][0]["operator_decision"]["applies"])
+        self.assertEqual("human_review_needed", decided["rules"][0]["verification_state"])
+
     def test_human_verification_becomes_pending_when_reference_revision_changes(self):
         from migration_harness.rule_review import review_rules
 
