@@ -267,7 +267,7 @@ target = "One.cs"
     def test_fixed_exception_must_stay_with_the_obligation_after_pack_split(self):
         from migration_harness import workflow
         from migration_harness.config import load_config
-        from migration_harness.rule_materials import render_guidelines
+        from migration_harness.rules.rule_materials import render_guidelines
 
         config = self.root / "settings.toml"
         original = b'''[project]

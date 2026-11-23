@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from migration_harness.capsules import prepare_context
-from migration_harness.grounded_evidence import bounded_evidence_snapshot, grounded_diagnostic, grounded_evidence
+from migration_harness.context.capsules import prepare_context
+from migration_harness.verification.grounded_evidence import bounded_evidence_snapshot, grounded_diagnostic, grounded_evidence
 
 
 class GroundedEvidenceTests(unittest.TestCase):
@@ -65,7 +65,7 @@ class GroundedEvidenceTests(unittest.TestCase):
             self.verify(self.row)
 
     def test_uses_text_only_validates_strict_json_and_has_no_environment_side_effects(self):
-        name = "migration_harness.checker_advisory.run_text_advisory"
+        name = "migration_harness.verification.checker_advisory.run_text_advisory"
         with patch(name, return_value=json.dumps({"citations": [self.row]})) as acp:
             result = self.diagnose("Total mismatch in Sample.cs")
         self.assertEqual("grounded", result["status"])
@@ -81,12 +81,12 @@ class GroundedEvidenceTests(unittest.TestCase):
             self.target.write_text("class Newer {}", encoding="utf-8")
             return json.dumps({"citations": [self.row]})
 
-        with patch("migration_harness.checker_advisory.run_text_advisory", side_effect=replace_before_reply):
+        with patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=replace_before_reply):
             self.assertEqual("unavailable", self.diagnose("Total mismatch in Sample.cs")["status"])
 
     def test_sidecar_with_changed_pinned_source_is_never_sent(self):
         (self.run / "capsule/php-sources/0001.php").write_bytes(b"changed source")
-        with patch("migration_harness.checker_advisory.run_text_advisory") as acp:
+        with patch("migration_harness.verification.checker_advisory.run_text_advisory") as acp:
             self.assertEqual("unavailable", self.diagnose("Total mismatch")["status"])
         acp.assert_not_called()
 
@@ -95,7 +95,7 @@ class GroundedEvidenceTests(unittest.TestCase):
         mirror.write_bytes(self.target.read_bytes())
         self.targets += (Path(mirror.name),)
         self.hashes[mirror.name] = self.hashes[self.target.name]
-        with patch("migration_harness.checker_advisory.run_text_advisory",
+        with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                    return_value=json.dumps({"citations": [self.row]})):
             self.assertEqual("unclear", self.diagnose("Total mismatch")["status"])
             self.assertEqual("grounded", self.diagnose("Total mismatch in Sample.cs")["status"])

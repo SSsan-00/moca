@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
-from migration_harness.editor_queue import editor_queue
-from migration_harness.worktree_targets import save_target_edit, worktree_source_lock
+from migration_harness.runs.editor_queue import editor_queue
+from migration_harness.runs.worktree_targets import save_target_edit, worktree_source_lock
 
 
 class CheckerResumeLockTests(SavedRunFixture):

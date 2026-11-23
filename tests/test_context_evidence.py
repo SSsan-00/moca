@@ -4,8 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from migration_harness.capsules import prepare_context
-from migration_harness.context_evidence import boundary_hints, find_feature, inspect_context, read_context
+from migration_harness.context.capsules import prepare_context
+from migration_harness.context.context_evidence import boundary_hints, find_feature, inspect_context, read_context
 
 
 class ContextEvidenceTests(unittest.TestCase):

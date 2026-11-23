@@ -4,9 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from migration_harness.target_evidence import (
-    diagnostic_references, read_target_reference, related_target_references, target_references,
-)
+from migration_harness.context.target_evidence import diagnostic_references, read_target_reference, related_target_references, target_references
 
 
 class TargetEvidenceTests(unittest.TestCase):

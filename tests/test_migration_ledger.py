@@ -5,8 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import run_records, workflow
-from migration_harness.diff_viewer import capture_workspace, save_workspace
+from migration_harness.runs import run_records
+from migration_harness import workflow
+from migration_harness.web.diff_viewer import capture_workspace, save_workspace
 
 
 class LedgerReviewTest(HarnessCase):

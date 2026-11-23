@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from migration_harness.dashboard import _save_settings
-from migration_harness.rule_workspace import RuleWorkspace
-from migration_harness.rule_chat import RuleChat
+from migration_harness.web.dashboard import _save_settings
+from migration_harness.rules.rule_workspace import RuleWorkspace
+from migration_harness.rules.rule_chat import RuleChat
 
 
 class RuleWorkspaceTests(unittest.TestCase):
@@ -144,7 +144,7 @@ end_line = 1
         from threading import Event
         from unittest.mock import Mock
 
-        from migration_harness import junie_cli
+        from migration_harness.junie import junie_cli
 
         chat = RuleChat.__new__(RuleChat)
         chat.response = []
@@ -164,8 +164,8 @@ end_line = 1
             return False
 
         chat.advance = receive_connection
-        with patch("migration_harness.rule_chat.monotonic", side_effect=[0, 40]), patch(
-            "migration_harness.rule_chat.sleep"
+        with patch("migration_harness.rules.rule_chat.monotonic", side_effect=[0, 40]), patch(
+            "migration_harness.rules.rule_chat.sleep"
         ):
             self.assertEqual(chat.wait(ready=True, cancelled=Event(), publish=lambda *_: None), "")
         self.assertEqual(chat.session_id, "slow-connection")
@@ -188,7 +188,7 @@ end_line = 1
             def shutdown(self):
                 pass
         draft = self.workspace.start()
-        with patch("migration_harness.rule_workspace.RuleChat", FakeChat):
+        with patch("migration_harness.rules.rule_workspace.RuleChat", FakeChat):
             self.send(draft, "message", text="文書なしで追加")
             worker = self.workspace.worker
             if worker:
@@ -234,8 +234,8 @@ for line in sys.stdin:
             process.terminate()
             return process.wait(timeout=5)
 
-        with patch("migration_harness.junie_cli._close_junie", side_effect=stop_fixture), patch(
-                "migration_harness.junie_cli._launch_process", side_effect=lambda *args, **kwargs: subprocess.Popen(
+        with patch("migration_harness.junie.junie_cli._close_junie", side_effect=stop_fixture), patch(
+                "migration_harness.junie.junie_cli._launch_process", side_effect=lambda *args, **kwargs: subprocess.Popen(
                     [sys.executable, "-u", "-c", mock], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL)):
             try:
@@ -294,9 +294,9 @@ for line in sys.stdin:
         print(json.dumps({'method':'session/update','params':{'sessionId':'same','update':{
             'sessionUpdate':'available_commands_update','availableCommands':[{'name':'harness-optimize-rules'}]}}}),flush=True)
 """
-        with patch("migration_harness.junie_cli._launch_process", side_effect=lambda *a, **k: subprocess.Popen(
+        with patch("migration_harness.junie.junie_cli._launch_process", side_effect=lambda *a, **k: subprocess.Popen(
             [sys.executable, "-u", "-c", mock], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )), patch("migration_harness.junie_cli._close_junie", side_effect=lambda process: (
+        )), patch("migration_harness.junie.junie_cli._close_junie", side_effect=lambda process: (
             process.terminate(), process.wait(timeout=3)
         )[-1]):
             chat = RuleChat(self.root, None, None)

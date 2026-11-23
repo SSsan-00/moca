@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase, SavedRunFixture
-from migration_harness import junie_cli, rule_materials, workflow
+from migration_harness.junie import junie_cli
+from migration_harness.rules import rule_materials
+from migration_harness import workflow
 
 
 class CheckerProvenanceTests(SavedRunFixture):
@@ -44,7 +46,7 @@ class CheckerProvenanceTests(SavedRunFixture):
             assets.write_bytes(b'{"libraries": {}}')
             return subprocess.CompletedProcess(command, 0)
 
-        with (patch("migration_harness.build_receipt.shutil.which", return_value=str(dotnet)),
+        with (patch("migration_harness.verification.build_receipt.shutil.which", return_value=str(dotnet)),
               patch.object(workflow, "run_process", side_effect=run) as executed,
               patch.object(junie_cli, "run_interactive", side_effect=AssertionError("Junie must not run")),
               redirect_stdout(io.StringIO())):

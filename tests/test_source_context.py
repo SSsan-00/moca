@@ -8,7 +8,7 @@ from itertools import count
 from pathlib import Path
 from unittest.mock import patch
 
-from migration_harness import source_context
+from migration_harness.context import source_context
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.files import sha256_file
 

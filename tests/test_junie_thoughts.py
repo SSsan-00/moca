@@ -9,8 +9,8 @@ from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from migration_harness.dashboard import Dashboard, render_dashboard_html
-from migration_harness.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
+from migration_harness.web.dashboard import Dashboard, render_dashboard_html
+from migration_harness.junie.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
 
 
 def trajectory(thought, *, agent_type="primary"):

@@ -7,10 +7,13 @@ from unittest.mock import patch
 import tomlkit
 
 from fixtures import HarnessCase
-from migration_harness import capsules, junie_cli, review_anchors, workflow
+from migration_harness.context import capsules
+from migration_harness.junie import junie_cli
+from migration_harness.web import review_anchors
+from migration_harness import workflow
 from migration_harness.config import load_config
-from migration_harness.diff_viewer import capture_workspace, review_html
-from migration_harness.settings_form import build_settings_draft
+from migration_harness.web.diff_viewer import capture_workspace, review_html
+from migration_harness.web.settings_form import build_settings_draft
 
 
 class ConfigFilePathTests(HarnessCase):

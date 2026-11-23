@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
-from migration_harness.editor_queue import editor_queue
-from migration_harness.recovery_status import recovery_status
+from migration_harness.runs.editor_queue import editor_queue
+from migration_harness.runs.recovery_status import recovery_status
 
 
 class SimulatedCrash(BaseException):

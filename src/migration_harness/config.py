@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from .junie_notifications import notification_settings
+from .junie.junie_notifications import notification_settings
 
 _INPUT_ENCODINGS = {"auto", "utf-8", "utf-8-sig", "euc-jp"}
 SCRIPT_PHASES = (

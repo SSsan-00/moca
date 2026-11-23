@@ -8,7 +8,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness import junie_cli, workflow
+from migration_harness.junie import junie_cli
+from migration_harness import workflow
 from fixtures import HarnessCase, SavedRunFixture
 
 
@@ -162,7 +163,7 @@ class PreparationScriptHandoffTests(HarnessCase):
                 config = self.config()
                 config.update(junie_apply_output_decisions=True, junie_review_script_output=True,
                               scripts={"before_prepare": [[sys.executable, "-c", "print('Check CalculateShipping')"]]})
-                with patch("migration_harness.checker_advisory.run_text_advisory",
+                with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                            return_value='{"verdict":"handoff","evidence_lines":[1],"symbol":"CalculateShipping"}'):
                     result = workflow.prepare_run(config, "sample")
                 run_path = Path(result["run_path"])
@@ -208,7 +209,7 @@ class CycleRecoveryTests(SavedRunFixture):
         path.write_text("old output from an earlier attempt\n", encoding="utf-8")
         record = self.record()
         with (
-            patch("migration_harness.checker_advisory.run_text_advisory",
+            patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"informational","evidence_lines":[1]}') as agent,
             self.assertRaises(workflow.RunScriptError),
         ):
@@ -230,14 +231,14 @@ class CycleRecoveryTests(SavedRunFixture):
         counter = self.run_path / "counter.txt"
         counter.write_text("", encoding="utf-8")
         with (
-            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
+            patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
             self.assertRaises(workflow.RunScriptError),
         ):
             workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
         saved = self.record()
         self.assertEqual(len(saved["script_command_progress"]["after_prepare"]), 1)
         self.assertEqual(saved["script_advisories"][-1]["status"], "interrupted")
-        with patch("migration_harness.checker_advisory.run_text_advisory") as agent:
+        with patch("migration_harness.verification.checker_advisory.run_text_advisory") as agent:
             workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
         agent.assert_not_called()
         self.assertEqual(counter.read_text(encoding="utf-8"), "x")
@@ -250,13 +251,13 @@ class CycleRecoveryTests(SavedRunFixture):
         counter = self.run_path / "counter.txt"
         counter.write_text("", encoding="utf-8")
         with (
-            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
+            patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
             self.assertRaises(workflow.RunScriptError),
         ):
             workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
         saved = self.record()
         self.assertEqual(saved["script_decisions_pending"]["after_prepare"]["command_number"], 1)
-        with patch("migration_harness.checker_advisory.run_text_advisory",
+        with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                    return_value='{"verdict":"passed","evidence_lines":[1]}') as agent:
             workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
         agent.assert_called_once()
@@ -291,7 +292,7 @@ class CycleRecoveryTests(SavedRunFixture):
             patch.object(workflow, "run_process", side_effect=process),
             patch.object(workflow, "_repair_target", side_effect=repair) as repair_call,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=responses),
+            patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=responses),
         ):
             result = workflow.resume_with_junie(self.config, self.run_id)
         self.assertEqual(result["status"], "checker_succeeded")
@@ -307,7 +308,7 @@ class CycleRecoveryTests(SavedRunFixture):
             "from pathlib import Path; p = Path('counter.txt'); p.write_text(p.read_text() + 'x'); print('Inspect CalculateShipping before migration')"]]}
         counter = self.run_path / "counter.txt"
         counter.write_text("", encoding="utf-8")
-        with patch("migration_harness.checker_advisory.run_text_advisory",
+        with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                    return_value='{"verdict":"handoff","evidence_lines":[1],"symbol":"CalculateShipping"}') as agent:
             for _ in range(2):
                 workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
@@ -349,7 +350,7 @@ class CycleRecoveryTests(SavedRunFixture):
             patch.object(workflow, "grounded_diagnostic",
                          return_value={"status": "grounded", "citations": [{"target":"Example.cs","source_id":"source"}]}),
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=responses),
+            patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=responses),
         ):
             result = workflow.resume_with_junie(self.config, self.run_id)
         self.assertEqual(result["status"], "checker_succeeded")

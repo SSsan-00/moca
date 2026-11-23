@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 
 MONACO = "0.57.0"
 ESBUILD = "0.27.0"
-DESTINATION = Path(__file__).resolve().parents[1] / "src" / "migration_harness" / "monaco"
+DESTINATION = Path(__file__).resolve().parents[1] / "src" / "migration_harness" / "web" / "monaco"
 
 
 def main() -> None:

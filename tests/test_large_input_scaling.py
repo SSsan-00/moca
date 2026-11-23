@@ -5,8 +5,9 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from migration_harness import capsules, workflow
-from migration_harness.php_boundaries import function_boundaries
+from migration_harness.context import capsules
+from migration_harness import workflow
+from migration_harness.context.php_boundaries import function_boundaries
 
 
 class LargeInputScalingTests(unittest.TestCase):

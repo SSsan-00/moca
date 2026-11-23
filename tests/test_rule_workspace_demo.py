@@ -10,5 +10,5 @@ class RuleWorkspaceDemoTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         subprocess.run([
             node_executable(self), str(root / "tests/rule_workspace_demo.cjs"),
-            str(root / "src/migration_harness/dashboard_rule_workspace_demo.js"),
+            str(root / "src/migration_harness/web/dashboard_rule_workspace_demo.js"),
         ], check=True, capture_output=True, text=True, timeout=10)

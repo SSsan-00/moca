@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fixtures import HarnessCase
 from migration_harness.config import load_config
-from migration_harness.settings_form import build_settings_draft
+from migration_harness.web.settings_form import build_settings_draft
 
 
 class DetailLogSettingsTests(HarnessCase):
@@ -51,7 +51,7 @@ class DetailLogSettingsTests(HarnessCase):
 
     def test_progress_style_only_changes_human_facing_prompt(self):
         from unittest.mock import patch
-        from migration_harness import junie_cli
+        from migration_harness.junie import junie_cli
 
         args = ["fixture-junie", "task"], self.path, "token", ()
         style = junie_cli.dashboard_progress_style("en", "custom", "Use a friendly tone.")
@@ -69,8 +69,8 @@ class DetailLogSettingsTests(HarnessCase):
         from io import BytesIO
         from subprocess import TimeoutExpired
         from unittest.mock import Mock, patch
-        from migration_harness import junie_cli
-        from migration_harness.junie_thoughts import FILENAME, read_junie_thoughts
+        from migration_harness.junie import junie_cli
+        from migration_harness.junie.junie_thoughts import FILENAME, read_junie_thoughts
 
         root = self.path.parent.resolve()
         for identifier, accept_result in (("default", None), ("structured", lambda _: None)):
@@ -101,8 +101,8 @@ class DetailLogSettingsTests(HarnessCase):
                 self.assertEqual([row["thought"] for row in rows], ["標準の回答"] if accept_result is None else [])
 
     def test_acp_visible_progress_is_recorded_without_thought_chunks(self):
-        from migration_harness.junie_cli import _AcpSession
-        from migration_harness.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
+        from migration_harness.junie.junie_cli import _AcpSession
+        from migration_harness.junie.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
 
         run_dir = self.path.parent / "fixture"
         run_dir.mkdir()

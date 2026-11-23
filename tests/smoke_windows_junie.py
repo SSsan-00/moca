@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness import junie_cli
+from migration_harness.junie import junie_cli
 
 
 def main() -> None:

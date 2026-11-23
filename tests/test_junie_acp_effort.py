@@ -3,8 +3,8 @@ from pathlib import Path
 from queue import Queue
 from unittest.mock import Mock, patch
 
-from migration_harness import junie_cli
-from migration_harness.rule_chat import RuleChat
+from migration_harness.junie import junie_cli
+from migration_harness.rules.rule_chat import RuleChat
 
 
 def make_session(kind, model="gpt-6-luna", effort="medium"):

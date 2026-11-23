@@ -6,9 +6,9 @@ from unittest import TestCase
 from unittest.mock import patch
 from uuid import UUID
 
-from migration_harness import run_manager
-from migration_harness.dashboard import Dashboard
-from migration_harness.run_manager import RunManager
+from migration_harness.runs import run_manager
+from migration_harness.web.dashboard import Dashboard
+from migration_harness.runs.run_manager import RunManager
 
 
 class WorkspaceListCacheTests(TestCase):

@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from migration_harness import junie_cli
+from migration_harness.junie import junie_cli
 from migration_harness.errors import format_error
 
 

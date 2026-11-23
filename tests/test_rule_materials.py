@@ -4,7 +4,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import junie_cli, rule_materials, source_context, workflow
+from migration_harness.junie import junie_cli
+from migration_harness.rules import rule_materials
+from migration_harness.context import source_context
+from migration_harness import workflow
 
 
 class RuleMaterialsTests(HarnessCase):
@@ -32,7 +35,7 @@ class RuleMaterialsTests(HarnessCase):
                                            evidence_inventory=inventory)
 
     def test_operator_rule_review_replaces_false_decision_and_checks_evidence_version(self):
-        from migration_harness.rule_review import review_rules
+        from migration_harness.rules.rule_review import review_rules
 
         (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
@@ -85,7 +88,7 @@ class RuleMaterialsTests(HarnessCase):
             review_rules(config, run_id)
 
     def test_insufficient_applicability_is_not_resolved_by_verification_alone(self):
-        from migration_harness.rule_review import review_rules
+        from migration_harness.rules.rule_review import review_rules
 
         (self.project / "source.php").write_text("<?php echo 1;", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
@@ -122,7 +125,7 @@ class RuleMaterialsTests(HarnessCase):
         self.assertEqual("human_review_needed", decided["rules"][0]["verification_state"])
 
     def test_human_verification_becomes_pending_when_reference_revision_changes(self):
-        from migration_harness.rule_review import review_rules
+        from migration_harness.rules.rule_review import review_rules
 
         (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
@@ -166,7 +169,7 @@ class RuleMaterialsTests(HarnessCase):
     def test_independent_checker_requires_fresh_evidence_even_on_same_version(self):
         import sys
 
-        from migration_harness.rule_review import review_rules
+        from migration_harness.rules.rule_review import review_rules
 
         (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")

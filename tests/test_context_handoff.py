@@ -9,8 +9,8 @@ from unittest.mock import patch
 from fixtures import HarnessCase
 from migration_harness import workflow
 
-from migration_harness.capsules import prepare_context
-from migration_harness.context_handoff import context_handoff, handoff_prompt, record_handoff
+from migration_harness.context.capsules import prepare_context
+from migration_harness.context.context_handoff import context_handoff, handoff_prompt, record_handoff
 
 
 class ContextHandoffTests(unittest.TestCase):
@@ -65,8 +65,8 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertIn("unreadable", handoff_prompt(self.run, self.root, self.targets, {}))
 
     def test_junie_memos_are_versioned_bounded_and_do_not_supersede_operator(self):
-        from migration_harness.context_handoff import junie_memo_request, save_junie_memo
-        from migration_harness.worktree_targets import target_hash
+        from migration_harness.context.context_handoff import junie_memo_request, save_junie_memo
+        from migration_harness.runs.worktree_targets import target_hash
 
         record = {"completed_capsules": 0, "target_hashes": {"Demo.cs": target_hash(self.target)}}
         draft, _ = junie_memo_request(self.root, "fixture")
@@ -100,9 +100,9 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertEqual(record["completed_capsules"], 0)
 
     def test_new_reference_revision_invalidates_notes_without_changing_php_or_target(self):
-        from migration_harness.context_handoff import junie_memo_request, save_junie_memo
-        from migration_harness.source_context import activate_target_context
-        from migration_harness.worktree_targets import target_hash
+        from migration_harness.context.context_handoff import junie_memo_request, save_junie_memo
+        from migration_harness.context.source_context import activate_target_context
+        from migration_harness.runs.worktree_targets import target_hash
 
         capsule = self.run / "capsule"
         previous = capsule / "target-context"
@@ -132,8 +132,8 @@ class ContextHandoffTests(unittest.TestCase):
         self.assertEqual("needs_review", saved["state"])
 
     def test_invalid_successor_does_not_hide_verified_unresolved_note(self):
-        from migration_harness.context_handoff import junie_memo_request, save_junie_memo
-        from migration_harness.worktree_targets import target_hash
+        from migration_harness.context.context_handoff import junie_memo_request, save_junie_memo
+        from migration_harness.runs.worktree_targets import target_hash
 
         record = {"target_hashes": {"Demo.cs": target_hash(self.target)}}
         draft, _ = junie_memo_request(self.root, "fixture")

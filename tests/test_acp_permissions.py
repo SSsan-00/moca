@@ -6,10 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from migration_harness import junie_cli, workflow
-from migration_harness.acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
+from migration_harness.junie import junie_cli
+from migration_harness import workflow
+from migration_harness.junie.acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
 from migration_harness.config import _execution_settings
-from migration_harness.dashboard import Dashboard
+from migration_harness.web.dashboard import Dashboard
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 
 

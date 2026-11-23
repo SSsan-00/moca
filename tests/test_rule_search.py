@@ -2,10 +2,11 @@ import json
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import capsules, rule_search
+from migration_harness.context import capsules
+from migration_harness.rules import rule_search
 from migration_harness.config import load_config
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
-from migration_harness.rule_materials import detail_index, selected_details
+from migration_harness.rules.rule_materials import detail_index, selected_details
 
 
 class RuleSearchTests(HarnessCase):

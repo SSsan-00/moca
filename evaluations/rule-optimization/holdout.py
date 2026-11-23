@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from migration_harness.config import load_config
-from migration_harness.rule_materials import render_guidelines, write_rule_files
+from migration_harness.rules.rule_materials import render_guidelines, write_rule_files
 
 
 REPO = Path(__file__).resolve().parents[2]

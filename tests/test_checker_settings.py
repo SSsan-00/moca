@@ -5,9 +5,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase
-from migration_harness import dashboard, workflow
+from migration_harness.web import dashboard
+from migration_harness import workflow
 from migration_harness.config import load_config
-from migration_harness.settings_form import build_settings_draft
+from migration_harness.web.settings_form import build_settings_draft
 
 
 class CheckerSettingsTests(HarnessCase):

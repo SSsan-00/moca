@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from migration_harness.script_handoff import make_script_handoff, script_handoff_context
+from migration_harness.verification.script_handoff import make_script_handoff, script_handoff_context
 
 
 class ScriptHandoffTests(unittest.TestCase):

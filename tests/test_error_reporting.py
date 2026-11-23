@@ -14,7 +14,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from migration_harness import cli, dashboard
+from migration_harness import cli
+from migration_harness.web import dashboard
 from migration_harness.errors import format_error, safe_command
 from migration_harness.workflow import RunInterrupted, RunScriptError
 

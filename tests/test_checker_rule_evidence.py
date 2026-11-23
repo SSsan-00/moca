@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness.checker_rule_evidence import MAX_RECEIPT_BYTES, checker_rule_context, parse_rule_receipt
+from migration_harness.verification.checker_rule_evidence import MAX_RECEIPT_BYTES, checker_rule_context, parse_rule_receipt
 
 
 class CheckerRuleEvidenceTests(unittest.TestCase):
@@ -63,8 +63,8 @@ class CheckerRuleEvidenceTests(unittest.TestCase):
             manifest = {"rule_files": [{"file": rule_path.name, "usage": "required",
                                         "sha256": hashlib.sha256(rule).hexdigest()}]}
             with (
-                patch("migration_harness.checker_rule_evidence.load_capsule_manifest", return_value=(capsule, manifest)),
-                patch("migration_harness.checker_rule_evidence.target_context_snapshot", return_value=reference),
+                patch("migration_harness.verification.checker_rule_evidence.load_capsule_manifest", return_value=(capsule, manifest)),
+                patch("migration_harness.verification.checker_rule_evidence.target_context_snapshot", return_value=reference),
             ):
                 before = checker_rule_context(root, worktree, {"target": target.name})
                 target.write_bytes(b"class Updated {}")

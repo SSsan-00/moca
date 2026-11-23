@@ -5,8 +5,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness import source_context, workflow
-from migration_harness.worktree_targets import target_hash
+from migration_harness.context import source_context
+from migration_harness import workflow
+from migration_harness.runs.worktree_targets import target_hash
 
 
 class ReferenceRefreshTests(unittest.TestCase):

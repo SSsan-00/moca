@@ -13,7 +13,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from migration_harness import execution, junie_cli
+from migration_harness import execution
+from migration_harness.junie import junie_cli
 
 
 def line(entry):

@@ -1,7 +1,7 @@
 from pathlib import Path
 import unittest
 
-from migration_harness.context_plan import navigation_plan
+from migration_harness.context.context_plan import navigation_plan
 
 
 class ContextPlanTests(unittest.TestCase):

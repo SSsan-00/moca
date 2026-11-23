@@ -18,10 +18,14 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import SavedRunFixture
-from migration_harness import build_receipt, cli, dashboard, junie_cli, run_records, workflow
-from migration_harness.editor_queue import add_prompt, editor_queue, record_operator_edit
+from migration_harness.verification import build_receipt
+from migration_harness import cli, workflow
+from migration_harness.web import dashboard
+from migration_harness.junie import junie_cli
+from migration_harness.runs import run_records
+from migration_harness.runs.editor_queue import add_prompt, editor_queue, record_operator_edit
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
-from migration_harness.settings_form import build_settings_draft
+from migration_harness.web.settings_form import build_settings_draft
 
 
 class JunieConnectionTests(unittest.TestCase):
@@ -650,7 +654,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 assets.write_bytes(b'{"libraries": {}}')
             return subprocess.CompletedProcess(command, 0)
 
-        with (patch("migration_harness.build_receipt.shutil.which", return_value=str(dotnet)),
+        with (patch("migration_harness.verification.build_receipt.shutil.which", return_value=str(dotnet)),
               patch.object(workflow, "run_process", side_effect=run),
               patch.object(junie_cli, "run_interactive") as junie, redirect_stdout(io.StringIO())):
             control = ExecutionControl(lambda _activity: None)
@@ -1300,7 +1304,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         with (
             patch.object(workflow, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory",
+            patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"informational","evidence_lines":[1]}') as agent,
         ):
             result = self.resume(self.build, ("fixture-checker", 2, log))
@@ -1325,7 +1329,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 self.subTest(code=code, message=message),
                 patch.object(workflow, "_repair_target") as repair,
                 patch.object(junie_cli, "require_interactive_cli"),
-                patch("migration_harness.checker_advisory.run_text_advisory",
+                patch("migration_harness.verification.checker_advisory.run_text_advisory",
                       return_value='{"verdict":"passed","evidence_lines":[1]}'),
             ):
                 result = self.resume(self.build, ("fixture-checker", code, message.encode()))
@@ -1340,7 +1344,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         with (
             patch.object(workflow, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory",
+            patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}'),
         ):
             result = self.resume(self.build, ("fixture-checker", 2, mixed), self.build, ("fixture-checker", 0, b""))
@@ -1358,7 +1362,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             patch.object(workflow, "grounded_diagnostic") as grounded,
             patch.object(workflow, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory",
+            patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}'),
         ):
             result = self.resume(self.build, ("fixture-checker", 2, log))
@@ -1377,7 +1381,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             patch.object(workflow, "grounded_diagnostic", return_value={"status": "grounded", "citations": [citation]}) as grounded,
             patch.object(workflow, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory",
+            patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}') as agent,
         ):
             result = self.resume(self.build, ("fixture-checker", 2, log), self.build, ("fixture-checker", 0, b""))
@@ -1395,7 +1399,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             patch.object(workflow, "grounded_diagnostic") as grounded,
             patch.object(workflow, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory",
+            patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}'),
         ):
             result = self.resume(self.build, ("fixture-checker", 2, log))
@@ -1408,7 +1412,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         with (
             patch.object(workflow, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory",
+            patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"informational","evidence_lines":[1]}'),
         ):
             result = self.resume(self.build, ("fixture-checker", 9, "特に気になる点はありません。".encode()))
@@ -1421,7 +1425,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         with (
             patch.object(workflow, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
-            patch("migration_harness.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
+            patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
             self.assertRaises(workflow.RunInterrupted),
         ):
             self.resume(self.build, ("fixture-checker", 1, b"an unknown result\n"))

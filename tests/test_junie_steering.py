@@ -10,9 +10,9 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
-from migration_harness import junie_cli
-from migration_harness.dashboard import Dashboard
-from migration_harness.editor_queue import LivePrompts, add_prompt, editor_queue
+from migration_harness.junie import junie_cli
+from migration_harness.web.dashboard import Dashboard
+from migration_harness.runs.editor_queue import LivePrompts, add_prompt, editor_queue
 from migration_harness.execution import OperationCancelled, control_scope
 
 
