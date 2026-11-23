@@ -113,7 +113,7 @@ class ContextHandoffTests(unittest.TestCase):
 
         for damaged in (None, {**current, "note": "tampered"}, {**current, "note": ""},
                         reidentified(source_sha256="0" * 64), reidentified(end_line=999),
-                        reidentified(reference_version="old")):
+                        reidentified(reference_version="old"), reidentified(note=" " * 501 + "nonblank")):
             with self.subTest(damaged=damaged):
                 path.write_text(json.dumps({"version": 1, "notes": [prior, damaged]}), encoding="utf-8")
                 prompt = handoff_prompt(self.run, self.root, self.targets, {}, through=1)

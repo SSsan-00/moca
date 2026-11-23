@@ -1487,6 +1487,10 @@
       <form method="dialog"><button class="review-close" type="submit" aria-label="移行台帳を閉じる">×</button></form>
     </header>
     <p><button class="review-action" id="open-rule-verification" type="button" disabled>ルールの反映を確認</button></p>
+    <form id="operator-note-scope">
+      <label>利用者メモの根拠範囲：カプセル <input id="operator-note-through" type="number" min="1" step="1" placeholder="全範囲"> まで</label>
+      <button type="submit">表示</button>
+    </form>
     <details id="unresolved-operator-notes" hidden>
       <summary>利用者の未解決メモ</summary>
       <p>現在の資料・移行先と版が一致する確認事項です。Junieへの本文の引き継ぎは最新3件までです。</p>
