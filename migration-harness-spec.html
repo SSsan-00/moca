@@ -126,7 +126,7 @@
       </button>
     </div>
     <h1>PHP → C# 移行ハーネス</h1>
-    <p class="lead">Windowsで動くPython製の移行ハーネスです。PHPを分割してJunieで移行し、ビルドと設定済みチェッカーで検証します。<a href="./progress-demo.html">進捗画面のデモ</a> · <a href="https://github.com/SSsan-00/php-to-csharp-migration-harness/blob/main/SPEC.md">技術仕様</a></p>
+    <p class="lead">WindowsでPHPをC#・Razor Pagesへ移行するローカルツールです。<a href="./progress-demo.html">サンプルで本番の画面を試す</a> · <a href="https://github.com/SSsan-00/php-to-csharp-migration-harness/blob/main/docs/windows-user-guide.md">Windowsで実行する</a> · <a href="https://github.com/SSsan-00/php-to-csharp-migration-harness/blob/main/SPEC.md">技術仕様</a></p>
   </header>
 
   <section>
@@ -140,10 +140,10 @@
       <article class="card">
         <h3>移行材料</h3>
         <ul>
-          <li>元のPHPと、コメントだけを追加した注釈版PHP</li>
-          <li>別ツールが生成した仮C#</li>
-          <li>共通の移行ルールと参考実装ペア</li>
-          <li>差分レビューに使うDiff ViewerワークスペースJSON</li>
+          <li>移行元のPHPと移行先の指定（Razorは .cshtml と .cshtml.cs の組）</li>
+          <li>必要に応じ、別ツールが生成した仮C#や注釈版PHP</li>
+          <li>任意の共通ルール・参考実装ペア</li>
+          <li>任意の差分ビューアーと、アンカーの参考にする既存JSON</li>
         </ul>
       </article>
       <article class="card">
@@ -176,9 +176,9 @@ flowchart TB
     B --> C[設定・入力ファイルを検証]
     C --> D[上限以内のカプセルに分割]
     D --> E[基準リビジョンからworktreeを作成]
-    E --> F{実行コマンド}
-    F -- prepare --> G[準備完了。worktree・カプセル・manifestを出力]
-    F -- run --> H[対象ファイルとカプセルをJunie用に配置]
+    E --> F{実行タブで選んだ操作}
+    F -- 準備のみ --> G[準備完了。worktree・カプセル・manifestを出力]
+    F -- 実行 --> H[対象ファイルとカプセルをJunie用に配置]
     H --> I[Junieで担当範囲を移行]
     I --> J[worktreeへ反映し実行記録を保存]
     J --> K{未処理カプセルがある?}
@@ -203,7 +203,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>参照範囲の制限</h3>
-      <p>Junie用フォルダの参照起点は、既定では移行先の親フォルダ、その隣のinc、incの一つ上にあるLibs・Extensionsです。初回収集で固定した参照資料は、同じRunの再開でも使います。移行先以外は参照専用です。JunieはOSで許可された他のパスにもアクセスできます。</p>
+      <p>Junie用フォルダの参照起点は、既定では移行先の親フォルダ、その隣のinc、incの一つ上にあるLibs・Extensionsです。通常の再開では作業ツリーの参考ファイルを照合します。変更があれば新版を固定し、既存の成果物を見直します。手修正と競合すれば自動で上書きしません。元PHPは準備時の版を維持し、区間の巻き戻し・ビルドのみ・チェッカーのみでは保存版の資料を使います。移行先以外は参照専用です。JunieはOSで許可された他のパスにもアクセスできます。</p>
     </div>
     <div class="callout">
       <h3>パスの指定</h3>
@@ -256,7 +256,7 @@ sequenceDiagram
       </article>
       <article class="card">
         <h3>公開デモとの違い</h3>
-        <p>公開デモでは5件ずつの模擬実行、停止・再開、編集・指示、モデルと推論の強さの設定を試せます。保存した指定は新しい模擬Runへ引き継ぎます。モデル候補は固定サンプルで、Junieやビルドは起動しません。設定はページ内だけに保持し、ブラウザーの再読み込みで初期値に戻ります。</p>
+        <p><a href="./progress-demo.html">公開デモ</a>では本番と同じ画面でサンプルのRunを選び、進捗・移行台帳・エディタを確認できます。操作結果はブラウザー内の模擬データにのみ反映します。実ファイルの読み書き、Junieとの通信、ビルド・チェッカー、Windows通知、ローカルの差分ビューアーとの連携は行いません。実際の移行結果や認証を確認するにはWindowsのローカル版を使います。</p>
       </article>
     </div>
   </section>
@@ -265,14 +265,14 @@ sequenceDiagram
     <h2>2. カプセルの分割と移行台帳</h2>
     <p>PHPの原文をRunに固定し、カプセルごとに移行範囲と参照範囲を記録します。同じ入力から分割したカプセルには、前後最大12行ずつを参照用に添えます。</p>
     <p>繰り返しや定数表は、Junieが元PHPから値と順序を抽出して移行先と照合します。チェッカーが差を検出した場合は、保存済みのカプセルを参照して修正します。</p>
-    <p>移行台帳ではRunごとにPHPの範囲、処理状態、移行先の候補、記録済みの判断と理由を閲覧できます。確認済みや理由付きの対象外はCLIの <code>ledger-review</code> で記録します。</p>
+    <p>移行台帳ではRunごとにPHPの範囲、処理状態、移行先の候補、記録済みの判断と理由を閲覧できます。「進捗」の移行台帳で対象範囲を確認し、確認済み・対象外などの判断を理由とともに記録します。</p>
     <div class="callout green">
       <h3>移行完了の判定</h3>
       <p>PHPの全範囲が確認済みか理由付きの対象外で、現在の入力でビルド、設定済みの検証スクリプトとチェッカーの条件を満たせば完了です。確認後に移行先が変わった範囲は要再確認として記録します。</p>
     </div>
     <div class="callout amber">
       <h3>分割と対応候補の範囲</h3>
-      <p>依存先の追加や、処理の意味に沿った分割は手動で行います。アンカー生成時に、処理済みのPHP範囲に対応する移行先の候補をRunに保存します。</p>
+      <p>PHPの名前付き関数やメソッドを認識でき、上限内に収まればその境界を保ちます。認識できない箇所や上限を超える箇所は行・文字範囲で分割します。業務の意味が正しく分かれたことを保証するものではありません。アンカー生成時に、処理済みのPHP範囲に対応する移行先の候補をRunに保存します。</p>
     </div>
   </section>
 
@@ -361,7 +361,7 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>チェッカーの偽陽性</h3>
-      <p>チェッカーだけを再開できる構成ではビルドの入力・成果物を照合し、その再開結果を台帳に表示するときも再照合します。対象が大きいと読み取りに時間がかかります。<a href="docs/windows-user-guide.md#再開方法を選ぶ">再開方法と保存条件</a>を参照してください。</p>
+      <p>チェッカーだけを再開できる構成ではビルドの入力・成果物を照合し、その再開結果を台帳に表示するときも再照合します。対象が大きいと読み取りに時間がかかります。<a href="https://github.com/SSsan-00/php-to-csharp-migration-harness/blob/main/docs/windows-user-guide.md#再開方法を選ぶ">再開方法と保存条件</a>を参照してください。</p>
       <p><code>review</code> で「問題なし」と判断した理由を記録できます。同じRunを再開して再検証し、承認済みの指摘だけが残れば完了します。解釈できないログは人が確認します。</p>
     </div>
   </section>
@@ -384,7 +384,7 @@ flowchart TB
       </article>
       <article class="step">
         <h3>Diff Viewerで人が確認する</h3>
-        <p>Diff Viewerが別タブで開き、アンカー付きJSONがダウンロードされます。対応行を確認し、必要に応じてアンカーを調整します。</p>
+        <p>Diff Viewerを別タブで開き、取得時点のスナップショットを確認します。JSONが必要な場合は進捗画面の「ワークスペースJSONを保存」からダウンロードします。対応行を確認し、必要に応じてアンカーを調整します。</p>
       </article>
     </div>
     <div class="callout amber">
