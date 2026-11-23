@@ -221,7 +221,7 @@ def operator_notes_from_receipt(run_path, targets, record, receipt_id, *, throug
 
 def handoff_prompt(
     run_path: Path, target_root: Path, targets: tuple[Path, ...], record: dict[str, Any], *,
-    through: int | None = None, draft=None, capture_operator_receipt: bool = False,
+    through: int | None = None, draft=None, operator_receipt: dict[str, Any] | None = None,
 ) -> str:
     junie = _junie_memo_prompt(run_path, target_root, targets, record, through)
     junie += stopped_memo_prompt(run_path, target_root, record, through, draft)
@@ -232,7 +232,7 @@ def handoff_prompt(
         version = _version(run_path, target_root, targets, record.get("detail_overrides", {}))
         pending = _pending_rows(_operator_handoff_rows(run_path, history, version, through))
         receipt_tip = ""
-        if len(pending) > _PROMPT_NOTES and capture_operator_receipt:
+        if len(pending) > _PROMPT_NOTES and operator_receipt is not None:
             hashes = version["target_hashes"]
             names = sorted(hashes)
             receipt = {
@@ -242,7 +242,7 @@ def handoff_prompt(
                 "target_layout_sha256": _content_hash(names), "target_digests": [hashes[name] for name in names],
             }
             receipt_id = _content_hash(receipt)
-            record["operator_handoff_receipt"] = {**receipt, "id": receipt_id}
+            operator_receipt.update(receipt, id=receipt_id)
             receipt_tip = f" and enter Junie launch memo reference ID {receipt_id} (起動時メモの参照ID)"
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         return "Saved context handoff is unreadable. Recheck the original source and existing records. " + junie

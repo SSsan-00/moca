@@ -63,6 +63,7 @@ class DashboardComparisonRoutesTests(HarnessCase):
                 self.assertIsNotNone(match)
                 receipt = match.group(1)
                 junie_cli.launch_input_observer.get()(prompt)
+                junie_cli.launch_accepted_observer.get()()
                 before = record_path.read_bytes()
                 with urlopen(dashboard_url + "migration-ledger?operator_through=1", timeout=3) as response:
                     current = json.load(response)

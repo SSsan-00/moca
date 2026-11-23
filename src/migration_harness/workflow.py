@@ -1242,10 +1242,16 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
     report_activity(summary)
 
 
-def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, inputs, *args, embedded_input=(), **kwargs):
+def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, inputs, *args,
+                        embedded_input=(), operator_receipt=None, **kwargs):
     """実行するたびに、確定した指示の容量を照合する。"""
     def observe(prompt):
         _record_junie_input(config, record_path, record, phase, prompt, guidelines, root, inputs, embedded_input)
+
+    def publish_operator_receipt():
+        if record.get("operator_handoff_receipt") != operator_receipt:
+            record["operator_handoff_receipt"] = operator_receipt
+            write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
     def observe_steering(instruction):
         """ACPで送る追加指示の容量を計測し、送信前に制限を適用する。"""
@@ -1290,11 +1296,13 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
     permission_token = junie_cli.permission_observer.set(observe_permission if dashboard else None)
     reference_token = junie_cli.reference_read_scope.set(reads)
     token = junie_cli.launch_input_observer.set(observe)
+    accepted_token = junie_cli.launch_accepted_observer.set(publish_operator_receipt if operator_receipt else None)
     steering_token = junie_cli.steering_input_observer.set(observe_steering)
     try:
         return junie_cli.run_interactive(*args, **kwargs)
     finally:
         junie_cli.steering_input_observer.reset(steering_token)
+        junie_cli.launch_accepted_observer.reset(accepted_token)
         junie_cli.launch_input_observer.reset(token)
         junie_cli.reference_read_scope.reset(reference_token)
         junie_cli.permission_observer.reset(permission_token)
@@ -1403,8 +1411,10 @@ def _run_editor_followup(
         "Do not access files outside this workspace or run builds, tests, or checkers. "
         f"When finished, write exactly {token} to {completion.name} as the final file action."
     )
-    prompt = context + handoff_prompt(record_path.parent, agent_root, targets, record,
-                           draft=record.get("stopped_migration_draft"), capture_operator_receipt=True) + memo_request + prompt
+    operator_receipt = {}
+    handoff = handoff_prompt(record_path.parent, agent_root, targets, record,
+                             draft=record.get("stopped_migration_draft"), operator_receipt=operator_receipt)
+    prompt = context + handoff + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
                                       guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -1416,6 +1426,7 @@ def _run_editor_followup(
             config, record_path, record, "editor_followup", guidelines, agent_root, inputs,
             command, completion, token, tuple(safe_target(agent_root, target) for target in targets),
             worktree=worktree, targets=targets, allowed=allowed, other_files=other_files, resumed_draft=prior, memo=memo,
+            operator_receipt=operator_receipt,
             report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
             prompts=LivePrompts(record_path.parent),
         )
@@ -1734,8 +1745,10 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         scripted_handoff = script_handoff_context(
             run_path, record, config.get("scripts", {}), _script_decision_versions(worktree_root, record),
         )
-    prompt = context + plan_hint + scripted_handoff + handoff_prompt(run_path, agent_root, relative_targets, record, through=index,
-                       draft=record.get("stopped_migration_draft"), capture_operator_receipt=True) + memo_request + prompt
+    operator_receipt = {}
+    handoff = handoff_prompt(run_path, agent_root, relative_targets, record, through=index,
+                             draft=draft, operator_receipt=operator_receipt)
+    prompt = context + plan_hint + scripted_handoff + handoff + memo_request + prompt
     other_files = _unlisted_workspace_files(agent_root, allowed, verified_sources)
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
@@ -1746,7 +1759,8 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
                 config, record_path, record, "migration", guidelines, agent_root, inputs,
                 command, completion_path, completion_token, agent_targets,
                 worktree=worktree_root, targets=relative_targets, allowed=allowed, other_files=other_files,
-                memo=memo, through=index, report_usage=junie_usage_recorder(run_path, "migration", index),
+                memo=memo, through=index, operator_receipt=operator_receipt,
+                report_usage=junie_usage_recorder(run_path, "migration", index),
                 prompts=LivePrompts(run_path),
             )
         except KeyboardInterrupt as exc:
@@ -2659,8 +2673,10 @@ def _repair_target(
             + ". "
         )
     record["last_context_plan"] = plan
-    prompt = context + plan_hint + handoff_prompt(run_path, agent_root, targets, record,
-                       draft=stopped_draft if resume_draft else None, capture_operator_receipt=True) + memo_request + prompt
+    operator_receipt = {}
+    handoff = handoff_prompt(run_path, agent_root, targets, record, draft=stopped_draft if resume_draft else None,
+                             operator_receipt=operator_receipt)
+    prompt = context + plan_hint + handoff + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       model=record.get("junie_model", config.get("junie_model")),
                                       effort=record.get("junie_effort"))
@@ -2673,7 +2689,7 @@ def _repair_target(
         exit_code = _run_budgeted_junie(
             config, run_path / "run.json", record, phase, guidelines, agent_root, inputs,
             command, completion_path, token, agent_targets,
-            report_usage=junie_usage_recorder(run_path, phase),
+            operator_receipt=operator_receipt, report_usage=junie_usage_recorder(run_path, phase),
             prompts=LivePrompts(run_path, interrupt_for_edits=True),
         )
     except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError) as exc:

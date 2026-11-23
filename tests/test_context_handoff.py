@@ -143,8 +143,10 @@ class ContextHandoffTests(unittest.TestCase):
 
         record = {"run_id": "test", "detail_overrides": {}}
         notes = [self.add(f"First target note {i}") for i in range(4)]
-        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1, capture_operator_receipt=True)
-        saved_receipt = record["operator_handoff_receipt"]
+        saved_receipt = {}
+        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1, operator_receipt=saved_receipt)
+        self.assertNotIn("operator_handoff_receipt", record)
+        record["operator_handoff_receipt"] = saved_receipt
         receipt = saved_receipt["id"]
         raw = json.dumps(saved_receipt)
         for text in ("Demo.cs", "demo.php", "php-0001", "First target note"):

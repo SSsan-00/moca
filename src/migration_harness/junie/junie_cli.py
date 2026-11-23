@@ -680,6 +680,7 @@ def _task_command(command: list[str]) -> list[str]:
 
 
 launch_input_observer: ContextVar[Callable[[str], None] | None] = ContextVar("launch_input_observer", default=None)
+launch_accepted_observer: ContextVar[Callable[[], None] | None] = ContextVar("launch_accepted_observer", default=None)
 steering_input_observer: ContextVar[Callable[[str], bool] | None] = ContextVar("steering_input_observer", default=None)
 session_closed_observer: ContextVar[Callable[[], None] | None] = ContextVar("session_closed_observer", default=None)
 acp_stop_observer: ContextVar[Callable[[str | None], None] | None] = ContextVar("acp_stop_observer", default=None)
@@ -875,9 +876,9 @@ class _AcpSession:
             except OSError:
                 pass
 
-    def request(self, request_id: int, method: str, **params: Any) -> None:
-        """応答を待つACPリクエストを送信する。"""
-        self.send(id=request_id, method=method, params=params)
+    def request(self, request_id: int, method: str, *, after_flush: Callable[[], None] | None = None,
+                **params: Any) -> None:
+        self.send(id=request_id, method=method, params=params, after_flush=after_flush)
 
     def steer(self) -> None:
         if (self.prompts is None or not self.steering_supported or self.session_id is None
@@ -1113,8 +1114,10 @@ class _AcpSession:
         self._on_session_ready()
 
     def _on_session_ready(self) -> None:
+        accepted = launch_accepted_observer.get()
         self.request(3, "session/prompt", sessionId=self.session_id,
-                     prompt=[{"type": "text", "text": self.command[-1]}])
+                     prompt=[{"type": "text", "text": self.command[-1]}],
+                     **({"after_flush": accepted} if accepted is not None else {}))
 
     def _advance_prompt(self, request_id, message) -> bool:
         # 要求IDは1=初期化、2=セッション作成、3=プロンプト実行。応答を待って次へ進む。
@@ -1359,6 +1362,8 @@ def _run_session(
             acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request,
                               completion_path, token, prompts)
             acp.initialize()
+        elif accepted := launch_accepted_observer.get():
+            accepted()
         if thought_path is not None:
             thoughts = JunieThoughts(process.stderr, events.logs, events.existing_logs, thought_path, token)
             if acp is not None and accept_result is None:
