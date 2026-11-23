@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from migration_harness.verification import checker_advisory as advisory
 from migration_harness.junie import junie_cli
+from migration_harness import workflow
 
 
 FAKE_ACP = r"""
@@ -18,6 +19,8 @@ import json, sys, time
 from pathlib import Path
 def receive(method, expected):
     msg = json.loads(sys.stdin.readline())
+    if len(sys.argv) > 2 and msg.get('method') == 'session/prompt':
+        Path(sys.argv[2]).touch()
     assert msg['method'] == method and msg['id'] == expected
     return msg['params']
 def send(**message):
@@ -70,6 +73,52 @@ else:
 
 
 class CheckerAdvisoryTests(unittest.TestCase):
+    def test_old_run_uses_only_saved_effort_for_free_output_advisory(self):
+        with TemporaryDirectory() as folder:
+            run = Path(folder)
+            (run / "checker.log").write_text("One diagnostic.\n", encoding="utf-8")
+            config = {"junie_model": "current-model", "checker_review_free_output": True}
+            for current, saved, model, effort in (
+                ("high", {"junie_model": "saved-model"}, "saved-model", None),
+                ("low", {"junie_model": "saved-model"}, "saved-model", None),
+                ("low", {}, "current-model", None),
+                ("high", {"junie_effort": None}, "current-model", None),
+                ("low", {"junie_effort": "high"}, "current-model", "high"),
+            ):
+                with self.subTest(current=current, saved=saved):
+                    config["junie_effort"] = current
+                    commands = []
+                    prompt_received = run / "prompt-received"
+                    prompt_received.unlink(missing_ok=True)
+
+                    def launch(command, *, owned, cwd, **streams):
+                        commands.append(command[3:-1])
+                        return junie_cli.JunieProcess(
+                            [sys.executable, "-c", FAKE_ACP, "effort-missing", str(prompt_received)], cwd=cwd, **streams,
+                        )
+
+                    with patch.object(junie_cli, "_launch_process", side_effect=launch):
+                        checked = workflow._review_free_checker_output(
+                            config, {"run_path": str(run)}, {"checker_exit_code": 0, **saved},
+                        )["checker_advisory"]
+                    self.assertEqual(commands, [["--model", model] + (["--effort", effort] if effort else [])])
+                    self.assertEqual(effort is None, prompt_received.exists())
+                    if effort:
+                        self.assertEqual(("unavailable", "AdvisoryEffortUnavailable"),
+                                         (checked["status"], checked["reason"]))
+                    else:
+                        self.assertEqual(("reported", "informational"), (checked["status"], checked["verdict"]))
+
+    def test_before_prepare_advisory_keeps_configured_effort(self):
+        with TemporaryDirectory() as folder:
+            run = Path(folder)
+            config = {"junie_model": "current-model", "junie_effort": "high"}
+            item = {"phase": "before_prepare", "command_number": 1, "exit_code": 0,
+                    "log": "before_prepare.log", "byte_offset": 0, "byte_length": 8}
+            with patch.object(workflow, "output_advisory", return_value={"status": "reported"}) as review:
+                workflow._review_script_output(config, run, {}, item, apply_decisions=False)
+            self.assertEqual({"model": "current-model", "effort": "high"}, review.call_args.kwargs["model_options"])
+
     def test_reply_is_exact_schema_with_real_ordered_unique_lines(self):
         reply = '{"verdict":"problem","evidence_lines":[1,2]}'
         self.assertEqual(advisory.parse_advisory(reply, 2)["evidence_lines"], [1, 2])

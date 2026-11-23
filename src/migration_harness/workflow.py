@@ -452,11 +452,12 @@ def _run_script_phase(
 
 
 def _advisory_model_options(config, record):
-    model = record.get("junie_model", config.get("junie_model"))
+    settings = config if record is None else record
+    model = settings.get("junie_model", config.get("junie_model"))
     if not model:
         return {}
     options = {"model": model}
-    effort = record.get("junie_effort", config.get("junie_effort"))
+    effort = settings.get("junie_effort")
     if effort:
         options["effort"] = effort
     return options
@@ -502,7 +503,7 @@ def _review_script_output(config, run_path, record, item, *, apply_decisions):
             run_path, item["log"], item["exit_code"], phase=phase, byte_offset=item["byte_offset"],
             byte_length=item["byte_length"], expected_hash=item.get("log_sha256"), allow_pass=apply_decisions,
             allow_handoff=apply_decisions and item["exit_code"] == 0 and phase in _HANDOFF_PHASES,
-            model_options=_advisory_model_options(config, record),
+            model_options=_advisory_model_options(config, None if phase == "before_prepare" else record),
         )
         check_cancelled()
         item.update(advisory)
