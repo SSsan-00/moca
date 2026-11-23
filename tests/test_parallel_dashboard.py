@@ -437,6 +437,90 @@ class ParallelDashboardTests(HarnessCase):
         self.assertTrue(self.started[5].wait(5))
         self.assertEqual(len(restored.workers), 1)
 
+    def test_direct_open_shares_restored_run_progress_and_stop(self):
+        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        self.wait_until(lambda: not self.manager.busy)
+        self.manager.limit = 0
+        self.manager.submit({"action": "resume-run", "run_id": run_id})
+        operation_id = self.manager.jobs[run_id]["operation_id"]
+        self.manager.close()
+
+        opened, finished = Event(), Event()
+        terminal = io.StringIO()
+        original_server = dashboard.Dashboard.server
+        saved_view = None
+
+        def open_server(view, *args):
+            nonlocal saved_view
+            saved_view = view
+            next_action = view.actions.get
+
+            def action_or_shutdown(*, timeout):
+                if finished.is_set():
+                    raise KeyboardInterrupt
+                return next_action(timeout=timeout)
+
+            view.actions.get = action_or_shutdown
+            with redirect_stdout(terminal):
+                server = original_server(view, *args)
+            opened.set()
+            return server
+
+        def read_state(stream, matches):
+            revision = None
+            for line in iter(stream.readline, b""):
+                if line.startswith(b"id: "):
+                    revision = int(line[4:])
+                elif line.startswith(b"data: "):
+                    state = json.loads(line[6:])
+                    if matches(state):
+                        self.assertEqual(state["run_id"], run_id)
+                        return revision, state
+            self.fail("Event stream closed before the expected Run state")
+
+        with ThreadPoolExecutor(max_workers=1) as pool, patch.object(dashboard.Dashboard, "server", open_server):
+            future = pool.submit(dashboard.run_dashboard, self.settings, run_id=run_id)
+            try:
+                self.assertTrue(opened.wait(15))
+                self.assertTrue(self.started[0].wait(15))
+                url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+                origin = urlsplit(url)
+                headers = {"Content-Type": "application/json", "Origin": f"{origin.scheme}://{origin.netloc}"}
+
+                def control(action, revision, **data):
+                    body = json.dumps({"action": action, "revision": revision, **data}).encode()
+                    with urlopen(Request(url + "control", body, headers), timeout=8) as response:
+                        self.assertEqual(response.status, 202)
+
+                with (urlopen(url + "events", timeout=8) as default,
+                      urlopen(url + f"events?run_id={run_id}", timeout=8) as selected):
+                    editing = lambda state: state.get("latest_activity", {}).get("message") == "unit-0 is editing"
+                    _, explicit = read_state(selected, editing)
+                    self.assertTrue(explicit["cancellable"])
+                    try:
+                        revision, initial = read_state(default, editing)
+                    except TimeoutError:
+                        self.fail("The default URL did not publish the restored Run's progress")
+                    self.assertEqual(initial, explicit)
+                    self.assertFalse(initial.get("ready"))
+                    self.assertEqual(initial["operation_id"], operation_id)
+                    control("stop", revision, operation_id=operation_id)
+
+                    stopped = lambda state: state.get("ready") and "停止しました" in state.get("message", "")
+                    revision, stopped_default = read_state(default, stopped)
+                    _, stopped_selected = read_state(selected, stopped)
+                    self.assertEqual(stopped_default, stopped_selected)
+                    self.assertFalse(stopped_default["cancellable"])
+                    self.wait_until(lambda: not saved_view.manager.busy)
+
+                    self.release[0].set()
+                    control("resume-run", revision, run_id=run_id)
+                    completed = lambda state: state.get("ready") and state["status"] == "build_succeeded"
+                    self.assertEqual(read_state(default, completed), read_state(selected, completed))
+            finally:
+                finished.set()
+                future.result(timeout=20)
+
     def test_failed_start_save_leaves_job_waiting_across_shutdown(self):
         self.manager.limit = 0
         run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]

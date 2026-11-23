@@ -84,7 +84,12 @@ class RunManager:
                 if owner is not old_owner and owner:
                     owner.__exit__(None, None, None)
                 raise
-            if self.scope is not None:
+            if self.scope is None:
+                run_id = self.default.state.get("run_id")
+                if run_id in views and views[run_id] is not self.default:
+                    self.default.publish(views[run_id].state)
+                    views[run_id] = self.default
+            else:
                 for view in [self.default, *self.views.values()]:
                     view.publish({"status": "idle", "ready": True})
                 self.results.clear()
