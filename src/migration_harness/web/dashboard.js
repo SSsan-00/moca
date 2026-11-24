@@ -996,17 +996,12 @@ let openResumeStage;
 function bindResumeStage() {
   const resumeDialog = document.querySelector("#resume-stage-dialog");
   const resumeStage = document.querySelector("#resume-stage");
-  const resumeHint = document.querySelector("#resume-stage-hint");
   const resumeSummary = document.querySelector("#resume-stage-summary");
   const resumePreview = document.querySelector("#resume-stage-preview");
   const resumeStart = document.querySelector("#resume-stage-start");
   const resumeBraveOption = document.querySelector("#resume-junie-brave-option");
   const resumeBrave = document.querySelector("#resume-junie-brave");
   let resumeRunID, resumePlan, resumeGeneration = 0;
-  const stageHints = {
-    migration: "保存済みの続きから最後まで進めます。完了済みの区間はやり直しません。",
-    checker: "現在の保存版に対応するビルド成果物で、チェッカーだけを実行します。",
-  };
 
   function resetResumeBrave() {
     resumeBraveOption.hidden = staticDemo || resumeStage.value !== "migration";
@@ -1022,7 +1017,6 @@ function bindResumeStage() {
     resumeStart.disabled = true;
     resumePreview.disabled = false;
     resumeSummary.textContent = "";
-    resumeHint.textContent = stageHints[resumeStage.value];
   }
   resumeStage.addEventListener("change", clearResumePlan);
   resumeDialog.addEventListener("close", clearResumePlan);
@@ -1039,6 +1033,7 @@ function bindResumeStage() {
       resumeSummary.textContent = [
         `保存版 ${plan.version.slice(0, 12)}`,
         plan.capsule_range ? `区間 ${plan.capsule_range.join("〜")}` : "",
+        plan.stages?.length ? "実行工程: " + plan.stages.map(stage => labels[stage]).join(" → ") : "",
         plan.repair ? "検証時に自動修正あり" : "自動修正なし",
         `無効になる記録  ${plan.invalidates.map(item => labels[item]).join("、")}`,
         ...Object.entries(plan.targets || {}).map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}`),

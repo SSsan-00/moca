@@ -44,7 +44,8 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
     let active = runs.filter(run => !run.ready && !run.queued).length;
     while (active < limit && pending.length) {
       const run = pending.shift();
-      Object.assign(run, {queued: false, status: "preparing", worktree_path: `demo/${run.run_id}`});
+      Object.assign(run, {queued: false, status: run.queuedStatus || "preparing", worktree_path: `demo/${run.run_id}`});
+      delete run.queuedStatus;
       active++;
     }
     publish();
@@ -89,7 +90,10 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
         } else if (action === "resume-run") {
           if (!run.ready || !run.worktree_path) throw new Error("このRunは再開できません。実行一覧を確認してください。");
           if (runs.some(item => item !== run && item.unit_id === run.unit_id && !item.ready)) throw new Error("この移行単位は別のRunで実行中または待機中です。");
-          Object.assign(run, {prepareOnly: false, tick: Math.min(run.tick, 20)});
+          const stage = data.start_stage;
+          const tick = stage === "build-through" ? 20 : stage === "checker" ? 25 : Math.min(run.tick, 20);
+          const queuedStatus = {migration: "junie_running", "build-through": "building", checker: "checking"}[stage];
+          Object.assign(run, {prepareOnly: false, tick, queuedStatus});
           enqueue(run);
         }
       }

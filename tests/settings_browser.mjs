@@ -955,10 +955,26 @@ try {
   await click("tab-runs");
   await wait(runAction(designRun, "resume-stage") + "?.matches(':enabled')");
   const placements = [];
-  for (const [width, height] of [[360, 540], [580, 620], [780, 640], [1280, 650]]) {
+  const actionMetrics = id => evaluate("(" + function (run) {
+    const row = document.querySelector('tr[data-run-id="' + run + '"]');
+    return [...(row?.querySelectorAll(".run-actions button") ?? [])].map(button => ({
+      label: button.textContent, width: button.getBoundingClientRect().width,
+      fits: button.scrollWidth <= button.clientWidth + 1,
+    }));
+  }.toString() + ")(" + JSON.stringify(id) + ")");
+  function verifyWidths(buttons, width, expected) {
+    assert(buttons.length > 1 && buttons.every(button => button.fits && button.width > 0), "labels fit at " + width);
+    const fixed = expected ?? buttons[0].width;
+    assert(buttons.every(button => Math.abs(button.width - fixed) <= 1), "action widths at " + width + ": " + JSON.stringify(buttons));
+    return fixed;
+  }
+  async function viewport(width, height) {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: false});
     await wait("innerWidth === " + width);
     await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  }
+  for (const [width, height] of [[320, 540], [360, 540], [580, 620], [780, 640], [1280, 650]]) {
+    await viewport(width, height);
     const layout = await evaluate("(" + function (run) {
       const row = document.querySelector('tr[data-run-id="' + run + '"]');
       const actions = row.querySelector(".run-actions");
@@ -990,42 +1006,57 @@ try {
         gridAreas: getComputedStyle(actions).gridTemplateAreas,
       };
     }.toString() + ")(" + JSON.stringify(designRun) + ")");
-    placements.push({width, layout});
+    const buttons = (await Promise.all([designRun, "demo-search", "demo-partners"].map(actionMetrics))).flat();
+    for (const label of ["進捗", "進捗で確認", "エディタ", "再開", "再検証", "再開方法…", "削除"]) {
+      assert(buttons.some(button => button.label === label), "fixture includes " + label);
+    }
+    placements.push({width, layout, buttonWidth: verifyWidths(buttons, width)});
+
   }
   await evaluate("(" + function () {
     const transport = window.harnessDemoTransport;
     const previous = transport.fetch;
     const requests = window.resumeDesignRequests = [];
-    transport.fetch = (resource, options) => {
+    transport.fetch = async (resource, options) => {
       const url = new URL(resource, location.href);
       const data = options?.body && JSON.parse(options.body);
+      const response = await previous(resource, options);
       if (url.pathname.endsWith("/resume-plan")) {
         const query = Object.fromEntries(url.searchParams);
+        if (response.ok) query.version = (await response.clone().json()).version;
         requests.push({kind: "plan", data: query});
-        const migration = query.start_stage === "migration";
-        return Promise.resolve(Response.json({version: "saved-" + query.start_stage,
-          capsule_range: migration ? [3, 5] : null, repair: migration, invalidates: ["checker"],
-          targets: {"Nested/path/with_a_long_name/Page.cshtml.cs": "a".repeat(64)}}));
       }
-      if (resource === "control" && data?.action === "resume-run") {
-        requests.push({kind: "start", data});
-        return Promise.resolve(Response.json({run_id: data.run_id}, {status: 202}));
-      }
-      return previous(resource, options);
+      if (resource === "control" && data?.action === "resume-run") requests.push({kind: "start", data});
+      return response;
     };
     window.restoreResumeDesignTransport = () => { transport.fetch = previous; };
   }.toString() + ")()");
-  await cdp("Emulation.setDeviceMetricsOverride", {width: 360, height: 440, deviceScaleFactor: 1, mobile: false});
-  const openResume = runAction(designRun, "resume-stage");
-  await evaluate(openResume + ".click()");
-  const dialog = field("resume-stage-dialog");
-  await wait(dialog + ".open");
-  assert.deepEqual(await evaluate("Array.from(" + field("resume-stage") + ".options, option => option.value)"), ["migration", "checker"]);
-  assert.equal(await evaluate(dialog + ".querySelectorAll('input[type=number], #resume-rewind, #resume-through').length"), 0);
-  assert.match(await evaluate(field("resume-stage-hint") + ".textContent"), /保存済みの続きから最後まで/);
-  assert.equal(await evaluate(field("resume-stage-start") + ".disabled"), true);
-  await click("resume-stage-preview");
-  await wait(field("resume-stage-start") + "?.matches(':enabled')");
+  const dialog = field("resume-stage-dialog"), startButton = field("resume-stage-start");
+  async function choosePlan(run, stage) {
+    await evaluate(runAction(run, "resume-stage") + ".click()");
+    await wait(dialog + ".open");
+    if (stage !== "migration") await change("resume-stage", stage);
+    assert(await evaluate(startButton + ".disabled"), "start requires a confirmed plan");
+    await click("resume-stage-preview");
+    await wait(startButton + "?.matches(':enabled')");
+  }
+  const demoRunStatus = run => "harnessDemoTransport.fetch('workspace').then(r => r.json()).then(d => d.runs.find(x => x.run_id === "
+    + JSON.stringify(run) + ")?.status)";
+  async function stopDemoStage(run) {
+    const body = JSON.stringify({action: "stop", run_id: run});
+    assert.equal(await evaluate("harnessDemoTransport.fetch('control', {method:'POST', body:" + JSON.stringify(body)
+      + "}).then(r => r.ok)"), true);
+    await wait("(" + demoRunStatus(run) + ").then(status => status === 'interrupted')");
+  }
+  const stoppedRange = await evaluate("harnessDemoTransport.fetch('workspace').then(r => r.json()).then(d => {"
+    + "const run = d.runs.find(x => x.run_id === " + JSON.stringify(designRun) + ");"
+    + "return (run.completed_capsules + 1) + '〜' + run.context_capsules;})");
+  await viewport(360, 440);
+  await choosePlan(designRun, "migration");
+  assert.deepEqual(await evaluate("Array.from(" + field("resume-stage") + ".options, option => [option.value,option.textContent])"),
+    [["migration", "移行から"], ["build-through", "ビルドから"], ["checker", "チェッカーから"]]);
+  assert.equal(await evaluate(dialog + ".querySelectorAll('input[type=number], #resume-rewind, #resume-through, #resume-stage-hint').length"), 0);
+  assert(!await evaluate(dialog + ".textContent.includes('保存済みの続きから')"), "static migration hint is not displayed");
   await wait("!" + dialog + ".getAnimations().some(a => a.playState === 'running')");
   assert(await evaluate("(" + function () {
     const modal = document.getElementById("resume-stage-dialog");
@@ -1036,36 +1067,58 @@ try {
         return rect.left >= bounds.left && rect.right <= bounds.right;
       });
   }.toString() + ")()"), "resume dialog has no horizontal clipping at 360 px");
-  assert.match(await evaluate(field("resume-stage-summary") + ".textContent"), /3〜5/);
+  assert((await evaluate(field("resume-stage-summary") + ".textContent")).includes(stoppedRange));
   await click("resume-stage-start");
   await wait("!" + dialog + ".open");
-  await evaluate(openResume + ".click()");
-  await wait(dialog + ".open");
-  await click("resume-stage-preview");
-  await wait(field("resume-stage-start") + "?.matches(':enabled')");
+  await wait("(" + demoRunStatus(designRun) + ").then(status => status === 'junie_running')");
+  await stopDemoStage(designRun);
+
+  const buildRun = "demo-partners";
+  await choosePlan(buildRun, "build-through");
+  assert.match(await evaluate(field("resume-stage-summary") + ".textContent"), /ビルド → チェッカー/);
+  await click("resume-stage-start");
+  await wait("!" + dialog + ".open");
+  await wait("(" + demoRunStatus(buildRun) + ").then(status => status === 'building')");
+  await wait(runAction(buildRun, "stop") + " != null");
+  for (const width of [320, 1280]) {
+    await viewport(width, width === 320 ? 540 : 650);
+    const changed = await actionMetrics(buildRun);
+    assert(changed.some(button => button.label === "停止") && !changed.some(button => button.label === "再検証"));
+    verifyWidths(changed, width, placements.find(place => place.width === width).buttonWidth);
+  }
+  await stopDemoStage(buildRun);
+
+  const checkerRun = "demo-search";
+  await choosePlan(checkerRun, "build-through");
   await change("resume-stage", "checker");
-  assert.equal(await evaluate(field("resume-stage-start") + ".disabled"), true);
-  assert.match(await evaluate(field("resume-stage-hint") + ".textContent"), /チェッカーだけ/);
+  assert.equal(await evaluate(startButton + ".disabled"), true);
   await click("resume-stage-preview");
-  await wait(field("resume-stage-start") + "?.matches(':enabled')");
+  await wait(startButton + "?.matches(':enabled')");
   await click("resume-stage-start");
   await wait("!" + dialog + ".open");
-  const resumeRequests = await evaluate("resumeDesignRequests.map(({kind, data}) => [kind, data.run_id, data.start_stage, data.plan_version ?? null, 'through_capsule' in data, 'rewind_to' in data])");
-  assert.deepEqual(resumeRequests, [
-    ["plan", designRun, "migration", null, false, false], ["start", designRun, "migration", "saved-migration", false, false],
-    ["plan", designRun, "migration", null, false, false], ["plan", designRun, "checker", null, false, false],
-    ["start", designRun, "checker", "saved-checker", false, false],
+  await wait("(" + demoRunStatus(checkerRun) + ").then(status => status === 'checking')");
+  await stopDemoStage(checkerRun);
+  const resumeRequests = await evaluate("resumeDesignRequests.map(({kind, data}) => [kind, data.run_id, data.start_stage, data.version ?? data.plan_version, 'through_capsule' in data, 'rewind_to' in data])");
+  assert.deepEqual(resumeRequests.map(([kind, run, stage, , through, rewind]) => [kind, run, stage, through, rewind]), [
+    ["plan", designRun, "migration", false, false], ["start", designRun, "migration", false, false],
+    ["plan", buildRun, "build-through", false, false], ["start", buildRun, "build-through", false, false],
+    ["plan", checkerRun, "build-through", false, false], ["plan", checkerRun, "checker", false, false],
+    ["start", checkerRun, "checker", false, false],
   ]);
+  for (const [plan, start] of [[0, 1], [2, 3], [5, 6]]) {
+    assert(resumeRequests[plan][3].startsWith("sample:"));
+    assert.equal(resumeRequests[start][3], resumeRequests[plan][3]);
+  }
   for (const {width, layout} of placements) {
     const desktop = width >= 1080;
     assert.deepEqual(layout, {
       navigation: ["open-runprogress", "open-runeditor"], execution: ["resume-run", "resume-stage"], remove: "hide-run",
       allFit: true, primary: true, executeTogether: true, navigationTogether: true, viewAndExecuteTogether: desktop,
-      gridAreas: desktop ? '"view execute remove"' : '"view remove" "execute execute"',
+      gridAreas: desktop ? '"view view execute execute remove"' : '"view view remove" "execute execute ."',
     }, "action groups and non-wrapping controls at width " + width);
   }
   await evaluate("restoreResumeDesignTransport()");
-  console.log("Browser resume: action groups fit at 360-1280 px; only migration and checker options; saved plan starts without range fields");
+  console.log("Browser resume: same-width actions across runs and status changes at 320-1280 px; migration, build and checker start at the confirmed phase");
   await cdp("Emulation.setDeviceMetricsOverride", {width: 390, height: 480, deviceScaleFactor: 1, mobile: false});
 
   // All sample runs were stopped or cancelled before the settings test.
