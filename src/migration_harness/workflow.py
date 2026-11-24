@@ -2272,6 +2272,13 @@ def _review_free_checker_output(config, checked, record):
     return {**checked, "checker_advisory": advisory, "error": record["error"]}
 
 
+def _remaining_checker_findings(record, checked, findings, use_raw_output):
+    if checked["status"] != "checker_needs_review" or (not use_raw_output and (checked["error"] or not findings)):
+        return None
+    accepted = accepted_findings(record, findings, record.get("review_file_hashes", {}))
+    return [finding for finding in findings if finding.finding_id not in accepted]
+
+
 def _apply_checker_pass(run_path, checked, record):
     advisory = record.get("checker_advisory", {})
     if not advisory.get("corroborated") or record["checker_exit_code"] != 0:
@@ -3611,10 +3618,9 @@ def _run_verification(
                 _check_selected_repair_targets(record, ())
                 _finish_repair_attempt(record)
             save_verification()
-            if checked["status"] != "checker_needs_review" or (checked["error"] and not use_raw_output):
+            remaining = _remaining_checker_findings(record, checked, findings, use_raw_output)
+            if remaining is None:
                 return checked
-            accepted = accepted_findings(record, findings, record.get("review_file_hashes", {}))
-            remaining = [finding for finding in findings if finding.finding_id not in accepted]
             if not remaining and not use_raw_output:
                 _check_selected_repair_targets(record, ())
                 record["status"] = "checker_accepted"
@@ -4271,7 +4277,7 @@ def _resume_checker(config, unit, result, record, plan, request_id):
         verification.update(_checker_provenance(config))
         record.update(status="checking", checker_exit_code=None)
         write_run_record(record_path, record)
-    checked, _, use_raw_output = _run_checker(
+    checked, findings, use_raw_output = _run_checker(
         command, {**result, "request_id": request_id,
                   **{key: record.get(key) for key in ("junie_exit_code", "agent_workspace_path", "completed_capsules",
                                                      "build_exit_code", "build_log_path", "verification")}},
@@ -4290,6 +4296,10 @@ def _resume_checker(config, unit, result, record, plan, request_id):
         verification["input_files"] != verification_files(config, worktree, unit["target"], command, {})
     )
     verification["scripts_passed"] = True
+    if (not use_raw_output and not verification["inputs_changed_during_verification"]
+            and _remaining_checker_findings(record, checked, findings, use_raw_output) == []):
+        record["status"] = "checker_accepted"
+        checked = {**checked, "status": record["status"]}
     write_run_record(record_path, record)
     if use_raw_output:
         checked = _review_free_checker_output(config, checked, record)

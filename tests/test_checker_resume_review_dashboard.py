@@ -7,6 +7,7 @@ import subprocess
 import sys
 import unittest
 import uuid
+from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -1549,6 +1550,136 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(result["status"], "checker_needs_review")
         self.assertEqual(self.review()["findings"][0], (finding_id, self.diagnostic.decode().strip(), False))
         self.assertEqual(len(self.record()["checker_reviews"]), 1)
+
+
+class CheckerResumeApprovalTests(SavedRunFixture):
+    diagnostic = b"MIG101 Example.cs:1 warning: use SharedUtility\n"
+
+    def setUp(self):
+        super().setUp()
+        self.config["build_project"] = "App.csproj"
+        (self.worktree / "App.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net9.0</TargetFramework>'
+            '</PropertyGroup></Project>', encoding="utf-8",
+        )
+        sdk = self.worktree.parent / "fixture-sdk"
+        pack = sdk / "packs/Microsoft.NETCore.App.Ref"
+        pack.mkdir(parents=True)
+        (pack / "fixture.dll").write_bytes(b"fixture reference")
+        self.dotnet = sdk / "dotnet"
+        self.dotnet.write_bytes(b"fixture launcher")
+        sdk_resolver = patch.object(build_receipt.shutil, "which", return_value=str(self.dotnet))
+        sdk_resolver.start()
+        self.addCleanup(sdk_resolver.stop)
+        self.assertEqual(self.verify(self.diagnostic)["status"], "checker_needs_review")
+        finding, = self.review()["findings"]
+        self.review(finding[0], "This use of the existing helper was checked against the source.")
+
+    def verify(self, output, *, only=False, code=7, rule_failure=False, request=None):
+        calls = []
+
+        def process(command, **kwargs):
+            calls.append(command[0])
+            if command[0] == "dotnet":
+                for name, data in {"bin/Debug/net9.0/App.dll": b"fixture build",
+                                   "obj/project.assets.json": b'{"libraries":{}}'}.items():
+                    path = self.worktree / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+                return subprocess.CompletedProcess(command, 0)
+            self.assertEqual(command, ["fixture-checker"])
+            kwargs["stdout"].write(output)
+            if rule_failure:
+                env = kwargs["env"]
+                request_data = json.loads(Path(env["MIGRATION_RULE_CHECK_REQUEST"]).read_bytes())
+                name, rule = next(iter(request_data["rules"].items()))
+                Path(env["MIGRATION_RULE_CHECK_RECEIPT"]).write_text(json.dumps({
+                    "schema": 1, "request_id": request_data["request_id"],
+                    "results": [{"rule": name, "sha256": rule["sha256"], "start_line": 1,
+                                 "end_line": rule["saved_file_lines"], "status": "failed", "evidence": "not reflected"}],
+                }), encoding="utf-8")
+            return subprocess.CompletedProcess(command, code)
+
+        if only and request is None:
+            request = {**workflow.plan_checker_resume(self.config, self.run_id), "id": str(uuid.uuid4())}
+        with (patch.object(workflow, "run_process", side_effect=process),
+              patch.object(junie_cli, "run_interactive") as junie,
+              redirect_stdout(io.StringIO())):
+            try:
+                result = workflow.resume_with_junie(self.config, self.run_id, verification_request=request)
+            except ValueError:
+                self.assertEqual(calls, [])
+                raise
+            finally:
+                junie.assert_not_called()
+        self.assertEqual(calls, ["fixture-checker"] if only else ["dotnet", "fixture-checker"])
+        self.assertEqual(result["checker_exit_code"], code)
+        self.assertEqual(self.record()["checker_exit_code"], code)
+        return result
+
+    def assert_both_statuses(self, output, expected, **options):
+        before = self.record()
+        for only in (True, False):
+            with self.subTest(checker_only=only):
+                self.save_record(before)
+                self.assertEqual(self.verify(output, only=only, **options)["status"], expected)
+                self.assertEqual(self.record()["status"], expected)
+                result = workflow.migration_ledger(self.config, self.run_id)["completion"]
+                self.assertIs(result["verification_passed"], expected == "checker_accepted")
+
+    def test_same_approved_finding_is_accepted_by_both_paths(self):
+        self.assert_both_statuses(self.diagnostic, "checker_accepted")
+
+    def test_new_or_unrecognized_finding_keeps_both_paths_in_review(self):
+        for extra in (b"MIG102 Example.cs:1 warning: distinct warning\n", b"checker offline\n",
+                      self.diagnostic.replace(b":1", b":2")):
+            self.assert_both_statuses(self.diagnostic + extra, "checker_needs_review")
+        self.assert_both_statuses(b"", "checker_needs_review")
+
+    def test_changed_target_invalidates_the_receipt_and_existing_approval(self):
+        plan = {**workflow.plan_checker_resume(self.config, self.run_id), "id": "old-target"}
+        self.target.write_text("class Updated {}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "再ビルド"):
+            self.verify(self.diagnostic, only=True, request=plan)
+        self.assertFalse(self.review()["findings"][0][2])
+        shutil.rmtree(self.worktree / "bin")
+        shutil.rmtree(self.worktree / "obj")
+        self.assertEqual(self.verify(self.diagnostic)["status"], "checker_needs_review")
+        self.assertEqual(self.verify(self.diagnostic, only=True)["status"], "checker_needs_review")
+        self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+
+    def test_change_during_checker_only_is_detected_before_approval(self):
+        plan = {**workflow.plan_checker_resume(self.config, self.run_id), "id": "change-during-check"}
+
+        def process(command, **kwargs):
+            self.assertEqual(command, ["fixture-checker"])
+            kwargs["stdout"].write(self.diagnostic)
+            self.target.write_bytes(b"class Updated {}")
+            return subprocess.CompletedProcess(command, 7)
+
+        with (patch.object(workflow, "run_process", side_effect=process) as checker,
+              patch.object(junie_cli, "run_interactive") as junie, redirect_stdout(io.StringIO())):
+            result = workflow.resume_with_junie(self.config, self.run_id, verification_request=plan)
+        checker.assert_called_once()
+        junie.assert_not_called()
+        self.assertEqual(result["status"], "checker_failed")
+        self.assertIn("再ビルド", result["error"])
+        self.assertEqual(self.record()["status"], "checker_failed")
+        self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+
+    def test_failed_rule_evidence_blocks_approved_diagnostics_in_both_paths(self):
+        capsule = self.run_path / "capsule"
+        material = capsule / "materials/rule-1.txt"
+        material.parent.mkdir()
+        data = b"Apply the reference behavior.\n"
+        material.write_bytes(data)
+        manifest_path = capsule / "manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["rule_files"] = [{"file": material.name, "usage": "required", "sha256": sha256(data).hexdigest()}]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.config["checker_rule_evidence"] = True
+        self.assert_both_statuses(self.diagnostic, "checker_needs_review", code=0, rule_failure=True)
+        self.assertEqual(self.record()["checker_review_reason"], "rule_not_reflected")
 
 
 class SavedDashboardTests(SavedRunFixture):
