@@ -1108,6 +1108,8 @@ const checkerReviewGuidance = {
     "詳細ログで Junie の起動や接続の状態を確認し、復旧後に「同じ実行を再開」を選んでください。"],
   checker_incomplete: ["チェッカーが正常に完了しなかったため、自動修正に進めませんでした。",
     "元のチェッカー出力と詳細ログで実行環境や設定を確認し、原因を直してから再開してください。"],
+  process_completion_unconfirmed: ["チェッカーのプロセス全体の完了を確認できず、結果を確定しませんでした。",
+    "ログと残存プロセスを確認し、チェッカーを同期実行に直してから新しいRunを開始してください。"],
   checker_interrupted: ["チェッカーが途中で停止したため、自動修正に進めませんでした。",
     "出力や停止時の状況を確認し、検査を続ける場合は「同じ実行を再開」を選んでください。"],
   repair_error: ["自動修正の途中でエラーが発生しました。"],
@@ -1117,7 +1119,8 @@ const checkerReviewGuidance = {
 function checkerReviewCopy(data) {
   const fallback = data.status === "checker_failed" ? "checker_incomplete" : "review_required";
   const [reason, next] = checkerReviewGuidance[data.checker_review_reason] || checkerReviewGuidance[fallback];
-  const action = !data.resumable ? "チェッカーの設定と詳細ログを確認してください。"
+  const action = !data.resumable && data.checker_review_reason !== "process_completion_unconfirmed"
+    ? "チェッカーの設定と詳細ログを確認してください。"
     : next || "チェッカー出力を確認し、修正方針を「Junie への追加指示」に入力して「指示を送って再開」を選ぶか、「エディタで手修正」を選んでください。";
   return {reason, action};
 }
@@ -1259,6 +1262,9 @@ function renderRecovery(data, force = false) {
       if (info.draft === "repair") next = "下書きと手修正版が競合する場合は repair-draft で版を確認してください。";
       if (info.conflict) next = "エディタで差分を確認し、競合を解消して保存してください。";
       if (info.needs_process_check) next = "ログと残存プロセスを確認するまで処理を再開しないでください。";
+      if (info.unconfirmed_command) {
+        next = info.unconfirmed_command.log + " と残存プロセスを確認し、コマンドを同期実行に直してから新しいRunを開始してください。";
+      }
       if (info.unknown_script) {
         const script = info.unknown_script;
         next = `実行結果不明: ${script.phase} #${script.number}。${script.log} と残存プロセスを確認後、端末の script-recovery で再試行する版を確認してください。自動では再実行しません。`;

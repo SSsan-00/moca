@@ -71,6 +71,7 @@ from .runs.editor_queue import (
 )
 from .errors import format_error
 from .execution import (
+    ConfiguredProcessIncomplete,
     build_process_scope,
     check_cancelled,
     current_operation_id,
@@ -261,6 +262,9 @@ def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str,
 _RECOVERABLE_ONCE_PHASES = frozenset({"after_prepare", "before_migration", "after_migration"})
 _LEGACY_SCRIPT_HASH_BYTES = 32_769
 _SAVED_SCRIPT_OUTPUT_CHANGED = "The saved script output is missing or changed; inspect the logs before starting a new Run"
+_UNCONFIRMED_COMMAND_GUIDANCE = (
+    "ログと残存プロセスを確認し、コマンドを同期実行に直してから新しい Run を開始してください。"
+)
 
 
 def _script_digest(value):
@@ -274,6 +278,7 @@ def _script_attempt_matches(attempt, phase, number, cwd, invocation):
 
 
 def _block_unknown_script(record):
+    _require_completed_command(record)
     if attempt := record.get("script_inflight"):
         raise ValueError(
             f"自作スクリプトの実行結果不明: {attempt['phase']} #{attempt['number']}。"
@@ -281,10 +286,16 @@ def _block_unknown_script(record):
         )
 
 
+def _require_completed_command(record):
+    if command := record.get("unconfirmed_command"):
+        raise ValueError(f"{command['phase']} の完了を確認できません（{command['log']}）。" + _UNCONFIRMED_COMMAND_GUIDANCE)
+
+
 def script_recovery(config, run_id, *, retry_version=None):
     validate_run_id(run_id)
     with execution_lock(config, run_id):
         run_path, worktree, record, unit = load_saved_run(config, run_id)
+        _require_completed_command(record)
         attempt = record.get("script_inflight")
         if not attempt or attempt["phase"] not in _RECOVERABLE_ONCE_PHASES:
             raise ValueError("実行結果が不明な一度限りのスクリプトはありません。")
@@ -399,7 +410,8 @@ def _run_script_phase(
                     else None
                 )
                 command_target_versions = before_command_versions if phase == "before_build" else verification_hashes
-                completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
+                completed = run_process(invocation, label=f"スクリプト {phase}", synchronous=True,
+                                        cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
                 if tracked and completed.returncode < 0:
                     _block_unknown_script(record)
                 length = 0
@@ -462,6 +474,9 @@ def _run_script_phase(
         run_id = None
         if record is not None:
             run_id = record["run_id"]
+            if isinstance(exc, ConfiguredProcessIncomplete):
+                record["unconfirmed_command"] = {"phase": phase, "log": log_path.name}
+                message += "\n" + _UNCONFIRMED_COMMAND_GUIDANCE
             record.update(status="script_failed", error=message)
             write_run_record(record_path, record)
         if junie_cli.unconfirmed_junie_stop(exc) is not None:
@@ -2170,11 +2185,13 @@ def _run_checker(
                 with rule_checker_exchange(run_path, Path(result["worktree_path"]), record,
                                            enabled=rule_evidence) as (checker_options, collect):
                     completed = run_process(
-                        command, label="チェッカー", cwd=result["worktree_path"], stdout=log,
+                        command, label="チェッカー", synchronous=True, cwd=result["worktree_path"], stdout=log,
                         stderr=subprocess.STDOUT, check=False, **checker_options,
                     )
                     if collect is not None and completed.returncode == 0:
                         collect()
+            except ConfiguredProcessIncomplete:
+                raise
             except (OSError, ValueError) as exc:
                 log.write((format_error(exc, command=command, cwd=result["worktree_path"]) + "\n").encode("utf-8"))
                 raise
@@ -2204,6 +2221,10 @@ def _run_checker(
                 record.update(status="checker_needs_review", checker_review_reason="output_error", error=format_error(exc))
         elif completed.returncode < 0:
             record.update(checker_review_reason="checker_incomplete", error="checker did not complete normally")
+    except ConfiguredProcessIncomplete as exc:
+        record["unconfirmed_command"] = {"phase": "checker", "log": log_path.name}
+        record.update(status="checker_failed", checker_review_reason="process_completion_unconfirmed",
+                      error=format_error(exc, command=command, cwd=result["worktree_path"]) + "\n" + _UNCONFIRMED_COMMAND_GUIDANCE)
     except (OSError, ValueError) as exc:
         record.update(status="checker_failed", checker_review_reason="checker_incomplete",
                       error=format_error(exc, command=command, cwd=result["worktree_path"]))
@@ -3582,6 +3603,8 @@ def _run_verification(
             command, verified, record, config["build_project"], require_zero_for_success=review_free_output,
             rule_evidence=bool(config.get("checker_rule_evidence")),
         )
+        if record.get("unconfirmed_command"):
+            return checked
         check_cancelled()
         if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
             raise ValueError("チェッカー実行中に移行先が更新されました。エディタで確認して指示を送信し直してください。")
@@ -4052,7 +4075,7 @@ def _require_saved_checker(config, record):
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
-    if record.get("script_inflight") or record.get("migration_stop_unconfirmed") or status not in (
+    if record.get("script_inflight") or record.get("unconfirmed_command") or record.get("migration_stop_unconfirmed") or status not in (
         _SCRIPT_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES
     ):
         return False
@@ -4067,7 +4090,7 @@ def can_resume_build(record):
     return (record.get("status") in (
         _BUILD_RESUME_STATUSES | _CHECKER_RESUME_STATUSES | VERIFIED_STATUSES
         | _SCRIPT_RESUME_STATUSES | {"editor_checkpoint"}
-    ) and not record.get("script_inflight") and bool(record.get("completed_capsules"))
+    ) and not record.get("script_inflight") and not record.get("unconfirmed_command") and bool(record.get("completed_capsules"))
         and record["completed_capsules"] == record.get("context_capsules")
         and not record.get("target_apply_pending"))
 
@@ -4079,6 +4102,7 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     run_path, worktree, _, unit = load_saved_run(config, run_id)
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
+        _require_completed_command(record)
         if not can_resume_build(record):
             raise ValueError("移行が完了してから「ビルドのみ」を選んでください。")
         if record.get("target_apply_pending") or record.get("stopped_migration_draft") or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
@@ -4101,6 +4125,7 @@ def plan_migration_resume(
     run_path, worktree, _, unit = load_saved_run(config, run_id)
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
+        _require_completed_command(record)
         agent = run_path / "agent-workspace"
         capsule, manifest = load_capsule_manifest(run_path)
         statuses = {"junie_running", "junie_failed", "interrupted"}
@@ -4224,6 +4249,7 @@ def plan_checker_resume(config, run_id):
         raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
+        _require_completed_command(record)
         if record.get("script_decisions_pending"):
             raise ValueError("Resolve the saved one-time script response before running the checker alone")
         if record.get("verification_script_pending") is not None:
@@ -4274,6 +4300,8 @@ def _resume_checker(config, unit, result, record, plan, request_id):
         record, config["build_project"], require_zero_for_success=bool(config.get("checker_review_free_output")),
         rule_evidence=bool(config.get("checker_rule_evidence")),
     )
+    if record.get("unconfirmed_command"):
+        return checked
     try:
         _check_build_receipt(config, worktree, record)
     except ValueError as exc:

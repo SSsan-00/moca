@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 import time
 from concurrent.futures import Future
-from contextlib import ExitStack, contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +20,10 @@ HEARTBEAT_SECONDS = 3
 
 class OperationCancelled(KeyboardInterrupt):
     """端末のCtrl+Cと同じ保存・再開処理を通る、画面からの停止要求。"""
+
+
+class ConfiguredProcessIncomplete(OSError):
+    pass
 
 
 @dataclass
@@ -102,19 +106,34 @@ def report_activity(message: str, *, kind: str = "activity", detail: str = "") -
         control.on_activity(entry)
 
 
-def run_process(command: list[str], *, label: str, cancellable: bool = True, **kwargs) -> subprocess.CompletedProcess:
+def _require_idle_job(job):
+    try:
+        active = job.active_processes()
+    except OSError as exc:
+        raise ConfiguredProcessIncomplete("Windows Job内の全プロセスの終了を確認できません。") from exc
+    if active:
+        raise ConfiguredProcessIncomplete("コマンドの親が終了した時点で子プロセスが残っています。")
+
+
+def run_process(
+    command: list[str], *, label: str, cancellable: bool = True, synchronous: bool = False, **kwargs,
+) -> subprocess.CompletedProcess:
     """待機中も停止を受け付ける。出力の内容と終了コードはsubprocess.runと同じ。"""
-    if not is_controlled():
+    if not is_controlled() and not synchronous:
         return subprocess.run(command, **kwargs)
     check_cancelled()
     check = kwargs.pop("check", False)
     if kwargs.pop("capture_output", False):
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    with ExitStack() as stack:
-        job = WindowsJob()
-        stack.callback(job.close)
-        kwargs["creationflags"] = kwargs.get("creationflags", 0) | CREATE_SUSPENDED
-        process = stack.enter_context(subprocess.Popen(command, **kwargs))
+    job = WindowsJob(kill_on_close=True) if synchronous else WindowsJob()
+    kwargs["creationflags"] = kwargs.get("creationflags", 0) | CREATE_SUSPENDED
+    try:
+        process = subprocess.Popen(command, **kwargs)
+    except BaseException:
+        job.close()
+        raise
+    # Kill-on-close must run before Popen's context can wait for a process that failed to stop.
+    with process, closing(job):
         try:
             job.start(process)
         except BaseException:
@@ -128,13 +147,22 @@ def run_process(command: list[str], *, label: str, cancellable: bool = True, **k
                     check_cancelled()
                 try:
                     stdout, stderr = process.communicate(timeout=0.25)
+                    if synchronous:
+                        _require_idle_job(job)
                     break
                 except subprocess.TimeoutExpired:
+                    if synchronous and process.poll() is not None:
+                        _require_idle_job(job)
                     if time.monotonic() >= next_report:
                         report_activity(f"{label}のプロセスは起動中です。終了を待っています。", kind="heartbeat")
                         next_report = time.monotonic() + HEARTBEAT_SECONDS
         except BaseException:
-            job.stop(time.monotonic() + 5)
+            try:
+                job.stop(time.monotonic() + 5)
+            except (OSError, KeyboardInterrupt) as exc:
+                if synchronous:
+                    raise ConfiguredProcessIncomplete("Windows Job内の子プロセスの回収を確認できません。") from exc
+                raise
             raise
         if check and process.returncode:
             raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
