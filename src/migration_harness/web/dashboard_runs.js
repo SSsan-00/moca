@@ -173,7 +173,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     const visible = data.runs.filter(run => (filter === "all" || category(run) === filter)
       && `${run.unit_id} ${run.run_id}`.toLocaleLowerCase("ja").includes(query));
     const nextRows = JSON.stringify(visible.map(run => [run.run_id, run.unit_id, run.status, run.ready, run.queued, run.queue_position, run.queue_saving,
-      run.resumable, run.build_resumable, run.stop_requested, run.cancellable, run.awaiting_answer, run.worktree_path, describe(run), run.current_capsule, run.context_capsules, selectedRun === run.run_id]));
+      run.resumable, run.stop_requested, run.cancellable, run.awaiting_answer, run.worktree_path, describe(run), run.current_capsule, run.context_capsules, selectedRun === run.run_id]));
     if (nextRows !== rowKey) {
       rowKey = nextRows;
       const focused = document.activeElement;
@@ -201,27 +201,37 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         const time = node("td", elapsed(run), "run-time");
         const actions = node("td");
         const buttons = node("div", undefined, "run-actions");
-        // 表示中のRunに対する操作をボタンへ結び付ける。
-        function button(label, action, tab, subtle = false) {
-          const item = node("button", label, `button${subtle ? " run-text-action" : ""}`);
+        const navigation = node("div", undefined, "run-view-actions");
+        const execution = node("div", undefined, "run-execution-actions");
+        for (const [group, label] of [[navigation, "表示"], [execution, "実行操作"]]) {
+          group.setAttribute("role", "group");
+          group.setAttribute("aria-label", label);
+        }
+        function button(group, label, action, {tab = "", style = ""} = {}) {
+          const item = node("button", label, "button " + style);
           item.type = "button";
-          item.dataset.action = action + (tab || "");
-          item.setAttribute("aria-label", `${run.unit_id}：${label}`);
+          item.dataset.action = action + tab;
+          item.setAttribute("aria-label", run.unit_id + "：" + label);
           item.addEventListener("click", () => act(action, run.run_id, tab));
-          buttons.append(item);
+          group.append(item);
         }
         if (run.queued) {
-          if (preparationChat) button("Junie", "open-run", "editor");
-          button("待機を取消", "cancel-queued", null, true);
+          if (preparationChat) button(navigation, "Junie", "open-run", {tab: "editor"});
+          button(execution, "待機を取消", "cancel-queued");
         } else {
-          button(tone === "review" ? "進捗で確認" : "進捗", "open-run", "progress");
-          if (run.worktree_path || preparationChat) button(run.worktree_path ? "エディタ" : "Junie", "open-run", "editor");
-          if (!run.ready && run.cancellable) button(run.stop_requested ? "停止中" : "停止", "stop", null, true);
-          if (run.ready && run.resumable) button(tone === "done" ? "再検証" : "再開", "resume-run", null, true);
-          if (preparationChat && run.ready && run.build_resumable) button("ビルドのみ", "resume-build", null, true);
-          if (preparationChat && run.ready && run.worktree_path) button("再開方法…", "resume-stage", null, true);
-          if (run.ready) button("削除", "hide-run");
+          button(navigation, tone === "review" ? "進捗で確認" : "進捗", "open-run", {tab: "progress"});
+          if (run.worktree_path || preparationChat) {
+            button(navigation, run.worktree_path ? "エディタ" : "Junie", "open-run", {tab: "editor"});
+          }
+          if (!run.ready && run.cancellable) button(execution, run.stop_requested ? "停止中" : "停止", "stop");
+          if (run.ready && run.resumable) {
+            button(execution, tone === "done" ? "再検証" : "再開", "resume-run", {style: "primary"});
+          }
+          if (preparationChat && run.ready && run.worktree_path) button(execution, "再開方法…", "resume-stage");
         }
+        if (navigation.childElementCount) buttons.append(navigation);
+        if (execution.childElementCount) buttons.append(execution);
+        if (run.ready && !run.queued) button(buttons, "削除", "hide-run", {style: "run-remove-action"});
         actions.append(buttons);
         row.append(name, state, current, time, actions);
         return row;

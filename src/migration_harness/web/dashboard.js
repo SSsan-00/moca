@@ -996,14 +996,17 @@ let openResumeStage;
 function bindResumeStage() {
   const resumeDialog = document.querySelector("#resume-stage-dialog");
   const resumeStage = document.querySelector("#resume-stage");
-  const resumeRewind = document.querySelector("#resume-rewind");
-  const resumeThrough = document.querySelector("#resume-through");
+  const resumeHint = document.querySelector("#resume-stage-hint");
   const resumeSummary = document.querySelector("#resume-stage-summary");
   const resumePreview = document.querySelector("#resume-stage-preview");
   const resumeStart = document.querySelector("#resume-stage-start");
   const resumeBraveOption = document.querySelector("#resume-junie-brave-option");
   const resumeBrave = document.querySelector("#resume-junie-brave");
   let resumeRunID, resumePlan, resumeGeneration = 0;
+  const stageHints = {
+    migration: "保存済みの続きから最後まで進めます。完了済みの区間はやり直しません。",
+    checker: "現在の保存版に対応するビルド成果物で、チェッカーだけを実行します。",
+  };
 
   function resetResumeBrave() {
     resumeBraveOption.hidden = staticDemo || resumeStage.value !== "migration";
@@ -1019,20 +1022,14 @@ function bindResumeStage() {
     resumeStart.disabled = true;
     resumePreview.disabled = false;
     resumeSummary.textContent = "";
-    document.querySelector("#resume-capsules").hidden = resumeStage.value !== "migration";
+    resumeHint.textContent = stageHints[resumeStage.value];
   }
-  for (const field of [resumeStage, resumeRewind, resumeThrough]) field.addEventListener("input", clearResumePlan);
+  resumeStage.addEventListener("change", clearResumePlan);
   resumeDialog.addEventListener("close", clearResumePlan);
   resumePreview.addEventListener("click", async () => {
     clearResumePlan();
     const generation = resumeGeneration;
     const payload = {run_id: resumeRunID, start_stage: resumeStage.value};
-    if (resumeStage.value === "migration") {
-      for (const [key, field] of [["rewind_to", resumeRewind], ["through_capsule", resumeThrough]]) {
-        if (!field.reportValidity()) return;
-        if (field.value) payload[key] = field.valueAsNumber;
-      }
-    }
     resumePreview.disabled = true;
     resumeSummary.textContent = "保存版を確認しています。";
     try {
@@ -1042,7 +1039,6 @@ function bindResumeStage() {
       resumeSummary.textContent = [
         `保存版 ${plan.version.slice(0, 12)}`,
         plan.capsule_range ? `区間 ${plan.capsule_range.join("〜")}` : "",
-        plan.rewind_to ? "巻き戻し前の版を保存します。" : "",
         plan.repair ? "検証時に自動修正あり" : "自動修正なし",
         `無効になる記録  ${plan.invalidates.map(item => labels[item]).join("、")}`,
         ...Object.entries(plan.targets || {}).map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}`),
@@ -1068,8 +1064,7 @@ function bindResumeStage() {
     resumePlan = undefined;
     try {
       const launch = model => workspaceRequest("control", {action: "resume-run", revision: dashboardRevision, ...payload, ...model});
-      const response = payload.start_stage === "build" ? await launch({}) :
-        await withSavedRunModel(payload.run_id, launch, () => generation === resumeGeneration);
+      const response = await withSavedRunModel(payload.run_id, launch, () => generation === resumeGeneration);
       if (response && generation === resumeGeneration) {
         resumeDialog.close();
         window.harnessRuns.sync();
@@ -1081,7 +1076,6 @@ function bindResumeStage() {
   return runID => {
     resumeRunID = runID;
     resumeStage.value = "migration";
-    resumeRewind.value = resumeThrough.value = "";
     clearResumePlan();
     resumeDialog.showModal();
   };
@@ -1103,16 +1097,8 @@ bindHarnessWorkspace({
       openResumeStage(payload.run_id);
       return;
     }
-    if (action === "resume-build") {
-      const plan = await workspaceRequest("resume-plan?" + new URLSearchParams({run_id: payload.run_id}));
-      const targets = Object.entries(plan.targets)
-        .map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}${plan.edits[name] ? "（保存済み編集あり）" : ""}`);
-      if (!window.confirm(`ビルドのみ（自動修正なし）\n保存版 ${plan.version.slice(0, 12)}\n\n${targets.join("\n")}\n\n以前のビルドとチェッカーの結果を無効にして開始しますか？`)) return;
-      payload = {...payload, start_stage: "build", plan_version: plan.version};
-      action = "resume-run";
-    }
     const launch = model => workspaceRequest("control", {action, revision: dashboardRevision, ...payload, ...model});
-    const result = action === "resume-run" && payload.start_stage !== "build" ?
+    const result = action === "resume-run" ?
       await withSavedRunModel(payload.run_id, launch) : await launch({});
     if (action === "hide-run" && selectedRunId === result.run_id) await connectRun("", {removed: true});
     return result;
