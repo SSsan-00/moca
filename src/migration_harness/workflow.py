@@ -4498,6 +4498,12 @@ def _replace_reference_output(path, data):
         temporary.unlink(missing_ok=True)
 
 
+_REFERENCE_RESOLUTION_GUIDANCE = (
+    "競合時と同じ版に戻せる場合は戻して再開してください。"
+    "戻せない場合はエディタの解消案を控え、最新の参考資料で新しいRunを作成してください。"
+)
+
+
 def _record_reference_conflict_resolution(run_path, worktree, canonical, targets, capsule, pending, record):
     conflict = pending["conflict"]
     record_path = run_path / "run.json"
@@ -4511,7 +4517,7 @@ def _record_reference_conflict_resolution(run_path, worktree, canonical, targets
                 or before != conflict["before"] or draft != conflict["draft"]):
             if queue["edits"]:
                 raise ValueError("参考資料または成果物・下書きの版が競合時と異なります。"
-                                 "解消案は未反映のまま保存されています。競合時の版を確認してください。")
+                                 "解消案は未反映のまま保存されています。" + _REFERENCE_RESOLUTION_GUIDANCE)
             pending.pop("conflict")
             write_run_record(record_path, record)
             return
@@ -4563,14 +4569,6 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
     pending = record.get("reference_refresh")
     recovering_adoption = bool(pending and pending.get("adoption"))
     canonical = run_path / "agent-workspace"
-    if recovering_adoption and pending["adoption"].get("editor_edits"):
-        adoption = pending["adoption"]
-        with worktree_source_lock(worktree):
-            if _reference_target_versions(worktree, targets) != adoption["after"]:
-                active = target_context_snapshot(capsule, pending["snapshot"])
-                _, _, changes = compare_target_context(worktree, targets, active)
-                if changes:
-                    raise ValueError("反映を再開する前に参考資料が更新されました。解消案は保存されています。")
     if pending and pending.get("conflict") and not recovering_adoption:
         _record_reference_conflict_resolution(run_path, worktree, canonical, targets, capsule, pending, record)
     if not pending:
@@ -4692,9 +4690,18 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
                 raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
             current = _reference_target_versions(worktree, targets)
             if current not in (adoption["before"], adoption["after"]):
-                raise ValueError("参考資料への追従中に移行先が変更されました。保存版を確認してください。")
-            if adopted_edits and current != adoption["after"] and edit_versions != adopted_edits:
-                raise ValueError("保存した参考資料の解消案が確認できません。")
+                raise ValueError("参考資料への追従中に移行先が変更されました。" + _REFERENCE_RESOLUTION_GUIDANCE)
+            if adopted_edits and (not recovering_adoption or current != adoption["after"] or current == adoption["before"]):
+                if edit_versions != adopted_edits:
+                    raise ValueError("保存した参考資料の解消案が確認できません。" + _REFERENCE_RESOLUTION_GUIDANCE)
+                active = target_context_snapshot(capsule, pending["snapshot"])
+                _, captured = target_context_inventory(active)
+                _, _, changes = compare_target_context(worktree, targets, active)
+                if (changes or captured != pending["conflict"]["reference_hashes"]
+                        or any(target_hash(safe_target(active, Path("files") / name)) != digest
+                               for name, digest in captured.items())):
+                    raise ValueError("反映を再開する前に参考資料が更新されました。解消案は保存されています。"
+                                     + _REFERENCE_RESOLUTION_GUIDANCE)
             changed = tuple(path for path in targets if current[path.as_posix()] != adoption["after"][path.as_posix()])
             outputs = {path: _reference_output(run_path, adoption, path) for path in
                        (targets if adopted_edits else changed)}

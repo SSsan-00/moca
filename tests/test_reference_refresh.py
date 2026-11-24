@@ -477,6 +477,28 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         model.assert_called_once()
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
 
+    def test_reference_changed_after_staging_is_checked_before_adoption(self):
+        self.saved_targets(complete=True)
+        stage = workflow._record_reference_conflict_resolution
+
+        def stage_then_replace_reference(*args):
+            stage(*args)
+            self.reference.write_text("reference C", encoding="utf-8")
+
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(workflow, "_verify_worktree") as verify):
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.resume_fixture()
+            saved = self.save_resolution()
+            with (patch.object(workflow, "_record_reference_conflict_resolution", side_effect=stage_then_replace_reference),
+                  self.assertRaisesRegex(ValueError, "反映を再開する前に参考資料が更新")):
+                self.resume_fixture()
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
+            with workflow.editor_queue(self.run_path) as queue:
+                self.assertEqual(queue["edits"]["Example.cs"], saved["edit"])
+            model.assert_called_once()
+            verify.assert_not_called()
+
     def test_editor_save_error_and_request_for_another_run_do_not_adopt(self):
         self.saved_targets()
         with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model:
