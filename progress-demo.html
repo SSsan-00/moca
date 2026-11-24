@@ -2170,16 +2170,9 @@ function showMigrationLedger(ledger, snapshot, compare) {
     });
     document.querySelector("#close-progress-prompt").addEventListener("click", () => dialog.close());
     input.addEventListener("input", inputChanged);
-    let submitting = false;
     document.querySelector("#progress-prompt-form").addEventListener("submit", async event => {
       event.preventDefault();
-      if (send.disabled || submitting) return;
-      submitting = true;
-      const text = input.value.trim();
-      try {
-        if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
-        if (dialog.open && input.value.trim() === text) await submit(text);
-      } finally { submitting = false; }
+      if (dialog.open && !send.disabled) await submit(input.value.trim());
     });
     return {button, dialog, input, render, showError};
   }

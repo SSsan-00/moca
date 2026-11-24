@@ -137,7 +137,10 @@ async function checkDashboard() {
   let actions;
   let proposeAnchors;
   let promptCallbacks;
-  const progressDialog = {button: new Element(), dialog: new Element(), input: new Element(), render() {}, showError() {}};
+  let deferredPrompt = false;
+  let promptId = 0;
+  const progressDialog = {button: new Element(), dialog: new Element(), input: new Element(), render() {},
+    showError(error) { this.error = error?.message; }};
   const anchor = dashboardElement("[data-propose-anchors]");
   page.querySelectorAll = selector => selector === ".step" ? Array.from({length: 7}, () => new Element())
     : selector === "[data-propose-anchors]" ? [anchor] : [];
@@ -145,7 +148,7 @@ async function checkDashboard() {
   const runtime = vm.createContext({
     document: page, Event, URL, URLSearchParams, Headers, TextEncoder, location,
     history: {replaceState(_, __, url) { location.href = url.href; }},
-    crypto: {randomUUID: () => "11111111-1111-4111-8111-111111111111"},
+    crypto: {randomUUID: () => ++promptId === 1 ? "11111111-1111-4111-8111-111111111111" : randomUUID()},
     window: {
       addEventListener() {}, setTimeout() {},
       open() {
@@ -174,7 +177,18 @@ async function checkDashboard() {
       const body = options.body ? JSON.parse(options.body) : {};
       const request = {path, headers: options.headers, body};
       requests.push(request);
-      if (path === "prompts" && !options.body) return Promise.resolve({ok: true, json: async () => ({run_id: "B", conversation: [], prompts: []})});
+      if (path === "prompts" && !options.body) return Promise.resolve({ok: true, json: async () => ({
+        run_id: options.headers.get("X-Run-ID"), conversation: [], prompts: [],
+      })});
+      if (path === "editor" && body.kind === "conversation") {
+        const receipt = {ok: true, json: async () => ({id: body.id, text: body.text, status: "received"})};
+        if (!deferredPrompt) return Promise.resolve(receipt);
+        deferredPrompt = false;
+        return new Promise((resolve, reject) => {
+          request.accept = () => resolve(receipt);
+          request.lose = () => reject(Error("fixture lost successful response"));
+        });
+      }
       if (path === "comparison" || body.action === "anchors") {
         return new Promise(resolve => { request.resolve = resolve; });
       }
@@ -250,6 +264,97 @@ async function checkDashboard() {
   requests.at(-1).resolve({ok: true, json: async () => ({run_id: "B", id: "anchors"})});
   await retry;
   assert.deepEqual(opened, ["review/A/plain.html", "review/B/anchors.html"]);
+
+  const openPrompt = async () => {
+    progressDialog.dialog.open = true;
+    await promptCallbacks.open();
+  };
+  const writePrompt = text => {
+    progressDialog.input.value = text;
+    promptCallbacks.inputChanged();
+  };
+  const sendPrompt = () => promptCallbacks.submit(progressDialog.input.value.trim());
+  const lastSend = () => requests.findLast(item => item.path === "editor" && item.body.kind === "conversation");
+  await selectRun("A");
+  await openPrompt();
+  writePrompt("Aの成功応答は遅れて届く");
+  deferredPrompt = true;
+  const delayed = sendPrompt();
+  const sentA = lastSend();
+  await selectRun("B");
+  await openPrompt();
+  writePrompt("Bの未送信下書き");
+  sentA.accept();
+  await delayed;
+  assert.equal(progressDialog.input.value, "Bの未送信下書き");
+  await selectRun("A");
+  await openPrompt();
+  const restoredAfterSuccess = progressDialog.input.value;
+
+  writePrompt("Aの受理済み応答を失う");
+  deferredPrompt = true;
+  const losing = sendPrompt();
+  const lost = lastSend();
+  lost.lose();
+  await losing;
+  assert.match(progressDialog.error, /fixture lost successful response/);
+  await selectRun("B");
+  await openPrompt();
+  assert.equal(progressDialog.input.value, "Bの未送信下書き");
+  await sendPrompt();
+  assert.equal(lastSend().body.run_id, "B");
+  await selectRun("A");
+  await openPrompt();
+  assert.equal(progressDialog.input.value, lost.body.text);
+  await sendPrompt();
+  const retried = lastSend();
+  assert.deepEqual({restoredAfterSuccess, preservesIdAfterOtherRun: retried.body.id === lost.body.id},
+    {restoredAfterSuccess: "", preservesIdAfterOtherRun: true});
+  assert.equal(retried.body.run_id, "A");
+  assert.equal(progressDialog.input.value, "");
+
+  writePrompt("書き直す前の本文");
+  deferredPrompt = true;
+  const redrafting = sendPrompt();
+  const earlier = lastSend();
+  writePrompt("より新しい未送信の本文");
+  await selectRun("B");
+  earlier.accept();
+  await redrafting;
+  await selectRun("A");
+  assert.equal(progressDialog.input.value, "より新しい未送信の本文");
+
+  await openPrompt();
+  writePrompt("同じ文面を書き直す");
+  deferredPrompt = true;
+  const sameText = sendPrompt();
+  const original = lastSend();
+  await selectRun("B");
+  await openPrompt();
+  writePrompt("Aが送信中でもBから送る");
+  await sendPrompt();
+  assert.equal(lastSend().body.run_id, "B");
+  await selectRun("A");
+  await openPrompt();
+  writePrompt("途中の別文面");
+  writePrompt(original.body.text);
+  original.accept();
+  await sameText;
+  assert.equal(progressDialog.input.value, original.body.text, "a recreated draft belongs to a newer edit even with identical text");
+
+  await openPrompt();
+  let modelReady;
+  runtime.window.harnessRunModelReady = () => new Promise(resolve => { modelReady = resolve; });
+  const beforeModelReady = lastSend();
+  const whileSavingEditor = sendPrompt();
+  await selectRun("B");
+  await openPrompt();
+  writePrompt(original.body.text);
+  modelReady(true);
+  await whileSavingEditor;
+  assert.equal(lastSend(), beforeModelReady, "a submit gesture cannot follow a Run switch while waiting for the editor");
+  delete runtime.window.harnessRunModelReady;
+  console.log("Dashboard: delayed progress receipts clear only the original Run draft; retries preserve each Run's ID.");
 }
 
 async function checkConversationFileSwitch() {

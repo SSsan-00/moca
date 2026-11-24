@@ -159,12 +159,14 @@ let buildRequest = 0;
 let buildLoading = false;
 let buildEditSubmitted = false;
 const progressPrompt = bindProgressPromptDialog({
-  open: refreshProgressPrompts, submit: submitProgressPrompt, inputChanged: syncProgressPrompts,
+  open: refreshProgressPrompts, submit: submitProgressPrompt,
+  inputChanged() { promptInputRevision++; syncProgressPrompts(); },
 });
+const progressPromptSends = new Map();
 let progressPrompts;
 let promptLoading = false;
-let promptSaving = false;
 let promptRequest = 0;
+let promptInputRevision = 0;
 
 // 判断に関する通知はメッセージがあるときだけ表示する。
 function showNotice(message) {
@@ -209,14 +211,16 @@ function syncActions() {
 function syncProgressPrompts() {
   progressPrompt.button.hidden = !snapshot.worktree_path;
   progressPrompt.button.disabled = !connected;
-  progressPrompt.render(progressPrompts, {available: connected, loading: promptLoading, saving: promptSaving});
+  progressPrompt.render(progressPrompts, {
+    available: connected, loading: promptLoading, saving: progressPromptSends.get(snapshot.run_id)?.sending,
+  });
 }
 
 // Runと要求番号を照合し、現在表示中の追加指示だけを更新する。
 async function refreshProgressPrompts() {
-  if (!progressPrompt.dialog.open || !connected || promptLoading || promptSaving) return;
-  const request = ++promptRequest;
   const runId = snapshot.run_id;
+  if (!progressPrompt.dialog.open || !connected || promptLoading || progressPromptSends.get(runId)?.sending) return;
+  const request = ++promptRequest;
   promptLoading = true;
   syncProgressPrompts();
   try {
@@ -230,37 +234,59 @@ async function refreshProgressPrompts() {
       progressPrompt.showError(error);
     }
   } finally {
-    promptLoading = false;
-    syncProgressPrompts();
+    if (request === promptRequest) {
+      promptLoading = false;
+      syncProgressPrompts();
+    }
   }
 }
 
-let pendingProgressMessage;
 async function submitProgressPrompt(text) {
   const runId = snapshot.run_id;
-  const request = ++promptRequest;
-  promptSaving = true;
+  const slot = progressPromptSends.get(runId) || {};
+  const input = progressPrompt.input.value;
+  if (!connected || !runId || selectedRunId !== runId || !progressPrompts?.timing ||
+      slot.sending || !text || input.trim() !== text) return;
+  const generation = streamGeneration, inputRevision = promptInputRevision;
+  const sameInput = () => progressPrompt.input.value === input && promptInputRevision === inputRevision;
+  const showingRun = () => connected && snapshot.run_id === runId && selectedRunId === runId;
+  const retry = slot.pending?.text === text ? slot.pending : undefined;
+  const conversation = retry || progressPrompts.conversation;
+  progressPromptSends.set(runId, slot);
+  slot.sending = true;
+  promptRequest++;
+  promptLoading = false;
   progressPrompt.showError();
   syncProgressPrompts();
   try {
-    if (progressPrompts?.conversation) {
-      if (pendingProgressMessage?.run_id !== runId || pendingProgressMessage?.text !== text) {
-        pendingProgressMessage = {kind: "conversation", run_id: runId, text, id: crypto.randomUUID().replaceAll("-", "")};
+    if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
+    if (!showingRun() || generation !== streamGeneration || !progressPrompt.dialog.open || !sameInput()) return;
+    if (conversation) {
+      const body = retry || {kind: "conversation", run_id: runId, text, id: crypto.randomUUID().replaceAll("-", "")};
+      slot.pending = body;
+      const receipt = await workspaceRequest("editor", body);
+      if (receipt?.id !== body.id) {
+        throw new Error("指示の受付を確認できません。再送時は同じ指示IDを使います。");
       }
-      await workspaceRequest("editor", pendingProgressMessage);
-      pendingProgressMessage = undefined;
+      slot.pending = undefined;
     } else {
       await workspaceRequest("prompts", {run_id: runId, text});
     }
-    if (request === promptRequest && snapshot.run_id === runId) {
-      progressPrompt.input.value = "";
+    if (snapshot.run_id === runId) {
+      if (sameInput()) progressPrompt.input.value = "";
+    } else {
+      const draft = runInputDrafts.get(runId);
+      if (draft?.prompt === input && draft.promptRevision === inputRevision) draft.prompt = "";
     }
   } catch (error) {
-    if (request === promptRequest) progressPrompt.showError(error);
+    if (showingRun() && sameInput()) progressPrompt.showError(error);
   } finally {
-    promptSaving = false;
-    syncProgressPrompts();
-    refreshProgressPrompts();
+    slot.sending = false;
+    if (!slot.pending) progressPromptSends.delete(runId);
+    if (showingRun()) {
+      syncProgressPrompts();
+      refreshProgressPrompts();
+    }
   }
 }
 
@@ -1746,6 +1772,7 @@ function receiveProgress(event) {
   if (snapshot.run_id !== data.run_id) {
     if (snapshot.run_id) runInputDrafts.set(snapshot.run_id, {
       checker: checkerInstruction.value, prompt: progressPrompt.input.value, reason: note.value,
+      promptRevision: promptInputRevision,
     });
     const draft = runInputDrafts.get(data.run_id) || {};
     checkerOutputRequest++;
@@ -1757,8 +1784,11 @@ function receiveProgress(event) {
     note.value = draft.reason || "";
     dialog.close();
     promptRequest++;
+    promptLoading = false;
     progressPrompts = undefined;
     progressPrompt.input.value = draft.prompt || "";
+    promptInputRevision = draft.promptRevision ?? 0;
+    progressPrompt.showError();
     progressPrompt.dialog.close();
     showComparisonStatus();
     activity.replaceChildren();
