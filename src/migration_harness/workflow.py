@@ -28,7 +28,7 @@ from .junie import junie_cli
 from .junie.acp_permissions import PinnedReferenceReads
 from .junie.reply_text import DuplicateJsonKey, load_unique_json, unwrap_json_fence
 from .verification.build_receipt import build_artifacts, build_inputs
-from .verification.verification_files import verification_files
+from .verification.verification_files import configured_verification_checker, verification_files, verification_scripts
 from .context import php_literals
 from .context.capsules import is_php_input, load_capsule_manifest, prepare_context
 from .verification.checker_advisory import (
@@ -2959,13 +2959,6 @@ def _adopt_repair_result(run_path, worktree, agent_root, repair_targets, record,
     apply_agent_targets(agent_root, worktree, repair_targets, before, record, run_path / "run.json")
 
 
-def _verification_scripts(config: dict[str, Any], checker_command: list[str] | None) -> dict[str, Any]:
-    phases = ("before_build", "after_build")
-    if checker_command is not None:
-        phases += ("before_checker", "after_checker")
-    return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
-
-
 _BUILD_DIAGNOSTIC = re.compile(
     r"(?P<path>.+?)\((?P<location>\d+(?:,\d+){0,3})\)\s*:\s*"
     r"(?:error|エラー)\s+(?P<code>(?:CS|RZ)\d+)\s*:\s*(?P<message>.+)",
@@ -3511,7 +3504,7 @@ def _run_verification(
     mode = request["intent"].removeprefix("stop_") if request else None
     configured_checker = config["checker_command"]
     command = None if mode in {"build", "build_repair"} else configured_checker
-    scripts = _verification_scripts(config, command)
+    scripts = verification_scripts(config, command)
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
     expected_targets = request.get("build_targets") if request else None
@@ -3787,18 +3780,8 @@ def migration_ledger(
     saved_configuration = verification.get("configured_checker_command", saved_checker)
     # 旧形式のnullは、未設定とビルドのみで省略した場合の両方で保存されていた。
     ambiguous_checker = saved_checker is None and "configured_checker_command" not in verification
-    configured_checker = config["checker_command"]
-    if (
-        verification.get("checker_from_cli")
-        and not ambiguous_checker
-        # Earlier checker-only resumes could record the unrelated project default.
-        and (not verification.get("checker_only") or verification.get("toml_checker_scope") in ("unit", "project"))
-        and not config.get("checker_from_cli")
-        and configured_checker == verification.get("toml_checker_command")
-    ):
-        # TOML側の既定値が変わっていなければ、前回CLIから指定したチェッカーを引き継ぐ。
-        configured_checker = saved_configuration
-    scripts = _verification_scripts(config, configured_checker)
+    configured_checker = configured_verification_checker(config, verification)
+    scripts = verification_scripts(config, configured_checker)
     status = record["status"]
     checker_passed = status == "checker_succeeded" and (
         record.get("checker_exit_code") == 0
@@ -4238,7 +4221,7 @@ def plan_checker_resume(config, run_id):
     command = config["checker_command"]
     if command is None:
         raise ValueError("チェッカーを設定してから再開してください。")
-    if _verification_scripts(config, command) or config.get("scripts", {}).get("after_migration"):
+    if verification_scripts(config, command) or config.get("scripts", {}).get("after_migration"):
         raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)

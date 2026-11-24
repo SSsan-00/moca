@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..context.capsules import load_capsule_manifest
-from ..verification.checker_rule_evidence import checker_rule_context
+from ..verification.checker_rule_evidence import current_checker_rule_results
 from ..config import target_paths
 from ..files import safe_target
 from ..runs.run_records import edit_run_record, execution_lock, load_saved_run, validate_run_id
@@ -30,15 +30,7 @@ def _review_state(config, run_id):
     snapshot = target_context_snapshot(capsule)
     reference_version = target_hash(safe_target(snapshot, Path("manifest.json")))
     history = record.get("rule_review_history", [])
-    checker_results = {}
-    checker_evidence = record.get("checker_rule_evidence")
-    if (checker_evidence and config.get("checker_rule_evidence") and record.get("checker_exit_code") == 0
-            and not (record.get("verification") or {}).get("inputs_changed_during_verification")):
-        try:
-            if checker_evidence["scope"] == checker_rule_context(run_path, worktree, record):
-                checker_results = checker_evidence["results"]
-        except (OSError, ValueError, KeyError):
-            pass
+    checker_results = current_checker_rule_results(config, run_path, worktree, record, unit["target"])
     rows = []
     for rule in rules:
         name = rule["file"]
