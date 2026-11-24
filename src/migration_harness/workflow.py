@@ -26,6 +26,7 @@ from typing import Any
 from .log_text import read_log_tail
 from .junie import junie_cli
 from .junie.acp_permissions import PinnedReferenceReads
+from .junie.reply_text import unwrap_json_fence
 from .verification.build_receipt import build_artifacts, build_inputs
 from .verification.verification_files import verification_files
 from .context import php_literals
@@ -978,11 +979,8 @@ def _review_detail_applicability(
 
         def save_decisions(answer: str) -> None:
             # 原文と詳細索引の全文を渡した場合は、最終回答を照合してハーネス側で完了記録を作る。
-            lines = answer.strip().splitlines()
-            if len(lines) >= 2 and lines[0] in {"```", "```json"} and lines[-1] == "```":
-                answer = "\n".join(lines[1:-1])
             try:
-                response = json.loads(answer)
+                response = json.loads(unwrap_json_fence(answer))
             except json.JSONDecodeError:
                 raise _MalformedDetailReviewReply("Junieの詳細ルール選別の応答がJSON形式ではありません。") from None
             if not isinstance(response, dict) or response.get("review_token") != token:

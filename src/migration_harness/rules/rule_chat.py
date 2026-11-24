@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from concurrent.futures import Future
 from pathlib import Path
@@ -9,6 +8,7 @@ from time import monotonic, sleep
 from uuid import uuid4
 
 from ..junie import junie_cli
+from ..junie.reply_text import unwrap_json_fence
 
 
 class RuleChat(junie_cli._AcpSession):
@@ -119,11 +119,8 @@ class RuleChat(junie_cli._AcpSession):
 
 def decode_reply(text):
     cleaned = text.strip().removeprefix("\ufeff").strip()
-    # フェンス境界だけを外し、JSON文字列のUnicode行区切りを変えない。
-    if fence := re.fullmatch(r"```(?:json)?(?:\r\n?|\n)(.*)(?:\r\n?|\n)```", cleaned, re.DOTALL):
-        cleaned = fence[1].strip()
     try:
-        payload = json.loads(cleaned)
+        payload = json.loads(unwrap_json_fence(cleaned).strip())
     except ValueError:
         return {"message": text}
     if not isinstance(payload, dict) or not isinstance(payload.get("message"), str):

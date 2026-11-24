@@ -518,6 +518,31 @@ class RuleMaterialsTests(HarnessCase):
             junie_cli.run_interactive(command, completion, "token", (), accept_result=lambda _: None)
         self.assertEqual(launch.call_args.args[0], command)
 
+    def test_valid_detail_reply_preserves_unicode_separators_on_first_attempt(self):
+        capsule = self.root / "capsule"
+        capsule.mkdir()
+        source = capsule / "context.md"
+        source.write_bytes(b"<?php echo $id;")
+        entry, = rule_materials.write_rule_files(capsule / "materials", [
+            ({"path": "orders.md", "usage": "reference", "description": "Order output"}, "Preserve IDs.\n"),
+        ])
+        manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": [entry]}
+        rule = entry["file"]
+        decisions = {rule: {"applies": True, "reason": "Keep\u2028every\u2029order\u0085ID", "rule_lines": [1, 1]}}
+        for fence, end in ((None, "\n"), ("```", "\n"), ("```json", "\r\n")):
+            with self.subTest(fence=fence, end=repr(end)):
+                def reply(command, completion, token, outputs, **kwargs):
+                    body = json.dumps({"review_token": token, "decisions": decisions}, ensure_ascii=False, indent=2)
+                    body = body.replace("\n", end)
+                    kwargs["accept_result"](end.join((fence, body, "```")) if fence else body)
+
+                record = {}
+                with patch.object(junie_cli, "run_interactive", side_effect=reply) as reviewer:
+                    workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), record, None)
+                reviewer.assert_called_once()
+                saved = json.loads((self.root / "run.json").read_bytes())
+                self.assertEqual(saved["detail_applicability"], decisions)
+
     def test_malformed_detail_reply_retries_once_without_adopting_partial_data(self):
         capsule = self.root / "capsule"
         capsule.mkdir()

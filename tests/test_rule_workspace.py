@@ -14,12 +14,20 @@ from unittest.mock import patch
 
 from migration_harness.config import load_config
 from migration_harness.files import sha256_file
+from migration_harness.junie.reply_text import unwrap_json_fence
 from migration_harness.web.dashboard import _save_settings
 from migration_harness.rules.rule_workspace import RuleWorkspace
 from migration_harness.rules.rule_chat import RuleChat, decode_reply
 
 
 class RuleReplyTests(unittest.TestCase):
+    def test_unwrap_only_removes_the_fence_lines(self):
+        body = ' \t{\r\n  "message": "one\u2028two\u2029three\u0085four"\n}\r\n '
+        self.assertEqual(unwrap_json_fence(body), body)
+        for end in ("\n", "\r\n", "\r"):
+            with self.subTest(end=repr(end)):
+                self.assertEqual(unwrap_json_fence(end.join(("```json", body, "```"))), body)
+
     def test_reply_preserves_unicode_separators_inside_the_json(self):
         for separator in ("\u2028", "\u2029", "\u0085"):
             value = f"前{separator}後"
