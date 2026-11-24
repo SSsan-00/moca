@@ -45,7 +45,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
                 handler.send_body(200, "application/json", b"{}")
 
             server.RequestHandlerClass.do_POST = test_post
-        worker = Thread(target=server.serve_forever, daemon=True)
+        worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         worker.start()
         self.server.callback(server.server_close)
         self.server.callback(worker.join)
