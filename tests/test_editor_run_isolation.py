@@ -20,5 +20,6 @@ class EditorRunIsolationTests(unittest.TestCase):
                     result = subprocess.run([
                         node, str(root / "tests/editor_run_isolation.cjs"),
                         str(root / "src/migration_harness/web/dashboard_editor.js"), str(path),
+                        str(root / "src/migration_harness/web/dashboard_chat.js"),
                     ], capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

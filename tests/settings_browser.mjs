@@ -461,6 +461,49 @@ try {
   await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 650, deviceScaleFactor: 1, mobile: false});
   await showRuleWorkspace();
   assert(await evaluate(ruleViewport), "live rules fit the available viewport");
+  await evaluate("(" + function () {
+    const original = window.fetch;
+    window.stopRuleChatFixture = () => { window.fetch = original; };
+    const fixture = {id: "browser-rules-fixture", revision: 0, messages: [], unresolved: [], files: []};
+    window.ruleChatActions = [];
+    window.fetch = (url, options) => {
+      if (!String(url).startsWith("rule-workspace")) return original(url, options);
+      if (!options?.body) return Promise.resolve(Response.json(String(url).includes("id=") ?
+        fixture : {drafts: [{id: fixture.id, files: 0}]}));
+      const action = JSON.parse(options.body);
+      window.ruleChatActions.push(action);
+      fixture.revision++;
+      if (action.action === "message") {
+        fixture.messages.push({role: "operator", text: action.text});
+        fixture.live = {status: "running", text: "参照資料を確認しています。", permission: {
+          id: "browser-permission", detail: "サンプル資料を開く", options: [{id: "allow", label: "一度だけ許可"}],
+        }};
+      } else if (action.action === "answer") {
+        fixture.live = {status: "running", text: "確認を続けています。"};
+      } else if (action.action === "stop") {
+        fixture.live = {status: "error", text: "Junieとの整理を中断しました。"};
+      }
+      return Promise.resolve(Response.json(fixture));
+    };
+  }.toString() + ")()");
+  await click("rules-start");
+  await wait("!" + field("rules-draft") + ".hidden");
+  await change("rules-instruction", "このルールについて相談します。", "input");
+  await click("rules-message");
+  await wait("!" + field("rules-live-turn") + ".hidden && !" + field("rules-permission") + ".hidden");
+  assert.equal(await evaluate(field("rules-live") + ".textContent"), "参照資料を確認しています。");
+  await evaluate(field("rules-permission") + ".querySelector('button').click()");
+  await wait(field("rules-permission") + ".hidden");
+  await change("rules-instruction", "続けて相談する下書き", "input");
+  assert(await evaluate(field("rules-message") + ".disabled && " + field("rules-optimize") + ".disabled"));
+  await click("rules-stop");
+  await wait(field("rules-live-turn") + ".hidden && " + field("rules-stop") + ".hidden");
+  assert.equal(await value("rules-instruction"), "続けて相談する下書き");
+  assert.equal(await evaluate(field("rules-status") + ".textContent"), "Junieとの整理を中断しました。");
+  assert.deepEqual(await evaluate("window.ruleChatActions.slice(1).map(({action, request, option}) => [action, request || '', option || ''])"),
+    [["message", "", ""], ["answer", "browser-permission", "allow"], ["stop", "", ""]]);
+  await evaluate("stopRuleChatFixture()");
+  console.log("Browser RuleWorkspace live actions: streaming text, permission, cancellation, and unsent draft remain distinct");
   const liveTabs = await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)");
   const liveSteps = await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)");
   assert.equal(liveTabs.length, 6); assert.equal(liveSteps.length, 7);
@@ -506,6 +549,64 @@ try {
   await evaluate(field("migration-ledger-dialog") + ".close()");
   await click("tab-editor");
   await wait("!" + field("workspace-editor") + ".hidden");
+  async function captureChat(name) {
+    const directory = process.env.HARNESS_CHAT_SCREENSHOTS;
+    if (!directory) return;
+    await fs.mkdir(directory, {recursive: true});
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))");
+    await evaluate("Promise.all(document.getAnimations().filter(a => Number.isFinite(a.effect?.getComputedTiming().endTime))"
+      + ".map(a => a.finished.catch(() => {}))).then(() => true)");
+    const {data} = await cdp("Page.captureScreenshot", {format: "png"});
+    await fs.writeFile(path.join(directory, name + ".png"), Buffer.from(data, "base64"));
+  }
+  async function sendChat(input, send, history, text, checkIME = false) {
+    await change(input, text, "input");
+    await wait(field(send) + ".matches(':enabled')");
+    const enter = options => evaluate(field(input) + ".dispatchEvent(new KeyboardEvent('keydown', " +
+      JSON.stringify({key: "Enter", bubbles: true, cancelable: true, ...options}) + "))");
+    if (checkIME) {
+      assert(await enter({}), "plain Enter remains a newline");
+      await evaluate(field(input) + ".dispatchEvent(new CompositionEvent('compositionstart'))");
+      assert(await enter({ctrlKey: true, isComposing: true}), "IME Enter must not submit");
+      assert(await enter({ctrlKey: true}), "unflagged Enter during composition must not submit");
+      assert.equal(await value(input), text);
+      assert(!(await evaluate(field(history) + ".textContent")).includes(text));
+      await evaluate(field(input) + ".dispatchEvent(new CompositionEvent('compositionend'))");
+    }
+    assert.equal(await enter({ctrlKey: true}), false, "Ctrl+Enter submits the composer");
+    await wait(field(history) + ".textContent.includes(" + JSON.stringify(text) + ")");
+  }
+  const editorSample = "注文履歴の日付表記を元の画面と揃えてください。\n表示順は変更しないでください。";
+  await sendChat("editor-prompt", "editor-send", "editor-prompts", editorSample, true);
+  const editorBubble = "document.querySelector('#editor-prompts .junie-chat-bubble[data-side=outgoing]')";
+  assert.equal(await evaluate(editorBubble + ".querySelector('p').textContent"), editorSample);
+  await wait("!!document.querySelector('#editor-prompts .junie-chat-bubble[data-side=incoming]')");
+  const editorStyles = await evaluate(editorBubble + ".className");
+  const queuedEdit = editorBubble + ".querySelector('button')";
+  await wait("!!" + queuedEdit);
+  await evaluate(queuedEdit + ".click()");
+  assert.equal(await value("editor-prompt"), editorSample);
+  assert.equal(await evaluate(field("editor-cancel-prompt") + ".hidden"), false);
+  await click("editor-cancel-prompt");
+  assert.equal(await value("editor-prompt"), "");
+  if (process.env.HARNESS_CHAT_SCREENSHOTS) {
+    await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 900, deviceScaleFactor: 1, mobile: false});
+    await wait(editorBubble + ".offsetWidth > 0");
+    await evaluate(editorBubble + ".closest('.junie-chat-feed').scrollTop = 0");
+  }
+  await captureChat("editor-light-1280");
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 390, height: 690, deviceScaleFactor: 1, mobile: false});
+  await click("theme-toggle");
+  await wait("document.documentElement.dataset.theme === 'dark' && !document.documentElement.dataset.wipe");
+  await evaluate(field("editor-chat-feed") + ".closest('.junie-chat').scrollIntoView({block: 'end'})");
+  assert(await evaluate("document.documentElement.scrollWidth <= innerWidth && " +
+    field("editor-send") + ".getBoundingClientRect().right <= innerWidth && " +
+    field("editor-send") + ".getBoundingClientRect().bottom <= innerHeight"));
+  await wait(editorBubble + ".offsetWidth > 0");
+  await captureChat("editor-dark-390");
+  await click("theme-toggle");
+  await wait("document.documentElement.dataset.theme === 'light' && !document.documentElement.dataset.wipe");
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 650, deviceScaleFactor: 1, mobile: false});
   await click("tab-runs");
   await wait("!" + field("workspace-runs") + ".hidden");
   await click("tab-tokens");
@@ -598,8 +699,45 @@ try {
   const ruleInstruction = field("rules-instruction");
   await evaluate(ruleInstruction + ".value = '確認テスト'");
   await wait("getComputedStyle(" + instructionExample + ").visibility === 'hidden'");
+  const rulesSample = "確定済みの注文は取消不可ですか？\n決済前の例外を確認してください。";
+  await sendChat("rules-instruction", "rules-message", "rules-history", rulesSample, true);
+  await wait("!" + field("rules-proposal") + ".hidden");
+  const rulesBubble = "document.querySelector('#rules-history .junie-chat-bubble[data-side=outgoing]')";
+  assert.equal(await evaluate(rulesBubble + ".className"), editorStyles, "both panels use the same visual components");
+  assert.equal(await evaluate(rulesBubble + ".querySelector('p').textContent"), rulesSample);
+  await wait("!!document.querySelector('#rules-history .junie-chat-bubble[data-side=incoming]')");
+  if (process.env.HARNESS_CHAT_SCREENSHOTS) {
+    await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 900, deviceScaleFactor: 1, mobile: false});
+    await wait(rulesBubble + ".offsetWidth > 0");
+    await evaluate(rulesBubble + ".closest('.junie-chat-feed').scrollTop = 0");
+  }
+  await captureChat("consultation-light-1280");
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 390, height: 690, deviceScaleFactor: 1, mobile: false});
+  await click("theme-toggle");
+  await wait("document.documentElement.dataset.theme === 'dark' && !document.documentElement.dataset.wipe");
+  await evaluate(field("rules-chat-feed") + ".closest('.junie-chat').scrollIntoView({block: 'end'})");
+  assert(await evaluate("document.documentElement.scrollWidth <= innerWidth && " +
+    field("rules-message") + ".getBoundingClientRect().right <= innerWidth && " +
+    field("rules-message") + ".getBoundingClientRect().bottom <= innerHeight"));
+  await captureChat("consultation-dark-390");
+  await click("theme-toggle");
+  await wait("document.documentElement.dataset.theme === 'light' && !document.documentElement.dataset.wipe");
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 650, deviceScaleFactor: 1, mobile: false});
+
+  const ruleFeed = field("rules-chat-feed");
+  for (let turn = 0; turn < 3; turn++) {
+    await sendChat("rules-instruction", "rules-message", "rules-history", "適用条件を確認 " + turn + "\n" + "照合してください。\n".repeat(12) + "以上。");
+  }
+  await evaluate(ruleFeed + ".scrollTop = 0");
+  await wait("!" + field("rules-chat-latest") + ".hidden");
+  await sendChat("rules-instruction", "rules-message", "rules-history", "古い履歴を読みながら新しい返信を確認。");
+  assert.equal(await evaluate(ruleFeed + ".scrollTop"), 0, "new replies must not move someone reading older messages");
+  await click("rules-chat-latest");
+  assert(await evaluate(ruleFeed + ".scrollHeight - " + ruleFeed + ".clientHeight - " + ruleFeed + ".scrollTop <= 1"));
+  assert.equal(await evaluate(field("rules-chat-latest") + ".hidden"), true);
   await click("rules-optimize");
   await wait("!" + field("rules-proposal") + ".hidden");
+  console.log("Browser Junie chats: same components, IME-safe shortcut, queued edits, and manually followed history");
   await click("rules-preview");
   await wait("!" + field("rules-review") + ".hidden");
   const rulesConfirm = field("rules-confirm");

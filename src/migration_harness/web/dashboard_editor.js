@@ -25,6 +25,7 @@
   const sendButton = find("#editor-send");
   const cancelEdit = find("#editor-cancel-prompt");
   const promptList = find("#editor-prompts");
+  const updateFeed = bindJunieChat(find("#editor-chat-feed"), find("#editor-chat-latest"), form, prompt, sendButton);
   const documents = new Map();
   const runDrafts = new Map();
   let switching = false;
@@ -40,6 +41,7 @@
   let latest;
   let monacoLoading;
   let shownPrompts;
+  let chatRun;
   let selectedTarget;
   let editPrompt;
   let newPromptDraft = "";
@@ -358,6 +360,8 @@
     sendButton.querySelector("[data-send-label]").hidden = !active;
     if (active) sendButton.removeAttribute("aria-label");
     else sendButton.setAttribute("aria-label", "送信");
+    find("#editor-chat-shortcut").textContent = active ? "Ctrl+Enter で変更を保存" : "Ctrl+Enter で送信";
+    cancelEdit.hidden = !active;
     cancelEdit.disabled = !active || sending;
     updateSendButton();
   }
@@ -373,13 +377,8 @@
   // 送信した指示と、その応答を表示する行を作る。
   function chatTurn(text) {
     const item = document.createElement("li");
-    const message = Object.assign(document.createElement("div"), {className: "editor-chat-bubble editor-chat-message"});
-    const reply = Object.assign(document.createElement("div"), {className: "editor-chat-bubble editor-chat-reply"});
-    message.append(
-      Object.assign(document.createElement("span"), {className: "editor-muted", textContent: "あなた"}),
-      Object.assign(document.createElement("p"), {textContent: text}),
-    );
-    reply.append(Object.assign(document.createElement("span"), {className: "editor-muted", textContent: "ハーネス"}));
+    const message = junieChatBubble("あなた", text, true);
+    const reply = junieChatBubble("ハーネス");
     item.append(message, reply);
     return {item, message, reply};
   }
@@ -393,7 +392,8 @@
     const conversation = state.conversation || [];
     const ids = new Set(conversation.map(message => message.id));
     const lastVerification = conversation.findLast(entry => entry.result_status);
-    promptList.replaceChildren(...state.prompts.filter(message => !ids.has(message.id)).map(message => {
+    const expanded = new Set([...promptList.querySelectorAll("details[open]")].map(item => item.dataset.logKey));
+    const turns = [...state.prompts.filter(message => !ids.has(message.id)).map(message => {
       const {item, message: outgoing, reply} = chatTurn(message.text);
       const label = {queued: "送信待ち", steering: "Junie に送信・処理中", applying: "反映確認中", sending: "処理中", sent: "送信済み"}[message.status];
       reply.append(Object.assign(document.createElement("p"), {textContent: label}));
@@ -426,8 +426,10 @@
         reply.append(Object.assign(document.createElement("p"), {className: "editor-muted",
           textContent: message.review_targets.join("\n")}));
       }
-      for (const log of message.logs || []) {
+      for (const [index, log] of (message.logs || []).entries()) {
         const details = document.createElement("details");
+        details.dataset.logKey = JSON.stringify([state.run_id, message.id, index]);
+        details.open = expanded.has(details.dataset.logKey);
         const summary = Object.assign(document.createElement("summary"), {
           textContent: (log.kind === "build" ? "ビルド出力" : "チェッカー出力") + (log.truncated ? "（末尾）" : ""),
         });
@@ -446,7 +448,12 @@
         }
       }
       return item;
-    }));
+    })];
+    updateFeed(() => {
+      promptList.replaceChildren(...turns);
+      find("#editor-chat-empty").hidden = Boolean(turns.length);
+    }, chatRun !== state.run_id);
+    chatRun = state.run_id;
   }
 
   // 保存状態を会話履歴と送信欄に反映する。

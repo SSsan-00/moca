@@ -222,10 +222,8 @@
     .editor-splitter:is(:hover, :focus-visible, .is-dragging) { background: var(--blue-soft); }
     .editor-splitter:is(:hover, :focus-visible, .is-dragging)::after { background: var(--blue); }
     .editor-splitter:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
-    .editor-heading, .editor-header, .editor-chat form { padding: 12px; }
-    .editor-heading { border-bottom: 1px solid var(--line); }
-    .editor-heading :is(h2, p), .editor-header p { margin: 0; }
-    .editor-heading h2 { font-size: 16px; }
+    .editor-header { padding: 12px; }
+    .editor-header p { margin: 0; }
     #editor-php-source { width: min(100%, 30ch); min-height: 34px; padding: 6px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
     .editor-muted { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .editor-notice { margin: 10px 10px 0; padding: 8px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: var(--amber-soft); color: var(--amber-ink); }
@@ -239,26 +237,69 @@
     .editor-languages button { flex: 0 0 92px; padding-inline: 0; }
     #editor-target-buttons { display: contents; }
     .editor-languages button[aria-pressed="true"], #editor-diff-toggle[aria-pressed="true"] { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
-    #editor-save, #editor-send { background: var(--blue); color: var(--blue-ink); border-color: var(--blue); }
+    #editor-save { background: var(--blue); color: var(--blue-ink); border-color: var(--blue); }
     #workspace-editor .button:disabled { background: var(--surface-muted); color: var(--muted); border-color: var(--line); }
-    .editor-chat-body { flex: 1; min-height: 0; padding: 12px; overflow: auto; overflow-wrap: anywhere; }
-    .editor-chat-body p, .editor-chat form p { margin: 0; }
     #editor-operator-question { margin-block: 8px; white-space: pre-wrap; }
     .editor-chat-list { display: grid; gap: 12px; max-width: 48rem; list-style: none; padding: 0; margin: 12px auto 0; }
-    .editor-chat-list li { display: grid; gap: 5px; min-width: 0; }
-    .editor-chat-bubble { max-width: min(92%, 65ch); min-width: 0; padding: 8px 10px; }
-    .editor-chat-message { justify-self: end; border-radius: 10px 10px 2px 10px; background: var(--blue-soft); }
-    .editor-chat-reply { justify-self: start; border-radius: 10px 10px 10px 2px; background: var(--surface-muted); }
-    .editor-chat-bubble p { white-space: pre-wrap; }
-    .editor-chat-bubble p + p { margin-top: 4px; }
-    .editor-chat-list summary { min-height: 24px; cursor: pointer; }
-    .editor-chat-list details pre { white-space: pre-wrap; margin-block: 4px; overflow-wrap: anywhere; }
-    .editor-chat-list button { min-height: 28px; height: auto; padding-inline: 6px; margin-top: 4px; }
-    .editor-chat form { display: grid; gap: 6px; border-top: 1px solid var(--line); }
-    .editor-chat textarea { width: 100%; min-height: 64px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }
-    .editor-chat-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; }
-    .editor-chat-actions > div { display: flex; gap: 6px; margin-inline-start: auto; }
-    #editor-send:has([data-send-icon]:not([hidden])) { width: 38px; padding: 0; border-radius: 50%; font-size: 19px; }
+    .junie-chat { min-width: 0; background: var(--paper); overflow: hidden; }
+    .junie-chat-head { display: flex; align-items: center; gap: 9px; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+    .junie-chat-mark {
+      flex: 0 0 34px; height: 34px; display: grid; place-items: center; border-radius: 11px;
+      color: var(--blue); background: var(--blue-soft);
+    }
+    .junie-chat-heading { flex: 1; min-width: 0; }
+    .junie-chat-heading :is(h2, h3) { margin: 0; color: var(--ink); font-size: 15px; }
+    .junie-chat-heading p { margin: 1px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .junie-chat-latest { min-height: 30px; padding: 3px 7px; white-space: nowrap; font-size: 11px; }
+    .junie-chat-feed {
+      flex: 1; min-height: 0; padding: 12px; overflow: auto; scrollbar-gutter: stable;
+      overflow-anchor: none; overflow-wrap: anywhere; background: var(--surface-soft);
+    }
+    .junie-chat-feed:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .junie-chat-context p { margin: 0; }
+    .junie-chat-list { display: grid; gap: 13px; max-width: 48rem; padding: 0; margin: 0 auto; list-style: none; }
+    .junie-chat-context:not([hidden]) + .junie-chat-list:not(:empty) { margin-top: 12px; }
+    .junie-chat-list > li { display: grid; align-items: start; gap: 8px; min-width: 0; }
+    .junie-chat-bubble {
+      display: grid; gap: 4px; justify-self: start; min-width: 0; max-width: min(96%, 60ch); padding: 8px 10px;
+      border: 1px solid var(--line); border-radius: 13px 13px 13px 4px; background: var(--paper); color: var(--ink);
+    }
+    .junie-chat-bubble[data-side="outgoing"] {
+      justify-self: end; border-color: transparent; border-radius: 13px 13px 4px 13px; background: var(--blue-soft);
+    }
+    .junie-chat-sender { color: var(--muted); font-size: 11px; font-weight: 700; }
+    .junie-chat-bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .junie-chat-bubble :is(pre, button) { margin: 0; }
+    .junie-chat-bubble pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .junie-chat-bubble button { justify-self: start; min-height: 30px; margin-top: 2px; }
+    .junie-chat-feed summary { cursor: pointer; }
+    .junie-chat-empty {
+      margin: 18px auto; padding: 14px; max-width: 42ch; border: 1px dashed var(--line); border-radius: 12px;
+      text-align: center; color: var(--muted); font-size: 13px;
+    }
+    .junie-chat-attachment { margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
+    .junie-chat-attachment pre { margin: 6px 0; }
+    .junie-chat-attachment button { min-height: 32px; margin: 2px 5px 2px 0; }
+    .junie-chat .junie-chat-composer { flex: none; display: grid; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); }
+    .junie-chat .junie-chat-composer textarea {
+      width: 100%; height: auto; min-height: 52px; max-height: 22dvh; margin: 0; resize: vertical; padding: 8px 10px;
+      border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); font: inherit;
+    }
+    .junie-chat-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+    .junie-chat-actions > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-inline-start: auto; }
+    .junie-chat-actions p { margin: 0; }
+    .junie-chat .junie-chat-send {
+      min-height: 34px; padding: 4px 11px; border-color: var(--blue); border-radius: 17px;
+      background: var(--blue); color: var(--blue-ink);
+    }
+    .junie-chat .junie-chat-send:disabled { border-color: var(--line); background: var(--surface-muted); color: var(--muted); }
+    .junie-chat .junie-chat-composer :is(button, textarea):focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    .junie-chat .junie-chat-composer .prompt-example { inset-inline-start: 10px; }
+    .junie-chat-hint { color: var(--muted); font-size: 11px; }
+    @media (max-width: 680px) {
+      .editor-layout .junie-chat { min-height: min(32rem, 74dvh); }
+      .editor-layout .junie-chat-feed { max-height: 48dvh; }
+    }
     #workspace-editor .workspace-feedback { margin: 4px 12px 10px; }
     .editor-layout:has(#editor-php-toggle[aria-pressed="true"]) #editor-error { display: none; }
     @media (max-width: 680px) {
@@ -343,15 +384,18 @@
     #token-input-breakdown { margin-top: 4px; }
     #workspace-rule-workspace { overflow: hidden; }
     .rule-workspace { display: grid; height: 100%; grid-template-rows: auto minmax(0, 1fr); gap: 12px; overflow: hidden; }
+    .rule-workspace-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+    .rule-workspace-intro { flex: 1 1 310px; }
+    .rule-workspace-header > p { flex: 1 0 100%; }
     .rule-workspace-header h2 { margin: 0; }
     .rule-workspace-header p { margin: 4px 0 0; }
     .rule-workspace-header p:empty { display: none; }
-    .rule-workspace-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
+    .rule-workspace-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
     .rule-workspace .rule-workspace-actions label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; }
     .rule-workspace .rule-workspace-actions select { width: auto; max-width: 100%; margin: 0; }
     .rule-workspace-body { display: flex; flex-direction: column; min-height: 0; gap: 10px; }
     #rules-draft:not([hidden]) { display: grid; grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
-    .rule-workspace-columns { display: grid; grid-template: minmax(0, 1fr) / repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .rule-workspace-columns { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 12px; }
     .rule-workspace-columns > section { display: grid; min-height: 0; align-content: start; gap: 8px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
     .rule-workspace-columns h3 { margin: 0; }
     .rule-workspace-columns label { display: grid; gap: 4px; }
@@ -360,13 +404,16 @@
     .rule-workspace pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 19rem; overflow: auto; }
     .rule-workspace textarea { height: auto; min-height: 0; }
     #rules-archive { flex: none; max-height: min(20vh, 12rem); overflow: auto; }
-    #rules-history { max-height: 17rem; overflow: auto; }
-    #rules-history p { margin-block: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .rule-workspace-columns > section.junie-chat { display: flex; flex-direction: column; padding: 0; gap: 0; overflow: hidden; }
+    #rules-live-turn { display: grid; max-width: 48rem; margin: 10px auto 0; }
+    #rules-live-turn[hidden] { display: none; }
     @media (max-width: 950px), (max-height: 500px) {
       .rule-workspace { display: block; overflow: auto; }
       .rule-workspace-body { margin-top: 12px; }
       .rule-workspace-columns { grid-template: auto / minmax(0, 1fr); }
       .rule-workspace-columns > section { overflow: visible; }
+      .rule-workspace-columns > .junie-chat { min-height: min(30rem, 78dvh); }
+      .rule-workspace-columns > .junie-chat .junie-chat-feed { max-height: 54dvh; }
       #rules-archive { max-height: none; }
     }
     #workspace-settings { overflow: hidden; }
@@ -468,7 +515,7 @@
     #editor-junie-status:not(:disabled):hover { border-color: currentColor; }
     #editor-junie-status:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
     #editor-junie-status .state-orb { flex-shrink: 0; }
-    .editor-chat-body #editor-junie-activity { margin-top: 6px; }
+    .junie-chat-context #editor-junie-activity { margin-top: 6px; }
     .controls { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 7px; }
     #toggle { min-width: 128px; }
     #stop[hidden], #toggle[hidden] { display: none; }
@@ -627,7 +674,7 @@
     #progress-prompt-submit:disabled {
       background: var(--surface-muted); color: var(--muted); border-color: var(--line); opacity: 1; transform: none;
     }
-    #editor-send:enabled:hover { background: var(--blue-hover); }
+    .junie-chat .junie-chat-send:enabled:hover { background: var(--blue-hover); }
     #review-dialog { overflow: hidden; }
     #review-dialog > .review-dialog-inner { display: grid; grid-template-rows: minmax(0, 1fr) auto; max-height: min(86dvh, 760px); padding: 0; }
     .checker-review-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: clamp(14px, 3vw, 22px); }
@@ -653,6 +700,7 @@
     #build-review-source { min-height: 11rem; margin-top: 8px; font: 13px/1.55 var(--mono); }
     #build-review-dialog .review-actions { display: flex; justify-content: flex-end; flex: 0 0 auto; margin: 0; padding: 10px clamp(16px, 3vw, 22px); border-top: 1px solid var(--line); }
     #progress-prompt-dialog .review-actions { display: flex; justify-content: flex-end; }
+    #progress-prompt-list li { display: grid; gap: 5px; min-width: 0; }
     #progress-prompt-list { max-height: 12rem; overflow: auto; overflow-wrap: anywhere; }
     .review-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
     @media (min-width: 650px) {
@@ -987,24 +1035,32 @@
       </section>
       <div class="editor-splitter" role="separator" aria-label="エディタとJunieの幅を調整"
            aria-controls="editor-pane" aria-orientation="vertical" tabindex="0"></div>
-      <aside class="panel editor-chat" aria-labelledby="editor-chat-title">
-        <header class="editor-heading"><h2 id="editor-chat-title">Junie</h2></header>
-        <div class="editor-chat-body">
-          <p role="status"><button class="state" id="editor-junie-status" type="button" disabled><span class="state-orb" aria-hidden="true"></span><span id="editor-junie-phase"></span></button></p>
-          <p id="editor-junie-activity" class="editor-muted" hidden></p>
-          <p id="editor-operator-question" class="editor-notice" role="status" hidden></p>
-          <ol class="editor-chat-list" id="editor-prompts" aria-label="Junie との会話" aria-live="polite"></ol>
+      <aside class="panel junie-chat" aria-labelledby="editor-chat-title">
+        <header class="junie-chat-head">
+          <span class="junie-chat-mark" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8m-8 3h5"/></svg></span>
+          <div class="junie-chat-heading"><h2 id="editor-chat-title">Junie</h2><p>このRunの会話</p></div>
+          <button class="button junie-chat-latest" id="editor-chat-latest" type="button" hidden>最新へ ↓</button>
+        </header>
+        <div class="junie-chat-feed" id="editor-chat-feed" role="region" tabindex="0" aria-label="エディタの会話履歴">
+          <div class="junie-chat-context">
+            <p role="status"><button class="state" id="editor-junie-status" type="button" disabled><span class="state-orb" aria-hidden="true"></span><span id="editor-junie-phase"></span></button></p>
+            <p id="editor-junie-activity" class="editor-muted" hidden></p>
+            <p id="editor-operator-question" class="editor-notice" role="status" hidden></p>
+          </div>
+          <p class="junie-chat-empty" id="editor-chat-empty">ここに追加指示と進捗が表示されます。</p>
+          <ol class="junie-chat-list" id="editor-prompts" aria-label="Junie との会話" aria-live="polite"></ol>
         </div>
-        <form id="editor-prompt-form">
+        <form class="junie-chat-composer" id="editor-prompt-form">
           <div class="prompt-field">
-            <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " required aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-prompt-example"></textarea>
+            <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " required aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-chat-shortcut"></textarea>
             <span class="prompt-example" id="editor-prompt-example" style="--characters: 14" aria-hidden="true"><span>例：日付の表示形式を維持する</span></span>
           </div>
-          <div class="editor-chat-actions">
+          <div class="junie-chat-actions">
             <p class="editor-muted" id="editor-prompt-timing"></p>
             <div>
-              <button class="button" id="editor-cancel-prompt" type="button" disabled>キャンセル</button>
-              <button class="button" id="editor-send" type="submit" aria-label="送信" disabled><span data-send-icon aria-hidden="true">↑</span><span data-send-label hidden>変更を保存</span></button>
+              <span class="junie-chat-hint" id="editor-chat-shortcut">Ctrl+Enter で送信</span>
+              <button class="button" id="editor-cancel-prompt" type="button" disabled hidden>キャンセル</button>
+              <button class="button junie-chat-send" id="editor-send" type="submit" aria-keyshortcuts="Control+Enter" aria-label="送信" disabled><span data-send-icon><span aria-hidden="true">↑ </span>送信</span><span data-send-label hidden>変更を保存</span></button>
             </div>
           </div>
         </form>
@@ -1032,9 +1088,9 @@
   <section class="workspace-pane" id="workspace-rule-workspace" role="tabpanel" aria-labelledby="tab-rule-workspace" tabindex="0" hidden>
     <div class="panel workspace-tools rule-workspace">
       <header class="rule-workspace-header">
-        <h2>次の移行ルールを整理</h2><p>現在の設定は、差分を確認して反映するまで変わりません。</p>
+        <div class="rule-workspace-intro"><h2>次の移行ルールを整理</h2><p>現在の設定は、差分を確認して反映するまで変わりません。</p></div>
         <div class="rule-workspace-actions">
-          <button type="button" id="rules-start">新しい下書き</button>
+          <button type="button" class="button" id="rules-start">新しい下書き</button>
           <label>下書きを開く <select id="rules-drafts"><option value="">選択してください</option></select></label>
         </div>
         <p id="rules-demo-note" hidden>デモ：Junieの返答はサンプルです。操作しても実際のファイルやTOMLは変更されません。</p>
@@ -1054,20 +1110,36 @@
               <label>読む場面 <input id="rules-description"></label>
               <button type="button" id="rules-save-classification">分類を保存</button>
             </section>
-            <section aria-labelledby="rules-dialogue-title">
-              <h3 id="rules-dialogue-title">Junieと相談</h3>
-              <div id="rules-history" role="log" aria-label="保存済みの会話"></div>
-              <pre id="rules-live" aria-live="off"></pre>
-              <div id="rules-permission" hidden></div>
-              <label for="rules-instruction">指示・質問</label>
-              <div class="prompt-field">
-                <textarea id="rules-instruction" rows="4" placeholder=" " aria-describedby="rules-instruction-example"></textarea>
-                <span class="prompt-example" id="rules-instruction-example" style="--characters: 25" aria-hidden="true"><span>例：どんな時に適用するか、Junieと相談できます</span></span>
+            <section class="junie-chat" aria-labelledby="rules-dialogue-title">
+              <header class="junie-chat-head">
+                <span class="junie-chat-mark" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8m-8 3h5"/></svg></span>
+                <div class="junie-chat-heading"><h3 id="rules-dialogue-title">Junieと相談</h3><p>この下書きのルール</p></div>
+                <button class="button junie-chat-latest" id="rules-chat-latest" type="button" hidden>最新へ ↓</button>
+              </header>
+              <div class="junie-chat-feed" id="rules-chat-feed" role="region" tabindex="0" aria-label="ルール整理の会話履歴">
+                <p class="junie-chat-empty" id="rules-chat-empty">ルールの適用条件や例外を相談できます。提案は確認するまで原文に反映されません。</p>
+                <ol class="junie-chat-list" id="rules-history" aria-label="保存済みの会話" aria-live="polite"></ol>
+                <div id="rules-live-turn" hidden><div class="junie-chat-bubble" data-side="incoming">
+                  <span class="junie-chat-sender">Junie · 回答中</span><p id="rules-live" aria-live="off"></p>
+                </div></div>
+                <div id="rules-permission" class="junie-chat-attachment" role="group" aria-label="Junieからの確認" hidden></div>
+                <details id="rules-proposal" class="junie-chat-attachment" hidden><summary>Junieの本文変更案</summary><pre id="rules-proposal-text"></pre><button class="button" type="button" id="rules-accept">下書きに採用</button></details>
               </div>
-              <button type="button" id="rules-message">送信</button>
-              <button type="button" id="rules-optimize">整理案を作る</button>
-              <button type="button" id="rules-stop" hidden>中断</button>
-              <details id="rules-proposal" hidden><summary>Junieの本文変更案</summary><pre id="rules-proposal-text"></pre><button type="button" id="rules-accept">下書きに採用</button></details>
+              <form class="junie-chat-composer" id="rules-composer">
+                <label class="junie-chat-hint" for="rules-instruction">指示・質問</label>
+                <div class="prompt-field">
+                  <textarea id="rules-instruction" rows="2" placeholder=" " aria-describedby="rules-chat-shortcut"></textarea>
+                  <span class="prompt-example" id="rules-instruction-example" style="--characters: 25" aria-hidden="true"><span>例：どんな時に適用するか、Junieと相談できます</span></span>
+                </div>
+                <div class="junie-chat-actions">
+                  <span class="junie-chat-hint" id="rules-chat-shortcut">Ctrl+Enter で送信</span>
+                  <div>
+                    <button class="button" type="button" id="rules-optimize">整理案を作る</button>
+                    <button class="button" type="button" id="rules-stop" hidden>中断</button>
+                    <button class="button junie-chat-send" type="submit" id="rules-message" aria-keyshortcuts="Control+Enter" disabled><span aria-hidden="true">↑ </span>送信</button>
+                  </div>
+                </div>
+              </form>
             </section>
             <section aria-labelledby="rules-preview-title">
               <h3 id="rules-preview-title">確認・反映</h3>
@@ -2057,6 +2129,7 @@ function showMigrationLedger(ledger, snapshot, compare) {
 <script src="./src/migration_harness/web/dashboard_runs.js"></script>
 <script src="./src/migration_harness/web/dashboard_settings.js"></script>
 <script src="./src/migration_harness/web/dashboard_log_presentation.js"></script>
+<script src="./src/migration_harness/web/dashboard_chat.js"></script>
 <template id="junie-log">
   <main class="junie-log" aria-labelledby="junie-log-title">
     <header class="junie-log-head">
