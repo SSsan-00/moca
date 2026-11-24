@@ -17,9 +17,11 @@ def recovery_status(config, run_id, *, blocked=False):
         _, record = load_dashboard_record(config, run_id)
         completed = record.get("completed_capsules")
         total = record.get("context_capsules")
-        attempt = record.get("script_inflight")
+        command_unconfirmed = record.get("unconfirmed_command")
+        attempt = None if command_unconfirmed else record.get("script_inflight")
         conflict = any(edit.get("status") == "conflict" for edit in queue["edits"].values())
-        needs_process_check = blocked or bool(record.get("migration_stop_unconfirmed")) or record["status"] in ACTIVE_PHASES
+        needs_process_check = (blocked or bool(command_unconfirmed or record.get("migration_stop_unconfirmed"))
+                               or record["status"] in ACTIVE_PHASES)
         draft = ("migration" if record.get("stopped_migration_draft") else
                  "repair" if record.get("repair_pending", {}).get("snapshot") else None)
         phase = record.get("script_phase") or record["status"]
@@ -34,6 +36,7 @@ def recovery_status(config, run_id, *, blocked=False):
             "pending_prompts": sum(prompt["status"] != "sent" for prompt in queue["prompts"]),
             "needs_process_check": needs_process_check,
             "unknown_script": approval,
+            "unconfirmed_command": command_unconfirmed,
             "available": bool(approval or needs_process_check or conflict or draft
                               or record["status"] in RECOVERY_PHASES),
         }

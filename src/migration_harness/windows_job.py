@@ -22,16 +22,36 @@ class _JobAccounting(ctypes.Structure):
     ]
 
 
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [
+        ("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
+        ("flags", win.DWORD), ("min_working_set", ctypes.c_size_t), ("max_working_set", ctypes.c_size_t),
+        ("active_limit", win.DWORD), ("affinity", ctypes.c_size_t),
+        ("priority_class", win.DWORD), ("scheduling_class", win.DWORD),
+    ]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [
+        ("basic", _BasicLimits), ("io_counters", ctypes.c_ulonglong * 6),
+        ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t),
+        ("peak_process_memory", ctypes.c_size_t), ("peak_job_memory", ctypes.c_size_t),
+    ]
+
+
 _HANDLE = win.HANDLE
 _DWORD = win.DWORD
 _BOOL = win.BOOL
 
 
 CREATE_SUSPENDED = 0x00000004
+_BASIC_ACCOUNTING = 1
+_EXTENDED_LIMITS = 9
+_KILL_ON_JOB_CLOSE = 0x00002000
 
 
 class WindowsJob:
-    def __init__(self):
+    def __init__(self, *, kill_on_close=False):
         """子プロセスを所有するWindows Job Objectを作成する。"""
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -56,6 +76,14 @@ class WindowsJob:
         self.handle = create(None, None)
         if not self.handle:
             raise ctypes.WinError(ctypes.get_last_error())
+        if kill_on_close:
+            limits = _ExtendedLimits()
+            limits.basic.flags = _KILL_ON_JOB_CLOSE
+            set_info = bind("SetInformationJobObject", _BOOL, _HANDLE, ctypes.c_int, ctypes.c_void_p, _DWORD)
+            if not set_info(self.handle, _EXTENDED_LIMITS, ctypes.byref(limits), ctypes.sizeof(limits)):
+                error = ctypes.WinError(ctypes.get_last_error())
+                self.close()
+                raise error
 
     def start(self, process):
         """起動を保留したプロセスをJobへ登録して開始する。"""
@@ -87,17 +115,16 @@ class WindowsJob:
         finally:
             self._close(snapshot)
 
-    def stop(self, deadline):
+    def active_processes(self):
         accounting = _JobAccounting()
-
-        def active():
-            if not self._query(self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
-                raise ctypes.WinError(ctypes.get_last_error())
-            return accounting.active_processes
-
-        if active() and not self._terminate(self.handle, 1):
+        if not self._query(self.handle, _BASIC_ACCOUNTING, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
             raise ctypes.WinError(ctypes.get_last_error())
-        while active():
+        return accounting.active_processes
+
+    def stop(self, deadline):
+        if self.active_processes() and not self._terminate(self.handle, 1):
+            raise ctypes.WinError(ctypes.get_last_error())
+        while self.active_processes():
             if time.monotonic() >= deadline:
                 raise TimeoutError("Job Object still has active processes")
             time.sleep(.025)
