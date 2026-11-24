@@ -121,8 +121,9 @@ class EditorSaveRecoveryTests(SavedRunFixture):
               patch.object(workflow.junie_cli, "run_interactive") as junie):
             with (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
                   patch.object(Path, "replace", new=fail_second),
-                  self.assertRaisesRegex(OSError, "fixture editor history is unwritable")):
+                  self.assertRaisesRegex(OSError, "保存履歴が未確定") as failure):
                 resume(plan, "first")
+            self.assertIn("fixture editor history is unwritable", str(failure.exception.__cause__))
             verify.assert_not_called()
             self.assertEqual(self.target.read_text(encoding="utf-8-sig"), changes[self.target.name])
             self.assertEqual((self.run_path / "editor.json").read_bytes(), original_queue)
@@ -161,6 +162,143 @@ class EditorSaveRecoveryTests(SavedRunFixture):
 
     def test_build_resume_retains_history_after_partial_target_replacement(self):
         self.check_build_history_recovery(partial=True)
+
+    def check_build_recovery_before_resave(self, *, reverse=False, separate_agent_change=False):
+        baseline = "class Example {\n    int First = 0;\n" + "".join(
+            f"    int Field{i} = {i};\n" for i in range(8)
+        ) + "    int Last = 0;\n}\n"
+        self.target.write_bytes(baseline.encode("utf-8-sig"))
+        self.start_server(ready=False)
+        first = baseline.replace("First = 0", "First = 9")
+        earlier = self.editor({**self.save_action(first), "save_id": "1" * 32})
+        self.assertTrue(earlier["queued"])
+        unrelated = "Field3 = 33"
+        if separate_agent_change:
+            self.target.write_bytes(baseline.replace("Field3 = 3", unrelated).encode("utf-8-sig"))
+
+        def git_only(command, *args, **kwargs):
+            self.assertEqual(command[:2], ["git", "merge-file"])
+            return self.popen(command, *args, **kwargs)
+
+        def build(request_id):
+            plan = workflow.plan_build_resume(self.config, self.run_id)
+            return workflow.resume_with_junie(self.config, self.run_id,
+                                               verification_request={**plan, "id": request_id})
+
+        with (patch.object(subprocess, "Popen", side_effect=git_only),
+              patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify):
+            with (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
+                  self.assertRaises(OSError)):
+                build("physical-write-before-history")
+            verify.assert_not_called()
+            before_resave = first.replace("Field3 = 3", unrelated) if separate_agent_change else first
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), before_resave)
+            self.start_server(ready=False)
+            view = self.editor()
+            draft = view["content"].replace("Last = 0", "Last = 7")
+            if reverse:
+                draft = draft.replace("First = 9", "First = 0")
+            previous = view["edit"] or {}
+            saved = self.editor({
+                "kind": "save", "run_id": self.run_id, "target": self.target.name,
+                "base": previous.get("base", view["content"]), "content": draft,
+                "edit_id": previous.get("id"), "save_id": "2" * 32,
+            })
+            self.assertTrue(saved["queued"])
+            self.assertEqual(build("retry")["status"], "build_succeeded")
+            verify.assert_called_once()
+            self.assertEqual(build("repeat")["status"], "build_succeeded")
+            self.assertEqual(verify.call_count, 2)
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), draft)
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        inputs = []
+        hint, _ = workflow._operator_edit_context(self.run_path, agent, "fixture", inputs, None)
+        self.assertIn("Human-edit handoff", hint)
+        operator = json.loads((agent / inputs[0]).read_bytes())
+        with editor_queue.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual(queue["operator_edits"], operator)
+        history = operator[self.target.name]
+        self.assertEqual(len(history), 2)
+        self.assertIn("-    int First = 0;", history[0])
+        self.assertIn("+    int First = 9;", history[0])
+        self.assertIn("+    int Last = 7;", history[1])
+        self.assertEqual("+    int First = 0;" in history[1], reverse)
+        self.assertNotIn("+    int Field3 = 33;", "".join(history))
+
+    def test_resave_after_build_history_failure_retains_both_operator_changes(self):
+        self.check_build_recovery_before_resave()
+
+    def test_resave_can_reverse_the_already_adopted_operator_change(self):
+        self.check_build_recovery_before_resave(reverse=True)
+
+    def test_resave_after_build_history_failure_does_not_attribute_agent_changes(self):
+        self.check_build_recovery_before_resave(separate_agent_change=True)
+
+    def leave_applied_build_edit(self):
+        self.start_server(ready=False)
+        self.assertTrue(self.editor({**self.save_action("class Manual {}\n"), "save_id": "1" * 32})["queued"])
+        plan = workflow.plan_build_resume(self.config, self.run_id)
+        with (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
+              patch.object(workflow, "_verify_worktree") as verify,
+              self.assertRaisesRegex(OSError, "保存履歴が未確定")):
+            workflow.resume_with_junie(self.config, self.run_id, verification_request={**plan, "id": "fixture"})
+        verify.assert_not_called()
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class Manual {}\n")
+        journal = self.run_path / editor_queue.EDITOR_SAVE_PENDING
+        self.assertTrue(journal.is_file())
+        return journal
+
+    def test_build_plan_recovers_without_opening_editor_and_commits_history_once(self):
+        journal = self.leave_applied_build_edit()
+        history = self.run_path / "editor.json"
+        before = history.read_bytes()
+        with (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
+              self.assertRaisesRegex(OSError, "保存履歴が未確定")):
+            workflow.plan_build_resume(self.config, self.run_id)
+        self.assertEqual(history.read_bytes(), before)
+        self.assertTrue(journal.is_file())
+        unlink = Path.unlink
+
+        def fail_to_remove_journal(path, *args, **kwargs):
+            if path == journal:
+                raise PermissionError("fixture recovery journal cannot be removed")
+            return unlink(path, *args, **kwargs)
+
+        with (patch.object(Path, "unlink", new=fail_to_remove_journal),
+              self.assertRaisesRegex(OSError, "保存履歴が未確定")):
+            workflow.plan_build_resume(self.config, self.run_id)
+        committed = history.read_bytes()
+        self.assertTrue(journal.is_file())
+        self.assertEqual(json.loads(committed)["edits"], {})
+        self.assertEqual(len(json.loads(committed)["operator_edits"][self.target.name]), 1)
+        plan = workflow.plan_build_resume(self.config, self.run_id)
+        self.assertEqual(plan["edits"], {})
+        self.assertFalse(journal.exists())
+        self.assertEqual(history.read_bytes(), committed)
+        with patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify:
+            self.assertEqual(workflow.resume_with_junie(
+                self.config, self.run_id, verification_request={**plan, "id": "recovered"},
+            )["status"], "build_succeeded")
+            verify.assert_called_once()
+        self.assertEqual(history.read_bytes(), committed)
+
+    def test_build_history_recovery_stops_for_an_unrecognized_target_version(self):
+        journal = self.leave_applied_build_edit()
+        history = self.run_path / "editor.json"
+        before = history.read_bytes()
+        applied = self.target.read_bytes()
+        self.target.write_bytes(b"class External {}\n")
+        with self.assertRaisesRegex(ValueError, "外部で更新"):
+            workflow.plan_build_resume(self.config, self.run_id)
+        self.assertIn("外部で更新", self.http_conflict())
+        self.assertEqual(self.target.read_bytes(), b"class External {}\n")
+        self.assertEqual(history.read_bytes(), before)
+        self.assertTrue(journal.is_file())
+        self.target.write_bytes(applied)
+        self.assertEqual(workflow.plan_build_resume(self.config, self.run_id)["edits"], {})
+        self.assertFalse(journal.exists())
 
     def test_failed_history_stops_resume_until_recovered_and_does_not_reapply(self):
         self.stage_old_instruction()

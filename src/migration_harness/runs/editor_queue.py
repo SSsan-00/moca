@@ -14,7 +14,7 @@ from typing import Any, Iterator
 
 from ..files import safe_target
 from .run_records import lock_run_record, replace_run_record
-from .worktree_targets import EDIT_BYTES, read_target, target_edit_bytes, worktree_source_lock
+from .worktree_targets import EDIT_BYTES, read_target, target_edit_bytes, target_hash, worktree_source_lock
 
 EDITOR_TARGET_SUFFIXES = frozenset({".cs", ".cshtml"})
 QUEUE_PHASES = {"junie_running", "editor_checkpoint", "editor_followup", "interrupted", "junie_failed"}
@@ -65,13 +65,62 @@ def stage_editor_save(run_path, queue, original, draft, save_id, intent):
         }
     _record_save_request(queue, save_id, intent, after=after)
     if before != after:
-        path = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
-        safe_target(run_path, path.with_suffix(".json.tmp").relative_to(run_path))
-        # 本文を置換する前に、置換前後の版と確定すべき履歴を永続化する。
-        replace_run_record(path, {"target": intent["target"], "before": before, "after": after,
-                                 "history_before": _digest(_read_queue(run_path / "editor.json").encode("utf-8")),
-                                 "history_after": queue})
+        _stage_editor_recovery(run_path, {"target": intent["target"], "before": before, "after": after,
+                                          "history_after": queue})
     return before
+
+
+def _stage_editor_recovery(run_path, receipt):
+    path = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
+    safe_target(run_path, path.with_suffix(".json.tmp").relative_to(run_path))
+    if path.exists():
+        raise ValueError(_HISTORY_RECOVERY)
+    replace_run_record(path, {**receipt, "history_before": _digest(_read_queue(run_path / "editor.json").encode("utf-8"))})
+
+
+def stage_editor_adoption(run_path, queue, merged):
+    entries = {}
+    for name, (data, current, content) in merged.items():
+        edit = queue["edits"][name]
+        entries[name] = {"before": _digest(data), "after": _digest(target_edit_bytes(data or b"", content)),
+                         "edit_id": edit["id"], "diff": _adopted_editor_diff(edit, current, content)}
+    adoption = {"id": secrets.token_hex(16), "entries": entries}
+    _stage_editor_recovery(run_path, {"adoption": adoption})
+    return adoption
+
+
+def complete_editor_adoption(queue, worktree, targets, adoption):
+    entries = adoption["entries"]
+    names = {target.as_posix() for target in targets if target.suffix.lower() in EDITOR_TARGET_SUFFIXES}
+    if not isinstance(entries, dict) or entries.keys() - names:
+        raise ValueError(_HISTORY_RECOVERY + " 保存先が現在の移行先と一致しません。")
+    applied = []
+    for name, receipt in entries.items():
+        if queue["edits"].get(name, {}).get("id") != receipt["edit_id"]:
+            raise ValueError(_HISTORY_RECOVERY + " 反映した編集の版が一致しません。")
+        current = target_hash(safe_target(worktree, Path(name)))
+        if current == receipt["after"]:
+            applied.append(name)
+        elif current != receipt["before"]:
+            raise ValueError(_HISTORY_RECOVERY + " 対象ファイルが外部で更新されたため、履歴を確定せず停止しました。")
+    for name in applied:
+        _append_operator_diff(queue, name, entries[name]["diff"])
+        del queue["edits"][name]
+    if applied:
+        queue["last_editor_adoption"] = adoption["id"]
+
+
+def _recover_editor_adoption(path, before, worktree, targets, record):
+    adoption = record["adoption"]
+    queue = json.loads(before)
+    if queue.get("last_editor_adoption") == adoption["id"]:
+        return
+    if _digest(before.encode("utf-8")) != record["history_before"]:
+        raise ValueError(_HISTORY_RECOVERY + " 編集履歴が外部で更新されたため、反映を停止しました。")
+    with worktree_source_lock(worktree):
+        complete_editor_adoption(queue, worktree, targets, adoption)
+        if queue.get("last_editor_adoption") == adoption["id"]:
+            replace_run_record(path, queue)
 
 
 def record_queued_editor_save(queue, edit, save_id, intent):
@@ -121,6 +170,18 @@ def _recover_editor_save(run_path, path, before, worktree, targets):
     journal = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
     try:
         record = json.loads(journal.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            raise ValueError("invalid editor save recovery")
+    except ValueError as exc:
+        raise ValueError(_HISTORY_RECOVERY + " 保存時の復旧記録を読み取れません。") from exc
+    if "adoption" in record:
+        try:
+            _recover_editor_adoption(path, before, worktree, targets, record)
+        except (KeyError, TypeError) as exc:
+            raise ValueError(_HISTORY_RECOVERY + " 保存時の復旧記録を読み取れません。") from exc
+        journal.unlink()
+        return
+    try:
         name, after = record["target"], record["history_after"]
         if not isinstance(name, str) or not isinstance(after, dict):
             raise ValueError("invalid editor save recovery")
@@ -199,16 +260,26 @@ def merge_edit(base: str, draft: str, current: str) -> str | None:
     raise ValueError("C# の変更を合流できませんでした。Git と対象ファイルを確認してください。")
 
 
+def _operator_edit_diff(before, after):
+    return "".join(unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), n=2)) if before != after else ""
+
+
+def _adopted_editor_diff(edit, current, adopted):
+    before, after = (edit["base"], edit["content"]) if current == adopted else (current, adopted)
+    return _operator_edit_diff(before, after)
+
+
+def _append_operator_diff(queue, target, diff):
+    if diff:
+        queue.setdefault("operator_edits", {}).setdefault(target, []).append(diff)
+
+
 def record_operator_edit(queue: dict[str, Any], target: str, before: str, after: str) -> None:
-    if before == after:
-        return
-    diff = "".join(unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), n=2))
-    queue.setdefault("operator_edits", {}).setdefault(target, []).append(diff)
+    _append_operator_diff(queue, target, _operator_edit_diff(before, after))
 
 
 def record_adopted_editor_edit(queue, target, edit, current, adopted):
-    before, after = (edit["base"], edit["content"]) if current == adopted else (current, adopted)
-    record_operator_edit(queue, target, before, after)
+    _append_operator_diff(queue, target, _adopted_editor_diff(edit, current, adopted))
 
 
 def add_prompt(queue: dict[str, Any], action: dict[str, Any]) -> None:
