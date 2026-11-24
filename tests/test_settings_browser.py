@@ -111,7 +111,7 @@ max_bytes = 9007199254740993 # preserve this value
                 with patch.object(dashboard, "list_models", return_value=catalog):
                     result = subprocess.run(
                         [*node_args, str(helper), chrome, str(root / "browser"), url, notification_url, run_id,
-                         str(run / JUNIE_LOG_NAME)],
+                         str(run / JUNIE_LOG_NAME), str(path)],
                         capture_output=True, text=True, encoding="utf-8", timeout=110,
                     )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

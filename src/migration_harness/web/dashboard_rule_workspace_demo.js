@@ -8,6 +8,7 @@
   let sequence = 0;
 
   window.harnessRuleWorkspaceDemo = (query, action) => {
+    if (!action && query?.registered === "1") return {registered: {name: file.name, text: file.text}};
     if (!action && !query?.id) {
       return {drafts: [...drafts.values()].filter(draft => !draft.applied)
         .map(draft => ({id: draft.id, files: draft.files.length}))};

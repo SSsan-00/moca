@@ -6,7 +6,7 @@ import {fileURLToPath, pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
 
-const [executable, profile, url, notificationUrl, expectedRun, liveLogPath] = process.argv.slice(2);
+const [executable, profile, url, notificationUrl, expectedRun, liveLogPath, ruleConfigPath] = process.argv.slice(2);
 let socket, sequence = 0;
 const pending = new Map();
 async function eventually(read, label) {
@@ -461,6 +461,77 @@ try {
   await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 650, deviceScaleFactor: 1, mobile: false});
   await showRuleWorkspace();
   assert(await evaluate(ruleViewport), "live rules fit the available viewport");
+  const registered = field("rules-registered");
+  const sourceValue = field("rules-sources");
+  const markdown = field("rules-text");
+  const draftPicker = field("rules-drafts");
+  const baseRuleConfig = await fs.readFile(ruleConfigPath, "utf8");
+  const fixtureProject = path.join(path.dirname(ruleConfigPath), "app");
+  const ruleText = "# 先頭のルール\r\n<sample>字面のまま</sample>\r\n";
+  await fs.writeFile(path.join(fixtureProject, "z-first.md"), ruleText);
+  await fs.writeFile(path.join(fixtureProject, "a-second.md"), "# 二番目\n");
+  const configureRules = (...names) => fs.writeFile(ruleConfigPath, baseRuleConfig +
+    names.map(name => "\n[[project.migration_rules]]\npath = " + JSON.stringify(name) + "\n").join(""));
+  const readRegistered = () => evaluate("fetch('rule-workspace?registered=1').then(r => r.json()).then(data => data.registered)");
+  async function revisitRules() {
+    await click("tab-settings");
+    await showRuleWorkspace();
+  }
+  assert.equal(await readRegistered(), null);
+  assert(await evaluate(registered + ".hidden"));
+
+  try {
+    await configureRules("z-first.md");
+    await revisitRules();
+    const name = field("rules-registered-name") + ".textContent";
+    await wait("!" + registered + ".hidden && " + name + " === 'z-first.md'");
+    assert.equal(await evaluate(field("rules-registered-text") + ".textContent"), ruleText);
+    assert.equal(await evaluate(field("rules-registered-text") + ".querySelector('sample')"), null);
+    assert.equal(await evaluate("fetch('rule-workspace').then(r => r.json()).then(data => data.drafts.length)"), 0);
+
+    await configureRules("missing.md", "z-first.md", "a-second.md");
+    await revisitRules();
+    assert.equal((await readRegistered()).name, "z-first.md", "skip an unreadable entry without sorting readable ones");
+
+    await configureRules("z-first.md", "a-second.md");
+    await revisitRules();
+    await click("rules-start");
+    await wait(sourceValue + ".selectedOptions[0]?.textContent === 'z-first.md' && " +
+      markdown + ".value.includes('字面のまま')");
+    assert(await evaluate(registered + ".hidden"));
+    await wait(draftPicker + ".value !== ''");
+    const firstDraft = await value("rules-drafts");
+
+    await evaluate("(" + function () {
+      const original = window.fetch;
+      window.restoreRuleSourceFetch = () => { window.fetch = original; };
+      window.fetch = async (url, options) => {
+        const response = await original(url, options);
+        if (!String(url).includes("source=rule-0002.md")) return response;
+        return new Promise(resolve => { window.releaseRuleSource = () => resolve(response); });
+      };
+    }.toString() + ")()");
+    await change("rules-sources", "rule-0002.md");
+    await wait("!!window.releaseRuleSource");
+    await change("rules-text", "未保存の本文", "input");
+    await evaluate("releaseRuleSource(); restoreRuleSourceFetch()");
+    await revisitRules();
+    assert.equal(await value("rules-sources"), "rule-0002.md");
+    assert.equal(await value("rules-text"), "未保存の本文");
+
+    await change("rules-sources", "new");
+    await wait(markdown + ".value === ''");
+    await click("rules-start");
+    await wait(sourceValue + ".selectedOptions[0]?.textContent === 'z-first.md' && " +
+      draftPicker + ".value !== " + JSON.stringify(firstDraft));
+    await change("rules-drafts", firstDraft);
+    await wait(sourceValue + ".value === 'new'");
+    await change("rules-drafts", "");
+    await wait("!" + registered + ".hidden && " + field("rules-draft") + ".hidden");
+  } finally {
+    await fs.writeFile(ruleConfigPath, baseRuleConfig);
+  }
+  console.log("Browser RuleWorkspace: first configured Markdown previews without a draft, skips unavailable files, and preserves source and unsaved edits");
   await evaluate("(" + function () {
     const original = window.fetch;
     window.stopRuleChatFixture = () => { window.fetch = original; };
@@ -688,6 +759,7 @@ try {
   console.log("Browser demo: saved language and tone change log framing without changing original entries");
 
   await showRuleWorkspace();
+  await wait("!" + registered + ".hidden && " + field("rules-registered-name") + ".textContent === 'orders.md'");
   await click("rules-start");
   await wait("!" + field("rules-draft") + ".hidden");
   const instructionExample = field("rules-instruction-example");

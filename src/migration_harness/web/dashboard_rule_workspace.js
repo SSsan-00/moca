@@ -9,6 +9,8 @@
     node("archive").hidden = true;
   }
   let draft, source = "new", busy = false, timer, token, uploadedBytes;
+  let registeredRequest = 0, sourceRequest = 0, sourceEdits = 0;
+  const selectedSources = new Map();
   let renderedMessages = [];
   const input = node("instruction");
   const send = node("message");
@@ -31,15 +33,18 @@
   function display(data) {
     const was = draft?.id;
     draft = data;
-    node("draft").hidden = !data || data.applied;
+    node("draft").hidden = !hasDraft();
+    if (hasDraft()) node("registered").hidden = true;
     if (!data || data.applied) {
       syncSend();
       return;
     }
     const running = data.live?.status === "running";
     const options = [new Option("新しいMarkdown", "new"), ...data.files.map(file => new Option(file.name, file.source))];
+    if (was !== data.id) source = selectedSources.get(data.id) ?? data.files[0]?.source ?? "new";
+    if (!options.some(item => item.value === source)) source = data.files[0]?.source ?? "new";
     node("sources").replaceChildren(...options);
-    node("sources").value = options.some(item => item.value === source) ? source : "new";
+    node("sources").value = source;
     updateFeed(() => {
       renderHistory(data.messages, was !== data.id);
       node("chat-empty").hidden = running || Boolean(data.messages.length);
@@ -119,14 +124,34 @@
       status(error.message);
     }
   }
+  const hasDraft = () => draft && !draft.applied;
+  async function refreshRegistered() {
+    if (hasDraft()) return;
+    const generation = ++registeredRequest;
+    const isCurrent = () => generation === registeredRequest && !hasDraft();
+    try {
+      const {registered} = await request({registered: "1"});
+      if (!isCurrent()) return;
+      node("registered").hidden = !registered;
+      node("registered-name").textContent = registered?.name || "";
+      node("registered-text").textContent = registered?.text || "";
+    } catch (error) {
+      if (!isCurrent()) return;
+      node("registered").hidden = true;
+      status(error.message);
+    }
+  }
   async function refresh() {
     const {drafts} = await request({});
     node("drafts").replaceChildren(new Option("選択してください", ""), ...drafts.map(item =>
       new Option(`${item.id.slice(0, 8)}（${item.files}件）`, item.id)));
     node("drafts").value = draft?.applied ? "" : draft?.id || "";
+    await refreshRegistered();
   }
   async function loadSource() {
     source = node("sources").value || "new";
+    const generation = ++sourceRequest, edits = sourceEdits;
+    if (draft) selectedSources.set(draft.id, source);
     uploadedBytes = undefined;
     const entry = draft?.files.find(item => item.source === source);
     const id = draft?.id, current = source;
@@ -135,7 +160,9 @@
     node("usage").value = entry?.usage || "required";
     node("description").value = entry?.description || "";
     const response = entry ? await request({id, source}) : {text: ""};
-    if (draft?.id === id && source === current) node("text").value = response.text;
+    if (generation === sourceRequest && edits === sourceEdits && draft?.id === id && source === current) {
+      node("text").value = response.text;
+    }
   }
   async function submit(action, extra = {}) {
     if (busy) return;
@@ -177,11 +204,12 @@
   node("drafts").addEventListener("change", async () => {
     try {
       const id = node("drafts").value;
-      if (id) { display(await request({id})); await loadSource(); } else display(null);
+      if (id) { display(await request({id})); await loadSource(); }
+      else { display(null); await refreshRegistered(); }
     } catch (error) { status(error.message); }
   });
   node("sources").addEventListener("change", () => loadSource().catch(error => status(error.message)));
-  node("text").addEventListener("input", () => { uploadedBytes = undefined; });
+  node("text").addEventListener("input", () => { sourceEdits++; uploadedBytes = undefined; });
   node("import").addEventListener("change", async event => {
     try {
       const file = event.target.files[0];
@@ -190,6 +218,7 @@
       const bytes = new Uint8Array(await file.arrayBuffer());
       const text = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
       if (source === "new") node("name").value = file.name;
+      sourceEdits++;
       node("text").value = text;
       const parts = [];
       for (let i = 0; i < bytes.length; i += 8192) parts.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));

@@ -994,6 +994,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     source = query.get("source", [None])[0]
                     if source is not None:
                         value = rules.file_text(identifier, source)
+                    elif query.get("registered") == ["1"]:
+                        value = {"registered": rules.first_registered_source()}
                     elif query.get("archive") == ["1"]:
                         with rules.lock:
                             value = {"archives": rules._archives()}

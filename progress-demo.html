@@ -394,6 +394,9 @@
     .rule-workspace .rule-workspace-actions label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; }
     .rule-workspace .rule-workspace-actions select { width: auto; max-width: 100%; margin: 0; }
     .rule-workspace-body { display: flex; flex-direction: column; min-height: 0; gap: 10px; }
+    #rules-registered:not([hidden]) { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; padding: 12px; }
+    #rules-registered :is(h3, p, pre) { margin: 0; }
+    #rules-registered-text { flex: 1; min-height: 0; max-height: min(50dvh, 32rem); padding: 10px; border-radius: 8px; background: var(--surface-soft); }
     #rules-draft:not([hidden]) { display: grid; grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
     .rule-workspace-columns { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 12px; }
     .rule-workspace-columns > section { display: grid; min-height: 0; align-content: start; gap: 8px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
@@ -1097,6 +1100,12 @@
         <p id="rules-status" role="status" aria-live="polite"></p>
       </header>
       <div class="rule-workspace-body">
+        <section class="panel" id="rules-registered" aria-labelledby="rules-registered-title" hidden>
+          <h3 id="rules-registered-title">登録済みの移行ルール</h3>
+          <p id="rules-registered-name"></p>
+          <p class="editor-muted">読み取り専用です。編集するには「新しい下書き」を選んでください。</p>
+          <pre id="rules-registered-text" tabindex="0" aria-labelledby="rules-registered-name"></pre>
+        </section>
         <div id="rules-draft" hidden>
           <div class="rule-workspace-columns">
             <section aria-labelledby="rules-source-title">

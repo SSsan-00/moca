@@ -24,6 +24,7 @@ from ..files import harness_asset, has_symlink_component, safe_target, sha256_fi
 from .rule_chat import RuleChat, decode_reply
 
 _MAX_SOURCE = 2 * 1024 * 1024
+_SOURCE_SUFFIXES = {".md", ".markdown", ".txt"}
 _ID = re.compile(r"[0-9a-f]{32}")
 _SOURCE = re.compile(r"rule-[0-9]{4}\.md")
 _CONFIG_EXCEPTIONS = (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, subprocess.SubprocessError, TOMLKitError)
@@ -139,11 +140,26 @@ class RuleWorkspace:
         _require_same_project(root, Path(self.config["project_root"]))
         return root, data, project.get("migration_rules", [])
 
+    def first_registered_source(self):
+        project_root, _, rules = self._config()
+        for item in rules:
+            try:
+                path = (project_root / item["path"]).expanduser()
+                if path.suffix.lower() not in _SOURCE_SUFFIXES or path.is_symlink() or not path.is_file():
+                    continue
+                with path.open("rb") as stream:
+                    text = _decode(stream.read(_MAX_SOURCE + 1))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if text.strip():
+                return {"name": path.name, "text": text}
+        return None
+
     def _new_file(self, path, meta, name, data, *, baseline=False, usage="required", description=""):
         _decode(data)
         if not data.strip():
             raise ValueError("空のMarkdownは追加できません。")
-        if not isinstance(name, str) or not name.strip() or len(name) > 160 or Path(name).suffix.lower() not in {".md", ".markdown", ".txt"}:
+        if not isinstance(name, str) or not name.strip() or len(name) > 160 or Path(name).suffix.lower() not in _SOURCE_SUFFIXES:
             raise ValueError("MarkdownまたはUTF-8テキストを選んでください。")
         if len(meta["files"]) >= 200:
             raise ValueError("原文は200件までです。")
