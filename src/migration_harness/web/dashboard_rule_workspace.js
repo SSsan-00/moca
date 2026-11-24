@@ -9,7 +9,7 @@
     node("archive").hidden = true;
   }
   let draft, source = "new", busy = false, timer, token, uploadedBytes;
-  let registeredRequest = 0, sourceRequest = 0, sourceEdits = 0;
+  let registeredRequest = 0, draftRequest = 0, sourceRequest = 0, editor;
   const selectedSources = new Map();
   let renderedMessages = [];
   const input = node("instruction");
@@ -21,6 +21,12 @@
     send.disabled = busy || !draft || draft.live?.status === "running" || !input.value.trim();
   };
   const status = text => { node("status").textContent = text; };
+  const canEditSource = () => hasDraft() && !busy && draft.live?.status !== "running"
+    && editor?.id === draft.id && editor.source === source;
+  function syncEditor() {
+    for (const id of ["text", "name", "import", "save-source"]) node(id).disabled = !canEditSource();
+    for (const id of ["sources", "drafts", "start"]) node(id).disabled = busy;
+  }
   const request = async (query, action) => {
     if (demo) return demo(query, action);
     const response = await fetch("rule-workspace" + (query ? "?" + new URLSearchParams(query) : ""), action ? {
@@ -33,6 +39,11 @@
   function display(data) {
     const was = draft?.id;
     draft = data;
+    if (!hasDraft() || was !== data.id) {
+      ++sourceRequest;
+      editor = null;
+    }
+    syncEditor();
     node("draft").hidden = !hasDraft();
     if (hasDraft()) node("registered").hidden = true;
     if (!data || data.applied) {
@@ -59,7 +70,7 @@
     syncSend();
     node("unresolved").textContent = data.unresolved.join("／");
     node("stop").hidden = !running;
-    for (const id of ["optimize", "save-source", "save-classification", "preview", "apply", "accept"]) {
+    for (const id of ["optimize", "save-classification", "preview", "apply", "accept"]) {
       node(id).disabled = running;
     }
     const preview = data.preview;
@@ -116,9 +127,10 @@
   }
   async function poll() {
     const id = draft?.id;
+    const previous = draft;
     try {
       const data = await request({id});
-      if (draft?.id === id && !busy) display(data);
+      if (draft === previous && !busy) display(data);
       else if (draft?.id === id) timer = setTimeout(poll, 400);
     } catch (error) {
       status(error.message);
@@ -148,40 +160,56 @@
     node("drafts").value = draft?.applied ? "" : draft?.id || "";
     await refreshRegistered();
   }
-  async function loadSource() {
-    source = node("sources").value || "new";
-    const generation = ++sourceRequest, edits = sourceEdits;
-    if (draft) selectedSources.set(draft.id, source);
-    uploadedBytes = undefined;
-    const entry = draft?.files.find(item => item.source === source);
-    const id = draft?.id, current = source;
+  function selectSource(entry) {
+    source = entry?.source ?? "new";
+    node("sources").value = source;
+    selectedSources.set(draft.id, source);
     node("name").value = entry?.name || "";
     node("name").readOnly = !!entry;
     node("usage").value = entry?.usage || "required";
     node("description").value = entry?.description || "";
-    const response = entry ? await request({id, source}) : {text: ""};
-    if (generation === sourceRequest && edits === sourceEdits && draft?.id === id && source === current) {
+  }
+  async function loadSource() {
+    const generation = ++sourceRequest;
+    editor = null;
+    uploadedBytes = undefined;
+    node("text").value = "";
+    syncEditor();
+    const entry = draft.files.find(item => item.source === node("sources").value);
+    selectSource(entry);
+    try {
+      const response = entry ? await request({id: draft.id, source}) : {text: "", revision: draft.revision};
+      if (generation !== sourceRequest) return;
       node("text").value = response.text;
+      editor = {id: draft.id, source, revision: response.revision};
+      syncEditor();
+    } catch (error) {
+      if (generation === sourceRequest) status(error.message);
     }
   }
   async function submit(action, extra = {}) {
     if (busy) return;
     busy = true;
+    syncEditor();
     syncSend();
     try {
       const was = draft?.id;
-      const result = await request(null, {action, id: was, revision: draft?.revision, ...extra});
+      const revision = draft?.revision;
+      const result = await request(null, {action, id: was, revision, ...extra});
       if (result.archives) return showArchives(result.archives);
+      if (editor?.id === result.id && editor.revision === (extra.revision ?? revision)) editor.revision = result.revision;
       display(result);
       if (action === "start" || was !== result.id || action === "accept") await loadSource();
       if (["start", "apply"].includes(action)) await refresh();
       if (action === "apply") status(demo ? "デモの反映が完了しました。実際のTOMLは変わりません。" :
         "TOMLに反映しました。次のRunから適用されます。");
       if (["message", "optimize"].includes(action) && input.value === extra.text) input.value = "";
+      return result;
     } catch (error) {
       status(error.message);
     } finally {
       busy = false;
+      syncEditor();
       syncSend();
     }
   }
@@ -200,39 +228,60 @@
     }));
     if (!archives.length) node("archives").textContent = "安全に整理できる旧版はありません。";
   }
-  node("start").addEventListener("click", () => submit("start"));
+  node("start").addEventListener("click", () => { ++draftRequest; return submit("start"); });
   node("drafts").addEventListener("change", async () => {
+    if (busy) return;
+    const generation = ++draftRequest;
+    const id = node("drafts").value;
+    display(null);
     try {
-      const id = node("drafts").value;
-      if (id) { display(await request({id})); await loadSource(); }
-      else { display(null); await refreshRegistered(); }
-    } catch (error) { status(error.message); }
+      if (!id) return await refreshRegistered();
+      const data = await request({id});
+      if (generation !== draftRequest) return;
+      display(data);
+      await loadSource();
+    } catch (error) { if (generation === draftRequest) status(error.message); }
   });
-  node("sources").addEventListener("change", () => loadSource().catch(error => status(error.message)));
-  node("text").addEventListener("input", () => { sourceEdits++; uploadedBytes = undefined; });
+  node("sources").addEventListener("change", () => { if (hasDraft() && !busy) return loadSource(); });
+  node("text").addEventListener("input", () => { if (canEditSource()) uploadedBytes = undefined; });
   node("import").addEventListener("change", async event => {
+    const file = event.target.files[0];
+    if (!file || !canEditSource()) return;
+    const generation = ++sourceRequest;
+    const target = editor;
+    editor = null;
+    syncEditor();
     try {
-      const file = event.target.files[0];
-      if (!file) return;
       if (file.size > 2 * 1024 * 1024) throw Error("Markdownは2 MiBまでです。");
       const bytes = new Uint8Array(await file.arrayBuffer());
+      if (generation !== sourceRequest) return;
       const text = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
       if (source === "new") node("name").value = file.name;
-      sourceEdits++;
       node("text").value = text;
       const parts = [];
       for (let i = 0; i < bytes.length; i += 8192) parts.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));
       uploadedBytes = btoa(parts.join(""));
-    } catch (error) { status(error.message); }
-    finally { event.target.value = ""; }
+    } catch (error) { if (generation === sourceRequest) status(error.message); }
+    finally {
+      if (generation === sourceRequest) {
+        editor = target;
+        syncEditor();
+      }
+      event.target.value = "";
+    }
   });
   node("save-source").addEventListener("click", async () => {
-    const create = source === "new";
-    await submit("edit", {source, name: node("name").value, text: node("text").value, bytes: uploadedBytes});
-    if (create && draft?.files.length) {
-      node("sources").value = draft.files.at(-1).source;
-      await loadSource().catch(error => status(error.message));
+    if (!canEditSource()) return;
+    ++sourceRequest;
+    const existing = source === "new" ? new Set(draft.files.map(file => file.source)) : null;
+    const result = await submit("edit", {source, revision: editor.revision, name: node("name").value,
+      text: node("text").value, bytes: uploadedBytes});
+    const created = existing && result?.files.find(file => !existing.has(file.source));
+    if (created) {
+      selectSource(created);
+      editor.source = source;
     }
+    if (result) status("下書きに保存しました。");
   });
   node("save-classification").addEventListener("click", () => {
     const previous = draft?.files.find(file => file.source === source);

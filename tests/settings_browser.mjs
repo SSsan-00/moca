@@ -5,6 +5,7 @@ import {createServer} from "node:http";
 import {fileURLToPath, pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
+import {checkRuleSourceEditor} from "./rule_source_browser.mjs";
 
 const [executable, profile, url, notificationUrl, expectedRun, liveLogPath, ruleConfigPath] = process.argv.slice(2);
 let socket, sequence = 0;
@@ -502,21 +503,9 @@ try {
     await wait(draftPicker + ".value !== ''");
     const firstDraft = await value("rules-drafts");
 
-    await evaluate("(" + function () {
-      const original = window.fetch;
-      window.restoreRuleSourceFetch = () => { window.fetch = original; };
-      window.fetch = async (url, options) => {
-        const response = await original(url, options);
-        if (!String(url).includes("source=rule-0002.md")) return response;
-        return new Promise(resolve => { window.releaseRuleSource = () => resolve(response); });
-      };
-    }.toString() + ")()");
-    await change("rules-sources", "rule-0002.md");
-    await wait("!!window.releaseRuleSource");
+    await checkRuleSourceEditor({evaluate, wait, field, change, click, value}, ruleConfigPath, firstDraft);
     await change("rules-text", "未保存の本文", "input");
-    await evaluate("releaseRuleSource(); restoreRuleSourceFetch()");
     await revisitRules();
-    assert.equal(await value("rules-sources"), "rule-0002.md");
     assert.equal(await value("rules-text"), "未保存の本文");
 
     await change("rules-sources", "new");
