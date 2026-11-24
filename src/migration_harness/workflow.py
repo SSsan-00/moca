@@ -64,6 +64,7 @@ from .runs.editor_queue import (
     LivePrompts,
     dispatch_prompts,
     editor_queue,
+    editor_save_pending,
     editor_target,
     finish_prompts,
     merge_edit,
@@ -4678,6 +4679,9 @@ def _resume_with_junie(
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = load_saved_run(config, run_id)
     _block_unknown_script(record)
+    if editor_save_pending(run_path):
+        with editor_queue(run_path, recover=(worktree_path, target_paths(unit))):
+            pass
     if record.get("migration_stop_unconfirmed"):
         raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
                          "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
