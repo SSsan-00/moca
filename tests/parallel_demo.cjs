@@ -47,5 +47,19 @@ const queued = data => data.runs.filter(run => run.queued).sort((a, b) => a.queu
   const prepared = (await demo.read()).runs.at(-1);
   assert.equal(prepared.junie_model, "opus");
   assert.equal(prepared.junie_effort, "low");
+  await demo.execute("resume-run", {run_id: "demo-partners", start_stage: "build-through"});
+  const states = [];
+  for (let index = 0; index < 10; index++) {
+    states.push((await demo.read()).runs.find(run => run.run_id === "demo-partners").status);
+    tick();
+  }
+  assert.deepEqual([...new Set(states)], ["building", "checking", "checker_succeeded"]);
+  await demo.execute("resume-run", {run_id: "demo-search", start_stage: "checker"});
+  states.length = 0;
+  for (let index = 0; index < 5; index++) {
+    states.push((await demo.read()).runs.find(run => run.run_id === "demo-search").status);
+    tick();
+  }
+  assert.deepEqual([...new Set(states)], ["checking", "checker_succeeded"]);
   console.log("Demo: five workers, FIFO resume, cancellation, and completion passed.");
 })().catch(error => { console.error(error); process.exitCode = 1; });

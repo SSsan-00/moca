@@ -411,6 +411,109 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual(junie.call_count, 2)
             external.assert_not_called()
 
+    def get_stage_plan(self, stage):
+        status, plan = self.request("resume-plan?" + urlencode({"run_id": self.run_id, "start_stage": stage}))
+        self.assertEqual(status, 200)
+        return plan
+
+    def start_stage_plan(self, plan):
+        return self.request("control", {"action": "resume-run", "run_id": self.run_id, "revision": 0,
+                                       "start_stage": plan["start_stage"], "plan_version": plan["version"]})[0]
+
+    def run_build_through(self, responses, expected):
+        plan = self.get_stage_plan("build-through")
+        self.assertEqual(plan["stages"], ["build", "checker"])
+        self.assertNotEqual(plan["version"], self.get_stage_plan("build")["version"])
+        commands, calls = self.mock_commands(*responses)
+        with (commands, patch.object(workflow.junie_cli, "run_interactive") as junie):
+            self.assertEqual(self.start_stage_plan(plan), 202)
+            self.wait_until_idle()
+        junie.assert_not_called()
+        record = self.record()
+        self.assertEqual(record["status"], expected)
+        self.assertEqual(self.manager.get(self.run_id).state["status"], expected)
+        self.assertEqual(record["resume_operations"][-1]["start_stage"], "build-through")
+        self.assertEqual([command[0] for command in calls], [
+            "dotnet" if entry[0] == "dotnet" else "fixture-checker" for entry in responses
+        ])
+        return record
+
+    def test_dashboard_build_through_runs_the_configured_checker(self):
+        record = self.run_build_through([
+            ("dotnet", 0, b"build ok"), ("checker", 0, b""),
+        ], "checker_succeeded")
+        self.assertEqual(record["checker_exit_code"], 0)
+        self.assertEqual(record["verification"]["checker_command"], ["fixture-checker"])
+        completion = workflow.migration_ledger(self.config, self.run_id)["completion"]
+        self.assertTrue(completion["verification_passed"])
+
+    def test_dashboard_build_through_uses_the_configured_automatic_repair_policy(self):
+        self.config["max_repair_attempts"] = 1
+        def repair(config, targets, worktree, run_path, record, *, operator_instruction=None):
+            self.assertEqual(record["status"], "build_failed")
+            self.assertIsNone(operator_instruction)
+            return True
+
+        with patch.object(workflow, "_repair_build_failure", side_effect=repair) as attempt:
+            self.run_build_through([
+                ("dotnet", 1, b"fixture build failed"), ("dotnet", 0, b"build ok"), ("checker", 0, b""),
+            ], "checker_succeeded")
+        attempt.assert_called_once()
+
+    def test_dashboard_build_through_preserves_failed_build_and_human_review(self):
+        record = self.run_build_through([("dotnet", 1, b"fixture build failed")], "build_failed")
+        self.assertIsNone(record.get("checker_exit_code"))
+        self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+        self.run_build_through([
+            ("dotnet", 0, b"build ok"), ("checker", 7, b"MIG001 Example.cs:1 warning: human review\n"),
+        ], "checker_needs_review")
+        self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
+        self.assertTrue(self.manager.get(self.run_id).state["review"]["findings"])
+
+    def test_dashboard_build_through_rechecks_configuration_before_enqueue(self):
+        plan = self.get_stage_plan("build-through")
+        self.config["checker_command"] = ["changed-fixture-checker"]
+        with (patch.object(workflow, "run_process") as external, self.assertRaises(HTTPError) as stale):
+            self.start_stage_plan(plan)
+        with stale.exception as response:
+            self.assertEqual(response.code, 409)
+            self.assertIn("再開計画を確認", response.read().decode())
+        external.assert_not_called()
+        updated = self.get_stage_plan("build-through")
+        self.assertNotEqual(updated["config_version"], plan["config_version"])
+        self.assertNotIn("changed-fixture-checker", json.dumps(updated))
+
+    def test_dashboard_build_through_without_a_configured_checker_finishes_at_build(self):
+        self.config["checker_command"] = None
+        self.save_record({**self.record(), "status": "junie_finished", "build_exit_code": None,
+                          "checker_exit_code": None})
+        plan = self.get_stage_plan("build-through")
+        self.assertEqual(plan["stages"], ["build"])
+        commands, calls = self.mock_commands(("dotnet", 0, b"build ok"))
+        with commands:
+            self.assertEqual(self.start_stage_plan(plan), 202)
+            self.wait_until_idle()
+        self.assertEqual(calls, [["dotnet", "build"]])
+        self.assertEqual(self.record()["status"], "build_succeeded")
+
+    def test_dashboard_checker_from_uses_saved_build_without_rebuilding(self):
+        inputs, outputs = {"build": "fixture-inputs"}, {"App.dll": "fixture-artifact"}
+        previous = self.record()
+        previous["checker_build"] = {"inputs": inputs, "artifacts": outputs}
+        previous["verification"] = {"target_hashes": {
+            self.target.name: workflow.review_target_hash(self.worktree, Path(self.target.name)),
+        }}
+        self.save_record(previous)
+        commands, calls = self.mock_commands(("checker", 0, b""))
+        with (patch.object(workflow, "build_inputs", return_value=inputs),
+              patch.object(workflow, "build_artifacts", return_value=outputs), commands):
+            plan = self.get_stage_plan("checker")
+            self.assertEqual(self.start_stage_plan(plan), 202)
+            self.wait_until_idle()
+        self.assertEqual(calls, [["fixture-checker"]])
+        self.assertEqual(self.record()["status"], "checker_succeeded")
+        self.assertEqual(self.record()["checker_build"], previous["checker_build"])
+
     def test_natural_rebuild_only_uses_explicit_plan_without_checker(self):
         self.config["checker_command"] = None
         mocked, calls = self.mock_commands(("dotnet", 0, b"build ok"))

@@ -55,6 +55,19 @@ window.harnessDemoTransport = (() => {
     return subscription;
   }
 
+  function resumePlan(run, stage) {
+    if (!run?.ready || !run.worktree_path) throw Error("停止・中断した実行を選び直してください。");
+    const completed = run.completed_capsules === run.context_capsules;
+    if (stage === "migration" && completed) throw Error("未完了の移行がないため、開始工程を選び直してください。");
+    if (stage === "build-through" && !completed) throw Error("移行が完了してからビルド工程を選んでください。");
+    if (stage === "checker" && (!completed || run.tick < 25)) throw Error("照合できるビルド成果物がありません。ビルドから再開してください。");
+    const stages = {migration: ["build", "checker"], "build-through": ["build", "checker"], checker: ["checker"]}[stage];
+    if (!stages) throw Error("再開する工程を選び直してください。");
+    return {version: ["sample", run.run_id, stage, run.status, run.tick].join(":"),
+      targets: {[target]: "sample"}, capsule_range: stage === "migration" ? [run.completed_capsules + 1, run.context_capsules] : null,
+      invalidates: stages, repair: false, ...(stage === "build-through" ? {stages} : {})};
+  }
+
   const controls = new Set(["run", "prepare", "stop", "cancel-queued", "hide-run", "resume-run"]);
   async function control(body, run) {
     const action = body.action === "resume" ? "resume-run" : body.action;
@@ -62,7 +75,9 @@ window.harnessDemoTransport = (() => {
       accepted.add(run.run_id);
       runs.select(run.run_id);
     } else if (controls.has(action)) {
-      if (body.start_stage) throw Error("工程指定での再開はローカルのハーネスで実行してください。");
+      if (body.start_stage && (action !== "resume-run" || body.plan_version !== resumePlan(run, body.start_stage).version)) {
+        throw Error("保存版が更新されました。再開計画を確認し直してください。");
+      }
       await runs.execute(action, body);
     } else {
       throw Error("この操作にはローカルのハーネスが必要です。デモでは実行しません。");
@@ -129,8 +144,7 @@ window.harnessDemoTransport = (() => {
             cursor: 1, live: !run.ready && !run.queued, more: false, log_language, log_tone});
         }
         case "checker-output": return json({output: finding, truncated: false});
-        case "resume-plan": return json({version: "demo-checkpoint", targets: {[target]: "sample"}, edits: {},
-          invalidates: ["build", "checker", "reviews"], repair: false});
+        case "resume-plan": return json(resumePlan(run, query.get("start_stage")));
       }
     } catch (error) {
       return new Response(error.message, {status: 400});

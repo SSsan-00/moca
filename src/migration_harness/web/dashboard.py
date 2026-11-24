@@ -83,6 +83,7 @@ from migration_harness.junie.junie_notifications import (
 from migration_harness.context.source_context import preview_target_context
 from migration_harness.runs.timings import freeze_timings
 from migration_harness.workflow import (
+    BUILD_THROUGH_STAGE,
     RunScriptError,
     _review_log,
     build_failure_review,
@@ -1334,7 +1335,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             )):
                 raise ValueError
             if "start_stage" in action and (not manager or action.get("action") != "resume-run"
-                                            or action["start_stage"] not in {"build", "migration", "checker"}):
+                                            or action["start_stage"] not in {"build", BUILD_THROUGH_STAGE, "migration", "checker"}):
                 raise ValueError
             if any(key in action for key in ("through_capsule", "rewind_to")) and (
                 action.get("start_stage") != "migration"

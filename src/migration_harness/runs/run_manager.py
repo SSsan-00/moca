@@ -308,7 +308,7 @@ class RunManager:
         return {"run_id": run_id}
 
     def submit(self, action, selected=None):
-        from ..workflow import can_resume_build, can_resume_run
+        from ..workflow import BUILD_THROUGH_STAGE, can_resume_build, can_resume_run
 
         with self.condition:
             if self.closing:
@@ -358,7 +358,7 @@ class RunManager:
                     stage = action.get("verification_request", {}).get("start_stage")
                     # 明示指定は受付時に計画を照合済みで、実行直前にも再照合する。
                     resumable = stage in {"migration", "checker"} or (
-                        can_resume_build(record) if stage == "build" else can_resume_run(self.config, record)
+                        can_resume_build(record) if stage in {"build", BUILD_THROUGH_STAGE} else can_resume_run(self.config, record)
                     )
                     if not resumable:
                         raise ValueError("このRunは再開できません。新しく実行してください。")

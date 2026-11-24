@@ -3201,7 +3201,9 @@ def _apply_verification_edits(run_path, worktree, unit, request):
     with editor_queue(run_path, recover=(worktree, targets)) as queue, worktree_source_lock(worktree):
         check_cancelled()
         if (saved_edits(queue) != request["edits"] or queue.get("edit_revision") != request["edit_revision"]
-                or target_versions(worktree, unit) != request["targets"]):
+                or target_versions(worktree, unit) != request["targets"]
+                or (request.get("start_stage") == BUILD_THROUGH_STAGE
+                    and any(prompt["status"] != "sent" for prompt in queue["prompts"]))):
             raise ValueError("指示を受け付けた後に移行先または保存版が更新されました。エディタで確認して指示を送信し直してください。")
         merged = {}
         conflicts = []
@@ -3572,6 +3574,8 @@ def _run_verification(
 ) -> dict[str, Any]:
     """毎回ビルドを先に実行し、指摘の状態に応じて修正かレビューに進む。"""
     explicit_build = request and request.get("start_stage") == "build"
+    automatic = not request or request.get("start_stage") == BUILD_THROUGH_STAGE
+    manual_request = None if automatic else request
     if not explicit_build:
         _require_saved_checker(config, record)
     run_path = Path(result["run_path"])
@@ -3579,6 +3583,7 @@ def _run_verification(
     targets = target_paths(unit)
     record_path = run_path / "run.json"
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
+    original_versions = record.get("target_hashes", {}).copy()
     try:
         if not explicit_build:
             _recover_selected_repair(run_path, worktree, targets, record)
@@ -3595,6 +3600,11 @@ def _run_verification(
     limit = config["max_repair_attempts"]
     history = record.setdefault("repair_history", [])
     expected_targets = request.get("build_targets") if request else None
+    if expected_targets is not None and automatic:
+        updated_versions = record.get("target_hashes", {})
+        expected_targets = {name: updated_versions.get(name) if name in updated_versions
+                            and updated_versions[name] != original_versions.get(name) else digest
+                            for name, digest in expected_targets.items()}
 
     def save_verification() -> None:
         verification = record["verification"]
@@ -3607,7 +3617,7 @@ def _run_verification(
     while True:
         previous_receipt = record.get("checker_build")
         with editor_queue(run_path) as queue:
-            pending_changes = not request and bool(queue["edits"] and any(prompt["status"] == "queued" for prompt in queue["prompts"]))
+            pending_changes = automatic and bool(queue["edits"] and any(prompt["status"] == "queued" for prompt in queue["prompts"]))
             if not pending_changes:
                 # 指示の受付と工程変更を直列化し、修正終了間際の送信もビルド前に扱う。
                 if record["status"] == "repairing":
@@ -3623,7 +3633,8 @@ def _run_verification(
                 raise RunInterrupted(record["run_id"]) from None
             return _run_prepared_with_junie(config, unit, run_path, result, record, resuming=True, followup_only=True)
         input_files = verification_files(config, worktree, unit["target"], command, scripts)
-        if _verification_script(config, "before_build", worktree, run_path, record, targets, None, request):
+        if _verification_script(config, "before_build", worktree, run_path, record, targets, None, manual_request):
+            expected_targets = None
             continue
         verified, hashes, inputs = _execute_verification_build(
             config, unit, result, record, run_path, worktree, targets, expected_targets=expected_targets,
@@ -3633,9 +3644,9 @@ def _run_verification(
         expected_targets = None
         if record["status"] == "build_failed":
             try:
-                if (not request or mode == "build_repair" and len(history) < limit) and _repair_build_failure(
+                if (automatic or mode == "build_repair" and len(history) < limit) and _repair_build_failure(
                     config, targets, worktree, run_path, record,
-                    **({"operator_instruction": request["text"]} if request else {}),
+                    **({"operator_instruction": request["text"]} if mode == "build_repair" else {}),
                 ):
                     continue
             except (OSError, RuntimeError, ValueError) as exc:
@@ -3650,7 +3661,7 @@ def _run_verification(
                 raise RunInterrupted(record["run_id"]) from None
             return verified
         check_cancelled()
-        if _verification_script(config, "after_build", worktree, run_path, record, targets, hashes, request):
+        if _verification_script(config, "after_build", worktree, run_path, record, targets, hashes, manual_request):
             continue
         if inputs and inputs == build_inputs(worktree, config["build_project"]):
             if artifacts := build_artifacts(worktree, inputs):
@@ -3667,7 +3678,7 @@ def _run_verification(
             save_verification()
             return verified
         write_run_record(record_path, record, timing_stage=5)
-        if _verification_script(config, "before_checker", worktree, run_path, record, targets, hashes, request):
+        if _verification_script(config, "before_checker", worktree, run_path, record, targets, hashes, manual_request):
             continue
         if request and any(review_target_hash(worktree, path) != hashes[path.as_posix()] for path in targets):
             raise ValueError("チェッカーの開始前に移行先が更新されました。エディタで確認して指示を送信し直してください。")
@@ -3684,7 +3695,7 @@ def _run_verification(
         if use_raw_output and review_free_output:
             checked = _review_free_checker_output(config, checked, record)
         if (record.get("checker_exit_code") is not None
-                and _verification_script(config, "after_checker", worktree, run_path, record, targets, hashes, request)):
+                and _verification_script(config, "after_checker", worktree, run_path, record, targets, hashes, manual_request)):
             continue
         try:
             apply_decision = use_raw_output and review_free_output and config.get("junie_apply_output_decisions")
@@ -3705,7 +3716,7 @@ def _run_verification(
                 _finish_repair_attempt(record)
                 save_verification()
                 return {**checked, "status": record["status"]}
-            if request:
+            if not automatic:
                 return checked
             advisory_path = use_raw_output and review_free_output
             if advisory_path and (not apply_decision or record["checker_advisory"].get("verdict") != "problem"):
@@ -4157,8 +4168,11 @@ def can_resume_build(record):
         and not record.get("target_apply_pending"))
 
 
-def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
-    """ビルドのみの明示再開を保存版と結び付ける。"""
+BUILD_THROUGH_STAGE = "build-through"
+
+
+def plan_build_resume(config: dict[str, Any], run_id: str, *, through_completion: bool = False) -> dict[str, Any]:
+    """指定したビルド再開の範囲を保存版と結び付ける。"""
     from .junie.junie_conversation import saved_edits, target_versions
 
     run_path, worktree, _, unit = load_saved_run(config, run_id)
@@ -4166,7 +4180,7 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         _, _, record, _ = load_saved_run(config, run_id)
         _require_completed_command(record)
         if not can_resume_build(record):
-            raise ValueError("移行が完了してから「ビルドのみ」を選んでください。")
+            raise ValueError("移行が完了してからビルド工程を選んでください。")
         if record.get("target_apply_pending") or record.get("stopped_migration_draft") or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
             raise ValueError("未反映の編集または Junie 指示があります。通常の再開で反映してください。")
         plan = {
@@ -4175,6 +4189,25 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             "edit_revision": queue.get("edit_revision"), "completed_capsules": record["completed_capsules"],
             "repair": False, "invalidates": ["build", "checker"],
         }
+        if through_completion:
+            _require_saved_checker(config, record)
+            if record.get("reference_refresh"):
+                raise ValueError("参考資料の変更が未反映です。通常の再開で確認してください。")
+            checker = config["checker_command"]
+            scripts = verification_scripts(config, checker)
+            if after_migration := config.get("scripts", {}).get("after_migration"):
+                scripts["after_migration"] = after_migration
+            limit = config["max_repair_attempts"]
+            inputs = {
+                "build_project": config["build_project"], "checker_command": checker, "scripts": scripts,
+                "files": verification_files(config, worktree, unit["target"], checker, scripts), "repair_limit": limit,
+                **{key: config.get(key) for key in ("checker_review_free_output", "checker_rule_evidence",
+                                                   "junie_apply_output_decisions", "junie_review_script_output",
+                                                   "junie_ground_output_repairs")},
+            }
+            plan.update(start_stage=BUILD_THROUGH_STAGE, intent="build_through", repair=bool(limit),
+                        stages=["build", "checker"] if checker else ["build"],
+                        config_version=hashlib.sha256(json.dumps(inputs, sort_keys=True).encode("utf-8")).hexdigest())
     plan["version"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()
     return plan
 
@@ -4282,8 +4315,8 @@ def plan_stage_resume(config, run_id, stage, *, through_capsule=None, rewind_to=
         return plan_migration_resume(config, run_id, through_capsule, rewind_to=rewind_to)
     if through_capsule is not None or rewind_to is not None:
         raise ValueError("区間は移行工程を選んだ場合に指定してください。")
-    if stage == "build":
-        return plan_build_resume(config, run_id)
+    if stage in {"build", BUILD_THROUGH_STAGE}:
+        return plan_build_resume(config, run_id, through_completion=stage == BUILD_THROUGH_STAGE)
     if stage == "checker":
         return plan_checker_resume(config, run_id)
     raise ValueError("再開する工程を選び直してください。")
@@ -4939,8 +4972,8 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
 
 
 def _validate_resume_plan(config, run_id, record, verification_request, stage):
-    if stage == "build":
-        plan = plan_build_resume(config, run_id)
+    if stage in {"build", BUILD_THROUGH_STAGE}:
+        plan = plan_build_resume(config, run_id, through_completion=stage == BUILD_THROUGH_STAGE)
         if any(verification_request.get(key) != value for key, value in plan.items()):
             raise ValueError("確認後に保存版または実行条件が更新されました。再開する版を確認し直してください。")
     elif stage == "migration":
@@ -5040,7 +5073,6 @@ def _resume_with_junie(
     if checker_instruction is not None and status not in {"checker_needs_review", "checker_failed"}:
         raise ValueError("表示中の Run のチェッカー結果が変わりました。")
     stage = verification_request.get("start_stage") if verification_request else None
-    explicit_build = stage == "build"
     plan = _validate_resume_plan(config, run_id, record, verification_request, stage)
     if not verification_request and not can_resume_run(config, record):
         if status in _CHECKER_RESUME_STATUSES:
@@ -5115,7 +5147,7 @@ def _resume_with_junie(
             if len(history) >= config["max_repair_attempts"]:
                 raise ValueError("この Run の修正回数が上限に達しました。残った指摘はエディタで修正してください。")
         verification_request["build_targets"] = _apply_verification_edits(run_path, worktree_path, unit, verification_request)
-        if explicit_build:
+        if stage in {"build", BUILD_THROUGH_STAGE}:
             if _previously_required_checker(record):
                 record["checker_required"] = True
             operation = {
