@@ -62,6 +62,7 @@ from .verification.script_handoff import make_script_handoff, script_handoff_con
 from .runs.editor_queue import (
     EDITOR_TARGET_SUFFIXES,
     LivePrompts,
+    complete_editor_adoption,
     dispatch_prompts,
     editor_queue,
     editor_save_pending,
@@ -71,6 +72,7 @@ from .runs.editor_queue import (
     merge_edit,
     record_adopted_editor_edit,
     record_operator_edit,
+    stage_editor_adoption,
 )
 from .errors import format_error
 from .execution import (
@@ -3119,7 +3121,7 @@ def _apply_verification_edits(run_path, worktree, unit, request):
 
     targets = target_paths(unit)
     apply_error = None
-    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
+    with editor_queue(run_path, recover=(worktree, targets)) as queue, worktree_source_lock(worktree):
         check_cancelled()
         if (saved_edits(queue) != request["edits"] or queue.get("edit_revision") != request["edit_revision"]
                 or target_versions(worktree, unit) != request["targets"]):
@@ -3135,16 +3137,19 @@ def _apply_verification_edits(run_path, worktree, unit, request):
                 edit["status"] = "conflict"
                 conflicts.append(name)
             else:
-                merged[name] = (hashlib.sha256(data).hexdigest() if data is not None else None, current, content)
+                merged[name] = data, current, content
         if not conflicts:
-            for name, (version, current, content) in merged.items():
-                try:
-                    save_target_edit(worktree, targets, {"target": name, "version": version, "content": content})
-                except (OSError, ValueError) as exc:
-                    apply_error = ValueError(f"{name} を反映できませんでした。残りの保存版を確認してください。{format_error(exc)}")
-                    break
-                record_adopted_editor_edit(queue, name, queue["edits"][name], current, content)
-                del queue["edits"][name]
+            if merged:
+                adoption = stage_editor_adoption(run_path, queue, merged)
+                for name, (_, _, content) in merged.items():
+                    try:
+                        save_target_edit(worktree, targets, {
+                            "target": name, "version": adoption["entries"][name]["before"], "content": content,
+                        })
+                    except (OSError, ValueError) as exc:
+                        apply_error = ValueError(f"{name} を反映できませんでした。残りの保存版を確認してください。{format_error(exc)}")
+                        break
+                complete_editor_adoption(queue, worktree, targets, adoption)
             if apply_error is None:
                 return target_versions(worktree, unit)
     if apply_error is not None:
@@ -4080,7 +4085,7 @@ def plan_build_resume(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     from .junie.junie_conversation import saved_edits, target_versions
 
     run_path, worktree, _, unit = load_saved_run(config, run_id)
-    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
+    with editor_queue(run_path, recover=(worktree, target_paths(unit))) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
         _require_completed_command(record)
         if not can_resume_build(record):
