@@ -606,6 +606,7 @@ try {
       return fetchOriginal(resource, options);
     };
   }.toString() + ")()");
+  assert.equal(await evaluate("fetch('fixture-resumable', {method: 'POST'}).then(r => r.status)"), 200);
   await click("tab-progress");
   await wait(field("toggle") + "?.matches(':enabled')");
   const failedChange = runModel + ".value = 'fixture-lite'; " + runModel + ".dispatchEvent(new Event('change', {bubbles:true}))";

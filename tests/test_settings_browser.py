@@ -11,6 +11,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from migration_harness.web import dashboard
 from migration_harness.junie.junie_notifications import RunNotice
@@ -96,6 +97,21 @@ max_bytes = 9007199254740993 # preserve this value
                 server = view.server(config, dashboard.render_dashboard_html(" data-live data-workspace"),
                                      (package / "dashboard.js").read_bytes())
             url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+            fixture_route = urlsplit(url).path + "fixture-resumable"
+            post = server.RequestHandlerClass.do_POST
+
+            def allow_fixture_resume(handler):
+                if handler.path != fixture_route:
+                    return post(handler)
+                record_path = run / "run.json"
+                saved = json.loads(record_path.read_bytes())
+                saved.pop("script_inflight", None)
+                record_path.write_text(json.dumps(saved), encoding="utf-8")
+                view.observe(saved)
+                view.ready(config, saved)
+                handler.send_body(200, "application/json", b"{}")
+
+            server.RequestHandlerClass.do_POST = allow_fixture_resume
             token = "T" * 32
             server.junie_notifications.links[token] = RunNotice(run_id, "script_failed", "failed")
             notification_url = f"http://127.0.0.1:{server.server_port}/junie-open/{token}"
@@ -115,6 +131,8 @@ max_bytes = 9007199254740993 # preserve this value
                         capture_output=True, text=True, encoding="utf-8", timeout=110,
                     )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(view.actions.qsize(), 1)
+                self.assertEqual(view.actions.get_nowait()["action"], "resume")
                 print(result.stdout, end="", flush=True)
             finally:
                 server.shutdown()
