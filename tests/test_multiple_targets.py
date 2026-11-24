@@ -379,7 +379,7 @@ class MultipleTargetsTest(HarnessCase):
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
         model, page = self.worktree / model_name, self.worktree / page_name
         agent = self.run_path / "agent-workspace"
-        run_process = subprocess.run
+        run_process = workflow.run_process
 
         def run_checker(command, **kwargs):
             """ビューが未修正のときだけ、そのファイルに指摘を出す。"""
@@ -420,7 +420,7 @@ class MultipleTargetsTest(HarnessCase):
                     completion.write_text(token, encoding="ascii")
                     return 0
 
-                with patch.object(workflow.subprocess, "run", side_effect=run_checker):
+                with patch.object(workflow, "run_process", side_effect=run_checker):
                     result = self.resume(repair)
                 if case == "success":
                     self.assertEqual(result["status"], "checker_succeeded")
@@ -447,7 +447,7 @@ class MultipleTargetsTest(HarnessCase):
         run_records.write_run_record(self.record_path, record)
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
 
-        run_process = subprocess.run
+        run_process = workflow.run_process
 
         def check(command, **kwargs):
             if command[0] == "git":
@@ -470,7 +470,7 @@ class MultipleTargetsTest(HarnessCase):
             completion.write_text(token)
             return 0
 
-        with patch.object(workflow.subprocess, "run", side_effect=check):
+        with patch.object(workflow, "run_process", side_effect=check):
             with self.assertRaises(workflow.RunInterrupted):
                 self.resume(interrupt)
             self.assertNotEqual((self.worktree / page).read_text(encoding="utf-8-sig"), "draft")
@@ -485,7 +485,7 @@ class MultipleTargetsTest(HarnessCase):
         record.update(status="checker_needs_review", build_exit_code=0, completed_capsules=1)
         run_records.write_run_record(self.record_path, record)
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
-        run_process = subprocess.run
+        run_process = workflow.run_process
 
         def check(command, **kwargs):
             if command[0] == "git":
@@ -499,7 +499,7 @@ class MultipleTargetsTest(HarnessCase):
             junie_cli.JunieLaunchError(["junie"], str(self.worktree), None, FileNotFoundError("missing launcher")),
             junie_cli.JunieSessionError(["junie"], 0, "JLine returned dumb"),
         ]
-        with patch.object(workflow.subprocess, "run", side_effect=check):
+        with patch.object(workflow, "run_process", side_effect=check):
             for failure in failures:
                 with self.subTest(error=type(failure).__name__):
                     def fail(*args, **kwargs):

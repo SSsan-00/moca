@@ -228,14 +228,14 @@ class CapsulePreparationTests(HarnessCase):
         config["scripts"]["before_migration"].append(["@copy-migration-draft", str(draft), "Target.cs"])
         config["scripts"]["after_build"].append([sys.executable, "-c", "raise SystemExit(7)"])
         config["checker_command"] = [sys.executable, "-c", "pass"]
-        subprocess_run = subprocess.run
+        original_run_process = workflow.run_process
         calls = []
 
         def run_process(args, **kwargs):
             if args in (["dotnet", "build"], config["checker_command"]):
                 calls.append("dotnet" if args[0] == "dotnet" else "fixture-checker")
                 return subprocess.CompletedProcess(args, 0)
-            return subprocess_run(args, **kwargs)
+            return original_run_process(args, **kwargs)
 
         def migrate(args, completion, token, targets, *, report_usage=None, prompts=None):
             target, = targets
@@ -248,7 +248,7 @@ class CapsulePreparationTests(HarnessCase):
         with (
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(junie_cli, "run_interactive", side_effect=migrate),
-            patch.object(workflow.subprocess, "run", side_effect=run_process),
+            patch.object(workflow, "run_process", side_effect=run_process),
             redirect_stdout(io.StringIO()),
         ):
             with self.assertRaises(workflow.RunScriptError) as failure:
