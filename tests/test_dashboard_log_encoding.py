@@ -117,6 +117,29 @@ class DashboardRunLogEncodingTests(SavedRunFixture):
     def test_long_hook_line_keeps_lf_diagnostic_after_split_utf8_character(self):
         self.check_split_character("utf-8", "\n")
 
+    def test_unterminated_cp932_tail_keeps_intact_japanese_characters(self):
+        for prefix, diagnostic in (
+            (".", "失敗"),
+            (".", "値"),
+            (".", "警告"),
+            ("縺", "値"),
+        ):
+            with self.subTest(prefix=prefix, diagnostic=diagnostic):
+                initial = f"{diagnostic}: MissingProjectReference "
+                encoded = initial.encode("cp932")
+                fill = "." * (65_536 - len(encoded))
+                raw = b"OutsideExcerpt" + b"." * 7000 + prefix.encode("cp932") + encoded + fill.encode("ascii")
+                self.check_failed_hook_tail(raw, "\n" + initial + fill)
+
+    def test_confirmed_utf8_split_precedes_cp932_interpretation_of_the_fragment(self):
+        visible = "MissingProjectReference "
+        character = "\ua961".encode("utf-8")
+        # The single trailing byte is also a valid CP932 half-width character.
+        self.assertEqual(len(character[2:].decode("cp932")), 1)
+        fill = "." * (65_536 - 1 - len(visible))
+        raw = b"OutsideExcerpt" + b"." * 7000 + character + (visible + fill).encode("ascii")
+        self.check_failed_hook_tail(raw, "\n" + visible + fill)
+
     def check_split_character(self, encoding, newline):
         diagnostic = " MissingProjectReference: " + JAPANESE + newline
         last = diagnostic.encode(encoding)
