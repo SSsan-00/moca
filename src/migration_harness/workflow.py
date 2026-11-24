@@ -4744,10 +4744,18 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
         with editor_queue(run_path) as queue, worktree_source_lock(worktree):
             adopted_edits = adoption.get("editor_edits", {})
             edit_versions = _reference_edit_versions(queue["edits"])
-            if (edit_versions and edit_versions != adopted_edits
-                    or pending.get("conflict") and any(prompt["status"] != "sent" for prompt in queue["prompts"])):
-                raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
             current = _reference_target_versions(worktree, targets)
+            conflict = pending.get("conflict", {})
+            staged_draft = adoption.get("draft") or conflict.get("draft")
+            if edit_versions and edit_versions != adopted_edits:
+                if (not record.get("target_apply_pending") and current == adoption["before"] and staged_draft
+                        and _reference_target_versions(canonical, targets) == staged_draft):
+                    pending.pop("adoption")
+                    write_run_record(record_path, record)
+                    raise ValueError("見直し後に編集が保存されました。成果物は上書きしていません。もう一度再開してください。")
+                raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
+            if conflict and any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+                raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
             if current not in (adoption["before"], adoption["after"]):
                 raise ValueError("参考資料への追従中に移行先が変更されました。" + _REFERENCE_RESOLUTION_GUIDANCE)
             if adopted_edits and (not recovering_adoption or current != adoption["after"] or current == adoption["before"]):

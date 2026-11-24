@@ -2,7 +2,7 @@ import codecs
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -496,6 +496,61 @@ class ReferenceConflictEditorTests(SavedRunFixture):
 
     def test_newer_reference_invalidates_proposal_without_losing_concurrent_edit(self):
         self.reference_and_queued_edit(during_proposal=True, overlap=False, first_failure="new reference")
+
+    def test_save_after_staging_replans_before_any_adoption_or_prompt_consumption(self):
+        self.saved_targets()
+        self.target.write_bytes(self.base.encode("utf-8-sig"))
+        message = "Verify the unrelated manual label."
+        use_queue = workflow.editor_queue
+        with use_queue(self.run_path) as queue:
+            queue["operator_edits"].clear()
+            queue["prompts"].append({"id": "unrelated", "text": message, "status": "queued"})
+        human = self.base.replace("old label", "late human edit")
+        saved = None
+
+        @contextmanager
+        def queue_with_late_save(run_path):
+            nonlocal saved
+            with use_queue(run_path) as queue:
+                yield queue
+            if saved is None and self.record().get("reference_refresh", {}).get("adoption"):
+                saved = self.save_editor("Example.cs", human)["edit"]
+
+        def propose(*args):
+            with use_queue(self.run_path) as queue:
+                self.assertEqual(queue["prompts"], [{"id": "unrelated", "text": message, "status": "queued"}])
+            self.assertFalse(list(self.agent.glob("*-operator.txt")))
+            return self.propose(*args)
+
+        def migrate(command, completion, token, targets, **kwargs):
+            instructions = f"checker-findings-{token}-operator.txt"
+            self.assertIn(instructions, command[-1])
+            self.assertEqual((self.agent / instructions).read_text(encoding="utf-8"), f"- {message}\n")
+            self.assertEqual((self.agent / "refs/Library.cs").read_text(encoding="utf-8"), "reference B")
+            self.assertEqual(targets[0].read_text(encoding="utf-8-sig"), human.replace("reference A", "model choice"))
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        with (patch.object(workflow, "editor_queue", side_effect=queue_with_late_save),
+              patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+              patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result)):
+            with self.assertRaisesRegex(ValueError, "成果物は上書きしていません。もう一度再開"):
+                self.resume_fixture()
+            self.assertIsNotNone(saved)
+            self.assertEqual(self.target.read_bytes(), self.base.encode("utf-8-sig"))
+            self.assertNotIn("adoption", self.record()["reference_refresh"])
+            continuation.assert_not_called()
+            with use_queue(self.run_path) as queue:
+                self.assertEqual(queue["edits"]["Example.cs"], saved)
+                self.assertEqual(queue["prompts"][0]["status"], "queued")
+            self.assertEqual(self.resume_fixture()["completed_capsules"], 2)
+        self.assertEqual(model.call_count, 2)
+        continuation.assert_called_once()
+        with use_queue(self.run_path) as queue:
+            self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
+            self.assertEqual(queue["prompts"][0]["status"], "sent")
 
     def test_http_resolution_continues_partial_run_and_preserves_old_reference_and_stopped_draft(self):
         self.saved_targets(stopped=True)
