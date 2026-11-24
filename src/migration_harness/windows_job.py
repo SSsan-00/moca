@@ -22,6 +22,12 @@ class _JobAccounting(ctypes.Structure):
     ]
 
 
+class _JobProcessIds(ctypes.Structure):
+    _fields_ = [
+        ("assigned", win.DWORD), ("listed", win.DWORD), ("ids", ctypes.c_size_t * 2),
+    ]
+
+
 class _BasicLimits(ctypes.Structure):
     _fields_ = [
         ("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
@@ -46,8 +52,10 @@ _BOOL = win.BOOL
 
 CREATE_SUSPENDED = 0x00000004
 _BASIC_ACCOUNTING = 1
+_BASIC_PROCESS_ID_LIST = 3
 _EXTENDED_LIMITS = 9
 _KILL_ON_JOB_CLOSE = 0x00002000
+_ERROR_MORE_DATA = 234
 
 
 class WindowsJob:
@@ -120,6 +128,18 @@ class WindowsJob:
         if not self._query(self.handle, _BASIC_ACCOUNTING, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
             raise ctypes.WinError(ctypes.get_last_error())
         return accounting.active_processes
+
+    def has_processes_other_than(self, exited_pid):
+        # Job membership can still include the launcher after its process handle is signaled.
+        members = _JobProcessIds()
+        if not self._query(self.handle, _BASIC_PROCESS_ID_LIST, ctypes.byref(members), ctypes.sizeof(members), None):
+            error = ctypes.get_last_error()
+            if error == _ERROR_MORE_DATA:
+                return True
+            raise ctypes.WinError(error)
+        if members.assigned != members.listed or members.listed > len(members.ids):
+            raise OSError("Windows Job returned an incomplete process list")
+        return any(pid != exited_pid for pid in members.ids[:members.listed])
 
     def stop(self, deadline):
         if self.active_processes() and not self._terminate(self.handle, 1):

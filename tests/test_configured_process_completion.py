@@ -12,12 +12,13 @@ from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness.execution import ConfiguredProcessIncomplete, ExecutionControl, control_scope, run_process
 from migration_harness.runs.recovery_status import recovery_status
-from migration_harness.windows_job import WindowsJob
+from migration_harness.windows_job import _BASIC_PROCESS_ID_LIST, _JobProcessIds, WindowsJob
 
 
-def launcher(*, waits, pid_path=None):
-    child = ("import sys; print('child stdout'); print('child stderr', file=sys.stderr); sys.exit(7)"
-             if waits else "import time; time.sleep(15)")
+def launcher(*, waits, pid_path=None, child=None):
+    if child is None:
+        child = ("import sys; print('child stdout'); print('child stderr', file=sys.stderr); sys.exit(7)"
+                 if waits else "import time; time.sleep(15)")
     code = f"import subprocess, sys; from pathlib import Path; child = subprocess.Popen([sys.executable, '-c', {child!r}]); "
     if pid_path is not None:
         code += f"Path({str(pid_path)!r}).write_text(str(child.pid), encoding='ascii'); "
@@ -26,10 +27,53 @@ def launcher(*, waits, pid_path=None):
 
 
 class ConfiguredProcessControlTests(unittest.TestCase):
-    def test_job_accounting_failure_does_not_certify_parent_exit(self):
-        with patch.object(WindowsJob, "active_processes", side_effect=OSError("fixture accounting unavailable")):
+    def test_job_membership_failure_does_not_certify_parent_exit(self):
+        with patch.object(WindowsJob, "has_processes_other_than", side_effect=OSError("fixture membership unavailable")):
             with self.assertRaises(ConfiguredProcessIncomplete):
                 run_process([sys.executable, "-c", "pass"], label="fixture", synchronous=True)
+
+    def test_reported_launcher_pid_alone_does_not_imply_a_surviving_child(self):
+        start = WindowsJob.start
+
+        def return_stale_launcher(job, process):
+            start(job, process)
+            query = job._query
+
+            def report(handle, info, output, size, returned):
+                if info != _BASIC_PROCESS_ID_LIST:
+                    return query(handle, info, output, size, returned)
+                self.assertIsNotNone(process.returncode)
+                members = ctypes.cast(output, ctypes.POINTER(_JobProcessIds)).contents
+                members.assigned = members.listed = 1
+                members.ids[0] = process.pid
+                return True
+
+            job._query = report
+
+        with patch.object(WindowsJob, "start", return_stale_launcher):
+            completed = run_process([sys.executable, "-c", "print('fixture output')"], label="fixture",
+                                    synchronous=True, capture_output=True)
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout.splitlines(), [b"fixture output"])
+
+    def test_child_that_can_exit_after_membership_check_is_still_incomplete(self):
+        contains_other = WindowsJob.has_processes_other_than
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory) / "release"
+            child = ("import time; from pathlib import Path; deadline = time.monotonic() + 10\n"
+                     f"while not Path({str(release)!r}).exists() and time.monotonic() < deadline:\n"
+                     " time.sleep(.01)")
+
+            def release_after_observation(job, exited_pid):
+                found = contains_other(job, exited_pid)
+                if found:
+                    release.touch()
+                return found
+
+            with (patch.object(WindowsJob, "has_processes_other_than", release_after_observation),
+                  self.assertRaises(ConfiguredProcessIncomplete)):
+                run_process(launcher(waits=False, child=child), label="fixture", synchronous=True, capture_output=True)
+            self.assertTrue(release.is_file())
 
     def test_synchronous_child_output_and_nonzero_status_are_preserved_without_dashboard(self):
         with tempfile.TemporaryDirectory() as directory:

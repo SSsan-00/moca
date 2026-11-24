@@ -106,9 +106,9 @@ def report_activity(message: str, *, kind: str = "activity", detail: str = "") -
         control.on_activity(entry)
 
 
-def _require_idle_job(job):
+def _require_idle_job(job, exited_pid):
     try:
-        active = job.active_processes()
+        active = job.has_processes_other_than(exited_pid)
     except OSError as exc:
         raise ConfiguredProcessIncomplete("Windows Job内の全プロセスの終了を確認できません。") from exc
     if active:
@@ -148,11 +148,11 @@ def run_process(
                 try:
                     stdout, stderr = process.communicate(timeout=0.25)
                     if synchronous:
-                        _require_idle_job(job)
+                        _require_idle_job(job, process.pid)
                     break
                 except subprocess.TimeoutExpired:
                     if synchronous and process.poll() is not None:
-                        _require_idle_job(job)
+                        _require_idle_job(job, process.pid)
                     if time.monotonic() >= next_report:
                         report_activity(f"{label}のプロセスは起動中です。終了を待っています。", kind="heartbeat")
                         next_report = time.monotonic() + HEARTBEAT_SECONDS
