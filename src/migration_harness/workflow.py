@@ -863,6 +863,22 @@ class _MalformedDetailReviewReply(ValueError):
     pass
 
 
+def _unique_detail_review_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _MalformedDetailReviewReply("detail review response contains a duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _load_detail_review_json(text):
+    try:
+        return json.loads(text, object_pairs_hook=_unique_detail_review_keys)
+    except json.JSONDecodeError:
+        raise _MalformedDetailReviewReply("Junieの詳細ルール選別の応答がJSON形式ではありません。") from None
+
+
 def _review_detail_applicability(
     run_path: Path, capsule: Path, manifest: dict[str, Any], targets: tuple[Path, ...],
     record: dict[str, Any], max_steps: int | None, *, model: str | None = None, effort: str | None = None,
@@ -968,6 +984,7 @@ def _review_detail_applicability(
         token = uuid.uuid4().hex
         completion = review_root / f"review-complete-{token}.txt"
         output = review_root / "decisions.json"
+        initial_decisions = None
         if context is None:
             # 判定は未入力のまま、照合に使うファイル名だけを固定する。
             pending = json.dumps({"applies": None, "reason": ""})
@@ -975,14 +992,12 @@ def _review_detail_applicability(
                 f'  {json.dumps(item["file"], ensure_ascii=False)}: {pending}'
                 for item in index
             )
-            output.write_text("{\n" + ",\n".join(rows) + "\n}\n", encoding="utf-8")
+            initial_decisions = "{\n" + ",\n".join(rows) + "\n}\n"
+            output.write_text(initial_decisions, encoding="utf-8")
 
         def save_decisions(answer: str) -> None:
             # 原文と詳細索引の全文を渡した場合は、最終回答を照合してハーネス側で完了記録を作る。
-            try:
-                response = json.loads(unwrap_json_fence(answer))
-            except json.JSONDecodeError:
-                raise _MalformedDetailReviewReply("Junieの詳細ルール選別の応答がJSON形式ではありません。") from None
+            response = _load_detail_review_json(unwrap_json_fence(answer))
             if not isinstance(response, dict) or response.get("review_token") != token:
                 raise ValueError("detail review result does not match this invocation")
             selected_details(index, response.get("decisions"), line_counts, evidence)
@@ -1067,18 +1082,28 @@ def _review_detail_applicability(
                 )
                 if not junie_cli.has_completion_record(completion, token) or output.is_symlink() or not output.is_file():
                     raise ValueError("Junie did not complete the detail applicability review")
-                decisions = json.loads(output.read_text(encoding="utf-8-sig"))
+                decisions = _load_detail_review_json(output.read_text(encoding="utf-8-sig"))
                 selected_details(index, decisions, line_counts, evidence)
                 break
             except (_MalformedDetailReviewReply, InvalidDetailContextEvidence) as exc:
+                completion.unlink(missing_ok=True)
                 if attempt:
                     raise
                 if isinstance(exc, _MalformedDetailReviewReply):
+                    output.unlink(missing_ok=True)
                     report_activity("詳細ルール選別の応答がJSON形式ではなかったため、1回だけ再試行します。")
-                    correction = (
-                        "The previous reply was not valid JSON. Return one complete JSON object with the "
-                        "requested keys, no prose, no progress updates in the final response, and no Markdown fences."
-                    )
+                    if initial_decisions is None:
+                        correction = (
+                            "The previous reply was not valid JSON. Return one complete JSON object with the "
+                            "requested keys, no duplicate keys, no prose, no progress updates in the final response, "
+                            "and no Markdown fences."
+                        )
+                    else:
+                        output.write_text(initial_decisions, encoding="utf-8")
+                        correction = (
+                            "The previous decisions.json was invalid and has been reset. Complete the prepared file "
+                            "as one JSON object with no duplicate keys, then write the new completion marker."
+                        )
                 else:
                     report_activity("詳細ルール選別の根拠が保存資料と一致しないため、1回だけ再試行します。")
                     correction = (
@@ -1091,7 +1116,6 @@ def _review_detail_applicability(
                         "Keep valid citations and preserve all decisions and nonempty reasons. If applicability "
                         "cannot be established from verified evidence, follow the insufficient_context rule."
                     )
-                completion.unlink(missing_ok=True)
                 previous_token = token
                 token = uuid.uuid4().hex
                 completion = review_root / f"review-complete-{token}.txt"

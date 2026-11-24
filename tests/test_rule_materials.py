@@ -597,6 +597,65 @@ class RuleMaterialsTests(HarnessCase):
                     if should_complete:
                         budget = max(sizes[0], sizes[1] - len(hint.encode("utf-8")))
 
+    def test_duplicate_detail_decisions_are_rejected_in_final_replies_and_files(self):
+        capsule = self.root / "capsule"
+        capsule.mkdir()
+        entry, = rule_materials.write_rule_files(capsule / "materials", [
+            ({"path": "identity.md", "usage": "reference", "description": "Customer ID"}, "Preserve IDs.\n"),
+        ])
+        source = capsule / "context.md"
+        manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": [entry]}
+        rule = entry["file"]
+        valid = {rule: {"applies": True, "reason": "Keep\u2028customer ID", "rule_lines": [1, 1]}}
+        for large in (False, True):
+            source.write_bytes(b"<?php echo $customerId;\r\n" * (1000 if large else 1))
+            for name, invalid in {
+                "rule": f'{{"{rule}":{{"applies":true,"reason":"Keep ID"}},"{rule}":{{"applies":false,"reason":"Drop ID"}}}}',
+                "nested": f'{{"{rule}":{{"applies":true,"app\\u006cies":false,"reason":"Conflicting decision"}}}}',
+            }.items():
+                for repair in (False, True):
+                    with self.subTest(large=large, duplicate=name, repair=repair):
+                        run = self.root / f"{large}-{name}-{repair}"
+                        run.mkdir()
+                        record, attempts = {}, []
+
+                        def reply(command, completion, token, outputs, **kwargs):
+                            accept = kwargs["accept_result"]
+                            self.assertEqual(accept is None, large)
+                            self.assertFalse(completion.exists())
+                            self.assertNotIn("detail_applicability", record)
+                            self.assertFalse((run / "run.json").exists())
+                            if attempts:
+                                old_completion, old_token = attempts[0]
+                                self.assertFalse(old_completion.exists())
+                                self.assertNotEqual(token, old_token)
+                                self.assertIn(token, command[-1])
+                                self.assertIn("no duplicate keys", command[-1])
+                            if large:
+                                pending = json.loads(outputs[0].read_bytes())
+                                self.assertEqual(pending, {rule: {"applies": None, "reason": ""}})
+                            else:
+                                self.assertFalse(outputs[0].exists())
+                            body = json.dumps(valid, ensure_ascii=False) if repair and attempts else invalid
+                            attempts.append((completion, token))
+                            if large:
+                                outputs[0].write_text(body, encoding="utf-8-sig")
+                                completion.write_text(token, encoding="utf-8")
+                            else:
+                                accept('```json\r\n{"review_token":"' + token + '","decisions":' + body + '}\r\n```')
+
+                        args = run, capsule, manifest, (Path("Target.cs"),), record, None
+                        with patch.object(junie_cli, "run_interactive", side_effect=reply):
+                            if repair:
+                                self.assertEqual(workflow._review_detail_applicability(*args), {rule})
+                                self.assertEqual(json.loads((run / "run.json").read_bytes())["detail_applicability"], valid)
+                            else:
+                                with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+                                    workflow._review_detail_applicability(*args)
+                                self.assertNotIn("detail_applicability", record)
+                                self.assertFalse((run / "run.json").exists())
+                        self.assertEqual(len(attempts), 2)
+
     def test_invalid_context_evidence_retries_without_reusing_completion(self):
         capsule = self.root / "capsule"
         capsule.mkdir()
