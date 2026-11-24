@@ -8,6 +8,10 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   const rows = find("#run-rows");
   const feedback = find("#workspace-run-feedback");
   const dryRunButton = find("#dry-run-selected");
+  const brave = document.documentElement.hasAttribute("data-live") ? find("#run-junie-brave") : null;
+  const resetBrave = () => { if (brave) brave.checked = false; };
+  resetBrave();
+  if (brave) find("#run-junie-brave-option").hidden = false;
   let dryRunId;
   let dryRunCancelling = false;
   const search = find("#run-search");
@@ -71,6 +75,10 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   // 接続状態と送信中の操作から、実行・再開ボタンを更新する。
   function sync() {
     const available = canAct() && !pending;
+    if (brave) {
+      brave.disabled = !available || selectedUnits.size !== 1;
+      if (brave.disabled) resetBrave();
+    }
     for (const button of form.querySelectorAll("button")) {
       button.disabled = button === dryRunButton && dryRunId
         ? dryRunCancelling : !available || !selectedUnits.size;
@@ -125,7 +133,12 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     const nextOptions = JSON.stringify([data.units, busyUnits]);
     if (nextOptions !== optionKey) {
       optionKey = nextOptions;
-      for (const unit of selectedUnits) if (!data.units.includes(unit) || busyUnits.includes(unit)) selectedUnits.delete(unit);
+      for (const unit of selectedUnits) {
+        if (!data.units.includes(unit) || busyUnits.includes(unit)) {
+          selectedUnits.delete(unit);
+          resetBrave();
+        }
+      }
       options.replaceChildren(...data.units.map(unit => {
         const label = node("label");
         const input = node("input");
@@ -133,7 +146,11 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         input.value = unit;
         input.checked = selectedUnits.has(unit);
         input.dataset.busy = String(busyUnits.includes(unit));
-        input.addEventListener("change", () => { if (input.checked) selectedUnits.add(unit); else selectedUnits.delete(unit); sync(); });
+        input.addEventListener("change", () => {
+          if (input.checked) selectedUnits.add(unit); else selectedUnits.delete(unit);
+          resetBrave();
+          sync();
+        });
         label.append(input, node("span", unit));
         if (busyUnits.includes(unit)) label.append(node("small", "実行中・待機中"));
         return label;
@@ -268,6 +285,11 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     }
     if (pending || !canAct() || !selectedUnits.size || !event.submitter) return;
     const action = event.submitter.value;
+    const payload = {unit_ids: [...selectedUnits]};
+    if (action === "run" && payload.unit_ids.length === 1 && brave?.checked && !brave.disabled) {
+      payload.junie_brave = true;
+    }
+    resetBrave();
     pending = true;
     try {
       if (action === "dry-run") {
@@ -297,7 +319,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         return;
       }
       sync();
-      await execute(action, {unit_ids: [...selectedUnits]});
+      await execute(action, payload);
       selectedUnits.clear();
       optionKey = undefined;
       find("#unit-picker").open = false;
@@ -312,7 +334,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     }
   });
   search.addEventListener("input", render);
-  workspaceTabs.addEventListener("harnesstab", refresh);
+  workspaceTabs.addEventListener("harnesstab", () => { resetBrave(); refresh(); });
   setInterval(() => {
     if (!document.hidden) refresh();
     for (const row of rows.children) {

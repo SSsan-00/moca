@@ -140,6 +140,7 @@ class RunManager:
         for job in jobs:
             run_id, unit_id = job["run_id"], job["unit_id"]
             interrupted = job.get("running")
+            reconfirm_brave = job.get("junie_brave_reconfirm") is True or "junie_brave" in job
             if interrupted:
                 message = blocked.setdefault(
                     run_id, "前回の処理の終了を確認できません。ログと残存プロセスを確認してから指示を送信し直してください。",
@@ -161,6 +162,10 @@ class RunManager:
             views[run_id] = view
             if interrupted:
                 view.publish({**view.state, "message": message})
+            elif reconfirm_brave:
+                status = "preparation_interrupted" if job["action"] == "run" else view.state["status"]
+                view.publish({**view.state, "status": status, "queued": False, "ready": True,
+                              "message": "Brave モードの実行待ちは再起動後に引き継ぎません。この画面からもう一度実行してください。"})
             else:
                 waiting[run_id] = self._queued_job(view, job, job.get("operation_id"))
         return views, disk_ids, waiting
@@ -176,8 +181,12 @@ class RunManager:
     def persist(self):
         if not self.root:
             return
-        jobs = [{key: value for key, value in job.items() if key not in {"reply", "config"}}
-                for job in self.jobs.values()]
+        jobs = []
+        for job in self.jobs.values():
+            saved = {key: value for key, value in job.items() if key not in {"reply", "config", "junie_brave"}}
+            if job.get("junie_brave") is True:
+                saved["junie_brave_reconfirm"] = True
+            jobs.append(saved)
         temporary = self.queue_path.with_suffix(".tmp")
         temporary.write_text(json.dumps({
             "project_root": self.config["project_root"], "jobs": jobs,
@@ -305,11 +314,18 @@ class RunManager:
             if self.closing:
                 raise ValueError("ダッシュボードを終了しています。再度起動してください。")
             kind = action["action"]
+            brave = action.get("junie_brave", False)
+            if type(brave) is not bool or (brave and kind not in {"run", "resume-run"}):
+                raise ValueError("Brave モードは移行の実行、または再開方法を指定した場合にだけ選択できます。")
+            if brave and kind == "resume-run" and action.get("verification_request", {}).get("start_stage") != "migration":
+                raise ValueError("移行工程の再開計画を確認してから Brave モードを選択してください。")
             if kind in {"run", "prepare"}:
                 units = action.get("unit_ids", [action.get("unit_id")])
                 if not isinstance(units, list) or not units or len(units) > 100 or any(not isinstance(unit, str) for unit in units):
                     raise ValueError("移行単位を1件以上、100件以内で選択してください。")
                 units = list(dict.fromkeys(units))
+                if brave and len(units) != 1:
+                    raise ValueError("Brave モードで実行する移行単位は1件だけ選択してください。")
                 for unit in units:
                     find_unit(self.config, unit)
                 if any(job["unit_id"] in units for job in self.jobs.values()):
@@ -318,7 +334,7 @@ class RunManager:
                 for unit in units:
                     run_id = str(uuid.uuid4())
                     view = self.new_view(run_id, unit)
-                    self.enqueue(view, {"action": kind})
+                    self.enqueue(view, {"action": kind, **({"junie_brave": True} if brave else {})})
                     ids.append(run_id)
             else:
                 view = self.get(action.get("run_id")) if action.get("run_id") else selected or self.default

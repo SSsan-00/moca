@@ -33,6 +33,7 @@ class ExecutionControl:
     on_junie_request: Callable[[dict | None], Future[str] | None] | None = None
     trusted_junie_workspaces: set[str] = field(default_factory=set)
     junie_steering: bool = False
+    junie_brave: bool = False
     operation_id: str | None = None
     junie_thoughts_path: Path | None = None
     junie_progress_style: str | None = None

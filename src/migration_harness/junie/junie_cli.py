@@ -22,7 +22,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
-from tempfile import TemporaryFile
+from tempfile import TemporaryDirectory, TemporaryFile
 from threading import Event, Thread
 from typing import TYPE_CHECKING, Any
 
@@ -699,14 +699,16 @@ def run_interactive(
     prefer_task: bool = False,
     prompts: LivePrompts | None = None,
 ) -> int:
-    if accept_result is None and (dashboard := junie_dashboard_control()) is not None:
+    dashboard = junie_dashboard_control()
+    brave_requested = dashboard is not None and dashboard.junie_brave
+    if accept_result is None and dashboard is not None:
         style = dashboard.junie_progress_style or DASHBOARD_PROGRESS_INSTRUCTION
         command = [*command[:-1], f"{command[-1]}\n\n{style}"]
     # 終了コードだけでは移行完了を保証しない。呼び出し元でも完了記録と成果物を検証する。
     task_supported = None
     if prompts is not None:
         prompts.recover()
-    if prefer_task:
+    if prefer_task and not brave_requested:
         task_supported = _supports_task(command[0])
         if task_supported:
             command = _task_command(command)
@@ -733,6 +735,11 @@ def run_interactive(
             except JunieAcpModelUnavailable as exc:
                 if unconfirmed_junie_stop(exc) is not None:
                     raise
+                if brave_requested:
+                    raise JunieSessionError(
+                        command, 1, "Brave モードで使える Junie ACP のモデルがありません。モデルを確認するか、"
+                        "Brave モードを選択せずに再開してください。非対話モードには切り替えていません。",
+                    ) from exc
                 # 非対話モードでは操作ごとの確認がなくなるため、自動では切り替えない。
                 dashboard = junie_dashboard_control()
                 if dashboard is None or task_supported is False:
@@ -800,6 +807,21 @@ def acp_confirms_effort(option: dict | None, effort: str, model: str | None = No
     return effort == "none" and model == "junie-lite"
 
 
+def acp_confirms_brave(session: dict) -> bool:
+    options = session.get("configOptions")
+    if not isinstance(options, list):
+        return False
+    brave = [option for option in options if isinstance(option, dict) and option.get("id") == "brave_mode"]
+    if len(brave) != 1:
+        return False
+    mode = brave[0]
+    if mode.get("type") == "boolean":
+        return mode.get("currentValue") is True
+    values = mode.get("options")
+    return (mode.get("type") == "select" and mode.get("currentValue") == "on" and isinstance(values, list)
+            and any(isinstance(choice, dict) and choice.get("value") == "on" for choice in values))
+
+
 def _acp_message(line: bytes):
     try:
         return json.loads(line)
@@ -820,12 +842,14 @@ def _acp_message(line: bytes):
 class _AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
+    require_brave = False
+
     def _connection_timeout(self) -> float:
         return ACP_STARTUP_TIMEOUT
 
     def __init__(
         self, process: subprocess.Popen, command: list[str], project: Path, show_request: Callable,
-        completion_path: Path, token: str, prompts: LivePrompts | None,
+        completion_path: Path, token: str, prompts: LivePrompts | None, *, require_brave: bool = False,
     ) -> None:
         """ACPセッションと入出力・完了状態を初期化する。"""
         self.process = process
@@ -845,6 +869,7 @@ class _AcpSession:
         self.selecting_lite = False
         self.pending_effort: tuple[str, str, int] | None = None
         self.session_ready = False
+        self.require_brave = require_brave
         self.permission_started = 0.0
         self.prompts = prompts
         self.completion_path = completion_path
@@ -1005,6 +1030,8 @@ class _AcpSession:
 
     def initialize(self) -> None:
         caps = {"fs": {"readTextFile": True}} if self.reference_reads and self.reference_reads.pins else {}
+        if self.require_brave:
+            caps["session"] = {"configOptions": {"boolean": {}}}
         self.request(1, "initialize", protocolVersion=1, clientCapabilities=caps)
 
     def read_reference(self, request_id: int | str, params: dict) -> None:
@@ -1077,6 +1104,9 @@ class _AcpSession:
     def _complete_lite_selection(self, message) -> None:
         self.selecting_lite = False
         error = message.get("error")
+        result = message.get("result")
+        if isinstance(result, dict) and "configOptions" in result:
+            self._require_brave_option(result)
         if (not isinstance(error, dict) and "result" in message
                 or isinstance(error, dict) and error.get("code") == -32601):
             return
@@ -1128,12 +1158,23 @@ class _AcpSession:
         if "error" in message or not acp_confirms_effort(option, effort):
             self._retry_effort_configuration(error if isinstance(error, dict) else None)
             return
+        self._require_brave_option(result)
         self.pending_effort = None
         self._mark_session_ready()
 
     def _mark_session_ready(self) -> None:
         self.session_ready = True
+        if self.require_brave:
+            report_activity("Junie の Brave モード: ON（今回の実行のみ）", kind="phase")
         self._on_session_ready()
+
+    def _require_brave_option(self, session: dict) -> None:
+        if self.require_brave and not acp_confirms_brave(session):
+            action = "この実行を停止します。" if self.session_ready else "指示を送信していません。"
+            raise JunieSessionError(
+                self.command, 1, "Junie ACP で Brave モードがオンになったことを確認できなかったため、"
+                f"{action}対応する Junie CLI を使用するか、Brave モードを選択せずに再開してください。",
+            )
 
     def _on_session_ready(self) -> None:
         accepted = launch_accepted_observer.get()
@@ -1159,6 +1200,7 @@ class _AcpSession:
             self.steering_supported = isinstance(steering, dict) and steering.get("supported") is True
             self.request(2, "session/new", cwd=str(self.project), mcpServers=[])
         elif request_id == 2 and result.get("sessionId"):
+            self._require_brave_option(result)
             self.session_id = result["sessionId"]
             if not self._select_lite_if_missing(result):
                 self._configure_effort(result)
@@ -1193,7 +1235,9 @@ class _AcpSession:
         elif method == "session/update" and params.get("sessionId") == self.session_id:
             update = params.get("update", {})
             kind = update.get("sessionUpdate")
-            if kind in ("tool_call", "tool_call_update") and "toolCallId" in update:
+            if kind == "config_option_update":
+                self._require_brave_option(update)
+            elif kind in ("tool_call", "tool_call_update") and "toolCallId" in update:
                 self.flush_progress()
                 self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
             elif self.progress_sink is not None and kind == "agent_message_chunk":
@@ -1279,7 +1323,7 @@ def acp_command(command: list[str]) -> list[str]:
     return [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
 
 
-def _launch_session_process(command, *, headless, dashboard, thought_path):
+def _launch_session_process(command, *, headless, dashboard, thought_path, brave_config=None):
     streams = {"stderr": subprocess.PIPE} if thought_path is not None else {}
     if headless:
         return _launch_process(command, owned=True, stdin=subprocess.DEVNULL, **streams)
@@ -1287,7 +1331,11 @@ def _launch_session_process(command, *, headless, dashboard, thought_path):
         # 対話入力をJunieへ直接渡すため、端末の標準入出力を引き継ぐ。
         return _launch_process(command, owned=True)
     # ACPの指示は初期化後に送るため、起動時の引数から外す。
-    return _launch_process(acp_command(command), owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
+    invocation = acp_command(command)
+    if brave_config is not None:
+        invocation.extend(["--config-location", str(brave_config), "--skip-update-check"])
+        streams["kill_on_close"] = True
+    return _launch_process(invocation, owned=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **streams)
 
 
 def _run_session(
@@ -1307,12 +1355,17 @@ def _run_session(
     if observe := acp_stop_observer.get():
         observe(None)
     headless = command[-2:-1] == ["--task"]
+    brave_requested = dashboard is not None and dashboard.junie_brave
+    brave = brave_requested and accept_result is None
+    if brave_requested and headless:
+        raise JunieSessionError(command, 1, "Brave モードを選択した実行は Junie ACP を使用します。")
     restore_terminal = _save_terminal_mode() if dashboard is None and not headless else None
     process = None
     acp = None
     thoughts = None
     result_ready = False
     stopped = False
+    brave_directory = None
 
     def stop() -> int:
         nonlocal stopped
@@ -1379,10 +1432,17 @@ def _run_session(
         events = _JunieSessionEvents(token, headless_project=root.resolve() if headless else None)
         next_poll = time.monotonic()
         thought_path = dashboard.junie_thoughts_path if dashboard is not None else None
-        process = _launch_session_process(command, headless=headless, dashboard=dashboard, thought_path=thought_path)
+        launch_options = {}
+        if brave:
+            brave_directory = TemporaryDirectory(prefix="migration-junie-brave-")
+            brave_config = Path(brave_directory.name) / "config.json"
+            brave_config.write_text('{"brave":true}\n', encoding="ascii")
+            launch_options["brave_config"] = brave_config
+        process = _launch_session_process(command, headless=headless, dashboard=dashboard,
+                                          thought_path=thought_path, **launch_options)
         if dashboard is not None and not headless:
             acp = _AcpSession(process, command, Path(project), dashboard.on_junie_request,
-                              completion_path, token, prompts)
+                              completion_path, token, prompts, require_brave=brave)
             acp.initialize()
         elif accepted := launch_accepted_observer.get():
             accepted()
@@ -1467,9 +1527,11 @@ def _run_session(
                     acp.check_steering_turns(events, exited=True)
                 # 終了コード0でも、対応するセッションも完了記録もなければ起動失敗として診断する。
                 if events.path is None and not has_completion_record(completion_path, token):
-                    raise JunieSessionError(
-                        command, exit_code, events.startup_diagnostics(process.pid, command),
-                    )
+                    diagnostics = events.startup_diagnostics(process.pid, command)
+                    if brave and acp is not None and not acp.session_ready:
+                        diagnostics += ("\nJunie ACP の Brave モードを確認できませんでした。対応する Junie CLI を"
+                                        "使用するか、Brave モードを選択せずに再開してください。")
+                    raise JunieSessionError(command, exit_code, diagnostics)
                 if headless and thoughts is not None and accept_result is None and events.result:
                     collect_thoughts(lambda: thoughts.append_progress(events.result))
                 result_ready = result_files_ready()
@@ -1503,8 +1565,15 @@ def _run_session(
                 # 停止要求が出ていても最後の使用量を回収する。最終回答の採用処理は行わない。
                 collect_session_events(cancellable=False)
         finally:
-            if restore_terminal is not None and (process is None or process.poll() is not None):
-                restore_terminal()
+            try:
+                if brave_directory is not None:
+                    try:
+                        brave_directory.cleanup()
+                    except OSError:
+                        report_activity("Junie の一時 Brave 設定を削除できませんでした。共通設定には適用されていません。")
+            finally:
+                if restore_terminal is not None and (process is None or process.poll() is not None):
+                    restore_terminal()
 
 
 def _save_terminal_mode() -> Callable[[], None]:

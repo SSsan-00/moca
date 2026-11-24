@@ -1267,6 +1267,12 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 raise ValueError
             if "verification_request" in action:
                 raise ValueError
+            brave = action.get("junie_brave", False)
+            if type(brave) is not bool or (brave and (
+                not manager or action.get("action") not in {"run", "resume-run"}
+                or (action["action"] == "resume-run" and action.get("start_stage") != "migration")
+            )):
+                raise ValueError
             if "start_stage" in action and (not manager or action.get("action") != "resume-run"
                                             or action["start_stage"] not in {"build", "migration", "checker"}):
                 raise ValueError
@@ -1478,6 +1484,7 @@ def execute_dashboard_action(view, config, action):
         with control_scope(view.control):
             if view.control is not None:
                 view.control.junie_progress_style = dashboard_progress_style(config)
+                view.control.junie_brave = action.get("junie_brave") is True and action["action"] in {"run", "resume-run"}
                 # ログの保存先を決められない場合も、実行側の通常の検証とエラー表示を使う。
                 with suppress(KeyError, OSError, ValueError):
                     validate_run_id(run_id)
