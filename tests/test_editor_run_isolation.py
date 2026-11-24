@@ -23,3 +23,4 @@ class EditorRunIsolationTests(unittest.TestCase):
                         str(root / "src/migration_harness/web/dashboard_chat.js"),
                     ], capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("same-file run isolation, delayed responses, drafts, saves, and recovery passed.", result.stdout)

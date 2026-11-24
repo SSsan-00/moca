@@ -86,6 +86,45 @@ def _json(path: Path, value) -> None:
     _write(path, rule_pack.json_text(value).encode("utf-8"))
 
 
+def _draft_state_digest(state):
+    return _digest(json.dumps(state, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+
+
+def _advance_edit_revision(state, addition):
+    if addition is not None:
+        state["files"].append(addition)
+    state["revision"] += 1
+    for key in ("plan", "preview", "proposal"):
+        state.pop(key, None)
+
+
+def _read_draft_state(path):
+    state_path = path / "state.json"
+    state = rule_pack.read_json(state_path)
+    receipt = safe_target(path, Path("edit-pending.json"))
+    if not receipt.exists():
+        return state
+    pending = rule_pack.read_json(receipt)
+    source = pending.get("source")
+    if not isinstance(source, str) or not _SOURCE.fullmatch(source):
+        raise ValueError("下書きの保存記録を読み取れません。")
+    target = safe_target(path, Path("sources") / source)
+    digest = sha256_file(target) if target.exists() else None
+    version = _draft_state_digest(state)
+    if version == pending["state_before"]:
+        if digest == pending["body_after"]:
+            _advance_edit_revision(state, pending["addition"])
+            if _draft_state_digest(state) != pending["state_after"]:
+                raise ValueError("下書きの版と保存記録が一致しません。")
+            _json(state_path, state)
+        elif digest != pending["body_before"]:
+            raise ValueError("下書きの本文と保存記録が一致しません。")
+    elif version != pending["state_after"] or digest != pending["body_after"]:
+        raise ValueError("下書きの版または本文と保存記録が一致しません。")
+    receipt.unlink()
+    return state
+
+
 def _decode(data):
     if len(data) > _MAX_SOURCE or b"\0" in data:
         raise ValueError("Markdownの容量上限を超えたか、テキストではありません。")
@@ -158,7 +197,7 @@ class RuleWorkspace:
                 return {"name": path.name, "text": text}
         return None
 
-    def _new_file(self, path, meta, name, data, *, baseline=False, usage="required", description=""):
+    def _new_file_entry(self, meta, name, data, *, usage="required", description=""):
         _decode(data)
         if not data.strip():
             raise ValueError("空のMarkdownは追加できません。")
@@ -166,8 +205,13 @@ class RuleWorkspace:
             raise ValueError("MarkdownまたはUTF-8テキストを選んでください。")
         if len(meta["files"]) >= 200:
             raise ValueError("原文は200件までです。")
-        source = f"rule-{len(meta['files']) + 1:04d}.md"
-        meta["files"].append({"source": source, "name": name, "usage": usage, "description": description})
+        return {"source": f"rule-{len(meta['files']) + 1:04d}.md",
+                "name": name, "usage": usage, "description": description}
+
+    def _new_file(self, path, meta, name, data, *, baseline=False, usage="required", description=""):
+        entry = self._new_file_entry(meta, name, data, usage=usage, description=description)
+        source = entry["source"]
+        meta["files"].append(entry)
         _write(path / "sources" / source, data)
         if baseline:
             _write(path / "baseline" / source, data)
@@ -273,14 +317,14 @@ class RuleWorkspace:
                     if not state.get("applied"):
                         drafts.append({"id": path.name, "files": len(state["files"])})
                 return {"drafts": drafts[:30]}
-            state = rule_pack.read_json(self.draft(identifier) / "state.json")
+            state = _read_draft_state(self.draft(identifier))
             return {"junie_model": self.config.get("junie_model"), "junie_effort": self.config.get("junie_effort"),
                     **state, "live": self.live if identifier == self.active_id else None}
 
     def file_text(self, identifier, source):
         with self.lock:
             path = self.draft(identifier)
-            state = rule_pack.read_json(path / "state.json")
+            state = _read_draft_state(path)
             file = self._source(path, state, source)
             return {"text": _decode(file.read_bytes()), "revision": state["revision"]}
 
@@ -303,8 +347,14 @@ class RuleWorkspace:
                 raise ValueError("Markdownを読み込めません。") from None
         _decode(data)
         source = action.get("source")
+        addition = None
         if source == "new":
-            self._new_file(path, state, action.get("name"), data)
+            addition = self._new_file_entry(state, action.get("name"), data)
+            source = addition["source"]
+            file = safe_target(path, Path("sources") / source)
+            if file.exists():
+                raise ValueError("未登録の下書きが既に存在します。既存の本文を確認してください。")
+            original = None
         else:
             file = self._source(path, state, source)
             original = file.read_bytes()
@@ -312,12 +362,19 @@ class RuleWorkspace:
                 data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
             if not encoded and original.startswith(b"\xef\xbb\xbf"):
                 data = b"\xef\xbb\xbf" + data
-            if original != data:
-                _write(file, data)
-        state["revision"] += 1
-        state.pop("plan", None)
-        state.pop("preview", None)
-        state.pop("proposal", None)
+        state_before = _draft_state_digest(state) if original != data else None
+        _advance_edit_revision(state, addition)
+        state_path = path / "state.json"
+        if state_before is None:
+            _json(state_path, state)
+            return
+        receipt = safe_target(path, Path("edit-pending.json"))
+        _json(receipt, {"source": source, "addition": addition,
+                        "state_before": state_before, "state_after": _draft_state_digest(state),
+                        "body_before": _digest(original) if original is not None else None, "body_after": _digest(data)})
+        _write(file, data)
+        _json(state_path, state)
+        receipt.unlink()
 
     def _disconnect(self):
         if self.chat:
@@ -379,7 +436,7 @@ class RuleWorkspace:
             with self.lock:
                 if self.cancelled.is_set():
                     raise InterruptedError("Junieとの整理を中断しました。")
-                current = rule_pack.read_json(path / "state.json")
+                current = _read_draft_state(path)
                 if answer is None:
                     if _DUPLICATE_REPLY not in current["unresolved"]:
                         current["unresolved"].append(_DUPLICATE_REPLY)
@@ -581,7 +638,7 @@ class RuleWorkspace:
             if kind == "start":
                 return self.start()
             path = self.draft(identifier)
-            state = rule_pack.read_json(path / "state.json")
+            state = _read_draft_state(path)
             if kind == "answer":
                 if self.active_id != identifier or self.chat is None or not self.worker:
                     raise ValueError("このJunieの確認は終了しています。")
@@ -629,10 +686,9 @@ class RuleWorkspace:
                     state.update(junie_model=model, junie_effort=effort)
                     state["revision"] += 1
                     state.pop("preview", None)
-            elif kind == "edit":
-                self._edit(path, state, action)
-            elif kind == "accept":
-                self._edit(path, state, state.get("proposal") or {})
+            elif kind in {"edit", "accept"}:
+                self._edit(path, state, action if kind == "edit" else state.get("proposal") or {})
+                return self.snapshot(identifier)
             elif kind == "classification":
                 source = action.get("source")
                 self._source(path, state, source)

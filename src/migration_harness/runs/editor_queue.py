@@ -206,6 +206,11 @@ def record_operator_edit(queue: dict[str, Any], target: str, before: str, after:
     queue.setdefault("operator_edits", {}).setdefault(target, []).append(diff)
 
 
+def record_adopted_editor_edit(queue, target, edit, current, adopted):
+    before, after = (edit["base"], edit["content"]) if current == adopted else (current, adopted)
+    record_operator_edit(queue, target, before, after)
+
+
 def add_prompt(queue: dict[str, Any], action: dict[str, Any]) -> None:
     text = editor_text(action.get("text"), 4_000).strip()
     if not text:

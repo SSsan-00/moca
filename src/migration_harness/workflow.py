@@ -69,6 +69,7 @@ from .runs.editor_queue import (
     editor_text,
     finish_prompts,
     merge_edit,
+    record_adopted_editor_edit,
     record_operator_edit,
 )
 from .errors import format_error
@@ -1173,11 +1174,7 @@ def _apply_editor_edits(
     else:
         apply_agent_targets(agent_root, worktree, targets, record["target_hashes"], record, record_path)
     for name, (_, current, text) in merged.items():
-        if current == text:
-            # Junieが同じ変更を行った場合も、人が保存した意図を引き継ぐ。
-            record_operator_edit(queue, name, edits[name]["base"], edits[name]["content"])
-        else:
-            record_operator_edit(queue, name, current, text)
+        record_adopted_editor_edit(queue, name, edits[name], current, text)
     edits.clear()
     return True
 
@@ -3146,7 +3143,7 @@ def _apply_verification_edits(run_path, worktree, unit, request):
                 except (OSError, ValueError) as exc:
                     apply_error = ValueError(f"{name} を反映できませんでした。残りの保存版を確認してください。{format_error(exc)}")
                     break
-                record_operator_edit(queue, name, current, content)
+                record_adopted_editor_edit(queue, name, queue["edits"][name], current, content)
                 del queue["edits"][name]
             if apply_error is None:
                 return target_versions(worktree, unit)

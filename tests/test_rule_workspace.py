@@ -158,6 +158,137 @@ end_line = 1
         self.assertEqual((path / "sources/rule-0001.md").read_bytes(), b"first\r\nnew exception\r\n")
         self.assertEqual((path / "sources/rule-0002.md").read_bytes(), new_data)
 
+    def test_failed_final_state_write_never_exposes_new_markdown_at_the_old_revision(self):
+        original_toml = self.config_path.read_bytes()
+        original_rules = (self.app / "original.md").read_bytes()
+        replace = Path.replace
+        changed = "修正したルール\n例外条件\n"
+        for kind in ("edit", "accept", "add"):
+            with self.subTest(kind=kind):
+                draft = self.workspace.start()
+                root = self.workspace.draft(draft["id"])
+                state_file = root / "state.json"
+                registered = draft["files"][0]["source"]
+                source = "rule-0002.md" if kind == "add" else registered
+                plan = {"format_version": 2, "documents": [{"path": "Agent.md", "title": "Fixture",
+                    "parts": [{"source": registered, "start": 1, "end": 2}]}]}
+                stored = json.loads(state_file.read_bytes())
+                stored.update(plan=plan, proposal={"source": source, "text": changed})
+                state_file.write_text(json.dumps(stored), encoding="utf-8")
+                stale = self.send(draft, "preview")
+                previous = stale["preview"]["token"]
+                final_bytes = changed.replace("\n", "\r\n").encode("utf-8") if kind != "add" else changed.encode("utf-8")
+
+                def fail_state(candidate, destination):
+                    if destination == state_file:
+                        raise PermissionError("fixture: final state replacement")
+                    return replace(candidate, destination)
+
+                write_kind = "edit" if kind == "add" else kind
+                fields = {"source": "new", "name": "more.md", "text": changed} if kind == "add" else (
+                    {"source": registered, "text": changed} if kind == "edit" else {}
+                )
+                reopened = RuleWorkspace(self.config)
+                self.addCleanup(reopened.close)
+
+                def after_restart(action, **kwargs):
+                    return reopened.action({"id": stale["id"], "revision": stale["revision"],
+                        "action": action, **kwargs}, lambda *_: self.fail("stale configuration could be applied"))
+
+                with patch.object(Path, "replace", fail_state):
+                    with self.assertRaisesRegex(PermissionError, "final state replacement"):
+                        self.send(stale, write_kind, **fields)
+                    self.assertEqual((root / "sources" / source).read_bytes(), final_bytes)
+                    with self.assertRaisesRegex(PermissionError, "final state replacement"):
+                        reopened.file_text(draft["id"], source)
+                    for action in ("edit", "preview", "apply"):
+                        with self.assertRaisesRegex(PermissionError, "final state replacement"):
+                            after_restart(action, source=registered, text="別画面の旧版", confirmed=True, preview=previous)
+                    self.assertEqual((root / "sources" / source).read_bytes(), final_bytes)
+
+                for action in ("edit", "accept", "preview", "apply"):
+                    with self.assertRaisesRegex(ValueError, "更新済み"):
+                        after_restart(action, source=registered, text="別画面の旧版", confirmed=True, preview=previous)
+                recovered = reopened.snapshot(draft["id"])
+                self.assertEqual(recovered["revision"], stale["revision"] + 1)
+                self.assertEqual(reopened.file_text(draft["id"], source)["text"], final_bytes.decode("utf-8"))
+                self.assertEqual(len(recovered["files"]), 2 if kind == "add" else 1)
+                for key in ("plan", "preview", "proposal"):
+                    self.assertNotIn(key, recovered)
+                self.assertTrue(self.send(recovered, "preview")["preview"]["token"])
+                self.assertEqual(self.config_path.read_bytes(), original_toml)
+                self.assertEqual((self.app / "original.md").read_bytes(), original_rules)
+
+    def test_body_replace_failure_recovers_the_original_revision(self):
+        draft = self.workspace.start()
+        name = draft["files"][0]["source"]
+        file = self.workspace.draft(draft["id"]) / "sources" / name
+        original = file.read_bytes()
+        replace = Path.replace
+
+        def fail_body(candidate, destination):
+            if destination == file:
+                raise PermissionError("fixture: body replacement")
+            return replace(candidate, destination)
+
+        with patch.object(Path, "replace", fail_body):
+            with self.assertRaisesRegex(PermissionError, "body replacement"):
+                self.send(draft, "edit", source=name, text="未反映の本文")
+        reopened = RuleWorkspace(self.config)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.file_text(draft["id"], name), {"text": original.decode(), "revision": draft["revision"]})
+        self.assertEqual(self.send(draft, "edit", source=name, text="次の正常な本文")["revision"], draft["revision"] + 1)
+
+    def test_interruption_after_state_commit_does_not_increment_twice(self):
+        draft = self.workspace.start()
+        root = self.workspace.draft(draft["id"])
+        source = draft["files"][0]["source"]
+        replace = Path.replace
+
+        def interrupt_after_state(candidate, destination):
+            result = replace(candidate, destination)
+            if destination == root / "state.json":
+                raise PermissionError("fixture: state already replaced")
+            return result
+
+        with patch.object(Path, "replace", interrupt_after_state):
+            with self.assertRaisesRegex(PermissionError, "state already replaced"):
+                self.send(draft, "edit", source=source, text="確定済みの本文")
+        reopened = RuleWorkspace(self.config)
+        self.addCleanup(reopened.close)
+        expected = {"text": "確定済みの本文", "revision": draft["revision"] + 1}
+        for _ in range(2):
+            self.assertEqual(reopened.file_text(draft["id"], source), expected)
+        self.assertFalse((root / "edit-pending.json").exists())
+
+    def test_unexpected_body_during_recovery_is_not_overwritten_or_published(self):
+        draft = self.workspace.start()
+        root = self.workspace.draft(draft["id"])
+        state_file = root / "state.json"
+        source = draft["files"][0]["source"]
+        body = root / "sources" / source
+        replace = Path.replace
+
+        def fail_state(candidate, destination):
+            if destination == state_file:
+                raise PermissionError("fixture: final state replacement")
+            return replace(candidate, destination)
+
+        with patch.object(Path, "replace", fail_state):
+            with self.assertRaisesRegex(PermissionError, "final state replacement"):
+                self.send(draft, "edit", source=source, text="保存した本文")
+        unexpected = b"unexpected fixture content"
+        body.write_bytes(unexpected)
+        before = state_file.read_bytes()
+        reopened = RuleWorkspace(self.config)
+        self.addCleanup(reopened.close)
+        with self.assertRaisesRegex(ValueError, "本文と保存記録が一致しません"):
+            reopened.file_text(draft["id"], source)
+        with self.assertRaisesRegex(ValueError, "本文と保存記録が一致しません"):
+            self.send(draft, "preview")
+        self.assertEqual(body.read_bytes(), unexpected)
+        self.assertEqual(state_file.read_bytes(), before)
+
     def test_managed_pack_keeps_original_bytes_with_case_alias(self):
         runs = Path(self.config["run_root"])
         runs.mkdir()

@@ -54,8 +54,9 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         parsed = urlsplit(self.url)
         self.headers = {"Origin": f"{parsed.scheme}://{parsed.netloc}", "Content-Type": "application/json"}
 
-    def editor(self, action=None):
-        request = Request(self.url + "editor", None if action is None else json.dumps(action).encode(), self.headers)
+    def editor(self, action=None, *, target=None):
+        route = "editor" if target is None else f"editor?target={target}"
+        request = Request(self.url + route, None if action is None else json.dumps(action).encode(), self.headers)
         with urlopen(request, timeout=4) as reply:
             return json.load(reply)
 
@@ -88,6 +89,78 @@ class EditorSaveRecoveryTests(SavedRunFixture):
             request = {"edits": saved_edits(queue), "edit_revision": queue["edit_revision"],
                        "targets": target_versions(self.worktree, unit)}
         workflow._apply_verification_edits(self.run_path, self.worktree, unit, request)
+
+    def check_build_history_recovery(self, *, partial=False):
+        changes = {self.target.name: "class FirstManual {}\n"}
+        if partial:
+            (self.worktree / "Second.cs").write_bytes(b"class SecondOriginal {}\n")
+            self.config["units"][0]["targets"] = [self.target.name, "Second.cs"]
+            self.save_record({**self.record(), "targets": list(self.config["units"][0]["targets"])})
+            changes["Second.cs"] = "class SecondManual {}\n"
+        self.start_server(ready=False)
+        for target, draft in changes.items():
+            before = self.editor(target=target)
+            saved = self.editor({"kind": "save", "run_id": self.run_id, "target": target,
+                                 "base": before["content"], "content": draft, "edit_id": None})
+            self.assertTrue(saved["queued"])
+            self.assertEqual(saved["edit"]["content"], draft)
+        original_queue = (self.run_path / "editor.json").read_bytes()
+        plan = workflow.plan_build_resume(self.config, self.run_id)
+        replace = Path.replace
+
+        def fail_second(path, destination):
+            if partial and destination == self.worktree / "Second.cs":
+                raise PermissionError("fixture target not writable")
+            return replace(path, destination)
+
+        def resume(request, request_id):
+            return workflow.resume_with_junie(self.config, self.run_id,
+                                               verification_request={**request, "id": request_id})
+
+        with (patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify,
+              patch.object(workflow.junie_cli, "run_interactive") as junie):
+            with (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
+                  patch.object(Path, "replace", new=fail_second),
+                  self.assertRaisesRegex(OSError, "fixture editor history is unwritable")):
+                resume(plan, "first")
+            verify.assert_not_called()
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), changes[self.target.name])
+            self.assertEqual((self.run_path / "editor.json").read_bytes(), original_queue)
+            if partial:
+                self.assertEqual((self.worktree / "Second.cs").read_text(encoding="utf-8-sig"),
+                                 "class SecondOriginal {}\n")
+            with self.assertRaisesRegex(ValueError, "保存版または実行条件が更新"):
+                resume(plan, "stale")
+            saved = workflow.plan_build_resume(self.config, self.run_id)
+            self.assertEqual(resume(saved, "retry")["status"], "build_succeeded")
+            verify.assert_called_once()
+            self.assertEqual(resume(workflow.plan_build_resume(self.config, self.run_id),
+                                    "another-build")["status"], "build_succeeded")
+            self.assertEqual(verify.call_count, 2)
+            junie.assert_not_called()
+
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        inputs = []
+        hint, report = workflow._operator_edit_context(self.run_path, agent, "fixture", inputs, None)
+        self.assertIn("Human-edit handoff", hint)
+        self.assertIsNotNone(report)
+        self.assertEqual(inputs, [Path(".migration-materials/operator-edits.json")])
+        written_handoff = json.loads((agent / inputs[0]).read_bytes())
+        with editor_queue.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual(queue["operator_edits"], written_handoff)
+            self.assertEqual(set(written_handoff), set(changes))
+        for target, draft in changes.items():
+            self.assertEqual((self.worktree / target).read_text(encoding="utf-8-sig"), draft)
+            patch_text, = written_handoff[target]
+            self.assertIn("+" + draft, patch_text)
+
+    def test_build_resume_retains_operator_handoff_after_history_write_failure(self):
+        self.check_build_history_recovery()
+
+    def test_build_resume_retains_history_after_partial_target_replacement(self):
+        self.check_build_history_recovery(partial=True)
 
     def test_failed_history_stops_resume_until_recovered_and_does_not_reapply(self):
         self.stage_old_instruction()
