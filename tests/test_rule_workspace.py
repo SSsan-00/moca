@@ -13,6 +13,8 @@ from threading import Event
 from unittest.mock import patch
 
 from migration_harness.config import load_config
+from migration_harness.context.capsules import load_capsule_manifest, prepare_context
+from migration_harness.rules.rule_materials import render_guidelines
 from migration_harness.files import sha256_file
 from migration_harness.junie.reply_text import unwrap_json_fence
 from migration_harness.web.dashboard import _save_settings
@@ -157,6 +159,105 @@ end_line = 1
         path = self.workspace.draft(next_draft["id"])
         self.assertEqual((path / "sources/rule-0001.md").read_bytes(), b"first\r\nnew exception\r\n")
         self.assertEqual((path / "sources/rule-0002.md").read_bytes(), new_data)
+
+    def optimize_with_plan(self, draft, plan):
+        self.rule_reply_plan = plan
+        fixture = self
+
+        class FakeChat:
+            offered_skill = False
+
+            def __init__(self, project, *_):
+                self.project = project
+
+            def begin(self, prompt):
+                pass
+
+            def wait(self, *, ready=False, **_):
+                return "" if ready else json.dumps({"message": "Reviewed", "unresolved": [], "plan": fixture.rule_reply_plan})
+
+            def shutdown(self):
+                pass
+
+        with patch("migration_harness.rules.rule_workspace.RuleChat", FakeChat):
+            self.send(draft, "optimize", text="Review placements")
+            if worker := self.workspace.worker:
+                worker.join(3)
+                self.assertFalse(worker.is_alive())
+        return self.workspace.snapshot(draft["id"])
+
+    def test_next_draft_preserves_the_applied_mandatory_ranges_and_reading_conditions(self):
+        self.config_path.write_text(self.config_path.read_text(encoding="utf-8").replace(
+            "usage = 'required'", "usage = 'reference'\ndescription = 'Original purpose'"), encoding="utf-8")
+        mandatory = "Every migration MUST preserve audit IDs."
+        (self.app / "original.md").write_text(mandatory + "\nPreserve view labels.\nRetain totals.\n", encoding="utf-8")
+        first = self.workspace.start()
+        first = self.send(first, "edit", source="new", name="all.md", text="Always preserve order.\n")
+        first = self.send(first, "classification", source="rule-0002.md", usage="reference", description="All mixed", confirm_scope=True)
+        def part(source, first, last):
+            return {"source": source, "start": first, "end": last}
+        plan = {"format_version": 2, "documents": [
+            {"path": "Agent.md", "title": "Accepted core",
+             "parts": [part("rule-0001.md", 1, 1), part("rule-0002.md", 1, 1)]},
+            {"path": "details/views.md", "title": "Views", "description": "Only when rendering views",
+             "parts": [part("rule-0001.md", 2, 2)]},
+            {"path": "details/totals.md", "title": "Totals", "description": "When aggregating amounts",
+             "parts": [part("rule-0001.md", 3, 3)]},
+        ]}
+        self.apply(self.optimize_with_plan(first, plan))
+
+        def assert_supply(number, *, new_required=False):
+            config = load_config(self.config_path)
+            run = self.root / f"context-{number}"
+            prepare_context(config, config["units"][0], run)
+            capsule, manifest = load_capsule_manifest(run)
+            guidelines = render_guidelines(capsule / "materials", manifest, selected=frozenset())
+            self.assertIn(mandatory, guidelines)
+            self.assertIn("Always preserve order.", guidelines)
+            self.assertNotIn("Preserve view labels.", guidelines)
+            self.assertNotIn("Retain totals.", guidelines)
+            self.assertEqual("New required text." in guidelines, new_required)
+
+        assert_supply(1)
+        second = self.workspace.start()
+        preview = self.send(second, "preview")
+        self.assertEqual(preview["preview"]["text_diff"], "")
+        self.assertTrue(self.send(preview, "apply", confirmed=True, preview=preview["preview"]["token"])["applied"])
+        second_plan = json.loads((self.workspace.draft(second["id"]) / "published/plan.json").read_bytes())
+        assert_supply(2)
+        self.assertEqual(second_plan, plan)
+        self.assertTrue(second["files"][0]["has_required_lines"])
+
+        third = self.workspace.start()
+        added = self.send(third, "edit", source="new", name="new.md", text="New required text.\n")
+        self.apply(added)
+        third_plan = json.loads((self.workspace.draft(third["id"]) / "published/plan.json").read_bytes())
+        self.assertEqual(third_plan["documents"][1:], plan["documents"][1:])
+        self.assertEqual(third_plan["documents"][0]["parts"][:-1], plan["documents"][0]["parts"])
+        assert_supply(3, new_required=True)
+
+        fourth = self.workspace.start()
+        with self.assertRaisesRegex(ValueError, "必須から詳細"):
+            self.send(fourth, "classification", source="rule-0001.md", usage="reference", description="Changed")
+        edit = self.send(fourth, "edit", source="rule-0001.md",
+                         text="New heading.\n" + mandatory + "\nPreserve view labels.\nRetain totals.\n")
+        with self.assertRaisesRegex(ValueError, "採用済みルールの原文"):
+            self.send(edit, "preview")
+        obsolete = self.optimize_with_plan(edit, third_plan)
+        with self.assertRaisesRegex(ValueError, "未配置"):
+            self.send(obsolete, "preview")
+        demoted = json.loads(json.dumps(third_plan))
+        demoted["documents"][0]["parts"][0].update(start=1, end=1)
+        demoted["documents"][1]["parts"][0].update(start=2, end=3)
+        demoted["documents"][2]["parts"][0].update(start=4, end=4)
+        wrong = self.optimize_with_plan(obsolete, demoted)
+        with self.assertRaisesRegex(ValueError, "採用済みの必須行"):
+            self.send(wrong, "preview")
+        demoted["documents"][0]["parts"][0]["end"] = 2
+        demoted["documents"][1]["parts"][0].update(start=3, end=3)
+        fresh = self.optimize_with_plan(wrong, demoted)
+        self.apply(fresh)
+        assert_supply(4, new_required=True)
 
     def test_failed_final_state_write_never_exposes_new_markdown_at_the_old_revision(self):
         original_toml = self.config_path.read_bytes()

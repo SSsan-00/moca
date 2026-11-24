@@ -641,7 +641,7 @@
     updateChat();
     report("#editor-prompt-error");
     try {
-      if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
+      if (window.harnessRunModelReady && !await window.harnessRunModelReady(runId)) return;
       if (!showingRun()) return;
       if (state.conversation) {
         let submission = submittedMessages.get(runId);
@@ -717,11 +717,12 @@
   const demo = window.harnessEditorDemo;
   const request = demo ? demo.request : workspaceRequest;
   const progress = demo ? () => demo.progress : () => snapshot;
-  let catalog = [], current, selectedModel = "", selectedEffort = "", saving = false, loading = false, generation = 0;
-  let pendingSave;
+  let catalog = [], current, selectedModel = "", selectedEffort = "", loading = false, generation = 0;
+  const pendingSaves = new Map(), savedRevisions = new Map();
   let catalogWarning = "";
 
   function render(message = "") {
+    const saving = pendingSaves.has(progress().run_id);
     const options = catalog.slice();
     if (selectedModel && !options.some(item => item.id === selectedModel)) options.push({id: selectedModel, name: selectedModel});
     const efforts = options.find(item => item.id === selectedModel)?.efforts || [];
@@ -752,9 +753,12 @@
     render("モデル設定を読み込んでいます。");
     if (!runId) { loading = false; return; }
     try {
+      if (pendingSaves.has(runId)) await pendingSaves.get(runId);
+      if (version !== generation) return;
       const data = await request("run-model");
       if (version !== generation || data.run_id !== progress().run_id) return;
       current = data;
+      savedRevisions.set(runId, data.revision ?? null);
       selectedModel = data.model || ""; selectedEffort = data.effort || "";
       render();
     } catch (error) {
@@ -764,44 +768,50 @@
     }
   }
 
-  async function saveSelection() {
-    if (!current?.can_select || saving || current.run_id !== progress().run_id) return false;
-    const version = generation;
-    let message;
-    saving = true; render("モデル設定を保存しています。");
-    try {
-      const data = await request("editor", {kind: "model", run_id: current.run_id, model: selectedModel,
-        effort: selectedEffort, model_revision: current.revision});
-      if (version !== generation) return false;
-      current = {run_id: data.run_id, can_select: true, model: data.junie_model, effort: data.junie_effort, revision: data.junie_model_revision};
-      message = "";
-      return true;
-    } catch (error) {
-      if (version === generation) {
-        selectedModel = current.model || ""; selectedEffort = current.effort || "";
-        message = `保存できませんでした。${error.message}`;
+  function saveSelection(model, effort) {
+    const runId = progress().run_id, previous = current;
+    if (!previous?.can_select || pendingSaves.has(runId) || previous.run_id !== runId) return;
+    selectedModel = model;
+    selectedEffort = effort;
+    const save = async () => {
+      let message;
+      try {
+        const data = await request("editor", {kind: "model", run_id: runId, model, effort,
+          model_revision: previous.revision});
+        if (data.run_id !== runId || typeof data.junie_model_revision !== "string") {
+          throw new Error("保存した実行と設定の版を確認できませんでした。");
+        }
+        savedRevisions.set(runId, data.junie_model_revision);
+        if (current === previous) {
+          current = {run_id: runId, can_select: true, model: data.junie_model, effort: data.junie_effort, revision: data.junie_model_revision};
+        }
+        return true;
+      } catch (error) {
+        if (current === previous) {
+          selectedModel = current.model || "";
+          selectedEffort = current.effort || "";
+          message = "保存できませんでした。" + error.message;
+        }
+        return false;
+      } finally {
+        pendingSaves.delete(runId);
+        if (progress().run_id === runId) render(message);
       }
-      return false;
-    } finally {
-      saving = false;
-      render(version === generation ? message : undefined);
-    }
+    };
+    pendingSaves.set(runId, Promise.resolve().then(save));
+    render("モデル設定を保存しています。");
   }
-  window.harnessRunModelReady = () => saving ? pendingSave : Promise.resolve(true);
+
+  window.harnessRunModelReady = runId => pendingSaves.get(runId) ?? true;
+  window.harnessRunModelRevision = runId => savedRevisions.get(runId);
   for (const group of groups) {
-    group.querySelector("[data-run-model]").addEventListener("change", event => {
-      selectedModel = event.target.value; selectedEffort = "";
-      pendingSave = saveSelection();
-    });
-    group.querySelector("[data-run-effort]").addEventListener("change", event => {
-      selectedEffort = event.target.value;
-      pendingSave = saveSelection();
-    });
+    group.querySelector("[data-run-model]").addEventListener("change", event => saveSelection(event.target.value, ""));
+    group.querySelector("[data-run-effort]").addEventListener("change", event => saveSelection(selectedModel, event.target.value));
   }
   document.addEventListener("harnessrunselect", () => { generation++; current = undefined; render("実行を読み込んでいます。"); });
   document.addEventListener("harnessrunchange", load);
   setInterval(() => {
-    if (!loading && !saving && !current?.can_select && progress().run_id && progress().worktree_path) load();
+    if (!loading && !pendingSaves.has(progress().run_id) && !current?.can_select && progress().run_id && progress().worktree_path) load();
   }, 3000);
   render("モデル一覧を読み込んでいます。");
   (async () => {

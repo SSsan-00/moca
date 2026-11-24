@@ -584,6 +584,52 @@ try {
   await wait(runEffort + ".value === 'medium' && !" + runEffort + ".disabled");
   const runSelection = await evaluate("fetch('run-model').then(r => r.json()).then(d => [d.model, d.effort])");
   assert.deepEqual(runSelection, ["fixture-luna", "medium"]);
+  await evaluate("(" + function () {
+    const fetchOriginal = window.fetch.bind(window);
+    const control = window.resumeModelFixture = {attempts: [], saved: false};
+    window.fetch = async (resource, options) => {
+      const body = options?.body && JSON.parse(options.body);
+      if (resource === "editor" && body?.kind === "model") {
+        control.pending = true;
+        const send = await new Promise(resolve => { control.release = resolve; });
+        control.pending = false;
+        if (!send) return new Response("fixture model save failed", {status: 409});
+        const reply = await fetchOriginal(resource, options);
+        control.saved = reply.ok;
+        return reply;
+      }
+      if (resource === "control" && body?.action === "resume") {
+        const response = await fetchOriginal(resource, options);
+        control.attempts.push({saved: control.saved, status: response.status, revision: body.model_revision});
+        return response;
+      }
+      return fetchOriginal(resource, options);
+    };
+  }.toString() + ")()");
+  assert.equal(await evaluate("fetch('fixture-resumable', {method: 'POST'}).then(r => r.status)"), 200);
+  await click("tab-progress");
+  await wait(field("toggle") + "?.matches(':enabled')");
+  const failedChange = runModel + ".value = 'fixture-lite'; " + runModel + ".dispatchEvent(new Event('change', {bubbles:true}))";
+  await evaluate(failedChange);
+  await wait("resumeModelFixture.pending");
+  await click("toggle");
+  await evaluate("resumeModelFixture.release(false)");
+  await wait(field("workspace-progress-feedback") + ".textContent.includes('モデル設定を保存できなかった')");
+  assert.deepEqual(await evaluate("resumeModelFixture.attempts"), []);
+  assert.equal(await evaluate("fetch('run-model').then(r => r.json()).then(d => d.model)"), "fixture-luna");
+  await evaluate(failedChange);
+  await wait("resumeModelFixture.pending");
+  await click("toggle");
+  await click("toggle");
+  assert.deepEqual(await evaluate("resumeModelFixture.attempts"), []);
+  await evaluate("resumeModelFixture.release(true)");
+  await wait("resumeModelFixture.attempts.length === 1");
+  const [attempt] = await evaluate("resumeModelFixture.attempts");
+  assert.deepEqual({saved: attempt.saved, status: attempt.status}, {saved: true, status: 202});
+  assert.match(attempt.revision, /^[0-9a-f]{24}$/);
+  assert.deepEqual(await evaluate("fetch('run-model').then(r => r.json()).then(d => [d.model, d.revision])"),
+    ["fixture-lite", attempt.revision]);
+  console.log("Browser Run model: a failed save blocks resume; a delayed valid save is used by one accepted resume");
   const liveTabs = await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)");
   const liveSteps = await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)");
   assert.equal(liveTabs.length, 6); assert.equal(liveSteps.length, 7);
@@ -874,6 +920,153 @@ try {
     await evaluate(button + ".click()");
     await wait("!" + button + " && !" + selectedDemo + ".includes(" + JSON.stringify(id) + ")");
   }
+
+  await click("tab-runs");
+  const waitingRun = "run-2026-11-14-001", otherRun = "demo-customer";
+  const waitingResume = runAction(waitingRun, "resume-run");
+  const otherProgress = runAction(otherRun, "open-runprogress");
+  await wait(waitingResume + "?.matches(':enabled') && " + otherProgress + "?.matches(':enabled')");
+  await evaluate("(" + function (run) {
+    const state = window.listModelWait = {started: 0};
+    const previous = window.harnessRunModelReady;
+    const transport = window.harnessDemoTransport;
+    const nativeFetch = transport.fetch;
+    window.harnessRunModelReady = id => id === run ? new Promise(resolve => { state.release = resolve; }) : previous(id);
+    transport.fetch = (path, request) => {
+      if (path === "control" && request?.body && JSON.parse(request.body).action === "resume-run") state.started++;
+      return nativeFetch(path, request);
+    };
+    state.restore = () => { window.harnessRunModelReady = previous; transport.fetch = nativeFetch; };
+  }.toString() + ")(" + JSON.stringify(waitingRun) + ")");
+  await evaluate(waitingResume + ".click()");
+  await wait("!!listModelWait.release");
+  assert(await evaluate(waitingResume + ".disabled"), "waiting resume locks its own row");
+  assert(await evaluate(otherProgress + ".matches(':enabled')"), "waiting resume must not lock another Run's row");
+  await evaluate(otherProgress + ".click()");
+  await wait(selectedDemo + ".includes(" + JSON.stringify(otherRun) + ")");
+  await evaluate("listModelWait.release(true)");
+  await click("tab-runs");
+  await wait(waitingResume + "?.matches(':enabled')");
+  assert.equal(await evaluate("listModelWait.started"), 0, "switching via the actual run list cancels the waiting resume");
+  await evaluate("listModelWait.restore()");
+  console.log("Browser run list: another Run can be selected while a model save is pending");
+
+  const designRun = "run-2026-11-14-001";
+  await click("tab-runs");
+  await wait(runAction(designRun, "resume-stage") + "?.matches(':enabled')");
+  const placements = [];
+  for (const [width, height] of [[360, 540], [580, 620], [780, 640], [1280, 650]]) {
+    await cdp("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: false});
+    await wait("innerWidth === " + width);
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    const layout = await evaluate("(" + function (run) {
+      const row = document.querySelector('tr[data-run-id="' + run + '"]');
+      const actions = row.querySelector(".run-actions");
+      const navigation = actions.querySelector(".run-view-actions");
+      const execution = actions.querySelector(".run-execution-actions");
+      const remove = actions.querySelector(":scope > .run-remove-action");
+      if (!navigation || !execution || !remove) return null;
+      const names = group => [...group.querySelectorAll("button")].map(button => button.dataset.action);
+      const buttons = [...execution.querySelectorAll("button")];
+      const rowBox = actions.getBoundingClientRect();
+      const viewport = row.closest(".runs-table-wrap").getBoundingClientRect();
+      const within = [...actions.querySelectorAll("button")].every(button => {
+        const rect = button.getBoundingClientRect();
+        return rect.left >= rowBox.left - 1 && rect.right <= rowBox.right + 1;
+      });
+      const top = element => Math.round(element.getBoundingClientRect().top);
+      const middle = element => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.top + bounds.height / 2;
+      };
+      const navButtons = [...navigation.querySelectorAll("button")];
+      return {
+        navigation: names(navigation), execution: names(execution), remove: remove.dataset.action,
+        allFit: within && actions.scrollWidth <= actions.clientWidth + 1 && rowBox.right <= viewport.right + 1,
+        primary: buttons[0].classList.contains("primary"),
+        executeTogether: Math.abs(top(buttons[0]) - top(buttons[1])) <= 1,
+        navigationTogether: Math.abs(top(navButtons[0]) - top(navButtons[1])) <= 1,
+        viewAndExecuteTogether: Math.abs(middle(navigation) - middle(execution)) <= 1,
+        gridAreas: getComputedStyle(actions).gridTemplateAreas,
+      };
+    }.toString() + ")(" + JSON.stringify(designRun) + ")");
+    placements.push({width, layout});
+  }
+  await evaluate("(" + function () {
+    const transport = window.harnessDemoTransport;
+    const previous = transport.fetch;
+    const requests = window.resumeDesignRequests = [];
+    transport.fetch = (resource, options) => {
+      const url = new URL(resource, location.href);
+      const data = options?.body && JSON.parse(options.body);
+      if (url.pathname.endsWith("/resume-plan")) {
+        const query = Object.fromEntries(url.searchParams);
+        requests.push({kind: "plan", data: query});
+        const migration = query.start_stage === "migration";
+        return Promise.resolve(Response.json({version: "saved-" + query.start_stage,
+          capsule_range: migration ? [3, 5] : null, repair: migration, invalidates: ["checker"],
+          targets: {"Nested/path/with_a_long_name/Page.cshtml.cs": "a".repeat(64)}}));
+      }
+      if (resource === "control" && data?.action === "resume-run") {
+        requests.push({kind: "start", data});
+        return Promise.resolve(Response.json({run_id: data.run_id}, {status: 202}));
+      }
+      return previous(resource, options);
+    };
+    window.restoreResumeDesignTransport = () => { transport.fetch = previous; };
+  }.toString() + ")()");
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 360, height: 440, deviceScaleFactor: 1, mobile: false});
+  const openResume = runAction(designRun, "resume-stage");
+  await evaluate(openResume + ".click()");
+  const dialog = field("resume-stage-dialog");
+  await wait(dialog + ".open");
+  assert.deepEqual(await evaluate("Array.from(" + field("resume-stage") + ".options, option => option.value)"), ["migration", "checker"]);
+  assert.equal(await evaluate(dialog + ".querySelectorAll('input[type=number], #resume-rewind, #resume-through').length"), 0);
+  assert.match(await evaluate(field("resume-stage-hint") + ".textContent"), /保存済みの続きから最後まで/);
+  assert.equal(await evaluate(field("resume-stage-start") + ".disabled"), true);
+  await click("resume-stage-preview");
+  await wait(field("resume-stage-start") + "?.matches(':enabled')");
+  await wait("!" + dialog + ".getAnimations().some(a => a.playState === 'running')");
+  assert(await evaluate("(" + function () {
+    const modal = document.getElementById("resume-stage-dialog");
+    const bounds = modal.getBoundingClientRect();
+    return modal.scrollWidth <= modal.clientWidth + 1 && bounds.left >= 0 && bounds.right <= innerWidth &&
+      [...modal.querySelectorAll("button")].every(button => {
+        const rect = button.getBoundingClientRect();
+        return rect.left >= bounds.left && rect.right <= bounds.right;
+      });
+  }.toString() + ")()"), "resume dialog has no horizontal clipping at 360 px");
+  assert.match(await evaluate(field("resume-stage-summary") + ".textContent"), /3〜5/);
+  await click("resume-stage-start");
+  await wait("!" + dialog + ".open");
+  await evaluate(openResume + ".click()");
+  await wait(dialog + ".open");
+  await click("resume-stage-preview");
+  await wait(field("resume-stage-start") + "?.matches(':enabled')");
+  await change("resume-stage", "checker");
+  assert.equal(await evaluate(field("resume-stage-start") + ".disabled"), true);
+  assert.match(await evaluate(field("resume-stage-hint") + ".textContent"), /チェッカーだけ/);
+  await click("resume-stage-preview");
+  await wait(field("resume-stage-start") + "?.matches(':enabled')");
+  await click("resume-stage-start");
+  await wait("!" + dialog + ".open");
+  const resumeRequests = await evaluate("resumeDesignRequests.map(({kind, data}) => [kind, data.run_id, data.start_stage, data.plan_version ?? null, 'through_capsule' in data, 'rewind_to' in data])");
+  assert.deepEqual(resumeRequests, [
+    ["plan", designRun, "migration", null, false, false], ["start", designRun, "migration", "saved-migration", false, false],
+    ["plan", designRun, "migration", null, false, false], ["plan", designRun, "checker", null, false, false],
+    ["start", designRun, "checker", "saved-checker", false, false],
+  ]);
+  for (const {width, layout} of placements) {
+    const desktop = width >= 1080;
+    assert.deepEqual(layout, {
+      navigation: ["open-runprogress", "open-runeditor"], execution: ["resume-run", "resume-stage"], remove: "hide-run",
+      allFit: true, primary: true, executeTogether: true, navigationTogether: true, viewAndExecuteTogether: desktop,
+      gridAreas: desktop ? '"view execute remove"' : '"view remove" "execute execute"',
+    }, "action groups and non-wrapping controls at width " + width);
+  }
+  await evaluate("restoreResumeDesignTransport()");
+  console.log("Browser resume: action groups fit at 360-1280 px; only migration and checker options; saved plan starts without range fields");
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 390, height: 480, deviceScaleFactor: 1, mobile: false});
 
   // All sample runs were stopped or cancelled before the settings test.
   await evaluate("window.confirm = () => true");

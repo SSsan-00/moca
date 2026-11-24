@@ -158,12 +158,24 @@
     .run-current { min-width: 110px; max-width: 260px; font-size: 13px; overflow-wrap: anywhere; }
     .run-current progress { display: block; width: 100%; max-width: 190px; height: 5px; margin-top: 8px; accent-color: var(--blue); }
     .run-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .run-actions { display: grid; grid-template-columns: 76px 64px 74px 44px; gap: 6px; width: 276px; }
-    .run-actions .button { width: 100%; min-width: 0; min-height: 32px; height: 32px; padding: 5px 6px; font-size: 12px; }
-    .run-actions [data-action="open-runprogress"] { grid-column: 1; }
-    .run-actions [data-action="open-runeditor"] { grid-column: 2; }
-    .run-actions .run-text-action { grid-column: 3; }
-    .run-actions [data-action="hide-run"] { grid-column: 4; }
+    .run-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "view remove" "execute execute";
+      align-items: center; gap: 6px 10px; min-width: 250px; }
+    .run-actions .button { min-width: 0; min-height: 34px; height: auto; padding: 5px 9px; font-size: 12px; white-space: normal; text-align: center; }
+    .run-view-actions { grid-area: view; display: flex; flex-wrap: wrap; gap: 2px; justify-self: start; padding: 2px;
+      border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+    .run-view-actions .button { border-color: transparent; background: transparent; }
+    .run-view-actions .button:not(:disabled):hover { border-color: var(--line); background: var(--paper); }
+    .run-execution-actions { grid-area: execute; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
+    .run-execution-actions:has(.button:only-child) { justify-self: start; min-width: min(100%, 100px); }
+    .run-actions .run-remove-action { grid-area: remove; border-color: transparent; background: transparent; color: var(--muted); }
+    .run-actions .run-remove-action:not(:disabled):hover { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber-ink); }
+    @media (min-width: 1080px) {
+      .run-actions { grid-template-columns: max-content max-content max-content; grid-template-areas: "view execute remove";
+        width: max-content; min-width: 0; gap: 10px; }
+      .run-view-actions { flex-wrap: nowrap; }
+      .run-execution-actions { grid-auto-columns: max-content; }
+      .run-actions .run-remove-action { border-inline-start-color: var(--line); border-start-start-radius: 0; border-end-start-radius: 0; }
+    }
     .runs-empty { padding: 24px; color: var(--muted); text-align: center; }
     .workspace-tabs .run-summary { margin-left: auto; font-size: 12px; padding-inline: 0; white-space: nowrap; }
     .run-summary .attention { color: var(--amber); }
@@ -184,7 +196,7 @@
       .runs-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 12px; gap: 8px; border-bottom: 1px solid var(--line); }
       .runs-table td { display: block; padding: 0; border: 0; min-width: 0; } .runs-table td:first-child { grid-column: 1; }
       .run-current { max-width: none; } .runs-table td:last-child { grid-column: 1 / -1; width: auto; }
-      .run-actions { grid-template-columns: repeat(3, minmax(0, 1fr)) 44px; width: min(100%, 276px); }
+      .run-actions { min-width: 0; width: 100%; }
       .runs-table-wrap { scroll-padding-block: 8px; }
       .run-id { font-size: 10px; } .run-time { text-align: right; font-size: 12px; } .run-context { gap: 6px; }
       #workspace-editor:not([hidden]) { display: block; }
@@ -648,6 +660,20 @@
     .review-dialog.is-closing { animation: review-dialog-out 220ms cubic-bezier(.4, 0, 1, 1) both; }
     .review-dialog.is-closing::backdrop { animation: review-backdrop-out 220ms cubic-bezier(.4, 0, 1, 1) both; }
     .review-dialog-inner { padding: 22px; }
+    #resume-stage-dialog { width: min(30rem, calc(100vw - 24px)); }
+    .resume-dialog-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 15px; }
+    .resume-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .resume-dialog-heading h2 { margin: 0 0 3px; }
+    .resume-dialog-heading p, .resume-stage-hint { margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .resume-stage-picker { display: grid; gap: 5px; }
+    .resume-stage-picker label { font-weight: 650; }
+    .resume-stage-picker select { width: 100%; min-width: 0; }
+    .resume-stage-plan { max-height: min(27dvh, 12rem); margin: 0; padding: 10px 12px; overflow: auto;
+      border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .resume-stage-plan:empty { display: none; }
+    .resume-dialog-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .resume-dialog-actions .button { min-width: 0; height: auto; white-space: normal; text-align: center; }
+
     .review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
     .review-eyebrow { margin: 0 0 5px; color: var(--blue); font: 700 10px/1.3 var(--mono); letter-spacing: .1em; }
     .review-heading h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
@@ -1555,31 +1581,27 @@
   </dialog>
 </main>
 <dialog class="review-dialog" id="resume-stage-dialog" aria-labelledby="resume-stage-title">
-  <div class="review-dialog-inner">
-    <h2 id="resume-stage-title">再開方法</h2>
-    <fieldset class="settings-fields">
+  <div class="review-dialog-inner resume-dialog-layout">
+    <header class="resume-dialog-heading">
+      <div><h2 id="resume-stage-title">再開方法</h2><p>保存済みの実行から、続ける工程を選びます。</p></div>
+      <form method="dialog"><button class="review-close" type="submit" aria-label="閉じる">×</button></form>
+    </header>
+    <div class="resume-stage-picker">
       <label for="resume-stage">開始工程</label>
-      <select class="workspace-select" id="resume-stage">
+      <select class="workspace-select" id="resume-stage" aria-describedby="resume-stage-hint" autofocus>
         <option value="migration">移行</option>
-        <option value="build">ビルドのみ</option>
         <option value="checker">チェッカーのみ</option>
       </select>
-      <div class="settings-pair" id="resume-capsules">
-        <div><label for="resume-rewind">やり直す区間（任意）</label>
-          <input id="resume-rewind" type="number" min="1" max="1000000" step="1" placeholder="空欄なら続きから"></div>
-        <div><label for="resume-through">終了区間（任意）</label>
-          <input id="resume-through" type="number" min="1" max="1000000" step="1" placeholder="空欄なら最後まで"></div>
-      </div>
-    </fieldset>
+      <p class="resume-stage-hint" id="resume-stage-hint">保存済みの続きから最後まで進めます。完了済みの区間はやり直しません。</p>
+    </div>
     <div class="junie-brave-option" id="resume-junie-brave-option" hidden>
       <label><input type="checkbox" id="resume-junie-brave" autocomplete="off" aria-describedby="resume-junie-brave-hint" disabled>Junie Brave（今回のみ）</label>
       <p id="resume-junie-brave-hint">移行の再開計画を確認した後に選べます。ファイルの変更やコマンドの実行などが個別の承認なしに行われる場合があります。</p>
     </div>
-    <pre id="resume-stage-summary" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
-    <div class="workspace-actions">
+    <pre class="resume-stage-plan" id="resume-stage-summary" role="status" tabindex="0"></pre>
+    <div class="resume-dialog-actions">
       <button class="button" id="resume-stage-preview" type="button">計画を確認</button>
       <button class="button primary" id="resume-stage-start" type="button" disabled>再開する</button>
-      <form method="dialog"><button class="button" type="submit">閉じる</button></form>
     </div>
   </div>
 </dialog>

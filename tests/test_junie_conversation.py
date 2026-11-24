@@ -333,7 +333,7 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(new_view["comparison_content"], "class Manual {}")
         self.assertEqual(new_view["comparison_label"], "作業ツリーとの差分")
 
-    def test_migration_stage_plan_and_conversation_share_workflow_across_restart(self):
+    def prepare_interrupted_migration(self, **changes):
         capsule = self.run_path / "capsule"
         manifest_path = capsule / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -346,7 +346,43 @@ class JunieConversationTests(SavedRunFixture):
         agent.mkdir()
         (agent / self.target.name).write_bytes(self.target.read_bytes())
         self.save_record({**self.record(), "status": "interrupted", "current_capsule": 2, "context_capsules": 3,
-                          "target_hashes": {self.target.name: workflow.sha256_file(self.target)}})
+                          "target_hashes": {self.target.name: workflow.sha256_file(self.target)}, **changes})
+
+    def test_default_migration_resume_runs_from_checkpoint_through_last_capsule(self):
+        self.prepare_interrupted_migration(migration_range_stop=2)
+        _, plan = self.request("resume-plan?" + urlencode({"run_id": self.run_id, "start_stage": "migration"}))
+        self.assertEqual(plan["capsule_range"], [2, 3])
+        self.assertIsNone(plan["through_capsule"])
+        self.assertNotIn("rewind_to", plan)
+        visited = []
+
+        def run_agent(_command, completion, token, targets, **_kwargs):
+            visited.append(self.record()["current_capsule"])
+            if len(visited) == 1:
+                self.assertEqual(targets[0].read_text(encoding="utf-8-sig"), "class Original {}\n")
+            targets[0].write_bytes(f"class Capsule{visited[-1]} {{}}\n".encode())
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        payload = {"action": "resume-run", "run_id": self.run_id, "revision": 0,
+                   "start_stage": "migration", "plan_version": plan["version"]}
+        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=run_agent),
+              patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify,
+              patch.object(workflow, "run_process") as external):
+            self.assertEqual(self.request("control", payload)[0], 202)
+            self.wait_until_idle()
+            self.assertEqual(visited, [2, 3])
+            verify.assert_called_once()
+            external.assert_not_called()
+        saved = self.record()
+        self.assertEqual(saved["completed_capsules"], 3)
+        self.assertNotIn("migration_range_stop", saved)
+        self.assertNotIn("rewind_to", saved["resume_operations"][-1])
+        self.assertIn("Capsule3", self.target.read_text(encoding="utf-8-sig"))
+
+    def test_migration_stage_plan_and_conversation_share_workflow_across_restart(self):
+        self.prepare_interrupted_migration()
         route = "resume-plan?" + urlencode({"run_id": self.run_id, "start_stage": "migration", "through_capsule": 2})
         _, plan = self.request(route)
         self.assertEqual(plan["capsule_range"], [2, 2])

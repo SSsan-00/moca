@@ -132,21 +132,33 @@ async function checkDashboard() {
   Object.assign(page, {
     querySelector: dashboardElement,
     getElementById: id => dashboardNodes.get("#" + id) ?? null,
-    createElement: () => new Element(), documentElement: new Element(), body: new Element(), dispatchEvent() {},
+    createElement: () => new Element(), documentElement: new Element(), body: new Element(),
+    dispatchEvent(event) { return this.emit(event.type); },
   });
   let actions;
   let proposeAnchors;
   let promptCallbacks;
   let deferredPrompt = false;
+  const modelRecords = new Map();
+  const modelGroup = new Element();
+  const modelFields = new Map();
+  modelGroup.querySelector = selector => {
+    if (!modelFields.has(selector)) modelFields.set(selector, new Element());
+    return modelFields.get(selector);
+  };
+  let exerciseModels = false, modelCounter = 0;
   let promptId = 0;
   const progressDialog = {button: new Element(), dialog: new Element(), input: new Element(), render() {},
     showError(error) { this.error = error?.message; }};
   const anchor = dashboardElement("[data-propose-anchors]");
   page.querySelectorAll = selector => selector === ".step" ? Array.from({length: 7}, () => new Element())
-    : selector === "[data-propose-anchors]" ? [anchor] : [];
+    : selector === "[data-propose-anchors]" ? [anchor]
+    : selector === ".run-model:has([data-run-model])" && exerciseModels ? [modelGroup] : [];
   const location = new URL("http://localhost/dashboard/?run=A");
   const runtime = vm.createContext({
     document: page, Event, URL, URLSearchParams, Headers, TextEncoder, location,
+    Option: class { constructor(label, value) { this.label = label; this.value = value; } },
+    effortLabels: {low: "Low", high: "High"},
     history: {replaceState(_, __, url) { location.href = url.href; }},
     crypto: {randomUUID: () => ++promptId === 1 ? "11111111-1111-4111-8111-111111111111" : randomUUID()},
     window: {
@@ -189,6 +201,25 @@ async function checkDashboard() {
           request.lose = () => reject(Error("fixture lost successful response"));
         });
       }
+      if (path === "junie-models") return Promise.resolve({ok: true, json: async () => ({models: [
+        {id: "old", name: "Old", efforts: ["low"]}, {id: "new", name: "New", efforts: ["high"]},
+      ]})});
+      if (path === "run-model") {
+        const run_id = options.headers.get("X-Run-ID");
+        const saved = modelRecords.get(run_id) ?? {model: "old", effort: "low", revision: null};
+        return Promise.resolve({ok: true, json: async () => ({run_id, can_select: true, ...saved})});
+      }
+      if (path === "editor" && body.kind === "model") {
+        return new Promise((resolve, reject) => {
+          request.accept = () => {
+            const revision = (++modelCounter).toString(16).padStart(24, "0");
+            modelRecords.set(body.run_id, {model: body.model, effort: body.effort, revision});
+            resolve({ok: true, json: async () => ({run_id: body.run_id, junie_model: body.model,
+              junie_effort: body.effort, junie_model_revision: revision})});
+          };
+          request.reject = () => reject(Error("fixture model save failed"));
+        });
+      }
       if (path === "comparison" || body.action === "anchors") {
         return new Promise(resolve => { request.resolve = resolve; });
       }
@@ -197,7 +228,9 @@ async function checkDashboard() {
   });
   runtime.window.fetch = runtime.fetch;
   vm.runInContext(fs.readFileSync(process.argv[3], "utf8"), runtime);
-  const progress = (stream, runId) => stream.onmessage({data: JSON.stringify({run_id: runId, status: "idle", ready: false, diff_viewer_enabled: true, worktree_path: runId})});
+  const progress = (stream, runId) => stream.onmessage({data: JSON.stringify({run_id: runId,
+    status: exerciseModels ? "interrupted" : "idle", ready: exerciseModels,
+    resumable: exerciseModels, diff_viewer_enabled: true, worktree_path: runId})});
   progress(streams[0], "A");
   const switching = actions.execute("open-run", {run_id: "B"});
   streams[1].onopen();
@@ -354,6 +387,61 @@ async function checkDashboard() {
   await whileSavingEditor;
   assert.equal(lastSend(), beforeModelReady, "a submit gesture cannot follow a Run switch while waiting for the editor");
   delete runtime.window.harnessRunModelReady;
+  progressDialog.dialog.open = false;
+  exerciseModels = true;
+  const query = page.querySelector;
+  page.querySelector = selector => selector === "#tab-editor" ? null : query(selector);
+  vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), runtime);
+  page.querySelector = query;
+  const selector = modelGroup.querySelector("[data-run-model]");
+  const saves = () => requests.filter(item => item.body.kind === "model");
+  const resumes = () => requests.filter(item => ["resume", "resume-run"].includes(item.body.action));
+  const changeModel = async model => {
+    selector.value = model;
+    await selector.emit("change");
+    await flush();
+    return saves().at(-1);
+  };
+  const toggle = dashboardElement("#toggle");
+  await selectRun("A");
+  await flush();
+  assert.equal(toggle.disabled, false);
+  let saving = await changeModel("new");
+  const waiting = toggle.emit("click");
+  await toggle.emit("click");
+  await actions.execute("resume-run", {run_id: "A"});
+  await flush();
+  assert.equal(resumes().length, 0, "progress and list must not resume A before the model is saved");
+
+  await actions.execute("resume-run", {run_id: "B"});
+  assert.deepEqual(resumes().map(request => request.body.run_id), ["B"], "A's save must not delay B's list action");
+  saving.accept();
+  await waiting;
+  await flush();
+  assert.deepEqual(resumes().map(request => [request.body.run_id, request.body.model_revision]), [
+    ["B", undefined], ["A", modelRecords.get("A").revision],
+  ]);
+  assert.equal(modelRecords.get("A").model, "new");
+
+  saving = await changeModel("old");
+  const listRestart = actions.execute("resume-run", {run_id: "A"});
+  const rejected = assert.rejects(listRestart, /モデル設定を保存できなかった/);
+  saving.reject();
+  await rejected;
+  assert.equal(resumes().length, 2, "failed model save must not post a resume");
+  assert.match(modelGroup.querySelector(".run-model-status").textContent, /fixture model save failed/);
+
+  saving = await changeModel("old");
+  const staleResume = toggle.emit("click");
+  await selectRun("B");
+  await selectRun("A");
+  saving.accept();
+  await staleResume;
+  await flush();
+  assert.equal(resumes().length, 2, "switching away and back invalidates a waiting click");
+  await actions.execute("resume-run", {run_id: "A"});
+  assert.equal(resumes().at(-1).body.model_revision, modelRecords.get("A").revision);
+  console.log("Dashboard: Run model order, per-Run isolation, failed save, and repeat clicks passed.");
   console.log("Dashboard: delayed progress receipts clear only the original Run draft; retries preserve each Run's ID.");
 }
 

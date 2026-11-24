@@ -82,7 +82,7 @@ let previousLog = "";
 const seenActivities = new Set();
 let renderedReview = "";
 let stopPendingOperation;
-let snapshotting = false;
+const snapshotting = new Set();
 let pendingOnly = false;
 
 document.title = "移行ハーネスの進捗";
@@ -198,7 +198,7 @@ function syncActions() {
   stopButton.disabled = !connected || submitting || !snapshot.cancellable || stopping;
   stopButton.textContent = stopping ? "停止を待っています" : "停止";
   migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
-  dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || !snapshot.diff_viewer_enabled || snapshotting;
+  dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || !snapshot.diff_viewer_enabled || snapshotting.has(snapshot.run_id);
   element("#migration-ledger-compare").disabled = dashboardViewer.disabled;
   element("#open-rule-verification").disabled = !connected || !snapshot.ready || !snapshot.run_id;
   for (const button of anchorButtons) {
@@ -259,7 +259,7 @@ async function submitProgressPrompt(text) {
   progressPrompt.showError();
   syncProgressPrompts();
   try {
-    if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
+    if (window.harnessRunModelReady && !await window.harnessRunModelReady(runId)) return;
     if (!showingRun() || generation !== streamGeneration || !progressPrompt.dialog.open || !sameInput()) return;
     if (conversation) {
       const body = retry || {kind: "conversation", run_id: runId, text, id: crypto.randomUUID().replaceAll("-", "")};
@@ -968,20 +968,45 @@ async function workspaceRequest(path, payload) {
   return response.json();
 }
 
+const startingWithRunModel = new Set();
+
+async function withSavedRunModel(runId, start, stillCurrent = () => true) {
+  if (!runId || startingWithRunModel.has(runId)) return;
+  const generation = streamGeneration;
+  startingWithRunModel.add(runId);
+  try {
+    const ready = window.harnessRunModelReady?.(runId);
+    if (ready !== undefined && ready !== true && !await ready) {
+      if (generation === streamGeneration && stillCurrent()) {
+        throw new Error("モデル設定を保存できなかったため、開始していません。設定を確認してやり直してください。");
+      }
+      return;
+    }
+    if (!connected || generation !== streamGeneration || !stillCurrent()) return;
+    const revision = window.harnessRunModelRevision?.(runId);
+    return await start(revision === undefined ? {} : {model_revision: revision});
+  } finally {
+    startingWithRunModel.delete(runId);
+  }
+}
+
 let openResumeStage;
 
 // 再開計画の照会と実行を同じRun・世代に結び付ける。
 function bindResumeStage() {
   const resumeDialog = document.querySelector("#resume-stage-dialog");
   const resumeStage = document.querySelector("#resume-stage");
-  const resumeRewind = document.querySelector("#resume-rewind");
-  const resumeThrough = document.querySelector("#resume-through");
+  const resumeHint = document.querySelector("#resume-stage-hint");
   const resumeSummary = document.querySelector("#resume-stage-summary");
   const resumePreview = document.querySelector("#resume-stage-preview");
   const resumeStart = document.querySelector("#resume-stage-start");
   const resumeBraveOption = document.querySelector("#resume-junie-brave-option");
   const resumeBrave = document.querySelector("#resume-junie-brave");
   let resumeRunID, resumePlan, resumeGeneration = 0;
+  const stageHints = {
+    migration: "保存済みの続きから最後まで進めます。完了済みの区間はやり直しません。",
+    checker: "現在の保存版に対応するビルド成果物で、チェッカーだけを実行します。",
+  };
 
   function resetResumeBrave() {
     resumeBraveOption.hidden = staticDemo || resumeStage.value !== "migration";
@@ -997,20 +1022,14 @@ function bindResumeStage() {
     resumeStart.disabled = true;
     resumePreview.disabled = false;
     resumeSummary.textContent = "";
-    document.querySelector("#resume-capsules").hidden = resumeStage.value !== "migration";
+    resumeHint.textContent = stageHints[resumeStage.value];
   }
-  for (const field of [resumeStage, resumeRewind, resumeThrough]) field.addEventListener("input", clearResumePlan);
+  resumeStage.addEventListener("change", clearResumePlan);
   resumeDialog.addEventListener("close", clearResumePlan);
   resumePreview.addEventListener("click", async () => {
     clearResumePlan();
     const generation = resumeGeneration;
     const payload = {run_id: resumeRunID, start_stage: resumeStage.value};
-    if (resumeStage.value === "migration") {
-      for (const [key, field] of [["rewind_to", resumeRewind], ["through_capsule", resumeThrough]]) {
-        if (!field.reportValidity()) return;
-        if (field.value) payload[key] = field.valueAsNumber;
-      }
-    }
     resumePreview.disabled = true;
     resumeSummary.textContent = "保存版を確認しています。";
     try {
@@ -1020,7 +1039,6 @@ function bindResumeStage() {
       resumeSummary.textContent = [
         `保存版 ${plan.version.slice(0, 12)}`,
         plan.capsule_range ? `区間 ${plan.capsule_range.join("〜")}` : "",
-        plan.rewind_to ? "巻き戻し前の版を保存します。" : "",
         plan.repair ? "検証時に自動修正あり" : "自動修正なし",
         `無効になる記録  ${plan.invalidates.map(item => labels[item]).join("、")}`,
         ...Object.entries(plan.targets || {}).map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}`),
@@ -1045,8 +1063,9 @@ function bindResumeStage() {
     resumeStart.disabled = true;
     resumePlan = undefined;
     try {
-      await workspaceRequest("control", {action: "resume-run", revision: dashboardRevision, ...payload});
-      if (generation === resumeGeneration) {
+      const launch = model => workspaceRequest("control", {action: "resume-run", revision: dashboardRevision, ...payload, ...model});
+      const response = await withSavedRunModel(payload.run_id, launch, () => generation === resumeGeneration);
+      if (response && generation === resumeGeneration) {
         resumeDialog.close();
         window.harnessRuns.sync();
       }
@@ -1057,7 +1076,6 @@ function bindResumeStage() {
   return runID => {
     resumeRunID = runID;
     resumeStage.value = "migration";
-    resumeRewind.value = resumeThrough.value = "";
     clearResumePlan();
     resumeDialog.showModal();
   };
@@ -1079,15 +1097,9 @@ bindHarnessWorkspace({
       openResumeStage(payload.run_id);
       return;
     }
-    if (action === "resume-build") {
-      const plan = await workspaceRequest("resume-plan?" + new URLSearchParams({run_id: payload.run_id}));
-      const targets = Object.entries(plan.targets)
-        .map(([name, hash]) => `${name} · ${hash?.slice(0, 12) ?? "未作成"}${plan.edits[name] ? "（保存済み編集あり）" : ""}`);
-      if (!window.confirm(`ビルドのみ（自動修正なし）\n保存版 ${plan.version.slice(0, 12)}\n\n${targets.join("\n")}\n\n以前のビルドとチェッカーの結果を無効にして開始しますか？`)) return;
-      payload = {...payload, start_stage: "build", plan_version: plan.version};
-      action = "resume-run";
-    }
-    const result = await workspaceRequest("control", {action, revision: dashboardRevision, ...payload});
+    const launch = model => workspaceRequest("control", {action, revision: dashboardRevision, ...payload, ...model});
+    const result = action === "resume-run" ?
+      await withSavedRunModel(payload.run_id, launch) : await launch({});
     if (action === "hide-run" && selectedRunId === result.run_id) await connectRun("", {removed: true});
     return result;
   },
@@ -1511,6 +1523,27 @@ function appendEvent(at, title, detail, kind = "state") {
 
 async function send(action, fields = {finding_id: findings.value, reason: note.value.trim()}) {
   if (submitting || !connected) return;
+  const runId = snapshot.run_id;
+  try {
+    if (action === "resume" || action === "build-response") {
+      return await withSavedRunModel(runId, model => sendControl(action, {...fields, ...model}),
+        () => selectedRunId === runId && snapshot.run_id === runId);
+    }
+    return await sendControl(action, fields);
+  } catch (error) {
+    showControlError(action, error);
+  }
+}
+
+function showControlError(action, error) {
+  const message = "操作を送信できませんでした。接続を確認して、もう一度お試しください。\n" + error.message;
+  if (action === "build-response" && buildDialog.open) buildFeedback.textContent = message;
+  else if (dialog.open) showNotice(message);
+  else element("#workspace-progress-feedback").textContent = message;
+}
+
+async function sendControl(action, fields) {
+  if (submitting || !connected) return;
   if (action === "stop") {
     if (!connected || !snapshot.cancellable || snapshot.stop_requested || stopPendingOperation !== undefined) return;
     stopPendingOperation = snapshot.operation_id;
@@ -1528,10 +1561,7 @@ async function send(action, fields = {finding_id: findings.value, reason: note.v
     return true;
   } catch (error) {
     if (action === "stop") stopPendingOperation = undefined;
-    const message = `操作を送信できませんでした。接続を確認して、もう一度お試しください。\n${error.message}`;
-    if (action === "build-response" && buildDialog.open) buildFeedback.textContent = message;
-    else if (dialog.open) showNotice(message);
-    else element("#workspace-progress-feedback").textContent = message;
+    showControlError(action, error);
   } finally {
     submitting = false;
     syncActions();
@@ -1554,18 +1584,13 @@ pendingFilter.addEventListener("click", () => {
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
 checkerInstruction.addEventListener("input", syncActions);
-let waitingForModel = false;
 resume.addEventListener("click", async () => {
-  if (waitingForModel) return;
-  waitingForModel = true;
-  try {
-    if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
-    const text = checkerInstruction.value.trim();
-    if (await send("resume", text ? {checker_instruction: text} : {})) {
-      checkerInstruction.value = "";
-      syncActions();
-    }
-  } finally { waitingForModel = false; }
+  const generation = streamGeneration;
+  const text = checkerInstruction.value.trim();
+  if (await send("resume", text ? {checker_instruction: text} : {}) && generation === streamGeneration) {
+    checkerInstruction.value = "";
+    syncActions();
+  }
 });
 element("#checker-open-editor").addEventListener("click", () => {
   dialog.close();
@@ -1615,8 +1640,8 @@ function displayComparison(url, popup) {
 }
 
 async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
-  if (snapshotting) return;
-  const sourceRunId = snapshot.run_id;
+  const sourceRunId = snapshot.run_id, generation = streamGeneration;
+  if (!sourceRunId || snapshotting.has(sourceRunId)) return;
   const index = fromReview ? findings.selectedIndex : snapshot.review?.findings.findIndex(item => !item[2]);
   const reported = snapshot.status === "checker_needs_review" ? snapshot.review?.locations?.[index] : null;
   const line = Number(reported?.line);
@@ -1625,17 +1650,27 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
     ? "Junieでアンカーを生成中です。確認が必要な場合は、進捗画面のダイアログで回答してください。"
     : "現在の参照PHPと最新の保存済み移行先を取得中";
   const popup = reserveComparisonTab(progress);
-  snapshotting = true;
+  snapshotting.add(sourceRunId);
   syncActions();
   showComparisonStatus(progress);
   try {
-    const request = withAnchors ? {action: "anchors", revision: dashboardRevision, focus} : {run_id: sourceRunId, focus};
-    const response = await runFetch(withAnchors ? "control" : "comparison", request ? {
-      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request),
-    } : {method: "POST"});
+    const load = model => {
+      const request = withAnchors
+        ? {action: "anchors", run_id: sourceRunId, revision: dashboardRevision, focus, ...model} : {run_id: sourceRunId, focus};
+      return runFetch(withAnchors ? "control" : "comparison", {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request),
+      });
+    };
+    const response = withAnchors ? await withSavedRunModel(sourceRunId, load,
+      () => selectedRunId === sourceRunId && snapshot.run_id === sourceRunId) : await load({});
+    if (!response) {
+      popup?.close();
+      if (generation === streamGeneration) showComparisonStatus();
+      return;
+    }
     if (!response.ok) throw new Error(await response.text());
     const {run_id: runId, id, count} = await response.json();
-    if (snapshot.run_id !== sourceRunId) {
+    if (generation !== streamGeneration || snapshot.run_id !== sourceRunId) {
       popup?.close();
       return;
     }
@@ -1661,6 +1696,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
     }
   } catch (error) {
     popup?.close();
+    if (generation !== streamGeneration) return;
     const message = `比較を開けませんでした。${error.message}`;
     showComparisonStatus(message);
     if (migrationLedgerDialog.open) {
@@ -1668,7 +1704,7 @@ async function openSnapshot({withAnchors = false, fromReview = false} = {}) {
       migrationLedgerMessage.hidden = false;
     }
   } finally {
-    snapshotting = false;
+    snapshotting.delete(sourceRunId);
     syncActions();
   }
 }

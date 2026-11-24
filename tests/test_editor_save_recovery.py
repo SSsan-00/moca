@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 from fixtures import SavedRunFixture
 from ui_dependencies import node_executable
 from migration_harness import workflow
+from migration_harness.files import sha256_file
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs import editor_queue, run_records
 from migration_harness.web import dashboard
@@ -27,7 +28,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
 
     def start_server(self, *, ready=True, allow_fixture_adoption=False):
         self.server.close()
-        view = dashboard.Dashboard()
+        view = self.view = dashboard.Dashboard()
         view.observe(self.record())
         view.ready(self.config, self.record())
         if not ready:
@@ -235,6 +236,150 @@ class EditorSaveRecoveryTests(SavedRunFixture):
 
     def test_resave_after_build_history_failure_does_not_attribute_agent_changes(self):
         self.check_build_recovery_before_resave(separate_agent_change=True)
+
+    def check_normal_resume_edit_recovery(self, *, boundary=None, reverse=False, separate_agent_change=False, direct=False):
+        baseline = "class Example {\n    int First = 0;\n" + "".join(
+            f"    int Field{i} = {i};\n" for i in range(8)
+        ) + "    int Last = 0;\n}\n"
+        self.target.write_bytes(baseline.encode("utf-8-sig"))
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        paths = [self.target.name, "Second.cs"] if boundary in {"second-target", "second-agent"} else [self.target.name]
+        if len(paths) > 1:
+            (self.worktree / paths[1]).write_bytes("class Second {}\n".encode("utf-8-sig"))
+            self.config["units"][0]["targets"] = paths
+        for name in paths:
+            (agent / name).write_bytes((self.worktree / name).read_bytes())
+        hashes = {name: sha256_file(self.worktree / name) for name in paths}
+        self.save_record({**self.record(), "status": "editor_checkpoint", "targets": paths, "junie_exit_code": 0,
+                          "target_hashes": hashes, "target_sha256": hashes[self.target.name]})
+        self.start_server(ready=False)
+        first = baseline.replace("First = 0", "First = 9")
+        for index, (name, content) in enumerate(zip(paths, [first, "class SecondManual {}\n"]), 1):
+            view = self.editor(target=name)
+            saved = self.editor({"kind": "save", "run_id": self.run_id, "target": name, "base": view["content"],
+                                 "content": content, "edit_id": None, "save_id": str(index) * 32})
+            self.assertTrue(saved["queued"])
+        if separate_agent_change:
+            (agent / self.target.name).write_bytes(baseline.replace("Field3 = 3", "Field3 = 33").encode("utf-8-sig"))
+            first = first.replace("Field3 = 3", "Field3 = 33")
+        replace = Path.replace
+        fault = {"worktree": self.target, "second-target": self.worktree / "Second.cs",
+                 "second-agent": agent / "Second.cs"}.get(boundary)
+
+        def fail_target(path, destination):
+            if destination == fault:
+                raise OSError("fixture target replace failed")
+            return replace(path, destination)
+
+        def git_only(command, *args, **kwargs):
+            self.assertEqual(command[:2], ["git", "merge-file"])
+            return self.popen(command, *args, **kwargs)
+
+        def resume():
+            return workflow.resume_with_junie(self.config, self.run_id)
+
+        with (patch.object(subprocess, "Popen", side_effect=git_only),
+              patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify,
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive") as junie):
+            gate = (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history)
+                    if fault is None else patch.object(Path, "replace", new=fail_target))
+            with gate, self.assertRaises(OSError):
+                resume()
+            verify.assert_not_called()
+            self.assertEqual((agent / self.target.name).read_text(encoding="utf-8-sig"), first)
+            if boundary == "worktree":
+                self.assertEqual(self.target.read_text(encoding="utf-8-sig"), baseline)
+            if boundary in {"second-target", "second-agent"}:
+                self.assertEqual((self.worktree / "Second.cs").read_text(encoding="utf-8-sig"), "class Second {}\n")
+            if direct:
+                self.assertEqual(resume()["status"], "build_succeeded")
+                verify.assert_called_once()
+            self.start_server(ready=False)
+            view = self.editor()
+            self.assertEqual(view["content"], first)
+            draft = first.replace("Last = 0", "Last = 7")
+            if reverse:
+                draft = draft.replace("First = 9", "First = 0")
+            edit = view["edit"] or {}
+            saved = self.editor({"kind": "save", "run_id": self.run_id, "target": self.target.name,
+                                 "base": edit.get("base", view["content"]), "content": draft,
+                                 "edit_id": edit.get("id"), "save_id": "3" * 32})
+            self.assertTrue(saved["queued"])
+            self.assertEqual(resume()["status"], "build_succeeded")
+            self.assertEqual(resume()["status"], "build_succeeded")
+            self.assertEqual(verify.call_count, 3 if direct else 2)
+            junie.assert_not_called()
+
+        for directory in (self.worktree, agent):
+            self.assertEqual((directory / self.target.name).read_text(encoding="utf-8-sig"), draft)
+            if len(paths) > 1:
+                self.assertEqual((directory / "Second.cs").read_text(encoding="utf-8-sig"), "class SecondManual {}\n")
+        inputs = []
+        workflow._operator_edit_context(self.run_path, agent, "fixture-normal", inputs, None)
+        operator = json.loads((agent / inputs[0]).read_bytes())
+        with editor_queue.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual(queue["operator_edits"], operator)
+        self.assertEqual(set(operator), set(paths))
+        self.assertEqual(len(operator[self.target.name]), 2)
+        older, newer = operator[self.target.name]
+        self.assertIn("+    int First = 9;", older)
+        self.assertIn("+    int Last = 7;", newer)
+        self.assertEqual("+    int First = 0;" in newer, reverse)
+        self.assertNotIn("+    int Field3 = 33;", older + newer)
+        if len(paths) > 1:
+            second, = operator["Second.cs"]
+            self.assertIn("+class SecondManual {}", second)
+
+    def test_normal_resume_keeps_operator_history_after_failed_save_and_resave(self):
+        self.check_normal_resume_edit_recovery(reverse=True, separate_agent_change=True)
+
+    def test_normal_resume_recovers_between_agent_and_worktree_replacement(self):
+        self.check_normal_resume_edit_recovery(boundary="worktree")
+
+    def test_normal_resume_recovers_partial_worktree_targets(self):
+        self.check_normal_resume_edit_recovery(boundary="second-target")
+
+    def test_normal_resume_recovers_partial_agent_targets(self):
+        self.check_normal_resume_edit_recovery(boundary="second-agent", direct=True)
+
+    def test_model_revision_is_checked_at_resume_acceptance_and_worker_start(self):
+        self.save_record({**self.record(), "status": "junie_finished",
+                          "junie_model": "old", "junie_effort": "low", "junie_model_revision": "a" * 24})
+        self.start_server()
+        self.assertTrue(self.view.state["resumable"])
+
+        def control(revision):
+            action = {"action": "resume", "run_id": self.run_id, "revision": self.view.revision, "model_revision": revision}
+            request = Request(self.url + "control", json.dumps(action).encode(), self.headers)
+            with urlopen(request, timeout=4) as response:
+                return response.status
+
+        def save(model, effort, revision):
+            return self.editor({"kind": "model", "run_id": self.run_id, "model": model, "effort": effort,
+                                "model_revision": revision})["junie_model_revision"]
+
+        current = save("new", "high", "a" * 24)
+        with self.assertRaises(HTTPError) as stale:
+            control("a" * 24)
+        with stale.exception as response:
+            self.assertEqual(response.code, 409)
+            self.assertIn("モデル設定が更新", response.read().decode())
+        self.assertTrue(self.view.actions.empty())
+
+        self.assertEqual(control(current), 202)
+        accepted = self.view.actions.get_nowait()
+        self.assertEqual(accepted["model_revision"], current)
+        self.assertEqual(run_records.run_model_options(self.run_path, self.record(), self.config),
+                         {"model": "new", "effort": "high"})
+        save("next", "medium", current)
+        with patch.object(dashboard, "resume_with_junie") as launch:
+            dashboard.execute_dashboard_action(self.view, self.config, accepted)
+        launch.assert_not_called()
+        self.assertTrue(self.view.state["ready"])
+        self.assertIn("モデル設定が更新", self.view.state["error_details"])
 
     def leave_applied_build_edit(self):
         self.start_server(ready=False)
