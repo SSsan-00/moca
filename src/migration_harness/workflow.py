@@ -23,7 +23,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory, mkdtemp
 from time import monotonic
 from typing import Any
 
-from .log_text import decode_log_text
+from .log_text import read_log_tail
 from .junie import junie_cli
 from .junie.acp_permissions import PinnedReferenceReads
 from .verification.build_receipt import build_artifacts, build_inputs
@@ -412,31 +412,11 @@ def _run_script_phase(
                     log.flush()
                     length = os.fstat(log.fileno()).st_size - start_output
                 repeatable_review = length > 0 and apply_decisions and command_target_versions is not None
-                target_versions_match = None
-                target_read_error = None
-                if repeatable_review:
-                    try:
-                        after_command_versions = _script_decision_versions(cwd, record)
-                    except OSError as exc:
-                        target_read_error = exc
-                    else:
-                        versions = (command_target_versions, before_command_versions, after_command_versions)
-                        if all(snapshot and all(snapshot.values()) for snapshot in versions):
-                            target_versions_match = command_target_versions == before_command_versions == after_command_versions
                 if length > 0:
                     decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
-                    output_read_error = None
-                    if (apply_decisions and settled_once) or repeatable_review:
-                        try:
-                            decision["log_sha256"] = _script_output_sha256(run_path, decision)
-                        except ValueError as exc:
-                            if not repeatable_review:
-                                raise
-                            decision["log_sha256"] = None
-                            output_read_error = exc
-                        else:
-                            decision["log_hash_scope"] = "full_range"
                     if apply_decisions and settled_once:
+                        decision["log_sha256"] = _script_output_sha256(run_path, decision)
+                        decision["log_hash_scope"] = "full_range"
                         decision["previous_status"], decision["previous_stage"] = previous_status, previous_stage
                         record.setdefault("script_decisions_pending", {})[phase] = decision
                         decision["target_versions"] = _script_decision_versions(cwd, record)
@@ -446,31 +426,9 @@ def _run_script_phase(
                         if tracked:
                             write_run_record(record_path, record)
                         if repeatable_review:
-                            if target_read_error is not None:
-                                decision["target_read_error"] = type(target_read_error).__name__
-                            record["verification_script_pending"] = {
-                                **decision, "target_versions": command_target_versions.copy(),
-                                "target_basis": _verification_target_basis(phase),
-                                "target_versions_match": target_versions_match,
-                            }
-                            if output_read_error is not None or target_versions_match is not True:
-                                if output_read_error is not None:
-                                    reason = "output_unverified"
-                                elif target_read_error is not None:
-                                    reason = "target_unreadable"
-                                else:
-                                    reason = "target_changed" if target_versions_match is False else "target_unverified"
-                                _append_script_advisory(record, {
-                                    **decision, "status": "blocked", "applied": "review_required", "reason": reason,
-                                })
-                                write_run_record(record_path, record)
-                                if output_read_error is not None:
-                                    raise output_read_error
-                                if target_read_error is not None:
-                                    raise ValueError("The script response has no verified target version; target read failed after execution") from target_read_error
-                                if target_versions_match is None:
-                                    raise ValueError("The script response has no verified target version; inspect the log and explicitly rebuild")
-                                raise ValueError("The target changed during verification; inspect the script log and explicitly rebuild")
+                            _record_verification_script_output(
+                                run_path, cwd, record, decision, command_target_versions, before_command_versions,
+                            )
                         _review_script_output(config, run_path, record, decision, apply_decisions=apply_decisions)
                         if apply_decisions and completed.returncode == 0:
                             _save_script_handoff(run_path, cwd, record, decision)
@@ -493,13 +451,7 @@ def _run_script_phase(
         message = f"スクリプト {phase} の {number} 番目で停止しました。ログ {log_path}\n{reason}"
         if not isinstance(exc, KeyboardInterrupt):
             try:
-                with log_path.open("rb") as stream:
-                    start = max(0, os.fstat(stream.fileno()).st_size - 65_536)
-                    stream.seek(start)
-                    tail = stream.read(65_536)
-                if start and b"\n" in tail:
-                    tail = tail.split(b"\n", 1)[1]
-                message += "\n" + decode_log_text(tail)
+                message += "\n" + read_log_tail(log_path)
             except OSError:
                 pass
         run_id = None
@@ -560,6 +512,43 @@ def _script_output_sha256(run_path: Path, item: dict[str, Any]) -> str:
     except (OSError, ValueError, OverflowError, EOFError) as exc:
         raise ValueError(_SAVED_SCRIPT_OUTPUT_CHANGED) from exc
     return digest.hexdigest()
+
+
+def _record_verification_script_output(run_path, cwd, record, item, expected, before):
+    path = run_path / "run.json"
+    pending = record["verification_script_pending"] = {
+        **item, "target_versions": expected.copy(), "target_basis": _verification_target_basis(item["phase"]),
+        "target_versions_match": None, "log_sha256": None,
+    }
+    write_run_record(path, record)
+    reason = "output_unverified"
+    try:
+        digest = _script_output_sha256(run_path, item)
+        item.update(log_sha256=digest, log_hash_scope="full_range")
+        pending.update(item)
+        write_run_record(path, record)
+
+        reason = "target_unverified"
+        try:
+            after = _script_decision_versions(cwd, record)
+        except OSError as exc:
+            reason = "target_unreadable"
+            item["target_read_error"] = pending["target_read_error"] = type(exc).__name__
+            raise ValueError("The script response has no verified target version; target read failed after execution") from exc
+        if not all(snapshot and all(snapshot.values()) for snapshot in (expected, before, after)):
+            raise ValueError("The script response has no verified target version; inspect the log and explicitly rebuild")
+        pending["target_versions_match"] = expected == before == after
+        if not pending["target_versions_match"]:
+            reason = "target_changed"
+            raise ValueError("The target changed during verification; inspect the script log and explicitly rebuild")
+    except (KeyboardInterrupt, ValueError) as exc:
+        interrupted = isinstance(exc, KeyboardInterrupt)
+        _append_script_advisory(record, {
+            **item, "log_sha256": pending["log_sha256"], "applied": "review_required",
+            "reason": "verification_interrupted" if interrupted else reason,
+            "status": "interrupted" if interrupted else "blocked",
+        })
+        raise
 
 
 def _verify_saved_script_output(run_path, item):
