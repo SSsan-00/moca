@@ -333,6 +333,7 @@
     if (!file.pendingSave || Object.entries(body).some(([key, value]) => file.pendingSave[key] !== value)) {
       file.pendingSave = {...body, save_id: crypto.randomUUID().replaceAll("-", "")};
     }
+    file.unconfirmedSaves.add(file.pendingSave.save_id);
     saving = true;
     const version = ++revision;
     showSaveState();
@@ -340,6 +341,7 @@
     try {
       const data = await request("editor", file.pendingSave);
       file.pendingSave = undefined;
+      file.unconfirmedSaves.clear();
       file.saved = content;
       file.editId = data.edit?.id ?? null;
       file.base = data.edit?.base ?? data.content;
@@ -555,17 +557,24 @@
     const saved = data.edit?.content ?? (data.read_error ? file?.saved : data.content) ?? "";
     if (!file) {
       const model = monaco.editor.createModel(saved, fileLanguage);
-      file = {model, saved, base: data.edit?.base ?? data.content, editId: data.edit?.id ?? null};
+      file = {model, saved, base: data.edit?.base ?? data.content, editId: data.edit?.id ?? null, unconfirmedSaves: new Set()};
       documents.set(key, file);
       model.onDidChangeContent(() => {
         file.pendingSave = undefined;
         if (file === current) showSaveState();
       });
-    } else if (!data.read_error && readText(file.model) === file.saved) {
-      file.saved = saved;
-      file.base = data.edit?.base ?? data.content;
-      file.editId = data.edit?.id ?? null;
-      if (readText(file.model) !== saved) file.model.setValue(saved);
+    } else if (!data.read_error) {
+      const accepted = file.unconfirmedSaves.has(data.edit?.save_id ?? data.accepted_save_id);
+      if (accepted || readText(file.model) === file.saved) {
+        file.saved = saved;
+        file.base = data.edit?.base ?? data.content;
+        file.editId = data.edit?.id ?? null;
+        if (accepted) {
+          file.pendingSave = undefined;
+          file.unconfirmedSaves.clear();
+          report("#editor-error");
+        } else if (readText(file.model) !== saved) file.model.setValue(saved);
+      }
     }
     selectedTarget = data.target;
     if (latest.getLanguageId() !== fileLanguage) monaco.editor.setModelLanguage(latest, fileLanguage);

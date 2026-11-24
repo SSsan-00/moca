@@ -38,11 +38,14 @@ from migration_harness.runs.editor_queue import (
     EDITOR_TARGET_SUFFIXES,
     QUEUE_PHASES,
     add_prompt,
+    applied_editor_save_id,
     editor_queue,
+    editor_save_intent,
     editor_save_pending,
     editor_target,
     editor_text,
     record_operator_edit,
+    record_queued_editor_save,
     replayed_editor_save,
     stage_editor_save,
 )
@@ -825,17 +828,21 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         save_id = action.get("save_id")
                         if save_id is not None and (not isinstance(save_id, str) or not re.fullmatch(r"[0-9a-f]{32}", save_id)):
                             raise ValueError("保存IDが無効です。エディタを開き直してください。")
-                        if action.get("edit_id") != (edit["id"] if edit else None):
-                            raise ValueError("保存済みの編集が別の画面で変更されました。")
+                        edit_id, resolve = action.get("edit_id"), action.get("resolve", False)
+                        if type(resolve) is not bool:
+                            raise ValueError("編集の競合を解消する指定が無効です。")
+                        intent = editor_save_intent(name, base, draft, edit_id, resolve)
                         # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
                         with worktree_source_lock(worktree), self.dashboard.condition:
                             state = self.dashboard.state
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
                             replay = (save_id is not None or not edit and not from_agent) and replayed_editor_save(
-                                queue, name, original, base, draft, save_id,
+                                queue, edit, original, content, save_id, intent,
                             )
                             if not replay:
+                                if edit_id != (edit["id"] if edit else None):
+                                    raise ValueError("保存済みの編集が別の画面で変更されました。")
                                 # 保存直前に実行が始まった場合も、編集をRunへ退避する。
                                 busy_other = state.get("generating_anchors") or state.get("stop_requested")
                                 queued = bool(queued or not state.get("ready") or busy_other or content != base)
@@ -843,15 +850,16 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                                 invalidate_queued_steering(queue)
                                 if queued:
                                     if edit and edit["status"] == "conflict" and (
-                                        not action.get("resolve") or base != content
+                                        not resolve or base != content
                                     ):
                                         raise ValueError("最新版との差分を確認し、競合を解消して保存してください。")
                                     edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
+                                    record_queued_editor_save(queue, edit, save_id, intent)
                                     queue["edits"][name] = edit
                                     prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
                                 else:
                                     record_operator_edit(queue, name, content, draft)
-                                    version = stage_editor_save(run_path, queue, name, original, base, draft, save_id)
+                                    version = stage_editor_save(run_path, queue, original, draft, save_id, intent)
                                     save_target_edit(worktree, targets, {"target": name, "version": version, "content": draft})
                                     original, content = editor_target(worktree, Path(name))
                     else:
@@ -868,6 +876,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
                     "status": phase, "operator_question": record.get("operator_question"),
                 }
+                if name and edit is None and read_error is None:
+                    if accepted := applied_editor_save_id(queue, name, original, content):
+                        payload["accepted_save_id"] = accepted
                 if name and from_agent and (draft := record.get("stopped_migration_draft")):
                     payload["stopped_draft"] = True
                     with suppress(OSError, ValueError):

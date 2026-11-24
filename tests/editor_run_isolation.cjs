@@ -77,6 +77,7 @@ function createEditor(host, options = {}) {
 }
 const pending = [];
 const timers = [];
+let editorTransport;
 const context = vm.createContext({
   document, window: {monaco: {
     KeyMod: {CtrlCmd: 1}, KeyCode: {KeyS: 1},
@@ -86,6 +87,7 @@ const context = vm.createContext({
   crypto: {randomUUID},
   snapshot: {run_id: "A"}, workspaceTabs: new Element(),
   workspaceRequest(path, body) {
+    if (editorTransport) return editorTransport(path, body);
     return new Promise((resolve, reject) => pending.push({path, body, resolve, reject}));
   },
   ResizeObserver: class { observe() {} }, MutationObserver: class { observe() {} },
@@ -330,7 +332,103 @@ async function checkConversationFileSwitch() {
   assert.equal(turns.children.length, 3);
 }
 
+async function checkQueuedEditorHttp(address, runId) {
+  const host = new URL(address);
+  assert.equal(host.hostname, "127.0.0.1");
+  const posted = [];
+  let lose = false;
+  async function actualRequest(path, body) {
+    const url = new URL(path, host);
+    assert.equal(url.origin, host.origin);
+    const response = await fetch(url, {redirect: "error", ...(body && {
+      method: "POST", headers: {"Origin": host.origin, "Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    })});
+    if (!response.ok) {
+      if (body) posted.push({body, status: response.status});
+      throw Error(await response.text());
+    }
+    const result = await response.json();
+    if (body) {
+      posted.push({body, status: response.status, result});
+      if (lose) {
+        lose = false;
+        throw Error("fixture lost successful response");
+      }
+    }
+    return result;
+  }
+  const button = find("#editor-save");
+  const feedback = find("#editor-error");
+  const status = find("#editor-save-status");
+  const submit = () => button.emit("click");
+  editorTransport = actualRequest;
+  context.snapshot = {run_id: runId};
+  await tick();
+
+  model().setValue("class First {}\n");
+  lose = true;
+  await submit();
+  const first = posted.at(-1);
+  assert.equal(first.status, 200);
+  assert.match(feedback.textContent, /lost successful response/);
+  await submit();
+  const repeated = posted.at(-1);
+  assert.equal(repeated.body.save_id, first.body.save_id);
+  assert.equal(repeated.status, 200, "the server must acknowledge the same already-saved edit");
+  assert.deepEqual(repeated.result.edit, first.result.edit);
+  assert.match(status.textContent, /保存済み/);
+
+  model().setValue("class Second {}\n");
+  lose = true;
+  await submit();
+  const second = posted.at(-1);
+  assert.equal(second.status, 200);
+  model().setValue("class PreparedNext {}\n");
+  await tick();
+  assert.equal(model().getValue(), "class PreparedNext {}\n", "acknowledgement must preserve newer unsaved text");
+  assert.equal(feedback.textContent, "");
+  await submit();
+  const next = posted.at(-1);
+  assert.equal(next.body.edit_id, second.result.edit.id);
+  assert.notEqual(next.body.save_id, second.body.save_id);
+  assert.equal(next.status, 200);
+
+  model().setValue("class Adopted {}\n");
+  lose = true;
+  await submit();
+  const adopted = posted.at(-1);
+  assert.equal(adopted.status, 200);
+  await actualRequest("fixture-adopt", {});
+  const acknowledgement = await actualRequest("editor", adopted.body);
+  assert.equal(acknowledgement.edit, null, "do not recreate an edit that the workflow already applied");
+  assert.equal(acknowledgement.accepted_save_id, adopted.body.save_id);
+  model().setValue("class PreparedAfterAdoption {}\n");
+  await tick();
+  assert.equal(model().getValue(), "class PreparedAfterAdoption {}\n");
+  await submit();
+  const afterAdoption = posted.at(-1);
+  assert.equal(afterAdoption.body.edit_id, null, "update a draft's base after its own edit has already been applied");
+  assert.equal(afterAdoption.body.base, adopted.body.content);
+  assert.equal(afterAdoption.status, 200);
+
+  model().setValue("class KeptLocally {}\n");
+  const other = await actualRequest("editor", {...afterAdoption.body, content: "class AnotherTab {}\n",
+    edit_id: afterAdoption.result.edit.id, save_id: randomUUID().replaceAll("-", "")});
+  await tick();
+  assert.equal(model().getValue(), "class KeptLocally {}\n");
+  await submit();
+  assert.equal(posted.at(-1).body.edit_id, afterAdoption.result.edit.id, "a receipt from another editor must not rebase the draft");
+  assert.equal(posted.at(-1).status, 409);
+  assert.deepEqual((await actualRequest("editor")).edit, other.edit);
+  console.log("Dashboard: live HTTP queued saves recover lost receipts without losing drafts or overwriting another tab.");
+}
+
 (async () => {
+  if (process.argv[5]) {
+    await checkQueuedEditorHttp(process.argv[5], process.argv[6]);
+    return;
+  }
   await checkDashboard();
   const initial = tick();
   take().resolve(response("A"));

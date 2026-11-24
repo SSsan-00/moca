@@ -42,43 +42,77 @@ def editor_save_pending(run_path: Path) -> bool:
     return True
 
 
-def _save_intent(base, draft):
-    return {"base": _digest(base.encode("utf-8")), "draft": _digest(draft.encode("utf-8"))}
+def editor_save_intent(name, base, draft, edit_id, resolve):
+    return {"target": name, "base": _digest(base.encode("utf-8")), "draft": _digest(draft.encode("utf-8")),
+            "edit_id": edit_id, "resolve": resolve}
 
 
-def stage_editor_save(run_path, queue, name, original, base, draft, save_id):
+def _record_save_request(queue, save_id, intent, **result):
+    latest = queue.setdefault("latest_save_requests", {})
+    if save_id is None:
+        latest.pop(intent["target"], None)
+    else:
+        latest[intent["target"]] = save_id
+        queue.setdefault("save_requests", {})[save_id] = {**intent, **result}
+
+
+def stage_editor_save(run_path, queue, original, draft, save_id, intent):
     before = _digest(original)
     after = _digest(target_edit_bytes(original or b"", draft))
-    receipt = {**_save_intent(base, draft), "after": after}
     if save_id is None:
-        queue.setdefault("immediate_saves", {})[name] = receipt
-    else:
-        queue.setdefault("immediate_save_requests", {})[save_id] = {**receipt, "target": name}
+        queue.setdefault("immediate_saves", {})[intent["target"]] = {
+            "base": intent["base"], "draft": intent["draft"], "after": after,
+        }
+    _record_save_request(queue, save_id, intent, after=after)
     if before != after:
         path = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
         safe_target(run_path, path.with_suffix(".json.tmp").relative_to(run_path))
         # 本文を置換する前に、置換前後の版と確定すべき履歴を永続化する。
-        replace_run_record(path, {"target": name, "before": before, "after": after,
+        replace_run_record(path, {"target": intent["target"], "before": before, "after": after,
                                  "history_before": _digest(_read_queue(run_path / "editor.json").encode("utf-8")),
                                  "history_after": queue})
     return before
 
 
-def replayed_editor_save(queue, name, original, base, draft, save_id):
-    if save_id is None:
-        receipt = queue.get("immediate_saves", {}).get(name)
-    else:
-        receipt = queue.get("immediate_save_requests", {}).get(save_id)
-    if receipt is None:
-        return False
-    intent = _save_intent(base, draft)
+def record_queued_editor_save(queue, edit, save_id, intent):
     if save_id is not None:
-        intent["target"] = name
-    if any(receipt[key] != value for key, value in intent.items()):
-        if save_id is not None:
+        edit["save_id"] = save_id
+    _record_save_request(queue, save_id, intent, queued_edit=edit["id"])
+
+
+def applied_editor_save_id(queue, name, original, content):
+    save_id = queue.get("latest_save_requests", {}).get(name)
+    if save_id is None:
+        return None
+    receipt = queue["save_requests"][save_id]
+    if "queued_edit" in receipt:
+        matches = original is not None and receipt["draft"] == _digest(content.encode("utf-8"))
+    else:
+        matches = receipt["after"] == _digest(original)
+    return save_id if matches else None
+
+
+def replayed_editor_save(queue, edit, original, content, save_id, intent):
+    if save_id is None:
+        receipt = queue.get("immediate_saves", {}).get(intent["target"])
+        if receipt is None or any(receipt[key] != intent[key] for key in ("base", "draft")):
+            return False
+    else:
+        receipt = queue.get("save_requests", {}).get(save_id)
+        if receipt is None:
+            old = queue.get("immediate_save_requests", {}).get(save_id)
+            if old is None:
+                return False
+            receipt = {**old, "edit_id": None, "resolve": False}
+        if any(receipt[key] != value for key, value in intent.items()):
             raise ValueError("同じ保存IDが別の編集に使われています。エディタを開き直してください。")
-        return False
-    if _digest(original) != receipt["after"]:
+    if "queued_edit" in receipt:
+        if edit is not None and edit["id"] == receipt["queued_edit"]:
+            return True
+        if edit is None and applied_editor_save_id(queue, intent["target"], original, content) == save_id:
+            return True
+        raise ValueError("保存済みの編集が更新されました。未保存の内容を控え、最新版を確認してください。")
+    if edit is not None or _digest(original) != receipt["after"]:
         raise ValueError("前回の保存後に対象ファイルが更新されました。最新の内容を読み込んでください。")
     return True
 

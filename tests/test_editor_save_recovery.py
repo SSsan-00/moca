@@ -2,6 +2,7 @@ import io
 import json
 import subprocess
 from contextlib import ExitStack, redirect_stdout
+from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -9,7 +10,9 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import SavedRunFixture
+from ui_dependencies import node_executable
 from migration_harness import workflow
+from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs import editor_queue, run_records
 from migration_harness.web import dashboard
 
@@ -17,18 +20,31 @@ from migration_harness.web import dashboard
 class EditorSaveRecoveryTests(SavedRunFixture):
     def setUp(self):
         super().setUp()
+        self.popen = subprocess.Popen
         self.enterContext(patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected child process")))
         self.server = self.enterContext(ExitStack())
         self.start_server()
 
-    def start_server(self):
+    def start_server(self, *, ready=True, allow_fixture_adoption=False):
         self.server.close()
         view = dashboard.Dashboard()
         view.observe(self.record())
         view.ready(self.config, self.record())
+        if not ready:
+            view.publish({**view.state, "ready": False})
         stream = io.StringIO()
         with redirect_stdout(stream):
             server = view.server(self.config, b"", b"")
+        if allow_fixture_adoption:
+            original_post = server.RequestHandlerClass.do_POST
+
+            def test_post(handler):
+                if not handler.path.endswith("/fixture-adopt"):
+                    return original_post(handler)
+                self.adopt_queued_edits()
+                handler.send_body(200, "application/json", b"{}")
+
+            server.RequestHandlerClass.do_POST = test_post
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         self.server.callback(server.server_close)
@@ -65,6 +81,13 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         if path.name == "editor.json":
             raise OSError("fixture editor history is unwritable")
         run_records.replace_run_record(path, queue)
+
+    def adopt_queued_edits(self):
+        unit = self.config["units"][0]
+        with editor_queue.editor_queue(self.run_path) as queue:
+            request = {"edits": saved_edits(queue), "edit_revision": queue["edit_revision"],
+                       "targets": target_versions(self.worktree, unit)}
+        workflow._apply_verification_edits(self.run_path, self.worktree, unit, request)
 
     def test_failed_history_stops_resume_until_recovered_and_does_not_reapply(self):
         self.stage_old_instruction()
@@ -206,3 +229,81 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         self.start_server()
         self.assertEqual(self.editor(payload)["content"], payload["content"])
         self.assertEqual(history.read_bytes(), before)
+
+    def test_queued_receipts_keep_the_version_and_later_prompts(self):
+        original = self.target.read_bytes()
+        second_target = self.worktree / "Other.cs"
+        names = [self.target.name, second_target.name]
+        self.config["units"][0]["targets"] = names
+        self.save_record({**self.record(), "targets": names})
+        self.start_server()
+        immediate = {**self.save_action("class ImmediatelySaved {}\n"), "save_id": "0" * 32}
+        self.assertIsNone(self.editor(immediate)["edit"])
+        history = self.run_path / "editor.json"
+        immediate_history = history.read_bytes()
+        self.start_server(ready=False)
+        self.assertIsNone(self.editor(immediate)["edit"])
+        self.assertEqual(history.read_bytes(), immediate_history)
+        first = {**self.save_action("class Queued {}\n"), "save_id": "1" * 32}
+        self.assertIn("同じ保存ID", self.http_conflict({**first, "save_id": immediate["save_id"]}))
+        accepted = self.editor(first)["edit"]
+        self.stage_old_instruction()
+        saved = history.read_bytes()
+        self.start_server()
+        self.assertEqual(self.editor(first)["edit"], accepted)
+        self.assertIn("更新", self.http_conflict(immediate))
+        self.assertEqual(history.read_bytes(), saved, "retry must not cancel later prompts or change the edit version")
+        for changed in [{"content": "class Other {}"}, {"resolve": True},
+                        {"edit_id": accepted["id"]}, {"target": second_target.name}]:
+            with self.subTest(changed=changed):
+                self.assertIn("同じ保存ID", self.http_conflict({**first, **changed}))
+        self.assertEqual(history.read_bytes(), saved)
+        next_edit = {**first, "content": "class AnotherTab {}\n", "save_id": "2" * 32, "edit_id": accepted["id"]}
+        final = self.editor(next_edit)["edit"]
+        saved = history.read_bytes()
+        self.assertIn("更新", self.http_conflict(first))
+        self.assertEqual(self.editor()["edit"], final)
+        self.assertEqual(history.read_bytes(), saved)
+        self.assertFalse(second_target.exists())
+        self.assertNotEqual(self.target.read_bytes(), original)
+        self.assertIn(b"ImmediatelySaved", self.target.read_bytes())
+
+    def test_replayed_queued_save_already_adopted_keeps_later_instructions(self):
+        self.start_server(ready=False)
+        action = {**self.save_action("class Adopted {}\n"), "save_id": "1" * 32}
+        self.editor(action)
+        self.adopt_queued_edits()
+        self.stage_old_instruction()
+        history = self.run_path / "editor.json"
+        saved = history.read_bytes()
+        self.start_server()
+        self.assertIsNone(self.editor()["edit"])
+        repeated = self.editor(action)
+        self.assertIsNone(repeated["edit"])
+        self.assertEqual(repeated["accepted_save_id"], action["save_id"])
+        self.assertEqual(repeated["content"], action["content"])
+        self.assertEqual(history.read_bytes(), saved)
+        self.target.write_bytes(b"class ChangedExternally {}\r\n")
+        self.assertIn("更新", self.http_conflict(action))
+        self.assertEqual(history.read_bytes(), saved)
+        self.assertIn(b"ChangedExternally", self.target.read_bytes())
+
+    def test_lost_queued_save_response_and_editor_poll_through_actual_http(self):
+        node = node_executable(self)
+        self.start_server(ready=False, allow_fixture_adoption=True)
+        root = Path(__file__).resolve().parent.parent
+        web = root / "src/migration_harness/web"
+        command = [node, str(root / "tests/editor_run_isolation.cjs"), str(web / "dashboard_editor.js"),
+                   str(web / "dashboard.js"), str(web / "dashboard_chat.js"), self.url, self.run_id]
+        with patch.object(subprocess, "Popen", self.start_node_only(self.popen, command)):
+            result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("live HTTP queued saves recover lost receipts", result.stdout)
+
+    @staticmethod
+    def start_node_only(popen, command):
+        def start(args, *options, **kwargs):
+            if args != command:
+                raise AssertionError("unexpected child process")
+            return popen(args, *options, **kwargs)
+        return start
