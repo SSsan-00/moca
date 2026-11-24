@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import test_before_build_versions as before_build
 from migration_harness import workflow
+from migration_harness.windows_job import WindowsJob
 
 
 METHOD = "test_old_before_build_phase_receipt_is_not_treated_as_a_precommand_receipt"
@@ -50,8 +51,20 @@ if sys.version_info[:2] == (3, 11):
         def test_repeated_real_synchronous_before_build(self):
             count = 30
             suite = unittest.TestSuite(before_build.BeforeBuildVersionTests(METHOD) for _ in range(count))
-            with contextlib.redirect_stdout(io.StringIO()):
+            membership = WindowsJob.has_processes_other_than
+            stale_count = 0
+
+            def compare(job, exited_pid):
+                nonlocal stale_count
+                active = job.active_processes()
+                others = membership(job, exited_pid)
+                if active and not others:
+                    stale_count += 1
+                return others
+
+            with contextlib.redirect_stdout(io.StringIO()), patch.object(WindowsJob, "has_processes_other_than", compare):
                 outcome = suite.run(unittest.TestResult())
+            print(f"ISSUE 206: positive Job accounting without any other reported PID ({stale_count} occurrences)")
             self.assertEqual(outcome.testsRun, count)
             self.assertEqual(outcome.skipped, [])
             self.assertTrue(outcome.wasSuccessful(), "\n".join(detail for _, detail in outcome.errors + outcome.failures))
