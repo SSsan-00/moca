@@ -4338,6 +4338,13 @@ def _recorded_reference_edit_overlap(old, new, operator_edits):
     return False
 
 
+class _ReferenceRefreshConflict(ValueError):
+    def __init__(self, message, conflicts, merged):
+        super().__init__(message)
+        self.conflicts = conflicts
+        self.merged = merged
+
+
 def _reference_refresh_merge(worktree, targets, proposal, baseline, before, diff_path, operator_edits):
     merged, conflicts, differences = {}, [], []
     for target in targets:
@@ -4363,8 +4370,10 @@ def _reference_refresh_merge(worktree, targets, proposal, baseline, before, diff
     diff_path.write_text("".join(differences), encoding="utf-8")
     if conflicts:
         preview = "".join(differences)[:1200]
-        raise ValueError(f"参考資料への追従案が手修正と競合しました。成果物は上書きしていません: "
-                         f"{', '.join(conflicts)}\n差分: {diff_path}\n{preview}")
+        raise _ReferenceRefreshConflict(
+            f"参考資料への追従案が手修正と競合しました。成果物は上書きしていません: "
+            f"{', '.join(conflicts)}\n差分: {diff_path}\n{preview}", conflicts, merged,
+        )
     return merged
 
 
@@ -4450,6 +4459,100 @@ def _capture_reference_revision(worktree, targets, run_path, capsule, policy, ha
     return name
 
 
+def _reference_target_versions(root, targets):
+    return {path.as_posix(): target_hash(safe_target(root, path)) for path in targets}
+
+
+def _reference_edit_versions(edits):
+    return {name: hashlib.sha256(json.dumps(item, sort_keys=True).encode("utf-8")).hexdigest()
+            for name, item in edits.items()}
+
+
+def _stage_reference_outputs(run_path, merged):
+    output = Path(mkdtemp(prefix="reference-output-", dir=run_path))
+    for path, data in merged.items():
+        destination = safe_target(output, Path("merged") / path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+    return {"output": output.name, "after": {path.as_posix(): hashlib.sha256(data).hexdigest()
+                                           for path, data in merged.items()}}
+
+
+def _reference_output(run_path, outputs, path):
+    source = safe_target(run_path, Path(outputs["output"]) / "merged" / path)
+    data = source.read_bytes()
+    if hashlib.sha256(data).hexdigest() != outputs["after"][path.as_posix()]:
+        raise ValueError("途中で保存した参考資料の修正案が一致しません。")
+    return data
+
+
+def _replace_reference_output(path, data):
+    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        temporary.write_bytes(data)
+        if path.exists():
+            shutil.copymode(path, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _record_reference_conflict_resolution(run_path, worktree, canonical, targets, capsule, pending, record):
+    conflict = pending["conflict"]
+    record_path = run_path / "run.json"
+    active = target_context_snapshot(capsule, pending["snapshot"])
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
+        _, captured = target_context_inventory(active)
+        _, _, changed_references = compare_target_context(worktree, targets, active)
+        before = _reference_target_versions(worktree, targets)
+        draft = _reference_target_versions(canonical, targets)
+        if (changed_references or captured != conflict["reference_hashes"]
+                or before != conflict["before"] or draft != conflict["draft"]):
+            if queue["edits"]:
+                raise ValueError("参考資料または成果物・下書きの版が競合時と異なります。"
+                                 "解消案は未反映のまま保存されています。競合時の版を確認してください。")
+            pending.pop("conflict")
+            write_run_record(record_path, record)
+            return
+        resolved = set(conflict["targets"])
+        if not resolved <= queue["edits"].keys():
+            raise ValueError(conflict["message"])
+        if any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+            raise ValueError("参考資料の競合解消と未送信の指示が両方あります。先に指示を確認してください。")
+        _verified_target_snapshot(run_path, conflict["generated"])
+        if stopped := pending.get("archived_draft"):
+            _verified_target_snapshot(run_path, stopped)
+        if any(target_hash(safe_target(active, Path("files") / name)) != digest for name, digest in captured.items()):
+            raise ValueError("競合時に固定した参考資料の内容が一致しません。解消案は未反映です。")
+        names = {path.as_posix() for path in targets}
+        if queue["edits"].keys() - names:
+            raise ValueError("競合解消の保存先が設定された移行先と一致しません。")
+        merged = {}
+        for path in targets:
+            name = path.as_posix()
+            raw, text = editor_target(worktree, path)
+            candidate = raw if name in resolved else _reference_output(run_path, conflict, path)
+            if edit := queue["edits"].get(name):
+                if edit["status"] != "queued" or edit["base"] != text:
+                    raise ValueError(f"解消案の基準版が移行先と一致しません: {name}")
+                combined = (edit["content"] if name in resolved else merge_edit(
+                    text, edit["content"], editor_text(candidate.decode("utf-8-sig")),
+                ))
+                if combined is None:
+                    raise ValueError(f"別の追従案と手修正が競合しています: {name}")
+                candidate = raw if combined == text else codecs.BOM_UTF8 + combined.replace(
+                    "\n", target_newline(raw),
+                ).encode("utf-8")
+            merged[path] = candidate
+        pending["adoption"] = {
+            **_stage_reference_outputs(run_path, merged), "before": before,
+            "backup": _save_capsule_checkpoint(run_path, worktree, targets, before),
+            "generated": conflict["generated"], "editor_edits": _reference_edit_versions(queue["edits"]),
+        }
+        write_run_record(record_path, record)
+
+
 def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, *, migration_complete):
     capsule, manifest = load_capsule_manifest(run_path)
     saved = target_context_snapshot(capsule)
@@ -4460,6 +4563,16 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
     pending = record.get("reference_refresh")
     recovering_adoption = bool(pending and pending.get("adoption"))
     canonical = run_path / "agent-workspace"
+    if recovering_adoption and pending["adoption"].get("editor_edits"):
+        adoption = pending["adoption"]
+        with worktree_source_lock(worktree):
+            if _reference_target_versions(worktree, targets) != adoption["after"]:
+                active = target_context_snapshot(capsule, pending["snapshot"])
+                _, _, changes = compare_target_context(worktree, targets, active)
+                if changes:
+                    raise ValueError("反映を再開する前に参考資料が更新されました。解消案は保存されています。")
+    if pending and pending.get("conflict") and not recovering_adoption:
+        _record_reference_conflict_resolution(run_path, worktree, canonical, targets, capsule, pending, record)
     if not pending:
         if any(record.get(key) for key in ("repair_pending", "migration_rewind", "target_apply_pending",
                                             "stopped_migration_save_error", "operator_question")):
@@ -4489,7 +4602,7 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
                 pending.setdefault("previous_results", {})[key] = record.pop(key)
         record["status"] = "junie_finished" if migration_complete else "interrupted"
         write_run_record(record_path, record, invalidate_migration_reviews=True)
-    elif not recovering_adoption:
+    elif not pending.get("adoption"):
         original = target_context_snapshot(capsule, pending["previous"])
         policy, hashes, changes = compare_target_context(worktree, targets, original)
         _, proposed_hashes = target_context_inventory(target_context_snapshot(capsule, pending["snapshot"]))
@@ -4522,11 +4635,12 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
         pending["archived_draft"] = pending.pop("previous_draft")
         write_run_record(record_path, record)
     if not pending.get("adoption"):
-        before = {path.as_posix(): target_hash(safe_target(worktree, path)) for path in targets}
+        before = _reference_target_versions(worktree, targets)
+        draft_before = _reference_target_versions(canonical, targets)
         completed = record["completed_capsules"]
         baseline = _reference_refresh_sources(run_path, record) if completed else {}
         recorded = record.get("target_hashes", {})
-        if any(target_hash(safe_target(canonical, path)) not in
+        if any(draft_before[path.as_posix()] not in
                {before[path.as_posix()], target_hash(baseline[path.as_posix()]) if completed else None,
                 recorded.get(path.as_posix(), before[path.as_posix()])}
                for path in targets):
@@ -4534,42 +4648,70 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
         if completed and pending["changes"]:
             if not all(before.values()) or not all(path.is_file() for path in baseline.values()):
                 raise ValueError("変換済みファイルの基準版が不足しているため、参考資料の変更を反映できません。")
+            with editor_queue(run_path) as queue:
+                if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+                    raise ValueError("参考資料を見直す前に未反映の編集・指示を確認してください。")
             proposal = _propose_reference_refresh(config, run_path, capsule, manifest, worktree,
                                                   targets, record, pending, baseline)
             with editor_queue(run_path) as queue, worktree_source_lock(worktree):
-                if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+                if (queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"])
+                        or draft_before != _reference_target_versions(canonical, targets)):
                     raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
-                merged = _reference_refresh_merge(worktree, targets, proposal, baseline, before, proposal / "変更差分.diff",
-                                                  queue.get("operator_edits", {}))
-                backup = _save_capsule_checkpoint(run_path, worktree, targets, before)
-                generated = _save_target_snapshot(
-                    run_path, {path.as_posix(): safe_target(proposal, path) for path in targets},
-                    before, workspace_unchanged=True,
-                )
-                output = proposal / "merged"
-                for path, data in merged.items():
-                    destination = safe_target(output, path)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_bytes(data)
-                pending["adoption"] = {"before": before, "after": {path.as_posix(): hashlib.sha256(data).hexdigest()
-                                       for path, data in merged.items()}, "backup": backup, "generated": generated,
-                                       "output": proposal.name}
+                try:
+                    merged = _reference_refresh_merge(
+                        worktree, targets, proposal, baseline, before, proposal / "変更差分.diff",
+                        queue.get("operator_edits", {}),
+                    )
+                except _ReferenceRefreshConflict as conflict:
+                    _, reference_hashes = target_context_inventory(target_context_snapshot(capsule, pending["snapshot"]))
+                    pending["conflict"] = {
+                        **_stage_reference_outputs(run_path, conflict.merged), "before": before, "draft": draft_before,
+                        "targets": conflict.conflicts, "message": str(conflict), "reference_hashes": reference_hashes,
+                        "generated": _save_target_snapshot(
+                            run_path, {path.as_posix(): safe_target(proposal, path) for path in targets},
+                            before, workspace_unchanged=True,
+                        ),
+                    }
+                    write_run_record(record_path, record)
+                    raise
+                pending["adoption"] = {
+                    **_stage_reference_outputs(run_path, merged), "before": before,
+                    "backup": _save_capsule_checkpoint(run_path, worktree, targets, before),
+                    "generated": _save_target_snapshot(
+                        run_path, {path.as_posix(): safe_target(proposal, path) for path in targets},
+                        before, workspace_unchanged=True,
+                    ),
+                }
                 write_run_record(record_path, record)
     if adoption := pending.get("adoption"):
         with editor_queue(run_path) as queue, worktree_source_lock(worktree):
-            if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+            adopted_edits = adoption.get("editor_edits", {})
+            edit_versions = _reference_edit_versions(queue["edits"])
+            if (edit_versions and edit_versions != adopted_edits
+                    or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
                 raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
-            current = {path.as_posix(): target_hash(safe_target(worktree, path)) for path in targets}
+            current = _reference_target_versions(worktree, targets)
             if current not in (adoption["before"], adoption["after"]):
                 raise ValueError("参考資料への追従中に移行先が変更されました。保存版を確認してください。")
+            if adopted_edits and current != adoption["after"] and edit_versions != adopted_edits:
+                raise ValueError("保存した参考資料の解消案が確認できません。")
             changed = tuple(path for path in targets if current[path.as_posix()] != adoption["after"][path.as_posix()])
+            outputs = {path: _reference_output(run_path, adoption, path) for path in
+                       (targets if adopted_edits else changed)}
+            if adopted_edits:
+                draft = _reference_target_versions(canonical, targets)
+                if any(digest not in {pending["conflict"]["draft"][name], adoption["after"][name]}
+                       for name, digest in draft.items()):
+                    raise ValueError("参考資料への追従中に下書きが変更されました。保存版を確認してください。")
+            for path, data in outputs.items():
+                destination = safe_target(canonical, path)
+                if target_hash(destination) != adoption["after"][path.as_posix()]:
+                    _replace_reference_output(destination, data)
             if changed:
-                for path in changed:
-                    source = safe_target(run_path, Path(adoption["output"]) / "merged" / path)
-                    if target_hash(source) != adoption["after"][path.as_posix()]:
-                        raise ValueError("途中で保存した参考資料の修正案が一致しません。")
-                    shutil.copyfile(source, safe_target(canonical, path))
                 apply_agent_targets(canonical, worktree, changed, current, record, record_path)
+            for name in edit_versions:
+                edit = queue["edits"].pop(name)
+                record_operator_edit(queue, name, edit["base"], edit["content"])
             current = adoption["after"].copy()
         record["reference_refresh_baseline"] = {"capsule": record["completed_capsules"], "checkpoint": adoption["generated"]}
         record["target_hashes"] = current
