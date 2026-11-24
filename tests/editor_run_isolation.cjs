@@ -374,8 +374,21 @@ async function checkConversationFileSwitch() {
   assert.equal(saved.body.run_id, "B");
   assert.equal(saved.body.base, "class B {}");
   assert.equal(saved.body.content, "class B { /* edit */ }");
-  saved.resolve(response("B", saved.body.content));
+  assert.match(saved.body.save_id, /^[0-9a-f]{32}$/);
+  saved.reject(new Error("simulated response loss"));
   await saving;
+  const retrySave = find("#editor-save").emit("click");
+  const retried = take();
+  assert.equal(retried.body.save_id, saved.body.save_id, "retry a lost save response with the same operation ID");
+  retried.reject(new Error("simulated response loss"));
+  await retrySave;
+  model().setValue("class B { /* changed again */ }");
+  model().setValue(saved.body.content);
+  const editedSave = find("#editor-save").emit("click");
+  const freshSave = take();
+  assert.notEqual(freshSave.body.save_id, saved.body.save_id, "a new edit must not reuse a rejected save ID");
+  freshSave.resolve(response("B", freshSave.body.content));
+  await editedSave;
 
   await select("A");
   take().resolve(response("A"));

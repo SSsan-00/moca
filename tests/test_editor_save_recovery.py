@@ -134,6 +134,32 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         self.assertEqual(self.target.read_bytes(), external)
         self.assertEqual(history.read_bytes(), saved)
 
+    def test_same_change_after_external_restore_requires_a_new_save_id(self):
+        original = self.target.read_bytes()
+        first = {**self.save_action("class Saved {}\n"), "save_id": "1" * 32}
+        self.editor(first)
+        history = self.run_path / "editor.json"
+        saved = history.read_bytes()
+
+        self.target.write_bytes(original)
+        self.start_server()
+        self.assertEqual(self.editor()["content"], first["base"])
+        self.assertIn("更新", self.http_conflict(first))
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(history.read_bytes(), saved)
+
+        fresh = {**self.save_action(first["content"]), "save_id": "2" * 32}
+        self.assertEqual(self.editor(fresh)["content"], first["content"])
+        self.assertEqual(len(json.loads(history.read_bytes())["operator_edits"][self.target.name]), 2)
+        latest = history.read_bytes()
+        self.editor(fresh)
+        self.assertIn("同じ保存ID", self.http_conflict({**fresh, "content": "class Other {}\n"}))
+        self.assertEqual(history.read_bytes(), latest)
+        self.target.write_bytes(original)
+        self.assertIn("更新", self.http_conflict(first))
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(history.read_bytes(), latest)
+
     def test_unexpected_file_after_failed_history_blocks_resume_without_overwriting(self):
         payload = self.save_action("class Manual {}\n")
         with patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history):

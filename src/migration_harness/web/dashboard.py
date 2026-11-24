@@ -822,6 +822,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     elif action.get("kind") == "save" and name:
                         base = editor_text(action.get("base"))
                         draft = editor_text(action.get("content"))
+                        save_id = action.get("save_id")
+                        if save_id is not None and (not isinstance(save_id, str) or not re.fullmatch(r"[0-9a-f]{32}", save_id)):
+                            raise ValueError("保存IDが無効です。エディタを開き直してください。")
                         if action.get("edit_id") != (edit["id"] if edit else None):
                             raise ValueError("保存済みの編集が別の画面で変更されました。")
                         # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
@@ -829,7 +832,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                             state = self.dashboard.state
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
-                            replay = not edit and not from_agent and replayed_editor_save(queue, name, original, base, draft)
+                            replay = (save_id is not None or not edit and not from_agent) and replayed_editor_save(
+                                queue, name, original, base, draft, save_id,
+                            )
                             if not replay:
                                 # 保存直前に実行が始まった場合も、編集をRunへ退避する。
                                 busy_other = state.get("generating_anchors") or state.get("stop_requested")
@@ -846,7 +851,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                                     prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
                                 else:
                                     record_operator_edit(queue, name, content, draft)
-                                    version = stage_editor_save(run_path, queue, name, original, base, draft)
+                                    version = stage_editor_save(run_path, queue, name, original, base, draft, save_id)
                                     save_target_edit(worktree, targets, {"target": name, "version": version, "content": draft})
                                     original, content = editor_target(worktree, Path(name))
                     else:

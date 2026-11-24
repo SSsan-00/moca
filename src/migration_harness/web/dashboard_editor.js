@@ -330,12 +330,16 @@
       kind: "save", run_id: state.run_id, target: state.target,
       base: resolving ? state.content : file.base, content, edit_id: file.editId, resolve: resolving,
     };
+    if (!file.pendingSave || Object.entries(body).some(([key, value]) => file.pendingSave[key] !== value)) {
+      file.pendingSave = {...body, save_id: crypto.randomUUID().replaceAll("-", "")};
+    }
     saving = true;
     const version = ++revision;
     showSaveState();
     report("#editor-error");
     try {
-      const data = await request("editor", body);
+      const data = await request("editor", file.pendingSave);
+      file.pendingSave = undefined;
       file.saved = content;
       file.editId = data.edit?.id ?? null;
       file.base = data.edit?.base ?? data.content;
@@ -553,7 +557,10 @@
       const model = monaco.editor.createModel(saved, fileLanguage);
       file = {model, saved, base: data.edit?.base ?? data.content, editId: data.edit?.id ?? null};
       documents.set(key, file);
-      model.onDidChangeContent(() => { if (file === current) showSaveState(); });
+      model.onDidChangeContent(() => {
+        file.pendingSave = undefined;
+        if (file === current) showSaveState();
+      });
     } else if (!data.read_error && readText(file.model) === file.saved) {
       file.saved = saved;
       file.base = data.edit?.base ?? data.content;
