@@ -466,6 +466,63 @@ class JunieConversationTests(SavedRunFixture):
         with editor_queue(self.run_path) as queue:
             self.assertEqual(queue["prompts"], [])
 
+    def test_mixed_requests_keep_the_complete_instruction_without_running_a_subset(self):
+        original = self.target.read_bytes()
+        record = self.record()
+        requests = (
+            "バリデーションを追加して、ビルドしてください。",
+            "不要な処理を削除して、ビルドしてください。",
+            "変数名を変更して、ビルドしてください。",
+            "ビルドログを保存する処理を追加してください。",
+            "例外時のフォールバックもお願いします。ビルドして",
+            "保存した版でビルドして、その前に入力値を検証するように",
+            "前回のビルド結果を教えて。必要な措置もお願いします。",
+            "今のビルドが終わったら、メッセージも整えてチェッカーを実行して",
+            "設定もお願いします。コードは修正してはいけません。ビルドだけ実行してください",
+            "First update Example.cs, then build.",
+            "What are you doing? Build, too.",
+        )
+        with (patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected child process")) as subprocess_start,
+              patch.object(workflow, "run_process") as run,
+              patch.object(workflow.junie_cli, "run_interactive") as junie):
+            for instruction in requests:
+                with self.subTest(instruction=instruction):
+                    identifier, receipt = self.send(instruction)
+                    self.assertEqual(receipt["status"], "received")
+                    self.assertNotIn("query_intent", receipt)
+                    entry = self.wait_for(identifier, "clarification")
+                    self.assertEqual(entry["text"], instruction)
+                    self.assertEqual(entry["targets"], receipt["targets"])
+                    self.assertIn("まだ何も実行していません", entry["question"])
+                    self.assertIn("編集や他の操作を行わず検証だけ", entry["question"])
+                    self.assertNotIn("result_status", entry)
+                    self.assertEqual(self.send(instruction, identifier)[1]["status"], "clarification")
+                    run.assert_not_called()
+                    junie.assert_not_called()
+                    self.assertEqual(self.target.read_bytes(), original)
+                    self.assertEqual(self.record(), record)
+                    with editor_queue(self.run_path) as queue:
+                        self.assertEqual(queue["prompts"], [])
+                    self.send("キャンセル")
+                    self.wait_for(identifier, "cancelled")
+            subprocess_start.assert_not_called()
+
+    def test_answer_to_mixed_instruction_completes_only_the_confirmed_verification(self):
+        instruction = "バリデーションを追加して、ビルドしてください。"
+        original = self.target.read_bytes()
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok"))
+        with (mocked, patch.object(workflow.junie_cli, "run_interactive") as junie):
+            identifier, _ = self.send(instruction)
+            self.wait_for(identifier, "clarification")
+            self.send("ビルドだけ")
+            result = self.wait_for(identifier, "done")
+            self.assertEqual(result["text"], instruction)
+            self.assertEqual(result["answer"], "ビルドだけ")
+            self.assertIn("編集や他の操作は実行していません", result["message"])
+            junie.assert_not_called()
+        self.assertEqual(calls, [["dotnet", "build"]])
+        self.assertEqual(self.target.read_bytes(), original)
+
     def test_an_ambiguous_build_mention_waits_for_an_explicit_answer(self):
         mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"))
         with mocked:

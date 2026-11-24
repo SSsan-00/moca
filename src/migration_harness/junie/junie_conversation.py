@@ -23,37 +23,46 @@ QUERY_INTENTS = {"status", "build_status", "checker_status"}
 BUILD_PHASES = {"building", "build_succeeded", "build_failed"}
 BUILD_TERM = r"(?:ビルド|\b(?:re)?build\b)"
 CHECKER_TERM = r"(?:チェッカー|\bchecker\b|チェック(?=まで|を(?:再|もう|実行)))"
+CLAUSE_BREAK = r"(?:\s*[、,。.!]\s*|\s*\n\s*)+"
+SAVED_VERSION = r"(?:(?:保存済みの(?:版|変更|内容)|保存した(?:版|変更|内容|修正)|保存版)で\s*)?"
 REQUEST_ENDING = r"(?:ください|(?:もらえ|くれ|いただけ)ますか\s*\??)?"
-VERIFICATION_REQUEST = (
-    rf"(?:{BUILD_TERM}|{CHECKER_TERM})(?:を|は)?\s*"
-    r"(?:(?:だけ|のみ|まで|も)(?:を)?\s*)?"
+VERIFY = (
+    r"(?:を|は)?\s*(?:(?:だけ|のみ|まで|も)を?\s*)?"
     rf"(?:して{REQUEST_ENDING}|(?:再)?実行して{REQUEST_ENDING}|やり直して{REQUEST_ENDING}|"
     r"お願い(?:します)?|(?:もう一(?:度|回)|再度)(?:実行して(?:ください)?|お願い(?:します)?)?)"
-    r"(?=[ \t]*[、,。.!！\n]|\s*$)"
-    r"|(?:^|[、,。.!！])\s*(?:please\s+)?(?:rebuild|build|(?:run|rerun)\s+(?:the\s+)?checker)"
-    r"(?:\s+again)?\s*(?=[、,。.!！]|$)"
 )
-CONDITIONAL_VERIFICATION = re.compile(
-    r"(?:^|[。.!?！\n])\s*(?P<condition>[^。.!?、,\n]+?(?:たら|なら|れば|場合(?:は|に)?|次第|てから|(?:た|の|終了|完了)後(?:に)?))"
-    r"[、,\s]*(?P<action>.+)", re.DOTALL,
+BUILD_REQUEST = rf"(?:{SAVED_VERSION}(?:再)?ビルド{VERIFY}|(?:please\s+)?(?:rebuild|build)(?:\s+again)?)"
+CHECKER_REQUEST = rf"(?:{SAVED_VERSION}(?:チェッカー|チェック(?=まで|を(?:再|もう|実行))){VERIFY}|(?:please\s+)?(?:run|rerun)\s+(?:the\s+)?checker(?:\s+again)?)"
+REPORT_RESULT = rf"(?:{CLAUSE_BREAK}結果を教えて{REQUEST_ENDING})?"
+INFORMATIONAL_PREFIX = re.compile(
+    rf"(?:(?:変更を保存しました|編集が終わりました|準備しました|手元で確認しました){CLAUSE_BREAK})+"
 )
-BUILD_COMPLETION_CONDITION = re.compile(
-    rf"(?:もし\s*)?(?:(?:今|現在)の|(?:現在)?実行中の)?\s*{BUILD_TERM}(?:が|の|は)?\s*"
-    r"(?:終わったら|終わってから|(?:終了|完了)(?:したら|してから|(?:した)?後(?:に)?|次第)|終わった後(?:に)?)",
+AFTER_BUILD = re.compile(
+    r"(?:もし\s*)?(?:(?:今|現在)の|(?:現在)?実行中の)?\s*ビルド(?:が|の|は)?\s*"
+    r"(?:終わったら|終わってから|(?:終了|完了)(?:したら|してから|(?:した)?後(?:に)?|次第)|終わった後(?:に)?)"
+    r"[、,\s]*"
+)
+NO_REPAIR = re.compile(
+    rf"(?:(?:コード|ファイル)は)?(?:修正|編集|変更)(?:を|は)?(?:してはいけません|しないで|せずに){CLAUSE_BREAK}"
 )
 STOP_REQUEST = re.compile(
     r"\s*(?:今すぐ\s*|すぐ\s*|現在の(?:処理|作業)を\s*|処理を\s*)?"
     r"(?:止めて|停止して|中止して)(?:ください)?[。.!！\s]*|\s*(?:please\s+)?stop(?:\s+now)?[。.!！\s]*",
 )
-FORBID_REPAIR = re.compile(
-    r"(?:修正|変更|編集)(?:は|を)?\s*(?:してはいけ|してはなら|してほしく|しない|せず|するな|禁止)"
-    r"|\b(?:do not|don't|without|never)\s+(?:fix|edit|modify|repair)\b",
+STATUS_QUESTION = re.compile(
+    r"(?:今|現在)(?:の)?(?:何を?して(?:いる|る)|(?:状態|状況|工程|進捗)(?:は|を教えて)?)\??"
+    r"|(?:状態|状況|進捗)(?:は|を教えて)?\??|what (?:are you doing|is happening)\??"
 )
-REPAIR_REQUEST = re.compile(r"(?<!やり)直して|修正して|合わせて|同じ.*(?:にして|使って)|既定値にして|\bfix\b")
-CHECKER_FINDINGS = re.compile(r"指摘|チェッカーの(?:出力|結果|エラー)|checker (?:findings|output|results?)")
-BUILD_FAILURE_REPAIR = re.compile(
-    r"(?:失敗|エラー|通らなかっ|失敗し|エラーがあ)(?:したら|たら|なら|れば|ったら|の場合|場合)"
-    r"[^。.!！\n]*(?:直して|修正して)|\bif (?:it|the build) fails[,]?\s+(?:fix|repair)\b",
+STATUS_TOPIC = r"(?:(?:前回|直前|現在|今)の)?(?P<topic>ビルド|チェッカー)"
+STATUS_DETAIL = (
+    r"(?:の)?(?:結果|ログ|状態|状況|進捗|(?:失敗の)?原因)(?:は|を(?:教えて|見せて)(?:ください)?)?\??"
+    r"|(?:は|が|を)?(?:もう)?(?:終わった|終えた|落ちた|通った|成功した|失敗した|完了した|終了した"
+    r"|実行した|停止した|済み|実行中|した|しました|回った)(?:のですか|の|かどうか|か)?\??"
+)
+VERIFICATION_STATUS = re.compile(
+    rf"(?:なぜ|どうして)?{STATUS_TOPIC}(?:はなぜ|はどうして)?(?:{STATUS_DETAIL})"
+    r"|why did (?:the )?(?P<english>build|checker) (?:fail|stop)\??"
+    r"|(?P<result>build|checker) (?:status|results?|logs?)\??"
 )
 PHASES = {
     "queued": "準備を開始しています", "preparing": "準備中", "cancelled": "待機取消済み",
@@ -87,28 +96,34 @@ def _junie_option(request, text):
     return next((choice for choice in request["options"] if text in (choice["label"], choice["id"])), None)
 
 
-def _conditional_verification(value):
-    match = CONDITIONAL_VERIFICATION.search(value)
-    if match and re.search(rf"{BUILD_TERM}|{CHECKER_TERM}", match[0]):
-        return match
+def _status_intent(value):
+    value = INFORMATIONAL_PREFIX.sub("", value, count=1).strip(" 。.!\n\t")
+    if match := VERIFICATION_STATUS.fullmatch(value):
+        topic = match["topic"] or match["english"] or match["result"]
+        return "checker_status" if topic in {"チェッカー", "checker"} else "build_status"
+    if STATUS_QUESTION.fullmatch(value):
+        return "status"
     return None
 
 
-def _status_intent(value):
-    if (_conditional_verification(value) or STOP_REQUEST.fullmatch(value)
-            or re.search(VERIFICATION_REQUEST, value)):
+def _verification(value, *, repair=True):
+    if re.fullmatch(rf"(?:{BUILD_REQUEST}{CLAUSE_BREAK})?{CHECKER_REQUEST}{REPORT_RESULT}", value):
+        return "checker"
+    if re.fullmatch(rf"{BUILD_REQUEST}{REPORT_RESULT}", value):
+        return "build"
+    if not repair:
         return None
-    checker = re.search(CHECKER_TERM, value)
-    if (checker or re.search(BUILD_TERM, value)) and (
-        re.search(r"なぜ|どうして|原因|結果|ログ|状態|状況|進捗|\b(?:why|status|results?|logs?)\b", value)
-        or re.search(r"終わった|終えた|落ちた|通った|済み|実行中|かどうか|(?:は|って)(?:どう|まだ)\s*\?"
-                     r"|(?:ビルド|チェッカー)(?:は|が|を)?\s*(?:した|しました|回った)(?:の|か)?\s*[?。]*$", value)
-        or re.search(r"(?:[?]|のですか|ましたか|したの\s*$|したか\s*$)", value)
-        and re.search(r"成功|失敗|完了|終了|実行した|停止|終わ|\b(?:ran|done|finish\w*|pass\w*|fail\w*|succeed\w*|running)\b", value)
+    if re.fullmatch(
+        rf"{BUILD_REQUEST}{CLAUSE_BREAK}(?:まだ)?(?:ビルドの)?(?:エラーがあれば|失敗したら|通らなかったら)"
+        rf"[、,\s]*(?:直して|修正して){REQUEST_ENDING}|"
+        rf"{BUILD_REQUEST}{CLAUSE_BREAK}if (?:it|the build) fails[,]?\s+(?:fix|repair)(?: it)?", value,
     ):
-        return "checker_status" if checker else "build_status"
-    if re.search(r"(?:今|現在).*(?:何して|何をして|状態|状況|工程|進捗)|^(?:状態|状況|進捗)[は?。\s]*$|what (?:are you doing|is happening)", value):
-        return "status"
+        return "build_repair"
+    if re.fullmatch(
+        rf"(?:この指摘|チェッカーの指摘)(?:は|を)(?:旧\s*php\s*と同じ既定値にして|(?:直して|修正して){REQUEST_ENDING})"
+        rf"{CLAUSE_BREAK}{CHECKER_REQUEST}{REPORT_RESULT}", value,
+    ):
+        return "checker_repair"
     return None
 
 
@@ -143,55 +158,28 @@ def _intent(text, phase):
         return "unsupported"
     if STOP_REQUEST.fullmatch(value):
         return "stop"
-    if not _conditional_verification(value) and re.search(
-        r"差分.*(?:だけ|のみ).*(?:確認|見る)|(?:残り|他).*(?:触らず|触らない).*差分", value,
+    value = INFORMATIONAL_PREFIX.sub("", value, count=1).strip(" 。.!\n\t")
+    if re.fullmatch(
+        rf"(?:(?:(?:残り|他)は触らず|止めずに|処理は続けたまま)(?:{CLAUSE_BREAK})?)?"
+        rf"(?:今の|現在の)?差分(?:だけ|のみ)(?:を)?(?:確認して|見て|見る){REQUEST_ENDING}", value,
     ):
-        if not re.search(VERIFICATION_REQUEST, value) and not re.search(r"(?:止めて|停止して|中止して)", value):
-            return "diff"
-    if re.search(r"(?:ビルド|チェッカー|停止|build|checker).*(?:しないで|しない|せず|しなくて|するな)|\b(?:don't|do not|without) (?:build|run|stop)\b", value):
-        return "clarify"
-    repair_on_failure = bool(BUILD_FAILURE_REPAIR.search(value))
-    if (condition := _conditional_verification(value)) and not repair_on_failure:
-        action = condition["action"]
-        if BUILD_COMPLETION_CONDITION.fullmatch(condition["condition"]) and not _conditional_verification(action):
-            intent = _intent(action, phase)
-            if intent in REBUILD:
-                return f"after_build_{intent}"
-        if (re.search(CHECKER_TERM, condition["condition"]) and re.search(REPAIR_REQUEST, condition["condition"])
-                and _intent(action, phase) == "checker" and not FORBID_REPAIR.search(value)):
-            return "checker_repair"
-        return "clarify"
-    stop = bool(re.search(r"止め|停止|中止|\bstop\b", value))
-    retry = bool(re.search(r"やり直|再実行|(?:もう|再度|もう一度).*?(?:一回|一度|実行|お願い)|rebuild|rerun", value))
-    build = bool(re.search(BUILD_TERM, value))
-    checker = bool(re.search(CHECKER_TERM, value))
-    forbidden = bool(FORBID_REPAIR.search(value))
-    repair = not forbidden and bool(REPAIR_REQUEST.search(value))
-    if (build or checker or stop or retry) and re.search(
-        r"\?|(?:ですか|ますか|でしょうか|していい)[。\s]*$", re.sub(VERIFICATION_REQUEST, "", value),
+        return "diff"
+    if phase in BUILD_PHASES and re.fullmatch(
+        rf"(?:(?:今|現在)の)?ビルドを(?:止めて|停止して|中止して){CLAUSE_BREAK}"
+        rf"{SAVED_VERSION}(?:やり直し|再ビルドし|再実行し)て{REQUEST_ENDING}|"
+        r"(?:please )?stop (?:the )?(?:current )?build and rebuild", value,
     ):
-        return "clarify"
-    if stop:
-        if phase in BUILD_PHASES and not checker and (
-            re.search(r"(?:止めて|(?:停止|中止)して).*(?:やり直して|再ビルドして|再実行して)", value)
-            or re.fullmatch(r"(?:please )?stop (?:the )?(?:current )?build and rebuild[.!]?", value)
-        ):
-            return ("stop_build_repair" if repair_on_failure else "clarify") if repair else "stop_build"
-        return "clarify"
-    if build or checker:
-        if re.search(r"\b(?:if|unless|when|after)\b", value) and not repair_on_failure:
-            return "clarify"
-        requests = re.findall(VERIFICATION_REQUEST, value)
-        if not requests:
-            return "clarify"
-        if any(re.search(CHECKER_TERM, request) for request in requests):
-            if repair:
-                return "checker_repair" if CHECKER_FINDINGS.search(value) and not repair_on_failure else "clarify"
-            return "checker"
-        if repair:
-            return "build_repair" if repair_on_failure else "clarify"
-        return "build"
-    if retry or re.fullmatch(r"\s*(?:もう一回|もう一度|再度)(?:お願い|お願いします)?[。.!！\s]*", value):
+        return "stop_build"
+    if condition := AFTER_BUILD.match(value):
+        return "after_build_" + intent if (intent := _verification(value[condition.end():])) else "clarify"
+    if prohibition := NO_REPAIR.match(value):
+        return _verification(value[prohibition.end():], repair=False) or "clarify"
+    if intent := _verification(value):
+        return intent
+    if re.search(
+        rf"{BUILD_TERM}|{CHECKER_TERM}|止め|停止|中止|\bstop\b|やり直|再実行|\brerun\b"
+        rf"|差分(?:だけ|のみ)|(?:もう一回|もう一度|再度)(?:お願い(?:します)?)?$", value,
+    ) or STATUS_QUESTION.fullmatch(re.split(r"[?。.!、,\n]", value, maxsplit=1)[0]):
         return "clarify"
     return "junie"
 
@@ -399,7 +387,7 @@ class JunieConversations:
                     _finish(entry, "failed", "停止できる実行中の処理がありません。")
                 history.append(entry)
                 return entry
-            if _conditional_verification(value):
+            if intent.startswith("after_build_"):
                 entry["predecessor_operation_id"] = self.manager.jobs.get(run_id, {}).get("operation_id")
             request = state.get("junie_request")
             if request:
@@ -586,12 +574,11 @@ class JunieConversations:
                 _finish(entry, "failed", "「ビルドだけ」「チェッカーまで」「キャンセル」のいずれかで回答してください。")
                 continue
             if intent in {"clarify", "stop"}:
-                clarification_text = "ビルドだけですか？ チェッカーまで実行しますか？"
-                value = unicodedata.normalize("NFKC", entry["text"]).lower()
-                if _conditional_verification(value) or re.search(r"\b(?:if|unless|when|after)\b", value):
-                    clarification_text = "実行条件を確定できません。条件を付けずに検証する場合は「ビルドだけ」か「チェッカーまで」、取り消す場合は「キャンセル」と答えてください。"
-                elif REPAIR_REQUEST.search(value):
-                    clarification_text = "編集と検証の順序を確認できません。編集なしで検証する場合は「ビルドだけ」か「チェッカーまで」、指示を出し直す場合は「キャンセル」と答えてください。"
+                clarification_text = (
+                    "実行条件を確定できません。指示全体を保留し、まだ何も実行していません。"
+                    "編集や他の操作を行わず検証だけ実行する場合は「ビルドだけ」か「チェッカーまで」、"
+                    "指示を出し直す場合は「キャンセル」と答えてください。"
+                )
                 entry.update(status="clarification", message=clarification_text, question=clarification_text)
             elif intent == "unsupported":
                 _finish(entry, "failed", "この欄では移行先の編集指示と設定済みのビルド・チェッカーを受け付けます。")
@@ -731,6 +718,8 @@ def finish_instruction(config, run_id, identifier, result, error=None):
                              if (log := _diagnostic(run_path, kind))]
             detail = result.get("error") or record.get("error")
             message = f"結果は「{PHASES.get(result['status'], '確認待ち')}」です。"
+            if entry.get("answer"):
+                message += " 確認で選んだ検証だけを実行しました。元の指示に含まれる編集や他の操作は実行していません。"
             _finish(entry, "done", f"{message} {detail}" if detail else message)
         elif isinstance(error, KeyboardInterrupt):
             _finish(entry, "cancelled", "処理を停止しました。進捗と保存した編集を確認してください。")
