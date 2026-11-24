@@ -34,6 +34,7 @@ from ..execution import (
     OperationCancelled,
     check_cancelled,
     is_controlled,
+    junie_brave_requested,
     junie_dashboard_control,
     report_activity,
 )
@@ -700,7 +701,7 @@ def run_interactive(
     prompts: LivePrompts | None = None,
 ) -> int:
     dashboard = junie_dashboard_control()
-    brave_requested = dashboard is not None and dashboard.junie_brave
+    brave_requested = junie_brave_requested()
     if accept_result is None and dashboard is not None:
         style = dashboard.junie_progress_style or DASHBOARD_PROGRESS_INSTRUCTION
         command = [*command[:-1], f"{command[-1]}\n\n{style}"]
@@ -1355,7 +1356,7 @@ def _run_session(
     if observe := acp_stop_observer.get():
         observe(None)
     headless = command[-2:-1] == ["--task"]
-    brave_requested = dashboard is not None and dashboard.junie_brave
+    brave_requested = junie_brave_requested()
     brave = brave_requested and accept_result is None
     if brave_requested and headless:
         raise JunieSessionError(command, 1, "Brave モードを選択した実行は Junie ACP を使用します。")

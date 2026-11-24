@@ -75,6 +75,11 @@ def junie_dashboard_control() -> ExecutionControl | None:
     return control if control is not None and control.on_junie_request is not None else None
 
 
+def junie_brave_requested() -> bool:
+    control = junie_dashboard_control()
+    return control is not None and control.junie_brave is True
+
+
 def check_cancelled() -> None:
     """現在の操作に停止要求がある場合は中断する。"""
     if (control := _control.get()) is not None and control.cancelled.is_set():
