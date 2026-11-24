@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const {randomUUID} = require("node:crypto");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
@@ -59,6 +60,7 @@ function createModel(value, language) {
   let changed = () => {};
   return {
     getValue: () => value, setValue(text) { value = text; changed(); },
+    setLanguage(id) { language = id; },
     getLanguageId: () => language, onDidChangeContent(callback) { changed = callback; },
   };
 }
@@ -78,8 +80,10 @@ const timers = [];
 const context = vm.createContext({
   document, window: {monaco: {
     KeyMod: {CtrlCmd: 1}, KeyCode: {KeyS: 1},
-    editor: {createModel, create: createEditor, createDiffEditor: createEditor, EndOfLinePreference: {LF: 0}, setTheme() {}},
+    editor: {createModel, create: createEditor, createDiffEditor: createEditor, EndOfLinePreference: {LF: 0}, setTheme() {},
+      setModelLanguage(model, language) { model.setLanguage(language); }},
   }},
+  crypto: {randomUUID},
   snapshot: {run_id: "A"}, workspaceTabs: new Element(),
   workspaceRequest(path, body) {
     return new Promise((resolve, reject) => pending.push({path, body, resolve, reject}));
@@ -231,6 +235,101 @@ async function checkDashboard() {
   assert.deepEqual(opened, ["review/A/plain.html", "review/B/anchors.html"]);
 }
 
+async function checkConversationFileSwitch() {
+  const run = "RazorRun", code = "Page.cshtml.cs", markup = "Page.cshtml";
+  const composer = find("#editor-prompt"), submit = find("#editor-prompt-form");
+  const send = find("#editor-send"), turns = find("#editor-prompts"), error = find("#editor-prompt-error");
+  const selectFile = target => find("#editor-target-buttons").emit("click", {target: {dataset: {target}}});
+  const razor = (target, conversation = []) => ({
+    ...response(run, target === code ? "class Page {}" : "@page"),
+    targets: [code, markup], target, conversation,
+  });
+  const enter = async text => { composer.value = text; await composer.emit("input"); };
+  const reply = ({body}) => ({id: body.id, text: body.text, status: "received"});
+  const readFile = async (target, history) => {
+    const read = pending.length ? undefined : tick();
+    const request = take();
+    assert.equal(request.body, undefined);
+    assert.equal(new URLSearchParams(request.path.split("?")[1]).get("target"), target);
+    request.resolve(razor(target, history));
+    await read;
+    await flush();
+  };
+
+  await select(run);
+  const firstRead = take();
+  firstRead.resolve(razor(code));
+  await flush();
+  const verify = "保存した版でビルドして";
+  await enter(` ${verify} `);
+  const sending = submit.emit("submit");
+  const first = take();
+  assert.equal(first.body.run_id, run);
+  assert.equal(first.body.text, verify);
+  await selectFile(markup);
+  const unexpectedDuplicate = submit.emit("submit");
+  await unexpectedDuplicate;
+  assert.equal(pending.filter(item => item.body).length, 0);
+  const firstReceipt = reply(first);
+  first.resolve(firstReceipt);
+  await sending;
+  assert.equal(composer.value, "", "a receipt for the same Run must clear its submitted draft after a file switch");
+  assert.equal(send.disabled, true);
+  assert.equal(turns.children.length, 1, "show the receipt without waiting for polling");
+  await submit.emit("submit");
+  assert.equal(pending.filter(item => item.body).length, 0);
+  await readFile(markup, [firstReceipt]);
+  assert.equal(model().getValue(), "@page");
+  assert.equal(turns.children.length, 1);
+
+  const followup = "チェッカーをもう一度";
+  await enter(followup);
+  const failing = submit.emit("submit");
+  const lost = take();
+  await selectFile(code);
+  lost.reject(new Error("simulated response lost after acceptance"));
+  await failing;
+  assert.equal(composer.value, followup);
+  assert.match(error.textContent, /simulated response lost/);
+  assert.equal(send.disabled, false);
+  const accepted = reply(lost);
+  await readFile(code, [firstReceipt, accepted]);
+  const retrying = submit.emit("submit");
+  const retry = take();
+  assert.equal(retry.body.id, lost.body.id, "a lost response must reuse the original request ID");
+  await selectFile(markup);
+  await enter("後から入力した指示");
+  retry.resolve(accepted);
+  await retrying;
+  assert.equal(composer.value, "後から入力した指示", "a receipt must not clear a newer draft");
+  assert.equal(turns.children.length, 2, "a retry receipt must update the existing turn rather than duplicate it");
+  await readFile(markup, [firstReceipt, accepted]);
+  assert.equal(composer.value, "後から入力した指示");
+
+  const abandonedSend = submit.emit("submit");
+  const abandoned = take();
+  assert.equal(context.window.harnessEditorCanSwitch(), false);
+  await select("B");
+  abandoned.resolve(reply(abandoned));
+  await abandonedSend;
+  if (!pending.length) tick();
+  take().resolve(response("B"));
+  await flush();
+  assert.equal(composer.value, "", "a prior Run's receipt never updates the new Run");
+  assert.equal(turns.children.length, 0);
+  await select(run);
+  take().resolve(razor(code, [firstReceipt, accepted, reply(abandoned)]));
+  await flush();
+  assert.equal(composer.value, abandoned.body.text, "preserve the draft when its success cannot be applied");
+  const recover = submit.emit("submit");
+  const recovered = take();
+  assert.equal(recovered.body.id, abandoned.body.id, "an unapplied success must not discard the retry ID");
+  recovered.resolve(reply(abandoned));
+  await recover;
+  assert.equal(composer.value, "");
+  assert.equal(turns.children.length, 3);
+}
+
 (async () => {
   await checkDashboard();
   const initial = tick();
@@ -313,5 +412,7 @@ async function checkDashboard() {
   await flush();
   assert.equal(editors.get(find("#editor-php")).getModel().getValue(), "fresh B PHP");
   assert.equal(model().getValue(), "class B { /* edit */ }");
+  await checkConversationFileSwitch();
+  console.log("Dashboard: Razor target changes preserve Run chat receipts, unsent drafts, and retry IDs.");
   console.log("Dashboard: same-file run isolation, delayed responses, drafts, saves, and recovery passed.");
 })().catch(error => { console.error(error); process.exitCode = 1; });
