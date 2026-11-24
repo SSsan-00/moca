@@ -7,6 +7,7 @@ from unittest.mock import patch
 from fixtures import HarnessCase
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_records
+from migration_harness.runs.editor_queue import add_prompt, editor_queue
 from migration_harness import workflow
 from migration_harness.web.diff_viewer import capture_workspace
 
@@ -77,6 +78,20 @@ class MultipleTargetsTest(HarnessCase):
         with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", run):
             return workflow.resume_with_junie(self.settings, self.prepared["run_id"])
 
+    def queue_prompt(self, text):
+        with editor_queue(self.run_path) as queue:
+            add_prompt(queue, {"text": text})
+
+    def assert_prompts(self, *expected):
+        with editor_queue(self.run_path) as queue:
+            self.assertEqual([(item["text"], item["status"]) for item in queue["prompts"]], list(expected))
+
+    def assert_supplied(self, command, *instructions):
+        self.assertIn("Operator follow-up for this migration", command[-1])
+        guidelines = Path(command[command.index("--ide-guidelines") + 1]).read_text(encoding="utf-8")
+        for instruction in instructions:
+            self.assertIn(instruction, guidelines)
+
     def test_outputs_keep_utf8_bom_newlines_and_recovery_hashes_on_repeated_application(self):
         contents = {
             self.targets[0]: '// 日本語😀\r\nclass Page {}\r\n'.encode("utf-8"),
@@ -110,6 +125,41 @@ class MultipleTargetsTest(HarnessCase):
         for name in self.targets:
             self.assertEqual((self.worktree / name).read_bytes(), f"original {name}".encode("utf-8"))
         self.assertNotIn("target_apply_pending", self.record())
+
+    def test_retries_staged_and_live_prompts_after_rejecting_non_utf8_output(self):
+        staged = "UNIQUE_FOLLOWUP_RETAIN_AUDIT_ID"
+        live = "UNIQUE_LIVE_FOLLOWUP_RETAIN_DISPLAY_NAME"
+        self.queue_prompt(staged)
+
+        def invalid_output(args, completion, token, targets, *, prompts, **kwargs):
+            self.assert_supplied(args, staged)
+            self.queue_prompt(live)
+            identifiers, instruction = prompts.take()
+            self.assertEqual(instruction, live)
+            prompts.finish(identifiers, True)
+            self.assert_prompts((staged, "sending"), (live, "applying"))
+            targets[0].write_bytes(b"class Page {}\r\n")
+            targets[1].write_bytes("日本語".encode("cp932"))
+            completion.write_text(token, encoding="ascii")
+            return 0
+
+        with self.assertRaisesRegex(ValueError, "UTF-8"):
+            self.resume(invalid_output)
+        self.assert_prompts((staged, "queued"), (live, "queued"))
+        self.assertEqual(self.record()["completed_capsules"], 0)
+        for name in self.targets:
+            self.assertEqual((self.worktree / name).read_bytes(), f"original {name}".encode("utf-8"))
+
+        def accept_output(args, *args_tail, **kwargs):
+            self.assert_supplied(args, staged, live)
+            self.assert_prompts((staged, "sending"), (live, "sending"))
+            return self.edit_with_junie()(args, *args_tail, **kwargs)
+
+        with patch.object(workflow, "_verify_worktree", side_effect=lambda _config, _unit, result, _record: result):
+            self.assertEqual(self.resume(accept_output)["completed_capsules"], 1)
+        self.assert_prompts((staged, "sent"), (live, "sent"))
+        for name in self.targets:
+            self.assertEqual((self.worktree / name).read_bytes(), f"migrated {name}".encode("utf-8-sig"))
 
     def test_bomless_utf16_output_is_rejected_before_publishing(self):
         def junie(args, completion, token, targets, **kwargs):
@@ -193,6 +243,8 @@ class MultipleTargetsTest(HarnessCase):
 
     # 途中の反映を復旧したうえで、カプセルの完了を改めて判定することを検証する。
     def test_recovers_partial_application_without_counting_the_capsule(self):
+        instruction = "UNIQUE_FOLLOWUP_RETAIN_VALIDATION"
+        self.queue_prompt(instruction)
         real_replace = Path.replace
 
         def fail_second_file(source, target):
@@ -205,17 +257,23 @@ class MultipleTargetsTest(HarnessCase):
             self.resume(self.edit_with_junie())
         self.assertIn("target_apply_pending", self.record())
         self.assertEqual(self.record()["completed_capsules"], 0)
+        self.assert_prompts((instruction, "queued"))
+        self.assertEqual((self.worktree / self.targets[0]).read_bytes(), f"migrated {self.targets[0]}".encode("utf-8-sig"))
         self.assertEqual((self.worktree / self.targets[1]).read_text(encoding="utf-8"), f"original {self.targets[1]}")
 
         def resume_junie(args, completion, token, targets, *, report_usage=None, prompts=None):
             """Junieの再開前に二つ目まで復旧していることを確認する。"""
             self.assertEqual((self.worktree / self.targets[1]).read_bytes(), f"migrated {self.targets[1]}".encode("utf-8-sig"))
+            self.assertNotIn("target_apply_pending", self.record())
+            self.assert_supplied(args, instruction)
+            self.assert_prompts((instruction, "sending"))
             return self.edit_with_junie()(args, completion, token, targets)
 
         with patch.object(workflow, "_verify_worktree", wraps=lambda _config, _unit, result, _record: result):
             self.resume(resume_junie)
         self.assertNotIn("target_apply_pending", self.record())
         self.assertEqual(self.record()["completed_capsules"], 1)
+        self.assert_prompts((instruction, "sent"))
 
     # 反映失敗後の外部編集を、復旧記録で上書きしないことを検証する。
     def test_failed_application_does_not_overwrite_an_external_edit(self):

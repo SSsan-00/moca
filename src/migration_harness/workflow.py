@@ -1803,6 +1803,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
     memo, memo_request = junie_memo_request(agent_root, completion_token)
     allowed = {*relative_targets, completion_path.relative_to(agent_root), Path(memo.name)}
     complete = False
+    targets_adopted = False
     with editor_queue(run_path) as queue:
         # Junieが停止している区間の境目で、画面からの編集と追加指示を取り込む。
         if not _apply_editor_edits(queue, agent_root, worktree_root, relative_targets, record, record_path):
@@ -1894,6 +1895,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         # 旧経路の途中編集は保持するが、完了トークンと全対象がそろうまで進捗は進めない。
         if complete or not record.get("stopped_migration_draft"):
             apply_agent_targets(agent_root, worktree_root, relative_targets, record["target_hashes"], record, record_path)
+            targets_adopted = True
             _archive_stopped_migration(record)
     except (OSError, ValueError) as exc:
         record.update(status="junie_failed", error=format_error(exc, command=command))
@@ -1901,7 +1903,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         raise
     finally:
         with editor_queue(run_path) as queue:
-            finish_prompts(queue, complete)
+            finish_prompts(queue, complete and targets_adopted)
     record["junie_exit_code"] = exit_code
     if not complete:
         record["status"] = "interrupted" if len(missing) < len(agent_targets) else "junie_failed"
