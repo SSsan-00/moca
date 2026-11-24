@@ -88,10 +88,11 @@ class DashboardExternalLogTests(unittest.TestCase):
 
 
 class DashboardRunLogEncodingTests(SavedRunFixture):
-    def test_nonzero_script_exposes_cp932_diagnostic_but_keeps_original_bytes(self):
-        raw = (JAPANESE + "\r\n").encode("cp932")
+    def check_failed_hook_tail(self, raw, expected_suffix):
+        (self.worktree / "fixture-output.bin").write_bytes(raw)
         self.config["scripts"] = {"after_migration": [[
-            sys.executable, "-c", f"import os,sys; os.write(2,bytes.fromhex({raw.hex()!r})); sys.exit(1)",
+            sys.executable, "-c", "from pathlib import Path; import sys; "
+            "sys.stderr.buffer.write(Path('fixture-output.bin').read_bytes()); sys.exit(1)",
         ]]}
         run_process = workflow.run_process
 
@@ -100,9 +101,43 @@ class DashboardRunLogEncodingTests(SavedRunFixture):
             return run_process(command, **kwargs)
 
         with patch.object(workflow, "run_process", side_effect=child):
-            with self.assertRaisesRegex(workflow.RunScriptError, JAPANESE):
+            with self.assertRaises(workflow.RunScriptError) as caught:
                 workflow.resume_with_junie(self.config, self.run_id)
+        error = str(caught.exception)
+        self.assertTrue(error.endswith(expected_suffix), repr(error[-100:]))
+        self.assertNotIn("OutsideExcerpt", error)
         record = self.record()
+        self.assertEqual(record["error"], error)
         self.assertEqual(record["status"], "script_failed")
-        self.assertIn(JAPANESE, record["error"])
         self.assertTrue((self.run_path / "after_migration.log").read_bytes().endswith(raw))
+
+    def test_long_hook_line_keeps_crlf_diagnostic_after_split_cp932_character(self):
+        self.check_split_character("cp932", "\r\n")
+
+    def test_long_hook_line_keeps_lf_diagnostic_after_split_utf8_character(self):
+        self.check_split_character("utf-8", "\n")
+
+    def check_split_character(self, encoding, newline):
+        diagnostic = " MissingProjectReference: " + JAPANESE + newline
+        last = diagnostic.encode(encoding)
+        char = "語".encode(encoding)
+        fill = b" " * (65_536 - (len(char) - 1) - len(last))
+        raw = b"OutsideExcerpt" + b"." * 7000 + char + fill + last
+        self.assertEqual(raw[-65_536:][:len(char) - 1], char[1:])
+        self.check_failed_hook_tail(raw, diagnostic)
+
+    def test_tail_starting_at_line_boundary_keeps_entire_first_diagnostic(self):
+        first = "MissingProjectReference: " + JAPANESE + "\r\n"
+        last = b"End of report.\n"
+        first_raw = first.encode("cp932")
+        fill = b"x" * (65_536 - len(first_raw) - len(last) - 1) + b"\n"
+        raw = b"OutsideExcerpt\n" + first_raw + fill + last
+        self.check_failed_hook_tail(raw, first + (fill + last).decode("ascii"))
+
+    def test_long_diagnostic_is_not_lost_when_followed_only_by_whitespace(self):
+        end = b"MissingProjectReference\r\n  \r\n"
+        self.check_failed_hook_tail(b"OutsideExcerpt" + b"." * 70000 + end, end.decode("ascii"))
+
+    def test_nonzero_script_exposes_cp932_diagnostic_but_keeps_original_bytes(self):
+        diagnostic = JAPANESE + "\r\n"
+        self.check_failed_hook_tail(diagnostic.encode("cp932"), diagnostic)

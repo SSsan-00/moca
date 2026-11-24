@@ -3,6 +3,7 @@ import subprocess
 import sys
 import unittest
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import SavedRunFixture
@@ -62,6 +63,73 @@ class VerificationScriptIoTests(SavedRunFixture):
                 "migration_harness.verification.checker_advisory.run_text_advisory", side_effect=advisories,
             ))
             yield builds, judge
+
+    def interrupt_completed_hook_read(self, path):
+        self.configure_hook()
+        open_file = Path.open
+        receipts_at_interrupt = []
+
+        def interrupt_read(file, *args, **kwargs):
+            stream = open_file(file, *args, **kwargs)
+            if file == path and args == ("rb",) and self.counter.exists():
+                read = stream.read
+
+                def read_then_interrupt(size):
+                    self.assertTrue(read(size))
+                    receipts_at_interrupt.append(self.record().get("verification_script_pending"))
+                    raise KeyboardInterrupt
+
+                stream.read = read_then_interrupt
+            return stream
+
+        with self.commands() as (builds, judge), patch.object(Path, "open", interrupt_read):
+            with self.assertRaises(workflow.RunScriptError) as error:
+                self.resume_run()
+            self.assertTrue(error.exception.interrupted)
+            self.assertEqual(len(builds), 1)
+            judge.assert_not_called()
+        record = self.record()
+        self.assertEqual(record["status"], "script_failed")
+        pending = record["verification_script_pending"]
+        self.assertEqual(receipts_at_interrupt, [pending])
+        self.assertEqual(pending["exit_code"], 1)
+        self.assertIsNone(pending["target_versions_match"])
+        audit = record["script_advisories"][-1]
+        self.assertEqual((audit["status"], audit["exit_code"]), ("interrupted", 1))
+        raw = self.log.read_bytes()
+        start = pending["byte_offset"]
+        output = raw[start:start + pending["byte_length"]]
+        self.assertEqual(output.strip(), b"Unreconciled amount: first hook failed")
+        return pending, output
+
+    def test_target_hash_interrupt_requires_explicit_rebuild_and_original_output(self):
+        pending, output = self.interrupt_completed_hook_read(self.target)
+        self.assertEqual(pending["log_sha256"], hashlib.sha256(output).hexdigest())
+        self.assertEqual(pending["log_hash_scope"], "full_range")
+        interrupted = self.record()["script_advisories"][-1]
+        raw = self.log.read_bytes()
+        with self.commands(PASSED) as (builds, judge):
+            with self.assertRaisesRegex(workflow.RunScriptError, "no verified target version"):
+                self.resume_run()
+            self.log.write_bytes(raw.replace(b"Unreconciled", b"unreconciled"))
+            with self.assertRaisesRegex(workflow.RunScriptError, "missing or changed"):
+                self.rebuild()
+            self.assertEqual((len(builds), judge.call_count, self.counter.read_text()), (0, 0, "x"))
+            self.log.write_bytes(raw)
+            self.assertEqual(self.rebuild()["status"], "build_succeeded")
+            self.assertEqual((len(builds), judge.call_count, self.counter.read_text()), (1, 1, "xx"))
+        self.assertTrue(self.log.read_bytes().startswith(raw))
+        self.assertIn(interrupted, self.record()["script_advisories"])
+
+    def test_log_hash_interrupt_disallows_replay_even_after_target_and_log_are_readable(self):
+        pending, _ = self.interrupt_completed_hook_read(self.run_path / "after_build.log")
+        self.assertIsNone(pending["log_sha256"])
+        self.assertNotIn("log_hash_scope", pending)
+        with self.commands() as (builds, judge):
+            for resume in (self.resume_run, self.rebuild):
+                with self.assertRaisesRegex(workflow.RunScriptError, "no verifiable full-range hash"):
+                    resume()
+            self.assertEqual((len(builds), judge.call_count, self.counter.read_text()), (0, 0, "x"))
 
     def test_after_hook_read_error_retains_output_for_verified_explicit_rebuild(self):
         self.configure_hook()
