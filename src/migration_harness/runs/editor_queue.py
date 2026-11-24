@@ -42,12 +42,18 @@ def editor_save_pending(run_path: Path) -> bool:
     return True
 
 
-def stage_editor_save(run_path, queue, name, original, base, draft):
+def _save_intent(base, draft):
+    return {"base": _digest(base.encode("utf-8")), "draft": _digest(draft.encode("utf-8"))}
+
+
+def stage_editor_save(run_path, queue, name, original, base, draft, save_id):
     before = _digest(original)
     after = _digest(target_edit_bytes(original or b"", draft))
-    queue.setdefault("immediate_saves", {})[name] = {
-        "base": _digest(base.encode("utf-8")), "draft": _digest(draft.encode("utf-8")), "after": after,
-    }
+    receipt = {**_save_intent(base, draft), "after": after}
+    if save_id is None:
+        queue.setdefault("immediate_saves", {})[name] = receipt
+    else:
+        queue.setdefault("immediate_save_requests", {})[save_id] = {**receipt, "target": name}
     if before != after:
         path = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
         safe_target(run_path, path.with_suffix(".json.tmp").relative_to(run_path))
@@ -58,9 +64,19 @@ def stage_editor_save(run_path, queue, name, original, base, draft):
     return before
 
 
-def replayed_editor_save(queue, name, original, base, draft):
-    receipt = queue.get("immediate_saves", {}).get(name)
-    if not receipt or (receipt["base"], receipt["draft"]) != (_digest(base.encode("utf-8")), _digest(draft.encode("utf-8"))):
+def replayed_editor_save(queue, name, original, base, draft, save_id):
+    if save_id is None:
+        receipt = queue.get("immediate_saves", {}).get(name)
+    else:
+        receipt = queue.get("immediate_save_requests", {}).get(save_id)
+    if receipt is None:
+        return False
+    intent = _save_intent(base, draft)
+    if save_id is not None:
+        intent["target"] = name
+    if any(receipt[key] != value for key, value in intent.items()):
+        if save_id is not None:
+            raise ValueError("同じ保存IDが別の編集に使われています。エディタを開き直してください。")
         return False
     if _digest(original) != receipt["after"]:
         raise ValueError("前回の保存後に対象ファイルが更新されました。最新の内容を読み込んでください。")
