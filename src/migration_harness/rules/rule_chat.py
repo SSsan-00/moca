@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import subprocess
 from concurrent.futures import Future
 from pathlib import Path
@@ -8,7 +7,7 @@ from time import monotonic, sleep
 from uuid import uuid4
 
 from ..junie import junie_cli
-from ..junie.reply_text import unwrap_json_fence
+from ..junie.reply_text import DuplicateJsonKey, load_unique_json, unwrap_json_fence
 
 
 class RuleChat(junie_cli._AcpSession):
@@ -120,7 +119,9 @@ class RuleChat(junie_cli._AcpSession):
 def decode_reply(text):
     cleaned = text.strip().removeprefix("\ufeff").strip()
     try:
-        payload = json.loads(unwrap_json_fence(cleaned).strip())
+        payload = load_unique_json(unwrap_json_fence(cleaned).strip())
+    except DuplicateJsonKey:
+        raise
     except ValueError:
         return {"message": text}
     if not isinstance(payload, dict) or not isinstance(payload.get("message"), str):

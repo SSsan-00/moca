@@ -21,6 +21,7 @@ from tomlkit.exceptions import TOMLKitError
 from . import rule_pack
 from ..config import load_config, resolve_project_root, validate_rule_usage
 from ..files import harness_asset, has_symlink_component, safe_target, sha256_file
+from ..junie.reply_text import DuplicateJsonKey
 from .rule_chat import RuleChat, decode_reply
 
 _MAX_SOURCE = 2 * 1024 * 1024
@@ -28,6 +29,7 @@ _SOURCE_SUFFIXES = {".md", ".markdown", ".txt"}
 _ID = re.compile(r"[0-9a-f]{32}")
 _SOURCE = re.compile(r"rule-[0-9]{4}\.md")
 _CONFIG_EXCEPTIONS = (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, subprocess.SubprocessError, TOMLKitError)
+_DUPLICATE_REPLY = "Junieの応答に重複するJSONキーがあるため採用しませんでした。Junieと相談して再確認してください。"
 _INSTRUCTIONS = """
 You are organizing PHP-to-C# migration rules, not running the migration. Work only with the versioned
 draft sources/ in this isolated workspace. Never run PHP, C#, hooks, builds, arbitrary shell commands,
@@ -365,11 +367,21 @@ class RuleWorkspace:
                 else:
                     prompt += "\nUse the supplied local skill's classification and preservation rules. The harness, not Junie, runs the validation and writes TOML."
             self.chat.begin(prompt)
-            answer = decode_reply(self.chat.wait(cancelled=self.cancelled, publish=publish))
+            reply = self.chat.wait(cancelled=self.cancelled, publish=publish)
+            try:
+                answer = decode_reply(reply)
+            except DuplicateJsonKey:
+                answer = None
             with self.lock:
                 if self.cancelled.is_set():
                     raise InterruptedError("Junieとの整理を中断しました。")
                 current = rule_pack.read_json(path / "state.json")
+                if answer is None:
+                    if _DUPLICATE_REPLY not in current["unresolved"]:
+                        current["unresolved"].append(_DUPLICATE_REPLY)
+                    _json(path / "state.json", current)
+                    self.live = {"status": "error", "text": _DUPLICATE_REPLY}
+                    return
                 current["messages"].append({"role": "junie", "text": answer["message"]})
                 if isinstance(answer.get("unresolved"), list) and all(isinstance(item, str) for item in answer["unresolved"]):
                     current["unresolved"] = answer["unresolved"]

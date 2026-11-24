@@ -442,6 +442,91 @@ end_line = 1
         self.assertIsNone(self.workspace.worker)
         self.assertEqual(self.config_path.read_bytes(), original)
 
+    def test_duplicate_chat_keys_hold_preview_and_apply_until_valid_review(self):
+        original = "タイムアウトは30秒\r\nタイムアウトは60秒\r\n".encode("utf-8")
+        source = self.app / "original.md"
+        source.write_bytes(original)
+        toml = self.config_path.read_bytes()
+        outstanding = "タイムアウトの優先順位が未確定"
+        duplicate_unresolved = (
+            '{"message":"ambiguous","unresolved":["' + outstanding + '"],"unresolved":[],'
+            '"edit":{"source":"rule-0001.md","text":"Drop the original rules."}}'
+        )
+        replies = iter((
+            duplicate_unresolved,
+            json.dumps({"message": outstanding, "unresolved": [outstanding]}, ensure_ascii=False),
+            duplicate_unresolved,
+            '```json\r\n{"message":"ambiguous","unresolved":[],"edit":'
+            '{"source":"rule-0001.md","text":"first","te\\u0078t":"second"}}\r\n```',
+            '{"message":"ambiguous","unresolved":[],"plan":{"format_version":2,'
+            '"documents":[{"path":"Agent.md","path":"details/wrong.md"}]}}',
+            '```json\r\n' + json.dumps(
+                {"message": "確認\u2028完了\u2029です\u0085。", "unresolved": []}, ensure_ascii=False,
+            ) + '\r\n```',
+        ))
+
+        class FakeChat:
+            def __init__(self, project, *_):
+                self.project = project
+
+            def begin(self, _):
+                pass
+
+            def wait(self, *, ready=False, **_):
+                return "" if ready else next(replies)
+
+            def shutdown(self):
+                pass
+
+        def ask(draft):
+            draft = self.send(draft, "message", text="優先順位を確認")
+            worker = self.workspace.worker
+            if worker:
+                worker.join(5)
+            self.assertIsNone(self.workspace.worker)
+            return RuleWorkspace(self.config).snapshot(draft["id"])
+
+        def assert_held(state):
+            for key in ("preview", "proposal", "plan", "applied"):
+                self.assertNotIn(key, state)
+            with self.assertRaisesRegex(ValueError, "未解決"):
+                self.send(state, "preview")
+            with self.assertRaisesRegex(ValueError, "確認して"):
+                self.send(state, "apply", confirmed=True, preview=old_token)
+            self.assertEqual(self.config_path.read_bytes(), toml)
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(draft_file.read_bytes(), original)
+
+        draft = self.workspace.start()
+        draft_file = self.workspace.draft(draft["id"]) / "sources" / draft["files"][0]["source"]
+        old_token = self.send(draft, "preview")["preview"]["token"]
+        with patch("migration_harness.rules.rule_workspace.RuleChat", FakeChat):
+            state = ask(draft)
+            self.assertTrue(any("重複" in item for item in state["unresolved"]))
+            assert_held(state)
+            with self.assertRaises(ValueError):
+                self.send(state, "accept")
+            state = ask(state)
+            self.assertEqual(state["unresolved"], [outstanding])
+            assert_held(state)
+            for duplicate in ("unresolved", "edit", "plan"):
+                with self.subTest(duplicate=duplicate):
+                    state = ask(state)
+                    self.assertIn(outstanding, state["unresolved"])
+                    assert_held(state)
+                    self.assertTrue(any("重複" in item for item in state["unresolved"]))
+                    self.assertFalse(any(item["text"] == "ambiguous" for item in state["messages"]))
+            state = ask(state)
+
+        self.assertEqual(state["unresolved"], [])
+        self.assertEqual(state["messages"][-1]["text"], "確認\u2028完了\u2029です\u0085。")
+        with self.assertRaisesRegex(ValueError, "再確認"):
+            self.send(state, "apply", confirmed=True, preview=old_token)
+        self.assertEqual(self.config_path.read_bytes(), toml)
+        self.assertTrue(self.apply(state)["applied"])
+        self.assertNotEqual(self.config_path.read_bytes(), toml)
+        self.assertEqual(source.read_bytes(), original)
+
     def test_rule_workspace_answers_only_current_permission_and_keeps_toml_unchanged(self):
         mock = """import json,sys
 def send(data): print(json.dumps(data),flush=True)
