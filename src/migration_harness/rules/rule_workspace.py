@@ -19,7 +19,7 @@ import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
 from . import rule_pack
-from ..config import load_config, resolve_project_root, validate_rule_usage
+from ..config import load_config, resolve_project_root, validate_junie_model, validate_rule_usage
 from ..files import harness_asset, has_symlink_component, safe_target, sha256_file
 from ..junie.reply_text import DuplicateJsonKey
 from .rule_chat import RuleChat, decode_reply
@@ -93,8 +93,9 @@ def _decode(data):
 
 
 def _diff(before, after, name):
-    return "".join(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
-                                        fromfile=f"before/{name}", tofile=f"after/{name}"))
+    lines = difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
+                                 fromfile=f"before/{name}", tofile=f"after/{name}")
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in lines)
 
 
 class RuleWorkspace:
@@ -179,7 +180,8 @@ class RuleWorkspace:
         identifier = uuid4().hex
         path = self.root() / identifier
         path.mkdir()
-        meta = {"id": identifier, "base": _digest(content), "origins": {}, "files": [], "messages": [], "unresolved": [], "revision": 0}
+        meta = {"id": identifier, "base": _digest(content), "origins": {}, "files": [], "messages": [], "unresolved": [], "revision": 0,
+                "junie_model": self.config.get("junie_model"), "junie_effort": self.config.get("junie_effort")}
         try:
             (path / "sources").mkdir()
             (path / "baseline").mkdir()
@@ -272,7 +274,8 @@ class RuleWorkspace:
                         drafts.append({"id": path.name, "files": len(state["files"])})
                 return {"drafts": drafts[:30]}
             state = rule_pack.read_json(self.draft(identifier) / "state.json")
-            return {**state, "live": self.live if identifier == self.active_id else None}
+            return {"junie_model": self.config.get("junie_model"), "junie_effort": self.config.get("junie_effort"),
+                    **state, "live": self.live if identifier == self.active_id else None}
 
     def file_text(self, identifier, source):
         with self.lock:
@@ -353,7 +356,8 @@ class RuleWorkspace:
                     destination = safe_target(workspace, skill.relative_to(workspace) / relative)
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     _write(destination, asset.read_bytes())
-                self.chat = RuleChat(workspace, self.config.get("junie_model"), self.config.get("junie_effort"))
+                self.chat = RuleChat(workspace, state.get("junie_model", self.config.get("junie_model")),
+                                     state.get("junie_effort", self.config.get("junie_effort")))
                 self.chat.wait(ready=True, cancelled=self.cancelled, publish=publish)
             workspace = self.chat.project
             source_root = _directory(workspace, Path("sources"))
@@ -613,7 +617,19 @@ class RuleWorkspace:
                 return {"archives": self._archives()}
             if state.get("applied") or action.get("revision") != state["revision"]:
                 raise ValueError("下書きが更新済みです。再読み込みしてください。")
-            if kind == "edit":
+            if kind == "model":
+                if not isinstance(action.get("model"), str) or not isinstance(action.get("effort"), str):
+                    raise ValueError("モデルと推論の強さを選択してください。")
+                model, effort = validate_junie_model(action["model"], action["effort"])
+                previous = (state.get("junie_model", self.config.get("junie_model")),
+                            state.get("junie_effort", self.config.get("junie_effort")))
+                if previous != (model, effort):
+                    if self.active_id == identifier:
+                        self._disconnect()
+                    state.update(junie_model=model, junie_effort=effort)
+                    state["revision"] += 1
+                    state.pop("preview", None)
+            elif kind == "edit":
                 self._edit(path, state, action)
             elif kind == "accept":
                 self._edit(path, state, state.get("proposal") or {})

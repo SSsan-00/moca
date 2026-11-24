@@ -136,6 +136,8 @@ async function checkDashboard() {
   });
   let actions;
   let proposeAnchors;
+  let promptCallbacks;
+  const progressDialog = {button: new Element(), dialog: new Element(), input: new Element(), render() {}, showError() {}};
   const anchor = dashboardElement("[data-propose-anchors]");
   page.querySelectorAll = selector => selector === ".step" ? Array.from({length: 7}, () => new Element())
     : selector === "[data-propose-anchors]" ? [anchor] : [];
@@ -143,6 +145,7 @@ async function checkDashboard() {
   const runtime = vm.createContext({
     document: page, Event, URL, URLSearchParams, Headers, TextEncoder, location,
     history: {replaceState(_, __, url) { location.href = url.href; }},
+    crypto: {randomUUID: () => "11111111-1111-4111-8111-111111111111"},
     window: {
       addEventListener() {}, setTimeout() {},
       open() {
@@ -160,7 +163,7 @@ async function checkDashboard() {
     },
     bindJunieLog: () => ({button: new Element()}),
     bindComparisonOptions(button, callback) { proposeAnchors = callback; },
-    bindProgressPromptDialog: () => ({button: new Element(), dialog: new Element(), input: new Element(), render() {}}),
+    bindProgressPromptDialog(callbacks) { promptCallbacks = callbacks; return progressDialog; },
     bindHarnessWorkspace(value) { actions = value; },
     bindTokenRuns: () => ({}),
     migrationLedgerButton: new Element(), migrationLedgerDialog: new Element(),
@@ -171,6 +174,7 @@ async function checkDashboard() {
       const body = options.body ? JSON.parse(options.body) : {};
       const request = {path, headers: options.headers, body};
       requests.push(request);
+      if (path === "prompts" && !options.body) return Promise.resolve({ok: true, json: async () => ({run_id: "B", conversation: [], prompts: []})});
       if (path === "comparison" || body.action === "anchors") {
         return new Promise(resolve => { request.resolve = resolve; });
       }
@@ -190,6 +194,17 @@ async function checkDashboard() {
   assert.equal(actions.canAct(), true);
   progress(streams[0], "A");
   assert.match(dashboardElement(".run-detail").textContent, /Run ID B/, "ignore events from the old connection");
+
+  progressDialog.dialog.open = true;
+  await promptCallbacks.open();
+  progressDialog.input.value = "確認してください";
+  await promptCallbacks.submit(progressDialog.input.value);
+  const sent = requests.find(item => item.path === "editor" && item.body.kind === "conversation");
+  assert.equal(sent.body.run_id, "B");
+  assert.equal(sent.body.text, "確認してください");
+  assert.equal(sent.body.id, "11111111111141118111111111111111");
+  assert.equal(progressDialog.input.value, "");
+  progressDialog.dialog.open = false;
 
   await actions.execute("hide-run", {run_id: "A"});
   assert.equal(location.searchParams.get("run"), "B", "deleting a different run must preserve the selection");

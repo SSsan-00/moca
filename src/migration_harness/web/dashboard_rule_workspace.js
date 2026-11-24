@@ -20,7 +20,63 @@
   const syncSend = () => {
     send.disabled = busy || !draft || draft.live?.status === "running" || !input.value.trim();
   };
+  let models = [...document.querySelector("#settings-junie-model").options].filter(option => option.value)
+    .map(option => ({id: option.value, name: option.text, ...(demo ? {efforts: option.value === "junie-lite" ? ["none"] : ["low", "medium", "high"]} : {})}));
   const status = text => { node("status").textContent = text; };
+  function renderDiff(diff) {
+    const output = node("text-diff");
+    if (!diff) {
+      output.replaceChildren(Object.assign(document.createElement("p"), {className: "rule-diff-empty", textContent: "本文の差分はありません。"}));
+      return;
+    }
+    const entries = document.createDocumentFragment(), lines = diff.replaceAll("\r\n", "\n").split("\n");
+    let oldRemaining = 0, newRemaining = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!oldRemaining && !newRemaining && line.startsWith("--- before/") && lines[i + 1]?.startsWith("+++ after/")) {
+        entries.append(Object.assign(document.createElement("div"), {className: "rule-diff-file", textContent: line.slice(11)}));
+        i++;
+        continue;
+      }
+      const hunk = line.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/);
+      if (hunk) {
+        oldRemaining = hunk[1] === undefined ? 1 : Number(hunk[1]);
+        newRemaining = hunk[2] === undefined ? 1 : Number(hunk[2]);
+        continue;
+      }
+      if (!line && i === lines.length - 1) continue;
+      const prefix = line[0], kind = prefix === "+" ? "add" : prefix === "-" ? "remove" : prefix === " " ? "context" : "meta";
+      if (kind === "remove" || kind === "context") oldRemaining = Math.max(0, oldRemaining - 1);
+      if (kind === "add" || kind === "context") newRemaining = Math.max(0, newRemaining - 1);
+      const row = document.createElement("div");
+      row.className = "rule-diff-line";
+      row.dataset.kind = kind;
+      const label = {add: "追加", remove: "削除", context: "", meta: ""}[kind];
+      row.append(Object.assign(document.createElement("span"), {className: "rule-diff-label", textContent: label}),
+        Object.assign(document.createElement("span"), {textContent: line === "\\ No newline at end of file" ? "末尾に改行なし" : kind === "meta" && line.startsWith("\\ ") ? line.slice(2) : kind === "meta" ? line : line.slice(1)}));
+      entries.append(row);
+    }
+    output.replaceChildren(entries);
+  }
+  function renderModel() {
+    const selected = draft?.junie_model || "", effort = draft?.junie_effort || "";
+    const options = models.slice();
+    if (selected && !options.some(item => item.id === selected)) options.push({id: selected, name: selected});
+    node("model").replaceChildren(new Option("Junieの既定モデル", ""), ...options.map(item => new Option(item.name, item.id)));
+    node("model").value = selected;
+    const efforts = (options.find(item => item.id === selected)?.efforts || []).filter(value => Object.hasOwn(effortLabels, value));
+    node("effort").replaceChildren(new Option("モデルの既定値", ""), ...efforts.map(value => new Option(effortLabels[value], value)));
+    if (effort && !efforts.includes(effort)) {
+      const previous = new Option(`${effort}（未確認）`, effort);
+      previous.disabled = true;
+      node("effort").add(previous);
+    }
+    node("effort").value = effort;
+    const disabled = !draft || busy || draft.live?.status === "running";
+    node("model").disabled = disabled;
+    node("effort").disabled = disabled || !selected || !efforts.length;
+    node("model-status").textContent = "";
+  }
   const canEditSource = () => hasDraft() && !busy && draft.live?.status !== "running"
     && editor?.id === draft.id && editor.source === source;
   function syncEditor() {
@@ -51,6 +107,7 @@
       return;
     }
     const running = data.live?.status === "running";
+    renderModel();
     const options = [new Option("新しいMarkdown", "new"), ...data.files.map(file => new Option(file.name, file.source))];
     if (was !== data.id) source = selectedSources.get(data.id) ?? data.files[0]?.source ?? "new";
     if (!options.some(item => item.value === source)) source = data.files[0]?.source ?? "new";
@@ -75,15 +132,8 @@
     }
     const preview = data.preview;
     node("review").hidden = !preview;
-    if (token !== preview?.token || was !== data.id) node("confirm").checked = false;
     token = preview?.token;
-    node("text-diff").textContent = preview?.text_diff || "本文の差分はありません。";
-    node("toml-diff").textContent = preview?.toml_diff || "";
-    const files = new Map(data.files.map(file => [file.source, file.name]));
-    node("coverage").textContent = preview?.rules.map(rule => [
-      `${rule.destination}：${rule.usage === "required" ? "必須" : rule.description}`,
-      ...rule.parts.map(part => `  ${files.get(part.source)} L${part.start}–${part.end}`),
-    ].join("\n")).join("\n\n") || "";
+    renderDiff(preview?.text_diff);
     clearTimeout(timer);
     if (running) timer = setTimeout(poll, 400);
     if (data.live?.status === "error") status(data.live.text);
@@ -162,6 +212,7 @@
   }
   function selectSource(entry) {
     source = entry?.source ?? "new";
+    node("import-label").hidden = !!entry;
     node("sources").value = source;
     selectedSources.set(draft.id, source);
     node("name").value = entry?.name || "";
@@ -190,6 +241,7 @@
   async function submit(action, extra = {}) {
     if (busy) return;
     busy = true;
+    renderModel();
     syncEditor();
     syncSend();
     try {
@@ -209,6 +261,7 @@
       status(error.message);
     } finally {
       busy = false;
+      renderModel();
       syncEditor();
       syncSend();
     }
@@ -243,6 +296,8 @@
     } catch (error) { if (generation === draftRequest) status(error.message); }
   });
   node("sources").addEventListener("change", () => { if (hasDraft() && !busy) return loadSource(); });
+  node("model").addEventListener("change", () => submit("model", {model: node("model").value, effort: ""}));
+  node("effort").addEventListener("change", () => submit("model", {model: node("model").value, effort: node("effort").value}));
   node("text").addEventListener("input", () => { if (canEditSource()) uploadedBytes = undefined; });
   node("import").addEventListener("change", async event => {
     const file = event.target.files[0];
@@ -297,11 +352,21 @@
   });
   node("optimize").addEventListener("click", () => submit("optimize", {text: input.value}));
   for (const action of ["accept", "stop", "preview"]) node(action).addEventListener("click", () => submit(action));
-  node("apply").addEventListener("click", () => submit("apply", {preview: token, confirmed: node("confirm").checked}));
+  node("apply").addEventListener("click", () => submit("apply", {preview: token, confirmed: true}));
   node("list-archive").addEventListener("click", async () => {
     try { showArchives((await request({archive: "1"})).archives); } catch (error) { status(error.message); }
   });
   workspaceTabs.addEventListener("harnesstab", () => {
     if (harnessTabs[activeHarnessTab] === tab) refresh().catch(error => status(error.message));
   });
+  (async () => {
+    if (!demo) {
+      try {
+        const response = await fetch("junie-models");
+        if (response.ok) models = (await response.json()).models;
+      } catch {}
+    }
+    renderModel();
+    if (demo) await submit("start");
+  })();
 })();

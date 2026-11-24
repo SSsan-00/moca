@@ -2,7 +2,8 @@
 
 window.harnessEditorDemo = (() => {
   // 編集と会話の模擬ファイルをRunごとに作る。
-  function createRun(runId) {
+  function createRun(run) {
+  const runId = run.run_id;
   const codeBehind = "Pages/Orders/Index.cshtml.cs";
   const razorPage = "Pages/Orders/Index.cshtml";
   const phpPath = "php/orders.php";
@@ -64,6 +65,7 @@ window.harnessEditorDemo = (() => {
     can_save: true,
     queued: true,
     can_prompt: true,
+    junie_model: run.junie_model ?? null, junie_effort: run.junie_effort ?? null, junie_model_revision: null,
     prompts: [],
     capsule: 3,
     status: "junie_running",
@@ -78,6 +80,13 @@ window.harnessEditorDemo = (() => {
 
   // 本番と同じ画面操作をデモRunのメモリ上の状態で再現する。
   async function request(path, action) {
+    if (path === "run-model") return {run_id: runId, can_select: true, model: demo.junie_model, effort: demo.junie_effort, revision: demo.junie_model_revision};
+    if (action?.kind === "model") {
+      if (action.model_revision !== demo.junie_model_revision) throw new Error("モデル設定が別の画面で変更されました。");
+      Object.assign(demo, {junie_model: action.model || null, junie_effort: action.effort || null,
+        junie_model_revision: String(nextId++)});
+      return structuredClone(demo);
+    }
     if (path.startsWith("editor-php?")) return {run_id: runId, sources: [phpPath], source: phpPath, content: php};
     const target = action?.target ?? new URLSearchParams(path.split("?")[1]).get("target") ?? codeBehind;
     const file = files.get(target);
@@ -171,7 +180,7 @@ window.harnessEditorDemo = (() => {
       active = undefined;
       return;
     }
-    if (!sessions.has(run.run_id)) sessions.set(run.run_id, createRun(run.run_id));
+    if (!sessions.has(run.run_id)) sessions.set(run.run_id, createRun(run));
     active = sessions.get(run.run_id);
     active.update(run);
   }

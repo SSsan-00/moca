@@ -17,6 +17,21 @@ TARGET_CONTEXT_ROOTS = ("target_parent", "inc", "Libs", "Extensions")
 TARGET_CONTEXT_FIELDS = {"roots", "folders", "exclude", "recursive", "max_files", "max_bytes", "max_file_bytes"}
 
 
+def validate_junie_model(model: Any, effort: Any) -> tuple[str | None, str | None]:
+    if model is not None:
+        if not isinstance(model, str) or any(character.isspace() or ord(character) < 32 or ord(character) == 127
+                                             for character in model) or model.startswith("-"):
+            raise ValueError("Junieのモデルは、空白を含まないモデルIDで指定してください。既定値に戻す場合は空欄にしてください。")
+        model = model or None
+    if effort is not None:
+        if not isinstance(effort, str) or effort not in ("", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            raise ValueError("推論の強さは none・minimal・low・medium・high・xhigh・max のいずれかを指定してください。")
+        effort = effort or None
+        if effort and not model:
+            raise ValueError("推論の強さを指定する場合は、Junieで使うモデルも選択してください。")
+    return model, effort
+
+
 def target_context_policy(settings: Any) -> dict[str, Any]:
     """周辺参照の範囲と上限を検証する。設定の省略と空の起点を区別する。"""
     if not isinstance(settings, dict) or settings.keys() - TARGET_CONTEXT_FIELDS:
@@ -274,19 +289,7 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
         raise ValueError("[junie].ground_output_repairs must be a boolean")
     if ground_output_repairs and not apply_output_decisions:
         raise ValueError("[junie].ground_output_repairs requires apply_output_decisions")
-    junie_model = junie.get("model")
-    if junie_model is not None:
-        if not isinstance(junie_model, str) or any(character.isspace() or ord(character) < 32 or ord(character) == 127
-                                                   for character in junie_model) or junie_model.startswith("-"):
-            raise ValueError("Junieのモデルは、空白を含まないモデルIDで指定してください。既定値に戻す場合は空欄にしてください。")
-        junie_model = junie_model or None
-    junie_effort = junie.get("effort")
-    if junie_effort is not None:
-        if not isinstance(junie_effort, str) or junie_effort not in ("", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
-            raise ValueError("推論の強さは none・minimal・low・medium・high・xhigh・max のいずれかを指定してください。")
-        junie_effort = junie_effort or None
-        if junie_effort and not junie_model:
-            raise ValueError("推論の強さを指定する場合は、Junieで使うモデルも選択してください。")
+    junie_model, junie_effort = validate_junie_model(junie.get("model"), junie.get("effort"))
     junie_max_steps = junie.get("max_steps")
     input_limits = {key: junie[key] for key in ("warn_input_bytes", "max_input_bytes") if key in junie}
     if any(type(value) is not int or value < 1 for value in input_limits.values()):

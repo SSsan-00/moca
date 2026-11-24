@@ -76,6 +76,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.record["detail_overrides"] = {name: {"applies": False}}
         self.put(self.ref, "updated reference")
         pending = {"previous": "target-context", "changes": {self.ref.as_posix(): "changed"}}
+        (self.run / "run.json").write_text(json.dumps(self.record), encoding="utf-8")
 
         def finish(_config, _record_path, _record, _stage, guidelines, proposal, _inputs,
                    _command, completion, token, _targets, **_kwargs):

@@ -87,6 +87,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
             ):
                 with self.subTest(current=current, saved=saved):
                     config["junie_effort"] = current
+                    (run / "run.json").write_text(json.dumps(saved), encoding="utf-8")
                     commands = []
                     prompt_received = run / "prompt-received"
                     prompt_received.unlink(missing_ok=True)

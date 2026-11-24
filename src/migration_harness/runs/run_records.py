@@ -5,13 +5,18 @@ from __future__ import annotations
 import errno
 import json
 import msvcrt
+import math
+import os
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import date
+from http.client import HTTPException
 from pathlib import Path
 from time import sleep
 from typing import Any, Literal
+from urllib.request import urlopen
 
 from ..junie import junie_cli
 from ..config import find_unit, target_paths
@@ -86,7 +91,10 @@ def write_run_record(
     with lock_run_record(path):
         if path.is_file():
             saved = json.loads(path.read_text(encoding="utf-8"))
-            for field in ("token_usage", "migration_reviews", "migration_mappings", "hidden_from_dashboard"):
+            if saved.get("junie_model_revision"):
+                for field in ("junie_model", "junie_effort", "junie_model_revision"):
+                    record[field] = saved[field]
+            for field in ("token_usage", "cost_exchange", "migration_reviews", "migration_mappings", "hidden_from_dashboard"):
                 if field in saved and not (invalidate_migration_reviews and field in {"migration_reviews", "migration_mappings"}):
                     record[field] = saved[field]
         replace_run_record(path, record)
@@ -111,19 +119,50 @@ def junie_usage_recorder(
     run_path: Path, phase: str, capsule: int | None = None,
 ) -> Callable[[list[int]], None]:
     def report(delta: list[int]) -> None:
+        lookup_rate = False
         with edit_run_record(run_path / "run.json") as (record, changes):
             rows = record.get("token_usage", [])
+            if "cost_exchange" not in record:
+                # 再開前の使用量には当時のレートがないため、現在のレートを過去に適用しない。
+                prior_usage = any(row.get("responses", 0) for row in rows)
+                changes["cost_exchange"] = {"status": "unavailable" if prior_usage else "pending"}
+                lookup_rate = not prior_usage
             row = next((row for row in rows if row["phase"] == phase and row.get("capsule") == capsule), None)
             if row is None:
                 row = {"phase": phase, "capsule": capsule, **dict.fromkeys(junie_cli.USAGE_FIELDS, 0)}
                 rows.append(row)
             elif not any(delta):
-                return
+                if not changes:
+                    return
+            previous_responses = row["responses"]
             for field, value in zip(junie_cli.USAGE_FIELDS, delta, strict=True):
                 row[field] += value
+            cost_known = getattr(delta, "cost_known", 0)
+            if cost_known or "cost_known" in row:
+                row["cost_usd"] = row.get("cost_usd", 0.0) + getattr(delta, "cost_usd", 0.0)
+                row["cost_known"] = row.get("cost_known", 0) + cost_known
+                row["cost_missing"] = row.get("cost_missing", previous_responses) + delta[-1] - cost_known
             changes["token_usage"] = rows
+        if lookup_rate:
+            rate = _exchange_rate()
+            with edit_run_record(run_path / "run.json") as (record, changes):
+                if record.get("cost_exchange", {}).get("status") == "pending":
+                    changes["cost_exchange"] = rate
 
     return report
+
+
+def _exchange_rate() -> dict[str, Any]:
+    try:
+        with urlopen("https://api.frankfurter.dev/v2/rate/usd/jpy", timeout=3) as response:
+            data = json.loads(response.read(4096))
+        rate = data["rate"]
+        if data.get("base") != "USD" or data.get("quote") != "JPY" or type(rate) not in (int, float) or not 0 < rate < 10000 or not math.isfinite(rate):
+            raise ValueError("invalid exchange rate")
+        day = date.fromisoformat(data["date"]).isoformat()
+        return {"status": "available", "rate": rate, "date": day, "source": "Frankfurter"}
+    except (OSError, ValueError, TypeError, KeyError, HTTPException):
+        return {"status": "unavailable"}
 
 
 def validate_run_id(run_id: str) -> None:
@@ -144,6 +183,12 @@ def _read_run_record(path: Path) -> Any:
             if getattr(exc, "winerror", None) not in {32, 33} or attempt == 10:
                 raise
             sleep(.02)
+
+
+def run_model_options(run_path: Path, record: dict[str, Any], config: dict[str, Any]) -> dict[str, str | None]:
+    saved = _read_run_record(run_path / "run.json")
+    return {"model": saved.get("junie_model", record.get("junie_model", config.get("junie_model"))),
+            "effort": saved.get("junie_effort", record.get("junie_effort"))}
 
 
 def _load_run_identity(

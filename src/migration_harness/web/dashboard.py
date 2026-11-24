@@ -31,7 +31,7 @@ from migration_harness.context.capsules import (
     pinned_php_sources,
     read_pinned_php,
 )
-from migration_harness.config import find_unit, load_config, target_paths
+from migration_harness.config import find_unit, load_config, target_paths, validate_junie_model
 from migration_harness.web.diff_viewer import _inside_file, create_snapshot, review_html, snapshot_bytes
 from migration_harness.runs.editor_queue import (
     AGENT_PHASES,
@@ -103,7 +103,7 @@ PROGRESS_FIELDS = (
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
     "build_exit_code", "build_log_path", "build_attempt_seconds",
     "checker_exit_code", "checker_log_path", "checker_review_reason", "checker_advisory", "error",
-    "script_phase", "script_logs", "script_advisories", "stage_timings", "active_stage", "timing_updated_at", "last_stop",
+    "script_phase", "script_logs", "script_advisories", "stage_timings", "active_stage", "timing_updated_at", "last_stop", "cost_exchange",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
 
@@ -591,6 +591,18 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
                 else:
                     self.send_body(200, "application/json", body)
+            elif self.path.partition("?")[0] == prefix + "run-model":
+                try:
+                    run_id = self.dashboard.state.get("run_id")
+                    if not run_id:
+                        raise ValueError("実行を選択してください。")
+                    _, _, record, _ = load_saved_run(config, run_id)
+                    payload = {"run_id": run_id, "can_select": bool(self.dashboard.state.get("worktree_path")),
+                               "model": record.get("junie_model", config.get("junie_model")),
+                               "effort": record.get("junie_effort"), "revision": record.get("junie_model_revision")}
+                    self.send_body(200, "application/json", json.dumps(payload).encode())
+                except _ERRORS as exc:
+                    self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
             elif self.path.partition("?")[0] == prefix + "prompts":
                 self.send_prompts()
             elif self.path.partition("?")[0] == prefix + "checker-output":
@@ -675,6 +687,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                                     raise ValueError("現在の工程では指示を登録できません。")
                                 add_prompt(queue, action)
                         payload.update(timing=timing, prompts=queue["prompts"])
+                        if manager:
+                            history = manager.conversations.preparation_replies(run_id, state) + queue.get("conversation", [])
+                            payload["conversation"] = sorted(history, key=lambda entry: entry.get("received_at", ""))
                 elif action is not None:
                     raise ValueError("移行の実行を開いてから指示を登録してください。")
                 self.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
@@ -741,7 +756,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 adopted_stamp = _editor_stamp(safe_target(worktree, Path(name)))
             view_version = _editor_version(
                 content_version, adopted_stamp, record.get("stopped_migration_draft"),
-                names, phase, record.get("current_capsule"), record.get("operator_question"),
+                names, phase, record.get("current_capsule"), record.get("operator_question"), record.get("junie_model_revision"),
                 record.get("completed_capsules"), record.get("context_capsules"), record.get("script_phase"),
                 _editor_stamp(run_path / "editor.json"), resolving_references, bool(references.get("adoption")),
                 _editor_stamp(run_path.parent / ".preparation-conversations" / (run_id + ".json")), live,
@@ -822,7 +837,16 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     read_error = format_error(exc)
                 edit = queue["edits"].get(name)
                 if action is not None:
-                    if action.get("kind") == "prompt" and prompt_timing:
+                    if action.get("kind") == "model":
+                        if not isinstance(action.get("model"), str) or not isinstance(action.get("effort"), str):
+                            raise ValueError("モデルと推論の強さを選択してください。")
+                        model, effort = validate_junie_model(action.get("model"), action.get("effort"))
+                        with edit_run_record(run_path / "run.json") as (saved, changes):
+                            if action.get("model_revision") != saved.get("junie_model_revision"):
+                                raise ValueError("モデル設定が別の画面で変更されました。画面を更新してください。")
+                            changes.update(junie_model=model, junie_effort=effort, junie_model_revision=secrets.token_hex(12))
+                            record.update(changes)
+                    elif action.get("kind") == "prompt" and prompt_timing:
                         add_prompt(queue, action)
                     elif action.get("kind") == "save" and name:
                         base = editor_text(action.get("base"))
@@ -876,6 +900,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     "exists": original is not None, "read_error": read_error,
                     "can_prompt": prompt_timing is not None, "prompt_timing": prompt_timing,
                     "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
+                    "junie_model": record.get("junie_model", config.get("junie_model")),
+                    "junie_effort": record.get("junie_effort"), "junie_model_revision": record.get("junie_model_revision"),
                     "status": phase, "operator_question": record.get("operator_question"),
                 }
                 if name and edit is None and read_error is None:
@@ -986,7 +1012,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         _, _, record, _ = load_saved_run(workspace_config, record_path.parent.name)
                     except _ERRORS:
                         continue
-                    keys = ("run_id", "unit_id", "created_at", "token_usage") if include_usage else ("run_id", "unit_id")
+                    keys = ("run_id", "unit_id", "created_at", "token_usage", "cost_exchange") if include_usage else ("run_id", "unit_id")
                     runs.append({key: record[key] for key in keys if key in record})
                     if not include_usage and len(runs) == 30:
                         break

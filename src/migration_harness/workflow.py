@@ -96,6 +96,7 @@ from .runs.run_records import (
     execution_lock,
     junie_usage_recorder,
     load_saved_run,
+    run_model_options,
     validate_run_id,
     write_run_record,
 )
@@ -495,13 +496,14 @@ def _run_script_phase(
         write_run_record(record_path, record, timing_stage=previous_stage)
 
 
-def _advisory_model_options(config, record):
-    settings = config if record is None else record
-    model = settings.get("junie_model", config.get("junie_model"))
+def _advisory_model_options(config, record, run_path):
+    selected = ({"model": config.get("junie_model"), "effort": config.get("junie_effort")}
+                if record is None else run_model_options(run_path, record, config))
+    model = selected["model"]
     if not model:
         return {}
     options = {"model": model}
-    effort = settings.get("junie_effort")
+    effort = selected["effort"]
     if effort:
         options["effort"] = effort
     return options
@@ -622,7 +624,7 @@ def _review_script_output(config, run_path, record, item, *, apply_decisions):
             run_path, item["log"], item["exit_code"], phase=phase, byte_offset=item["byte_offset"],
             byte_length=item["byte_length"], expected_hash=item.get("log_sha256"), allow_pass=apply_decisions,
             allow_handoff=apply_decisions and item["exit_code"] == 0 and phase in _HANDOFF_PHASES,
-            model_options=_advisory_model_options(config, None if phase == "before_prepare" else record),
+            model_options=_advisory_model_options(config, None if phase == "before_prepare" else record, run_path),
         )
         check_cancelled()
         item.update(advisory)
@@ -1080,8 +1082,9 @@ def _review_detail_applicability(
             launch_prompt = prompt
             if hint and (budget is None or len((prompt + hint).encode("utf-8")) + guideline_bytes <= budget):
                 launch_prompt += hint
+            selection = run_model_options(run_path, record, config) if config is not None else {"model": model, "effort": effort}
             command = junie_cli.build_command(
-                review_root, launch_prompt, max_steps, guidelines=guidelines, model=model, effort=effort,
+                review_root, launch_prompt, max_steps, guidelines=guidelines, **selection,
             )
             try:
                 _run_budgeted_junie(
@@ -1544,8 +1547,7 @@ def _run_editor_followup(
                              draft=record.get("stopped_migration_draft"), operator_receipt=operator_receipt)
     prompt = context + handoff + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
-                                      guidelines=guidelines, model=record.get("junie_model", config.get("junie_model")),
-                                      effort=record.get("junie_effort"))
+                                      guidelines=guidelines, **run_model_options(record_path.parent, record, config))
     allowed = {*targets, completion.relative_to(agent_root), Path(memo.name)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     prior = record.get("stopped_migration_draft")
@@ -1698,8 +1700,7 @@ def _prepare_migration_materials(config, unit, run_path, record, worktree_root, 
             selected = _review_detail_applicability(
                 run_path, capsule, manifest, relative_targets, record,
                 record.get("junie_max_steps", config["junie_max_steps"]),
-                model=record.get("junie_model", config.get("junie_model")),
-                effort=record.get("junie_effort"), config=config, pinned_context=agent_root,
+                config=config, pinned_context=agent_root,
             )
     except KeyboardInterrupt as exc:
         record.update(status="interrupted", error="detail applicability review was interrupted; resume this Run")
@@ -1880,8 +1881,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
     prompt = context + plan_hint + scripted_handoff + handoff + memo_request + prompt
     other_files = _unlisted_workspace_files(agent_root, allowed, verified_sources)
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
-                                      model=record.get("junie_model", config.get("junie_model")),
-                                      effort=record.get("junie_effort"))
+                                      **run_model_options(run_path, record, config))
     try:
         try:
             exit_code, stop_reason = _run_migration_junie(
@@ -2258,7 +2258,7 @@ def _review_free_checker_output(config, checked, record):
         report_activity("Junie にチェッカー出力の読み取り専用判定を依頼しています。", kind="phase")
         advisory = checker_advisory(
             run_path, exit_code, allow_pass=bool(config.get("junie_apply_output_decisions")),
-            model_options=_advisory_model_options(config, record),
+            model_options=_advisory_model_options(config, record, run_path),
         )
         check_cancelled()
     except KeyboardInterrupt:
@@ -2821,8 +2821,7 @@ def _repair_target(
                              operator_receipt=operator_receipt)
     prompt = context + plan_hint + handoff + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
-                                      model=record.get("junie_model", config.get("junie_model")),
-                                      effort=record.get("junie_effort"))
+                                      **run_model_options(run_path, record, config))
     allowed = {*repair_targets, completion_path.relative_to(agent_root), Path(memo.name)}
     other_files = _unlisted_workspace_files(agent_root, allowed)
     try:
@@ -3337,7 +3336,7 @@ def _grounded_repair_inputs(config, run_path, worktree, targets, hashes, advisor
     grounding = grounded_diagnostic(
         run_path, worktree, targets, expected_target_hashes=hashes,
         evidence_lines=evidence, phase=advisory["phase"], through=record.get("completed_capsules") or None,
-        model_options=_advisory_model_options(config, record),
+        model_options=_advisory_model_options(config, record, run_path),
     )
     advisory["grounding"] = grounding
     write_run_record(run_path / "run.json", record)
@@ -4413,7 +4412,6 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     changes.write_text(json.dumps(pending["changes"], ensure_ascii=False, indent=2), encoding="utf-8")
     selected = _review_detail_applicability(
         run_path, capsule, manifest, targets, record, record.get("junie_max_steps", config["junie_max_steps"]),
-        model=record.get("junie_model", config.get("junie_model")), effort=record.get("junie_effort"),
         config=config, pinned_context=proposal,
     )
     material = _stage_migration_materials(
@@ -4450,7 +4448,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     )
     args = junie_cli.build_command(
         proposal, prompt + inline, record.get("junie_max_steps", config["junie_max_steps"]), guidelines=guidelines,
-        model=record.get("junie_model", config.get("junie_model")), effort=record.get("junie_effort"),
+        **run_model_options(run_path, record, config),
     )
     allowed = {*targets, Path(completion.name)}
     guarded = _unlisted_workspace_files(proposal, allowed)
