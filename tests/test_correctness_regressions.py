@@ -86,6 +86,28 @@ class CheckerProvenanceTests(SavedRunFixture):
 
 
 class DetailReviewEvidenceTests(HarnessCase):
+    def test_staged_evidence_counts_physical_lines_without_changing_bytes(self):
+        capsule = self.root / "capsule"
+        materials = capsule / "materials"
+        materials.mkdir(parents=True)
+        cases = [(b"", 0), (b"abc", 1), (b"\r", 1), (b"x\r\r\nz\n", 3),
+                 (b"x" * 65535 + b"\r\nend", 2), (b"x" * 65535 + b"\rnext", 2)]
+        for end in (b"\n", b"\r\n", b"\r"):
+            cases.extend([(end.join([b"a", b"", b"z"]), 3), (end.join([b"a", b"", b"z", b""]), 3)])
+        digests = {}
+        for i, (raw, _) in enumerate(cases):
+            name = f"reference-{i:04d}.txt"
+            (materials / name).write_bytes(raw)
+            digests[name] = hashlib.sha256(raw).hexdigest()
+        review_root = self.root / "review"
+        inventory = workflow.stage_review_evidence(review_root, capsule, {"rule_files": [], "materials": digests}, None)
+        for i, (raw, lines) in enumerate(cases):
+            name = f"reference-{i:04d}.txt"
+            key = f"evidence/materials/{name}"
+            with self.subTest(case=i):
+                self.assertEqual((review_root / key).read_bytes(), raw)
+                self.assertEqual(inventory[key], {"path": name, "sha256": digests[name], "file_lines": lines})
+
     def test_review_gets_pinned_target_source_and_required_materials_and_reuses_decision(self):
         helper = "class Helper { public const bool PreserveZeros = true; }\n"
         (self.project / "Context").mkdir()
@@ -95,9 +117,9 @@ class DetailReviewEvidenceTests(HarnessCase):
             "Context/Helper.cs": helper,
             "required.md": "Follow the relevant preservation detail when Helper.PreserveZeros is true.\n",
             "detail.md": "If true, preserve leading zeros.\n",
-            "sample.php": "<?php echo '0012';\n",
         }.items():
             (self.project / name).write_text(body, encoding="utf-8")
+        (self.project / "Feature.cs").write_bytes(b"class Feature {\r    const bool Preserve = true;\r}\r")
         self.commit_project()
         config = self.config()
         unit = config["units"][0]
@@ -107,7 +129,7 @@ class DetailReviewEvidenceTests(HarnessCase):
             {**common, "path": "required.md", "role": "migration_rules", "usage": "required", "description": ""},
             {**common, "path": "detail.md", "role": "migration_rules", "usage": "reference",
              "description": "Check the configured formatting helper, following the required rule."},
-            {**common, "path": "sample.php", "role": "reference_php"},
+            {**common, "path": "Feature.cs", "role": "reference_csharp"},
         ])
         prepared = workflow.prepare_run(config, unit["id"])
         run_path, worktree = Path(prepared["run_path"]), Path(prepared["worktree_path"])
@@ -130,11 +152,12 @@ class DetailReviewEvidenceTests(HarnessCase):
             self.assertEqual(inventory[context_file]["sha256"], hashlib.sha256(expected_bytes).hexdigest())
             self.assertTrue(any("preservation detail" in (review_root / path).read_text(encoding="utf-8")
                                 for path, entry in inventory.items() if entry["path"] == "required.md"))
-            self.assertTrue(any(path.endswith("/reference-0001.txt") for path in inventory))
+            reference = {"file": "evidence/materials/reference-0001.txt", "lines": [2, 2]}
             self.assertIn("insufficient_context", command[-1])
             kwargs["accept_result"](json.dumps({"review_token": token, "decisions": {
                 rule: {"applies": expected_applies, "reason": f"Fixture oracle: {expected_applies}",
-                       "context_evidence": {"file": context_file, "lines": [1, 1]}},
+                       "context_evidence": {"file": context_file, "lines": [1, 1]},
+                       "additional_context_evidence": [reference]},
             }}))
             return 0
 
@@ -148,6 +171,7 @@ class DetailReviewEvidenceTests(HarnessCase):
         self.assertIn("preserve leading zeros", (agent_root / ".migration-materials/guidelines.md").read_text(encoding="utf-8"))
         saved = json.loads((run_path / "run.json").read_bytes())
         self.assertEqual(saved["detail_applicability"][rule]["context_evidence"]["file"], context_file)
+        self.assertEqual(saved["detail_review_evidence"]["evidence/materials/reference-0001.txt"]["file_lines"], 3)
         self.assertIn(context_file, saved["detail_review_evidence"])
 
         expected_helper = helper.replace("true", "false")

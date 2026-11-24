@@ -23,11 +23,13 @@ def stage_review_evidence(review_root, capsule, manifest, pinned_context):
                 check_cancelled()
                 output_file.write(chunk)
                 sha.update(chunk)
-                lines += chunk.count(b"\n")
+                lines += chunk.count(b"\n") + chunk.count(b"\r") - chunk.count(b"\r\n")
+                if last_byte == b"\r" and chunk.startswith(b"\n"):
+                    lines -= 1
                 last_byte = chunk[-1:]
         if sha.hexdigest() != digest:
             raise ValueError(f"saved detail review evidence changed: {origin}")
-        lines += int(bool(last_byte) and last_byte != b"\n")
+        lines += last_byte not in (b"", b"\r", b"\n")
         target.chmod(0o444)
         inventory[destination.as_posix()] = {"path": origin, "sha256": digest, "file_lines": lines}
 
