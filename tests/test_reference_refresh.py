@@ -497,6 +497,300 @@ class ReferenceConflictEditorTests(SavedRunFixture):
     def test_newer_reference_invalidates_proposal_without_losing_concurrent_edit(self):
         self.reference_and_queued_edit(during_proposal=True, overlap=False, first_failure="new reference")
 
+    def interrupted_adoption(self, *, fail_second=False, canonical_failure=False, complete_without_edit=False):
+        second_base = "work copy\n1\n2\n3\nold second label\n"
+        self.saved_targets(complete=complete_without_edit, multi=fail_second, second_base=second_base)
+        self.target.write_bytes(self.base.encode("utf-8-sig"))
+        with workflow.editor_queue(self.run_path) as queue:
+            queue["operator_edits"].clear()
+        first_edit = self.base
+        if not complete_without_edit:
+            first_edit = first_edit.replace("old label", "first human edit")
+            self.save_editor("Example.cs", first_edit)
+        if fail_second:
+            self.save_editor("Second.cs", second_base.replace("old second label", "second-file human edit"))
+        planned = first_edit.replace("reference A", "model choice")
+        relative = self.targets[1] if fail_second else self.targets[0]
+        failed_path = (self.agent if canonical_failure else self.worktree) / relative
+        replace = Path.replace
+        failures = []
+
+        def replace_last(path, destination):
+            if destination != failed_path:
+                return replace(path, destination)
+            saved = self.record()
+            adoption = saved["reference_refresh"]["adoption"]
+            name = relative.as_posix()
+            self.assertEqual(target_hash(path), adoption["after"][name])
+            if canonical_failure:
+                self.assertNotIn("target_apply_pending", saved)
+                self.assertEqual(target_hash(destination), adoption["draft"][name])
+            else:
+                self.assertEqual(saved["target_apply_pending"][name],
+                                 {"before": adoption["before"][name], "after": adoption["after"][name]})
+                self.assertEqual(target_hash(destination), adoption["before"][name])
+            failures.append(name)
+            raise PermissionError("fixture sharing violation")
+
+        with (patch.object(Path, "replace", new=replace_last),
+              self.assertRaisesRegex(PermissionError, "fixture sharing violation")):
+            self.resume_fixture()
+        self.assertEqual(failures, [relative.as_posix()])
+        self.assertEqual((self.agent / "Example.cs").read_text(encoding="utf-8-sig"), planned)
+        before_first = self.base if canonical_failure or not fail_second else planned
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), before_first)
+        return planned
+
+    def check_resuming_interrupted_adoption(self, *, resave=False, fail_second=False, canonical_failure=False,
+                                            legacy=False):
+        observed = {}
+
+        def migrate(command, completion, token, targets, **kwargs):
+            self.assertIn("context segment 2 of 2", command[-1])
+            self.assertEqual((self.agent / "refs/Library.cs").read_text(encoding="utf-8"), "reference B")
+            observed.update((p.name, p.read_text(encoding="utf-8-sig")) for p in targets)
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        def propose(*args):
+            proposal = self.propose(*args)
+            if fail_second:
+                (proposal / "Second.cs").write_text("followed reference B\n1\n2\n3\nold second label\n",
+                                                    encoding="utf-8-sig")
+            return proposal
+
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+              patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify):
+            planned = self.interrupted_adoption(fail_second=fail_second, canonical_failure=canonical_failure)
+            expected = planned
+            if legacy:
+                record = self.record()
+                record["reference_refresh"]["adoption"].pop("operator_edits_sha256")
+                self.save_record(record)
+            if resave:
+                self.assertEqual(self.open_editor()()[1]["content"], planned)
+                expected = planned.replace("\n2\n", "\nsecond human edit\n")
+                self.save_editor("Example.cs", expected)
+            self.assertEqual(self.resume_fixture()["completed_capsules"], 2)
+            self.resume_fixture()
+        model.assert_called_once()
+        continuation.assert_called_once()
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(observed["Example.cs"], expected)
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), expected)
+        if fail_second:
+            self.assertEqual(observed["Second.cs"], "followed reference B\n1\n2\n3\nsecond-file human edit\n")
+        record = self.record()
+        self.assertNotIn("reference_refresh", record)
+        self.assertNotIn("target_apply_pending", record)
+        self.assertEqual(len(record["reference_refresh_history"]), 1)
+        with workflow.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            changes = queue["operator_edits"]["Example.cs"]
+            self.assertEqual(len(changes), 2 if resave and not legacy else 1)
+            if not legacy:
+                self.assertIn("+first human edit", changes[0])
+            if resave:
+                self.assertIn("+second human edit", changes[-1])
+            if fail_second:
+                self.assertEqual(len(queue["operator_edits"]["Second.cs"]), 1)
+                self.assertIn("+second-file human edit", queue["operator_edits"]["Second.cs"][0])
+
+    def test_replacement_failure_recovery_without_another_save(self):
+        self.check_resuming_interrupted_adoption()
+
+    def test_replacement_failure_recovery_keeps_superseding_http_save(self):
+        self.check_resuming_interrupted_adoption(resave=True)
+
+    def test_partially_applied_multiple_targets_keep_superseding_http_save(self):
+        self.check_resuming_interrupted_adoption(resave=True, fail_second=True)
+
+    def test_partially_written_agent_targets_keep_superseding_http_save(self):
+        self.check_resuming_interrupted_adoption(resave=True, fail_second=True, canonical_failure=True)
+
+    def test_already_interrupted_adoption_without_new_history_receipt_can_resume(self):
+        self.check_resuming_interrupted_adoption(resave=True, legacy=True)
+
+    def test_completed_run_queues_the_first_save_while_reference_adoption_is_pending(self):
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(workflow, "_verify_worktree", return_value={"status": "verified"}) as verify):
+            planned = self.interrupted_adoption(complete_without_edit=True)
+            self.assertEqual(self.open_editor()()[1]["content"], self.base)
+            self.save_editor("Example.cs", self.base.replace("old label", "late human edit"))
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.base)
+            self.assertEqual(self.resume_fixture()["status"], "verified")
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"),
+                             planned.replace("old label", "late human edit"))
+        model.assert_called_once()
+        verify.assert_called_once()
+        with workflow.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
+
+    def test_recovery_preserves_overlap_until_an_explicit_http_resolution(self):
+        def migrate(_command, completion, token, targets, **kwargs):
+            self.assertEqual(targets[0].read_text(encoding="utf-8-sig"), resolved)
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+              patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify):
+            planned = self.interrupted_adoption()
+            editor = self.open_editor()
+            _, before = editor()
+            overlapping = self.base.replace("reference A", "different choice").replace("old label", "first human edit")
+            status, saved = editor({"kind": "save", "run_id": self.run_id, "target": "Example.cs",
+                                    "base": self.base, "content": overlapping, "edit_id": before["edit"]["id"]})
+            self.assertEqual(status, 200)
+            self.assertTrue(saved["queued"])
+            self.assertEqual(self.resume_fixture()["status"], "editor_checkpoint")
+            _, conflicted = self.open_editor()()
+            self.assertEqual(conflicted["content"], planned)
+            self.assertEqual(conflicted["edit"]["content"], overlapping)
+            self.assertEqual(conflicted["edit"]["status"], "conflict")
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), planned)
+            self.assertNotIn("reference_refresh", self.record())
+            continuation.assert_not_called()
+            verify.assert_not_called()
+            resolved = planned.replace("model choice", "checked resolution")
+            self.save_editor("Example.cs", resolved, resolve=True)
+            self.assertEqual(self.resume_fixture()["completed_capsules"], 2)
+        model.assert_called_once()
+        continuation.assert_called_once()
+        verify.assert_called_once()
+        with workflow.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 2)
+
+    def test_recovery_with_only_partial_writes_stops_before_replacing_targets_if_reference_changes(self):
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(workflow.junie_cli, "run_interactive") as continuation):
+            planned = self.interrupted_adoption()
+            saved = self.save_editor("Example.cs", planned.replace("\n2\n", "\nnew edit\n"))["edit"]
+            before = self.target.read_bytes()
+            self.reference.write_text("reference C", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "反映を再開する前に参考資料が更新"):
+                self.resume_fixture()
+            self.assertEqual(self.target.read_bytes(), before)
+            self.assertIn("target_apply_pending", self.record())
+            with workflow.editor_queue(self.run_path) as queue:
+                self.assertEqual(queue["edits"]["Example.cs"], saved)
+            model.assert_called_once()
+            continuation.assert_not_called()
+
+    def test_recovery_leaves_unrecognized_external_changes_and_new_edits_untouched(self):
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(workflow.junie_cli, "run_interactive") as continuation):
+            planned = self.interrupted_adoption()
+            saved = self.save_editor("Example.cs", planned.replace("\n2\n", "\nnew edit\n"))["edit"]
+            for path, diagnostic in ((self.target, "移行先が変更"), (self.agent / "Example.cs", "下書きが変更")):
+                with self.subTest(path=path):
+                    before = path.read_bytes()
+                    path.write_bytes(b"outside change")
+                    with self.assertRaisesRegex(ValueError, diagnostic):
+                        self.resume_fixture()
+                    self.assertEqual(path.read_bytes(), b"outside change")
+                    self.assertIn("target_apply_pending", self.record())
+                    with workflow.editor_queue(self.run_path) as queue:
+                        self.assertEqual(queue["edits"]["Example.cs"], saved)
+                        self.assertEqual(queue["operator_edits"], {})
+                    path.write_bytes(before)
+            model.assert_called_once()
+            continuation.assert_not_called()
+
+    def check_recovery_after_queue_commit(self, *, overlap_latest=False):
+        observed = []
+        message = "Investigate the updated progress label."
+
+        def propose(*args):
+            pinned = source_context.target_context_snapshot(self.capsule) / "files" / "refs/Library.cs"
+            observed.append(pinned.read_text(encoding="utf-8"))
+            with workflow.editor_queue(self.run_path) as queue:
+                if len(observed) > 1:
+                    if not overlap_latest:
+                        self.assertEqual(queue["prompts"][0]["status"], "queued")
+                    self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
+            proposal = self.propose(*args)
+            if observed[-1] == "reference C":
+                (proposal / "Example.cs").write_text(self.base.replace("reference A", "model choice C"),
+                                                      encoding="utf-8-sig")
+            return proposal
+
+        def migrate(command, completion, token, targets, **kwargs):
+            if not overlap_latest:
+                operator = f"checker-findings-{token}-operator.txt"
+                self.assertIn(operator, command[-1])
+                self.assertEqual((self.agent / operator).read_text(encoding="utf-8"), f"- {message}\n")
+            self.assertEqual((self.agent / "refs/Library.cs").read_text(encoding="utf-8"), "reference C")
+            self.assertEqual(targets[0].read_text(encoding="utf-8-sig"), expected)
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        writer = workflow.write_run_record
+
+        def lose_run_history(path, record, **kwargs):
+            if record.get("reference_refresh_history"):
+                raise OSError("fixture run journal write failed")
+            return writer(path, record, **kwargs)
+
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose),
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+              patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result)):
+            planned = self.interrupted_adoption()
+            if overlap_latest:
+                next_draft = planned.replace("model choice", "second human edit")
+                expected = planned.replace("model choice", "second human edit, reconciled with C")
+            else:
+                next_draft = planned.replace("\n2\n", "\nsecond human edit\n")
+                expected = next_draft.replace("model choice", "model choice C")
+            saved = self.save_editor("Example.cs", next_draft)["edit"]
+            if not overlap_latest:
+                with workflow.editor_queue(self.run_path) as queue:
+                    queue["prompts"].append({"id": "late", "text": message, "status": "queued"})
+            with (patch.object(workflow, "write_run_record", side_effect=lose_run_history),
+                  self.assertRaisesRegex(OSError, "fixture run journal write failed")):
+                self.resume_fixture()
+            continuation.assert_not_called()
+            self.assertNotIn("reference_refresh_history", self.record())
+            self.assertIn("adoption", self.record()["reference_refresh"])
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), planned)
+            with workflow.editor_queue(self.run_path) as queue:
+                self.assertEqual(queue["edits"]["Example.cs"], saved)
+                self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
+                if not overlap_latest:
+                    self.assertEqual(queue["prompts"][0]["status"], "queued")
+            self.reference.write_text("reference C", encoding="utf-8")
+            if overlap_latest:
+                with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                    self.resume_fixture()
+                continuation.assert_not_called()
+                _, conflicted = self.open_editor()()
+                self.assertEqual(conflicted["content"], planned)
+                self.assertEqual(conflicted["edit"]["content"], next_draft)
+                self.assertEqual(conflicted["edit"]["status"], "conflict")
+                self.save_editor("Example.cs", expected, resolve=True)
+            self.assertEqual(self.resume_fixture()["completed_capsules"], 2)
+        continuation.assert_called_once()
+        self.assertEqual(observed, ["reference B", "reference C"])
+        self.assertEqual(len(self.record()["reference_refresh_history"]), 2)
+        with workflow.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual([item["status"] for item in queue["prompts"]], [] if overlap_latest else ["sent"])
+            self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 2)
+            self.assertIn("+first human edit", queue["operator_edits"]["Example.cs"][0])
+            self.assertIn("+second human edit", queue["operator_edits"]["Example.cs"][1])
+
+    def test_recovery_after_queue_commit_rechecks_new_reference_without_replaying_history_or_prompts(self):
+        self.check_recovery_after_queue_commit()
+
+    def test_new_reference_overlapping_a_resave_from_the_recovered_version_is_editable(self):
+        self.check_recovery_after_queue_commit(overlap_latest=True)
+
     def test_save_after_staging_replans_before_any_adoption_or_prompt_consumption(self):
         self.saved_targets()
         self.target.write_bytes(self.base.encode("utf-8-sig"))
