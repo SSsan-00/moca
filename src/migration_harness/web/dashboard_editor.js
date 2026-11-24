@@ -44,6 +44,7 @@
   let chatRun;
   let selectedTarget;
   let editPrompt;
+  let promptEdits = 0;
   let newPromptDraft = "";
   let refreshing;
   let saving = false;
@@ -400,7 +401,7 @@
       if (message.status === "queued" && state.can_prompt) {
         const button = Object.assign(document.createElement("button"), {className: "button", type: "button", textContent: "編集"});
         button.addEventListener("click", () => {
-          if (editPrompt) return;
+          if (editPrompt || sending) return;
           editPrompt = message.id;
           newPromptDraft = prompt.value;
           prompt.value = message.text;
@@ -655,42 +656,57 @@
   phpPicker.addEventListener("change", () => loadPhp(phpPicker.value));
   save.addEventListener("click", saveDraft);
   cancelEdit.addEventListener("click", finishPromptEdit);
-  prompt.addEventListener("input", updateSendButton);
+  prompt.addEventListener("input", () => {
+    promptEdits++;
+    updateSendButton();
+  });
   const submittedMessages = new Map();
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    const text = prompt.value.trim();
-    if (!text || switching || state.run_id !== progress().run_id || sending || !state.can_prompt) return;
+    const input = prompt.value, text = input.trim();
+    if (!text || switching || state?.run_id !== progress().run_id || sending || !state?.can_prompt) return;
+    const runId = state.run_id, editing = editPrompt, editCount = promptEdits;
+    const showingRun = () => !switching && state?.run_id === runId && progress().run_id === runId;
+    const ownsDraft = () => editing === editPrompt && editCount === promptEdits && input === prompt.value;
     sending = true;
-    const version = ++revision;
+    revision++;
     updateChat();
     report("#editor-prompt-error");
-    const runId = state.run_id;
     try {
-      if (state.conversation && !editPrompt) {
+      if (state.conversation && !editing) {
         let submission = submittedMessages.get(runId);
         if (submission?.text !== text) {
           submission = {id: crypto.randomUUID().replaceAll("-", ""), text, status_only: layout.dataset.statusOnly === "true"};
           submittedMessages.set(runId, submission);
         }
         const entry = await request("editor", {kind: "conversation", run_id: runId, ...submission});
-        submittedMessages.delete(runId);
-        if (version !== revision) return;
+        if (!showingRun()) return;
+        if (entry?.id !== submission.id || !Array.isArray(state.conversation)) {
+          throw new Error("指示の受付を確認できません。再送すると同じ指示IDを使います。");
+        }
+        revision++;
         state.conversation = [...state.conversation.filter(item => item.id !== entry.id), entry];
-        prompt.value = "";
+        if (ownsDraft()) prompt.value = "";
+        submittedMessages.delete(runId);
         return;
       }
-      const data = await request("editor", {kind: "prompt", run_id: runId, id: editPrompt, text});
-      if (version !== revision) return;
+      const data = await request("editor", {kind: "prompt", run_id: runId, id: editing, text});
+      if (!showingRun()) return;
+      revision++;
       state.prompts = data.prompts;
-      if (editPrompt) finishPromptEdit();
-      else prompt.value = "";
+      if (ownsDraft()) {
+        if (editing) finishPromptEdit();
+        else prompt.value = "";
+      }
     } catch (error) {
-      if (version === revision) report("#editor-prompt-error", error);
+      if (showingRun()) report("#editor-prompt-error", error);
     } finally {
       sending = false;
-      updateChat();
-      if (!prompt.disabled) prompt.focus();
+      if (showingRun()) {
+        updateChat();
+        if (!prompt.disabled) prompt.focus();
+      }
+      if (state?.run_id !== progress().run_id || (selectedTarget && selectedTarget !== state?.target)) refresh();
     }
   });
   window.harnessEditorCanSwitch = () => !saving && !sending;
