@@ -1,4 +1,6 @@
+import codecs
 import hashlib
+import io
 import json
 import re
 from pathlib import Path
@@ -6,6 +8,38 @@ from pathlib import Path
 from ..files import safe_target
 from ..execution import check_cancelled
 from ..context.source_context import target_context_snapshot
+from ..context.target_evidence import pinned_text_encoding
+
+
+_COPY_CHUNK_BYTES = 64 * 1024
+
+
+def _copy_and_count(source, target):
+    sha = hashlib.sha256()
+    lines, last_character = 0, "\n"
+    with source.open("rb") as input_file, target.open("xb") as output_file:
+        encoding = pinned_text_encoding(input_file.peek(4))
+        decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(encoding)(), True)
+        while True:
+            check_cancelled()
+            chunk = input_file.read(_COPY_CHUNK_BYTES)
+            if chunk:
+                output_file.write(chunk)
+                sha.update(chunk)
+            if decoder is not None:
+                try:
+                    text = decoder.decode(chunk, final=not chunk)
+                except UnicodeDecodeError:
+                    decoder = None
+                else:
+                    if text:
+                        lines += text.count("\n")
+                        last_character = text[-1]
+            if not chunk:
+                break
+    # 周辺資料にはテキスト以外も含まれる。コピーは残すが、復号できない資料の行は引用できない。
+    file_lines = lines + (last_character != "\n") if decoder is not None else 0
+    return sha.hexdigest(), file_lines
 
 
 def stage_review_evidence(review_root, capsule, manifest, pinned_context):
@@ -16,20 +50,9 @@ def stage_review_evidence(review_root, capsule, manifest, pinned_context):
         source = safe_target(source_root, relative)
         target = safe_target(review_root, destination)
         target.parent.mkdir(parents=True, exist_ok=True)
-        sha = hashlib.sha256()
-        lines, last_byte = 0, b""
-        with source.open("rb") as input_file, target.open("xb") as output_file:
-            for chunk in iter(lambda: input_file.read(64 * 1024), b""):
-                check_cancelled()
-                output_file.write(chunk)
-                sha.update(chunk)
-                lines += chunk.count(b"\n") + chunk.count(b"\r") - chunk.count(b"\r\n")
-                if last_byte == b"\r" and chunk.startswith(b"\n"):
-                    lines -= 1
-                last_byte = chunk[-1:]
-        if sha.hexdigest() != digest:
+        actual_digest, lines = _copy_and_count(source, target)
+        if actual_digest != digest:
             raise ValueError(f"saved detail review evidence changed: {origin}")
-        lines += last_byte not in (b"", b"\r", b"\n")
         target.chmod(0o444)
         inventory[destination.as_posix()] = {"path": origin, "sha256": digest, "file_lines": lines}
 

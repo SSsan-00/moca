@@ -94,13 +94,16 @@ def _checked_entry(capsule, entries, source_id):
     return entry, _pinned_bytes(capsule, entry)
 
 
-def _decode(data):
+def pinned_text_encoding(data: bytes) -> str:
     if data.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
-        encoding = "utf-32"
-    elif data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        encoding = "utf-16"
-    else:
-        encoding = "utf-8-sig" if data.startswith(b"\xef\xbb\xbf") else "utf-8"
+        return "utf-32"
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    return "utf-8-sig" if data.startswith(b"\xef\xbb\xbf") else "utf-8"
+
+
+def _decode(data):
+    encoding = pinned_text_encoding(data)
     return encoding, data.decode(encoding)
 
 
