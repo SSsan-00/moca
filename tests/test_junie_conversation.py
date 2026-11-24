@@ -974,6 +974,8 @@ class JunieConversationTests(SavedRunFixture):
             "今のビルドが終わったら、保存した版でチェッカーを実行して": "after_build_checker",
             "ビルドの終了後に保存版でビルドしてください": "after_build_build",
             "変更を保存しました。今のビルドが終わったら、保存した版でチェッカーを実行して": "after_build_checker",
+            "変更を保存しました。\n\n　保存した版でビルドして、\n\t結果を教えて": "build",
+            "保存した版でビルドして、\n\n　結果を教えて。手元で確認しました。\n処理を追加して": "clarify",
             "準備しました。\n環境が整ったらチェッカーを実行して": "clarify",
             "手元で確認しました。\nなぜビルドが失敗したの？": "build_status",
             "ビルドが完了したらチェッカーを実行してもらえますか？": "after_build_checker",

@@ -23,7 +23,7 @@ QUERY_INTENTS = {"status", "build_status", "checker_status"}
 BUILD_PHASES = {"building", "build_succeeded", "build_failed"}
 BUILD_TERM = r"(?:ビルド|\b(?:re)?build\b)"
 CHECKER_TERM = r"(?:チェッカー|\bchecker\b|チェック(?=まで|を(?:再|もう|実行)))"
-CLAUSE_BREAK = r"(?:\s*[、,。.!]\s*|\s*\n\s*)+"
+CLAUSE_BREAK = r"[ \t]*(?:[、,。.!\n][ \t]*)+"
 SAVED_VERSION = r"(?:(?:保存済みの(?:版|変更|内容)|保存した(?:版|変更|内容|修正)|保存版)で\s*)?"
 REQUEST_ENDING = r"(?:ください|(?:もらえ|くれ|いただけ)ますか\s*\??)?"
 VERIFY = (
@@ -35,7 +35,7 @@ BUILD_REQUEST = rf"(?:{SAVED_VERSION}(?:再)?ビルド{VERIFY}|(?:please\s+)?(?:
 CHECKER_REQUEST = rf"(?:{SAVED_VERSION}(?:チェッカー|チェック(?=まで|を(?:再|もう|実行))){VERIFY}|(?:please\s+)?(?:run|rerun)\s+(?:the\s+)?checker(?:\s+again)?)"
 REPORT_RESULT = rf"(?:{CLAUSE_BREAK}結果を教えて{REQUEST_ENDING})?"
 INFORMATIONAL_PREFIX = re.compile(
-    rf"(?:(?:変更を保存しました|編集が終わりました|準備しました|手元で確認しました){CLAUSE_BREAK})+"
+    rf"^\s*(?:(?:変更を保存しました|編集が終わりました|準備しました|手元で確認しました){CLAUSE_BREAK})+"
 )
 AFTER_BUILD = re.compile(
     r"(?:もし\s*)?(?:(?:今|現在)の|(?:現在)?実行中の)?\s*ビルド(?:が|の|は)?\s*"
