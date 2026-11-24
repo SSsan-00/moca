@@ -26,6 +26,57 @@ class BeforeBuildVersionTests(SavedRunFixture):
         plan = workflow.plan_build_resume(self.config, self.run_id)
         return workflow.resume_with_junie(self.config, self.run_id, verification_request={**plan, "id": "reviewed"})
 
+    def interrupted_review_receipt(self, phase, command_number, interruption, diagnostic):
+        try:
+            self.resume_run()
+        except workflow.RunScriptError as error:
+            record = self.record()
+            log_path = self.run_path / f"{phase}.log"
+            try:
+                log = log_path.read_bytes()
+            except OSError as log_error:
+                log = None
+                log_text = repr(log_error)
+            else:
+                log_text = log.decode("utf-8", errors="backslashreplace")
+            source_error = error.__context__
+            detail = (
+                f"Expected the advisory to interrupt {phase} command {command_number}.\n"
+                f"RunScriptError: {error}\n"
+                f"Source: {source_error!r}; cause: {getattr(source_error, '__cause__', None)!r}\n"
+                f"run.json status: {record.get('status')!r}\n"
+                f"run.json error: {record.get('error')!r}\n"
+                f"run.json unconfirmed_command: {record.get('unconfirmed_command')!r}\n"
+                f"{log_path.name}:\n{log_text}"
+            )
+            if not error.interrupted or source_error is not interruption:
+                raise AssertionError(detail) from error
+            self.assertEqual(error.run_id, self.run_id, detail)
+            self.assertEqual(record.get("status"), "script_failed", detail)
+            self.assertEqual(record.get("error"), str(error), detail)
+            self.assertNotIn("unconfirmed_command", record, detail)
+            receipt = record.get("verification_script_pending")
+            self.assertIsInstance(receipt, dict, detail)
+            self.assertEqual(receipt.get("phase"), phase, detail)
+            self.assertEqual(receipt.get("command_number"), command_number, detail)
+            self.assertEqual(receipt.get("exit_code"), 0, detail)
+            self.assertIs(receipt.get("target_versions_match"), True, detail)
+            self.assertEqual(receipt.get("log"), log_path.name, detail)
+            self.assertIsNotNone(log, detail)
+            offset, length = receipt.get("byte_offset"), receipt.get("byte_length")
+            self.assertIsInstance(offset, int, detail)
+            self.assertIsInstance(length, int, detail)
+            output = log[offset:offset + length]
+            self.assertEqual(len(output), length, detail)
+            self.assertEqual(output.splitlines(), [diagnostic.encode("utf-8")], detail)
+            self.assertEqual(receipt.get("log_sha256"), hashlib.sha256(output).hexdigest(), detail)
+            self.assertEqual(receipt.get("log_hash_scope"), "full_range", detail)
+            advisories = record.get("script_advisories", [])
+            self.assertEqual(len(advisories), 1, detail)
+            self.assertEqual(advisories[0].get("status"), "interrupted", detail)
+            return record, receipt
+        self.fail(f"Expected the advisory to interrupt {phase} command {command_number}")
+
     def add_generated_target(self):
         target = self.worktree / "Generated.cs"
         target.write_text("class Original {}", encoding="utf-8")
@@ -79,11 +130,9 @@ class BeforeBuildVersionTests(SavedRunFixture):
         target = self.add_generated_target()
         original = target.read_bytes()
         self.configure_hooks(target, self.generate(target), f"print({GENERATED_DIAGNOSTIC!r})")
-        with self.commands([KeyboardInterrupt, PROBLEM]) as (builds, repair):
-            with self.assertRaises(workflow.RunScriptError):
-                self.resume_run()
-            receipt = self.record()["verification_script_pending"]
-            self.assertEqual(receipt["command_number"], 2)
+        interruption = KeyboardInterrupt("fixture advisory interruption")
+        with self.commands([interruption, PROBLEM]) as (builds, repair):
+            _, receipt = self.interrupted_review_receipt("before_build", 2, interruption, GENERATED_DIAGNOSTIC)
             self.assertEqual(receipt["target_versions"][self.target.name], hashlib.sha256(self.target.read_bytes()).hexdigest())
             actual_version = hashlib.sha256(target.read_bytes()).hexdigest()
             target.write_bytes(original)
@@ -133,11 +182,11 @@ class BeforeBuildVersionTests(SavedRunFixture):
         target = self.add_generated_target()
         original = target.read_bytes()
         self.configure_hooks(target, self.generate(target), f"print({GENERATED_DIAGNOSTIC!r})")
-        with self.commands([KeyboardInterrupt, PROBLEM]) as (builds, repair):
-            with self.assertRaises(workflow.RunScriptError):
-                self.resume_run()
-            record = self.record()
-            receipt = record["verification_script_pending"]
+        interruption = KeyboardInterrupt("fixture advisory interruption")
+        with self.commands([interruption, PROBLEM]) as (builds, repair):
+            record, receipt = self.interrupted_review_receipt("before_build", 2, interruption, GENERATED_DIAGNOSTIC)
+            self.assertEqual(receipt["target_basis"], "before_build_command")
+            self.assertEqual(receipt["target_versions"][target.name], hashlib.sha256(target.read_bytes()).hexdigest())
             receipt.update(target_basis="verification")
             receipt["target_versions"][target.name] = hashlib.sha256(original).hexdigest()
             self.save_record(record)
@@ -229,11 +278,9 @@ class BeforeBuildVersionTests(SavedRunFixture):
             f"print('1 test passed' if Path('ready.flag').exists() else {diagnostic!r})",
             phase="after_build",
         )
-        with self.commands([KeyboardInterrupt, PASSED]) as (builds, repair):
-            with self.assertRaises(workflow.RunScriptError):
-                self.resume_run()
-            record = self.record()
-            receipt = record["verification_script_pending"]
+        interruption = KeyboardInterrupt("fixture advisory interruption")
+        with self.commands([interruption, PASSED]) as (builds, repair):
+            record, receipt = self.interrupted_review_receipt("after_build", 1, interruption, diagnostic)
             receipt.pop("target_versions_match", None)
             receipt.pop("log_hash_scope", None)
             self.save_record(record)
