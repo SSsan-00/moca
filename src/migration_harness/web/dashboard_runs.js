@@ -22,6 +22,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   let selectedRun = "";
   let filter = "all";
   let pending = false;
+  const pendingResumes = new Set();
   let loading = false;
   let optionKey;
   let rowKey;
@@ -87,7 +88,9 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     find("#run-selected").textContent = selectedUnits.size ? `選択した${selectedUnits.size}件を実行` : "選択した単位を実行";
     find("#unit-selection-label").textContent = selectedUnits.size ? [...selectedUnits].join("・") : "移行単位を選択";
     for (const input of options.querySelectorAll("input")) input.disabled = !available || input.dataset.busy === "true";
-    for (const button of rows.querySelectorAll("button")) button.disabled = !available;
+    for (const row of rows.children) {
+      for (const button of row.querySelectorAll("button")) button.disabled = !available || pendingResumes.has(row.dataset.runId);
+    }
     for (const select of document.querySelectorAll("[data-run-context] select")) select.disabled = !available;
   }
   // 実行中の経過時間だけを保存済みの計測へ加える。
@@ -244,12 +247,14 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   }
   // 実行操作を送り、選択中Runと一覧を結果に合わせて更新する。
   async function act(action, runId, tab) {
-    if (pending || !canAct()) return;
+    if (pending || pendingResumes.has(runId) || !canAct()) return;
+    const resuming = action === "resume-run";
     const run = data.runs.find(item => item.run_id === runId);
     if (action === "hide-run" && !window.confirm(
       `${run.unit_id}\nRun ID: ${runId}\n\nこのRunを実行一覧から削除しますか？ 作業ツリーとログは保存されます。`
     )) return;
-    pending = true;
+    if (resuming) pendingResumes.add(runId);
+    else pending = true;
     feedback.textContent = "";
     sync();
     try {
@@ -261,7 +266,11 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         search.focus();
       }
     } catch (error) { feedback.textContent = error.message; }
-    finally { pending = false; sync(); }
+    finally {
+      if (resuming) pendingResumes.delete(runId);
+      else pending = false;
+      sync();
+    }
   }
   async function cancelDryRun() {
     if (!dryRunId || dryRunCancelling) return;

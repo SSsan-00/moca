@@ -921,6 +921,36 @@ try {
     await wait("!" + button + " && !" + selectedDemo + ".includes(" + JSON.stringify(id) + ")");
   }
 
+  await click("tab-runs");
+  const waitingRun = "run-2026-11-14-001", otherRun = "demo-customer";
+  const waitingResume = runAction(waitingRun, "resume-run");
+  const otherProgress = runAction(otherRun, "open-runprogress");
+  await wait(waitingResume + "?.matches(':enabled') && " + otherProgress + "?.matches(':enabled')");
+  await evaluate("(" + function (run) {
+    const state = window.listModelWait = {started: 0};
+    const previous = window.harnessRunModelReady;
+    const transport = window.harnessDemoTransport;
+    const nativeFetch = transport.fetch;
+    window.harnessRunModelReady = id => id === run ? new Promise(resolve => { state.release = resolve; }) : previous(id);
+    transport.fetch = (path, request) => {
+      if (path === "control" && request?.body && JSON.parse(request.body).action === "resume-run") state.started++;
+      return nativeFetch(path, request);
+    };
+    state.restore = () => { window.harnessRunModelReady = previous; transport.fetch = nativeFetch; };
+  }.toString() + ")(" + JSON.stringify(waitingRun) + ")");
+  await evaluate(waitingResume + ".click()");
+  await wait("!!listModelWait.release");
+  assert(await evaluate(waitingResume + ".disabled"), "waiting resume locks its own row");
+  assert(await evaluate(otherProgress + ".matches(':enabled')"), "waiting resume must not lock another Run's row");
+  await evaluate(otherProgress + ".click()");
+  await wait(selectedDemo + ".includes(" + JSON.stringify(otherRun) + ")");
+  await evaluate("listModelWait.release(true)");
+  await click("tab-runs");
+  await wait(waitingResume + "?.matches(':enabled')");
+  assert.equal(await evaluate("listModelWait.started"), 0, "switching via the actual run list cancels the waiting resume");
+  await evaluate("listModelWait.restore()");
+  console.log("Browser run list: another Run can be selected while a model save is pending");
+
   // All sample runs were stopped or cancelled before the settings test.
   await evaluate("window.confirm = () => true");
   await openDemoRun("run-2026-11-14-001");
