@@ -1,6 +1,7 @@
 """Run単位で、エディタからの編集と追加指示の反映待ちを管理する。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 from contextlib import contextmanager
@@ -11,26 +12,112 @@ from subprocess import run
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
+from ..files import safe_target
 from .run_records import lock_run_record, replace_run_record
-from .worktree_targets import EDIT_BYTES, read_target
+from .worktree_targets import EDIT_BYTES, read_target, target_edit_bytes, worktree_source_lock
 
 EDITOR_TARGET_SUFFIXES = frozenset({".cs", ".cshtml"})
 QUEUE_PHASES = {"junie_running", "editor_checkpoint", "editor_followup", "interrupted", "junie_failed"}
 AGENT_PHASES = QUEUE_PHASES | {"repairing"}
+EDITOR_SAVE_PENDING = "editor-save.pending.json"
+_HISTORY_RECOVERY = "エディタの保存履歴が未確定です。エディタを開き直し、保存内容を確認してください。"
+
+
+def _read_queue(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return '{"edits": {}, "prompts": []}'
+
+
+def _digest(data: bytes | None) -> str | None:
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+def editor_save_pending(run_path: Path) -> bool:
+    try:
+        (run_path / EDITOR_SAVE_PENDING).lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def stage_editor_save(run_path, queue, name, original, base, draft):
+    before = _digest(original)
+    after = _digest(target_edit_bytes(original or b"", draft))
+    queue.setdefault("immediate_saves", {})[name] = {
+        "base": _digest(base.encode("utf-8")), "draft": _digest(draft.encode("utf-8")), "after": after,
+    }
+    if before != after:
+        path = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
+        safe_target(run_path, path.with_suffix(".json.tmp").relative_to(run_path))
+        # 本文を置換する前に、置換前後の版と確定すべき履歴を永続化する。
+        replace_run_record(path, {"target": name, "before": before, "after": after,
+                                 "history_before": _digest(_read_queue(run_path / "editor.json").encode("utf-8")),
+                                 "history_after": queue})
+    return before
+
+
+def replayed_editor_save(queue, name, original, base, draft):
+    receipt = queue.get("immediate_saves", {}).get(name)
+    if not receipt or (receipt["base"], receipt["draft"]) != (_digest(base.encode("utf-8")), _digest(draft.encode("utf-8"))):
+        return False
+    if _digest(original) != receipt["after"]:
+        raise ValueError("前回の保存後に対象ファイルが更新されました。最新の内容を読み込んでください。")
+    return True
+
+
+def _recover_editor_save(run_path, path, before, worktree, targets):
+    journal = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
+    try:
+        record = json.loads(journal.read_text(encoding="utf-8"))
+        name, after = record["target"], record["history_after"]
+        if not isinstance(name, str) or not isinstance(after, dict):
+            raise ValueError("invalid editor save recovery")
+        previous, updated, history_before = record["before"], record["after"], record["history_before"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(_HISTORY_RECOVERY + " 保存時の復旧記録を読み取れません。") from exc
+    if name not in {target.as_posix() for target in targets if target.suffix.lower() in EDITOR_TARGET_SUFFIXES}:
+        raise ValueError(_HISTORY_RECOVERY + " 保存先が現在の移行先と一致しません。")
+    with worktree_source_lock(worktree):
+        original, _ = read_target(worktree, Path(name))
+        current = _digest(original)
+        unchanged_history = _digest(before.encode("utf-8")) == history_before
+        if current == updated and (unchanged_history or json.loads(before) == after):
+            if unchanged_history:
+                replace_run_record(path, after)
+        elif current != previous or not unchanged_history:
+            raise ValueError("対象ファイルか履歴が外部で更新されたため、保存を復旧せず停止しました。"
+                             "現在のファイルを控え、Run の editor-save.pending.json を確認してください。")
+        journal.unlink()
 
 
 @contextmanager
-def editor_queue(run_path: Path, *, name: str = "editor.json") -> Iterator[dict[str, Any]]:
+def editor_queue(
+    run_path: Path, *, name: str = "editor.json", recover: tuple[Path, tuple[Path, ...]] | None = None,
+) -> Iterator[dict[str, Any]]:
     """Runの編集・指示履歴をロック付きで管理する。"""
     path = run_path / name
     with lock_run_record(path):
         if path.is_symlink() or path.with_suffix(".json.tmp").is_symlink():
             raise ValueError("エディタの保存先がシンボリックリンクです。")
-        before = path.read_text(encoding="utf-8") if path.exists() else '{"edits": {}, "prompts": []}'
-        queue = json.loads(before)
-        yield queue
-        if queue != json.loads(before):
-            replace_run_record(path, queue)
+        try:
+            before = _read_queue(path)
+            if name == "editor.json" and editor_save_pending(run_path):
+                if recover is None:
+                    raise ValueError(_HISTORY_RECOVERY)
+                _recover_editor_save(run_path, path, before, *recover)
+                before = _read_queue(path)
+            queue = json.loads(before)
+            yield queue
+            if queue != json.loads(before):
+                replace_run_record(path, queue)
+                if name == "editor.json" and editor_save_pending(run_path):
+                    safe_target(run_path, Path(EDITOR_SAVE_PENDING)).unlink()
+        except OSError as exc:
+            if name == "editor.json" and editor_save_pending(run_path):
+                raise OSError(_HISTORY_RECOVERY) from exc
+            raise
 
 
 def editor_text(content: Any, limit: int = EDIT_BYTES) -> str:

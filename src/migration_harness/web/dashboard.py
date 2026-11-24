@@ -39,9 +39,12 @@ from migration_harness.runs.editor_queue import (
     QUEUE_PHASES,
     add_prompt,
     editor_queue,
+    editor_save_pending,
     editor_target,
     editor_text,
     record_operator_edit,
+    replayed_editor_save,
+    stage_editor_save,
 )
 from migration_harness.errors import format_error
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
@@ -773,9 +776,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             if action is None:
                 versions = self.editor_view_versions(query, state, run_id, run_path, worktree, record, unit)
                 view_version, content_version, _, _ = versions
-                if content_version and query.get("view_version") == [view_version]:
+                if content_version and query.get("view_version") == [view_version] and not editor_save_pending(run_path):
                     return None
-            with editor_queue(run_path) as queue:
+            with editor_queue(run_path, recover=(worktree, target_paths(unit))) as queue:
                 state = self.dashboard.state
                 if state.get("run_id") != run_id:
                     raise ValueError("表示中の実行が変わりました。")
@@ -822,26 +825,26 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                             state = self.dashboard.state
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
-                            # 保存直前に実行が始まった場合も、編集をRunへ退避する。
-                            busy_other = state.get("generating_anchors") or state.get("stop_requested")
-                            queued = bool(queued or not state.get("ready") or busy_other or content != base)
-                            if queued:
-                                if edit and edit["status"] == "conflict" and (
-                                    not action.get("resolve") or base != content
-                                ):
-                                    raise ValueError("最新版との差分を確認し、競合を解消して保存してください。")
-                                edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
-                                queue["edits"][name] = edit
-                                prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
-                            else:
-                                save_target_edit(worktree, targets, {
-                                    "target": name, "version": hashlib.sha256(original).hexdigest() if original is not None else None,
-                                    "content": draft,
-                                })
-                                record_operator_edit(queue, name, content, draft)
-                                original, content = editor_target(worktree, Path(name))
-                            queue["edit_revision"] = secrets.token_hex(12)
-                            invalidate_queued_steering(queue)
+                            replay = not edit and not from_agent and replayed_editor_save(queue, name, original, base, draft)
+                            if not replay:
+                                # 保存直前に実行が始まった場合も、編集をRunへ退避する。
+                                busy_other = state.get("generating_anchors") or state.get("stop_requested")
+                                queued = bool(queued or not state.get("ready") or busy_other or content != base)
+                                queue["edit_revision"] = secrets.token_hex(12)
+                                invalidate_queued_steering(queue)
+                                if queued:
+                                    if edit and edit["status"] == "conflict" and (
+                                        not action.get("resolve") or base != content
+                                    ):
+                                        raise ValueError("最新版との差分を確認し、競合を解消して保存してください。")
+                                    edit = {"id": secrets.token_hex(12), "base": base, "content": draft, "status": "queued"}
+                                    queue["edits"][name] = edit
+                                    prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=True)
+                                else:
+                                    record_operator_edit(queue, name, content, draft)
+                                    version = stage_editor_save(run_path, queue, name, original, base, draft)
+                                    save_target_edit(worktree, targets, {"target": name, "version": version, "content": draft})
+                                    original, content = editor_target(worktree, Path(name))
                     else:
                         raise ValueError("現在の工程ではこの操作を受け付けられません。")
                 payload = {

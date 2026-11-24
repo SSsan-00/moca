@@ -73,6 +73,14 @@ def target_newline(data: bytes) -> str:
     return "\n"
 
 
+def target_edit_bytes(original: bytes, content: str) -> bytes:
+    text = content.replace("\r\n", "\n").replace("\r", "\n")
+    data = text.replace("\n", target_newline(original)).encode("utf-8-sig")
+    if len(data) > EDIT_BYTES:
+        raise ValueError("編集後のファイルが 8 MiB を超えています。作業ツリーで編集してください。")
+    return data
+
+
 def save_target_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, Any]) -> None:
     """編集元の版を照合し、改行を保ってBOM付きUTF-8のファイルへ置き換える。"""
     with worktree_source_lock(worktree):
@@ -88,11 +96,7 @@ def save_target_edit(worktree: Path, targets: tuple[Path, ...], edit: dict[str, 
             version = hashlib.sha256(original).hexdigest()
         if version != edit["version"]:
             raise ValueError("編集を開いた後に対象ファイルが更新されました。最新の内容を読み込み、編集を反映し直してください。")
-        text = edit["content"].replace("\r\n", "\n").replace("\r", "\n")
-        text = text.replace("\n", target_newline(original))
-        data = text.encode("utf-8-sig")
-        if len(data) > EDIT_BYTES:
-            raise ValueError("編集後のファイルが 8 MiB を超えています。作業ツリーで編集してください。")
+        data = target_edit_bytes(original, edit["content"])
         if data == original and version is not None:
             return
         # 同じディレクトリに書き終えてから置き換え、保存途中の内容が見えないようにする。
