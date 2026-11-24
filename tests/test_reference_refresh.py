@@ -390,12 +390,12 @@ class ReferenceConflictEditorTests(SavedRunFixture):
     def save_resolution(self):
         return self.save_editor("Example.cs", self.resolved)
 
-    def save_editor(self, target, content):
+    def save_editor(self, target, content, *, resolve=False):
         editor = self.open_editor(target)
         _, before = editor()
         status, after = editor({"kind": "save", "run_id": self.run_id, "target": target,
                                 "base": before["content"], "content": content,
-                                "edit_id": (before.get("edit") or {}).get("id")})
+                                "edit_id": (before.get("edit") or {}).get("id"), "resolve": resolve})
         self.assertEqual(status, 200)
         self.assertEqual(after["save_timing"], "resume")
         self.assertTrue(after["queued"])
@@ -404,6 +404,98 @@ class ReferenceConflictEditorTests(SavedRunFixture):
 
     def resume_fixture(self):
         return workflow.resume_with_junie(self.config, self.run_id)
+
+    def reference_and_queued_edit(self, *, during_proposal, overlap, first_failure=None):
+        self.saved_targets()
+        self.target.write_bytes(self.base.encode("utf-8-sig"))
+        with workflow.editor_queue(self.run_path) as queue:
+            queue["operator_edits"].clear()
+        human = self.base.replace("reference A", "operator behavior") if overlap else self.base.replace(
+            "old label", "saved human label",
+        )
+        final = self.resolved.replace("keep this hand edit", "old label") if overlap else human.replace(
+            "reference A", "model choice",
+        )
+        expected_reference = "reference C" if first_failure == "new reference" else "reference B"
+        observed = []
+
+        def propose(*args):
+            pinned = source_context.target_context_snapshot(self.capsule) / "files" / "refs" / "Library.cs"
+            observed.append(pinned.read_text(encoding="utf-8"))
+            if during_proposal and len(observed) == 1:
+                self.save_editor("Example.cs", human)
+                if first_failure == "new reference":
+                    self.reference.write_text(expected_reference, encoding="utf-8")
+                elif first_failure == "stop proposal":
+                    raise ValueError("simulated interruption after editor save")
+            return self.propose(*args)
+
+        def migrate(command, completion, token, targets, **kwargs):
+            self.assertIn("context segment 2 of 2", command[-1])
+            pinned = Path(targets[0]).parent / "refs" / "Library.cs"
+            self.assertEqual(pinned.read_text(encoding="utf-8"), expected_reference)
+            self.assertEqual(targets[0].read_text(encoding="utf-8-sig"), final)
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        if not during_proposal:
+            self.save_editor("Example.cs", human)
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+              patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify):
+            if first_failure:
+                pattern = "見直し中に参考資料が更新" if first_failure == "new reference" else "simulated interruption"
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self.resume_fixture()
+                self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.base)
+                pending = self.record()["reference_refresh"]
+                self.assertNotIn("adoption", pending)
+                self.assertNotIn("conflict", pending)
+                self.assertEqual(self.open_editor()()[1]["edit"]["content"], human)
+                continuation.assert_not_called()
+            if overlap:
+                for _ in range(2):
+                    with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                        self.resume_fixture()
+                self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.base)
+                _, view = self.open_editor()()
+                self.assertEqual(view["edit"]["content"], human)
+                self.assertEqual(view["edit"]["status"], "conflict")
+                pending = self.record()["reference_refresh"]["conflict"]
+                proposed = workflow._verified_target_snapshot(self.run_path, pending["generated"])
+                self.assertIn("model choice", proposed["Example.cs"].read_text(encoding="utf-8-sig"))
+                continuation.assert_not_called()
+                self.save_editor("Example.cs", final, resolve=True)
+            self.assertEqual(self.resume_fixture()["completed_capsules"], 2)
+            self.resume_fixture()
+        self.assertEqual(observed, ["reference B", expected_reference] if first_failure else ["reference B"])
+        self.assertEqual(model.call_count, len(observed))
+        continuation.assert_called_once()
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), final)
+        self.assertEqual(len(self.record()["reference_refresh_history"]), 1)
+        with workflow.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
+
+    def test_edit_saved_before_resume_merges_using_latest_reference(self):
+        self.reference_and_queued_edit(during_proposal=False, overlap=False)
+
+    def test_edit_during_reference_proposal_merges_using_latest_reference(self):
+        self.reference_and_queued_edit(during_proposal=True, overlap=False)
+
+    def test_overlapping_saved_edit_before_resume_requires_explicit_resolution(self):
+        self.reference_and_queued_edit(during_proposal=False, overlap=True)
+
+    def test_overlapping_edit_during_reference_proposal_requires_explicit_resolution(self):
+        self.reference_and_queued_edit(during_proposal=True, overlap=True)
+
+    def test_pending_reference_refresh_recovers_after_interrupted_proposal(self):
+        self.reference_and_queued_edit(during_proposal=True, overlap=False, first_failure="stop proposal")
+
+    def test_newer_reference_invalidates_proposal_without_losing_concurrent_edit(self):
+        self.reference_and_queued_edit(during_proposal=True, overlap=False, first_failure="new reference")
 
     def test_http_resolution_continues_partial_run_and_preserves_old_reference_and_stopped_draft(self):
         self.saved_targets(stopped=True)
