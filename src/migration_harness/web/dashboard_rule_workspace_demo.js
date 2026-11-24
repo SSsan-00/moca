@@ -22,7 +22,7 @@
     const draft = drafts.get(action?.id ?? query?.id);
     if (!draft || draft.applied) throw Error("デモの下書きがありません。");
     const entry = draft.files.find(item => item.source === (action?.source ?? query?.source));
-    if (!action) return query.source ? {text: entry?.text ?? ""} : structuredClone(draft);
+    if (!action) return query.source ? {text: entry.text, revision: draft.revision} : structuredClone(draft);
 
     switch (action.action) {
       case "edit":

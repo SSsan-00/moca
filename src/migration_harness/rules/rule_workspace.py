@@ -277,7 +277,7 @@ class RuleWorkspace:
             path = self.draft(identifier)
             state = rule_pack.read_json(path / "state.json")
             file = self._source(path, state, source)
-            return {"text": _decode(file.read_bytes())}
+            return {"text": _decode(file.read_bytes()), "revision": state["revision"]}
 
     def _source(self, path, state, source):
         if not isinstance(source, str) or not _SOURCE.fullmatch(source) or source not in {f["source"] for f in state["files"]}:
