@@ -9,7 +9,12 @@ from time import perf_counter
 
 
 WINDOWS_SHARDS = ("conversation-editor", "remaining")
-CONVERSATION_EDITOR_MODULES = {"test_junie_conversation", "test_dashboard_editor"}
+CONVERSATION_EDITOR_MODULES = {
+    "test_dashboard_editor",
+    "test_junie_conversation",
+    "test_parallel_dashboard",
+    "test_reference_refresh",
+}
 
 REQUIRED_UI = {
     "test_settings_browser.SettingsBrowserTests.test_settings_round_trip_in_chromium",

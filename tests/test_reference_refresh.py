@@ -369,7 +369,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         output = io.StringIO()
         with redirect_stdout(output):
             server = view.server(self.config, b"", b"")
-        thread = Thread(target=server.serve_forever, daemon=True)
+        thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(thread.join, 5)
