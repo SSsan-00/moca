@@ -11,8 +11,8 @@ _STOP_TIMEOUT = 5
 
 
 class JunieProcess(subprocess.Popen):
-    def __init__(self, command, **kwargs):
-        job = WindowsJob()
+    def __init__(self, command, *, kill_on_close=False, **kwargs):
+        job = WindowsJob(kill_on_close=True) if kill_on_close else WindowsJob()
         try:
             # Assign before the launcher can spawn, including when it is cmd.exe.
             super().__init__(command, creationflags=CREATE_SUSPENDED, **kwargs)

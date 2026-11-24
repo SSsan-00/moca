@@ -430,9 +430,12 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                 prompt = '日本語 "quotes" & echo BAD > injected.txt | exit\n%JUNIE_TEST_EXPAND% !JUNIE_TEST_EXPAND! ^ ()\n' + "x" * 7000
                 project = str(root) + "\\"
                 guidelines = str(root / "必須事項 & details.md")
+                override = root / "Brave & (%JUNIE_TEST_EXPAND%) !JUNIE_TEST_EXPAND!.json"
+                override.write_bytes(b'{"brave":true}\n')
                 literal = "space &|<>^() %JUNIE_TEST_EXPAND% !JUNIE_TEST_EXPAND! tail\\"
                 command = ["junie", "--project", project, "--ide-guidelines", guidelines, "--max-steps", "2",
-                           "--model", "sonnet", "--effort", "high", "--literal", literal, "--prompt", prompt]
+                           "--model", "sonnet", "--effort", "high", "--literal", literal,
+                           "--config-location", str(override), "--prompt", prompt]
                 with patch.dict(os.environ, {
                     "PATH": str(root), "PATHEXT": ".COM;.EXE;.BAT;.CMD", "JUNIE_TEST_EXPAND": "SHOULD_NOT_EXPAND",
                     "JUNIE_MODEL": "opus", "JUNIE_EFFORT": "low",
@@ -451,7 +454,7 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                 self.assertEqual(data["guidelines"], guidelines)
                 self.assertEqual(data["model"], "sonnet")
                 self.assertEqual(data["effort"], "high")
-                self.assertEqual(data["argv"], ["--max-steps", "2", "--literal", literal])
+                self.assertEqual(data["argv"], ["--max-steps", "2", "--literal", literal, "--config-location", str(override)])
                 self.assertEqual(data["cwd"], str(root))
                 self.assertFalse((root / "injected.txt").exists())
                 self.assertFalse((root / "__pycache__").exists())

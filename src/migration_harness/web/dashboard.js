@@ -942,12 +942,21 @@ function bindResumeStage() {
   const resumeSummary = document.querySelector("#resume-stage-summary");
   const resumePreview = document.querySelector("#resume-stage-preview");
   const resumeStart = document.querySelector("#resume-stage-start");
+  const resumeBraveOption = document.querySelector("#resume-junie-brave-option");
+  const resumeBrave = document.querySelector("#resume-junie-brave");
   let resumeRunID, resumePlan, resumeGeneration = 0;
+
+  function resetResumeBrave() {
+    resumeBraveOption.hidden = staticDemo || resumeStage.value !== "migration";
+    resumeBrave.checked = false;
+    resumeBrave.disabled = true;
+  }
 
   // 選択条件を変えたときに、確認済みの版と応答待ちの要求を無効にする。
   function clearResumePlan() {
     resumeGeneration++;
     resumePlan = undefined;
+    resetResumeBrave();
     resumeStart.disabled = true;
     resumePreview.disabled = false;
     resumeSummary.textContent = "";
@@ -981,6 +990,7 @@ function bindResumeStage() {
       ].filter(Boolean).join("\n");
       resumePlan = {...payload, plan_version: plan.version};
       resumeStart.disabled = false;
+      resumeBrave.disabled = resumeBraveOption.hidden;
     } catch (error) {
       if (generation === resumeGeneration) resumeSummary.textContent = error.message;
     } finally {
@@ -990,7 +1000,11 @@ function bindResumeStage() {
   resumeStart.addEventListener("click", async () => {
     if (!resumePlan) return;
     const generation = resumeGeneration;
-    const payload = resumePlan;
+    const payload = {...resumePlan};
+    if (payload.start_stage === "migration" && resumeBrave.checked && !resumeBrave.disabled && !resumeBraveOption.hidden) {
+      payload.junie_brave = true;
+    }
+    resetResumeBrave();
     resumeStart.disabled = true;
     resumePlan = undefined;
     try {
