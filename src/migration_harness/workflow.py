@@ -26,7 +26,7 @@ from typing import Any
 from .log_text import read_log_tail
 from .junie import junie_cli
 from .junie.acp_permissions import PinnedReferenceReads
-from .junie.reply_text import unwrap_json_fence
+from .junie.reply_text import DuplicateJsonKey, load_unique_json, unwrap_json_fence
 from .verification.build_receipt import build_artifacts, build_inputs
 from .verification.verification_files import verification_files
 from .context import php_literals
@@ -878,18 +878,11 @@ class _MalformedDetailReviewReply(ValueError):
     pass
 
 
-def _unique_detail_review_keys(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise _MalformedDetailReviewReply("detail review response contains a duplicate JSON key")
-        result[key] = value
-    return result
-
-
 def _load_detail_review_json(text):
     try:
-        return json.loads(text, object_pairs_hook=_unique_detail_review_keys)
+        return load_unique_json(text)
+    except DuplicateJsonKey:
+        raise _MalformedDetailReviewReply("detail review response contains a duplicate JSON key") from None
     except json.JSONDecodeError:
         raise _MalformedDetailReviewReply("Junieの詳細ルール選別の応答がJSON形式ではありません。") from None
 
