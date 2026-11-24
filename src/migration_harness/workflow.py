@@ -66,6 +66,7 @@ from .runs.editor_queue import (
     editor_queue,
     editor_save_pending,
     editor_target,
+    editor_text,
     finish_prompts,
     merge_edit,
     record_operator_edit,
