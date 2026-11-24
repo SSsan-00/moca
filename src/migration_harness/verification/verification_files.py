@@ -8,6 +8,28 @@ from ..files import safe_target, sha256_file
 _SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".cjs", ".dll", ".exe", ".js", ".mjs", ".pl", ".ps1", ".py", ".rb", ".sh"})
 
 
+def verification_scripts(config, checker):
+    phases = ("before_build", "after_build")
+    if checker is not None:
+        phases += ("before_checker", "after_checker")
+    return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
+
+
+def configured_verification_checker(config, verification):
+    saved = verification.get("checker_command")
+    configured = config["checker_command"]
+    if (
+        verification.get("checker_from_cli")
+        and (saved is not None or "configured_checker_command" in verification)
+        # Earlier checker-only resumes could record the unrelated project default.
+        and (not verification.get("checker_only") or verification.get("toml_checker_scope") in ("unit", "project"))
+        and not config.get("checker_from_cli")
+        and configured == verification.get("toml_checker_command")
+    ):
+        return verification.get("configured_checker_command", saved)
+    return configured
+
+
 def _file_fingerprint(path: Path) -> str | None:
     try:
         if path.is_file():

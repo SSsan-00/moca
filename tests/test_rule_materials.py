@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -199,6 +200,13 @@ class RuleMaterialsTests(HarnessCase):
             "if sys.argv[1] == 'incomplete': print('Error: No checks were performed.')\n",
             encoding="utf-8",
         )
+        original_run = workflow.run_process
+
+        def process(command, **kwargs):
+            if command[0] == "dotnet":
+                return subprocess.CompletedProcess(command, 0)
+            return original_run(command, **kwargs)
+
         for verdict, expected, overall in (
             ("passed", "passed", "checker_succeeded"),
             ("omit", "human_review_needed", "checker_succeeded"),
@@ -206,9 +214,10 @@ class RuleMaterialsTests(HarnessCase):
             ("failed", "failed", "checker_needs_review"),
         ):
             with self.subTest(verdict=verdict):
-                result, _, _ = workflow._run_checker(
-                    [sys.executable, str(checker), verdict], run, record, None, rule_evidence=True,
-                )
+                config["checker_command"] = [sys.executable, str(checker), verdict]
+                record.update(status="junie_finished", completed_capsules=record["context_capsules"])
+                with patch.object(workflow, "run_process", side_effect=process):
+                    result = workflow._run_verification(config, config["units"][0], run, record)
                 self.assertEqual(result["status"], overall)
                 rows = review_rules(config, run["run_id"])["rules"]
                 self.assertEqual([row["verification_state"] for row in rows], [expected, "human_review_needed"])

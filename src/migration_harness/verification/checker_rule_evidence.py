@@ -8,6 +8,7 @@ import re
 import stat
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -15,9 +16,53 @@ from ..context.capsules import load_capsule_manifest
 from ..files import safe_target
 from ..context.source_context import target_context_snapshot
 from ..runs.worktree_targets import target_hash
+from .verification_files import configured_verification_checker, verification_files, verification_scripts
 
 
 MAX_RECEIPT_BYTES = 256 * 1024
+
+
+def _saved_verification_context(verification):
+    if not isinstance(verification, dict) or not {
+        "build_project", "checker_command", "scripts", "input_files",
+    }.issubset(verification):
+        return None
+    command, scripts, inputs = (verification[key] for key in ("checker_command", "scripts", "input_files"))
+    if (not isinstance(command, list) or not command or not isinstance(scripts, dict) or not isinstance(inputs, dict)
+            or not all(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) for digest in inputs.values())):
+        return None
+    return deepcopy({
+        "build_project": verification["build_project"], "checker_command": command,
+        "scripts": scripts, "input_files": inputs,
+    })
+
+
+def current_checker_rule_results(config, run_path, worktree, record, target):
+    evidence = record.get("checker_rule_evidence")
+    verification = record.get("verification")
+    if not (
+        config.get("checker_rule_evidence") and isinstance(evidence, dict) and isinstance(verification, dict)
+        and record.get("checker_exit_code") == 0 and verification.get("scripts_passed") is True
+        and verification.get("inputs_changed_during_verification") is False
+    ):
+        return {}
+    saved = _saved_verification_context(verification)
+    if saved is None or evidence.get("verification_context") != saved:
+        return {}
+    try:
+        command = configured_verification_checker(config, verification)
+        scripts = verification_scripts(config, command)
+        if (command != saved["checker_command"] or scripts != saved["scripts"]
+                or config["build_project"] != saved["build_project"]
+                or verification_files(config, worktree, target, command, scripts) != saved["input_files"]):
+            return {}
+        scope = checker_rule_context(run_path, worktree, record)
+        if scope is None or scope != evidence.get("scope"):
+            return {}
+        results = evidence["results"]
+        return results if isinstance(results, dict) else {}
+    except (OSError, ValueError, KeyError):
+        return {}
 
 
 def checker_rule_context(run_path: Path, worktree: Path, record: dict) -> dict | None:
@@ -114,6 +159,7 @@ def rule_checker_exchange(run_path: Path, worktree: Path, record: dict, *, enabl
     if not scope:
         yield {}, None
         return
+    verification_context = _saved_verification_context(record.get("verification"))
     with TemporaryDirectory(prefix="rule-check-", dir=run_path) as temporary:
         directory = Path(temporary)
         request_id = uuid.uuid4().hex
@@ -140,7 +186,10 @@ def rule_checker_exchange(run_path: Path, worktree: Path, record: dict, *, enabl
                 record["checker_rule_evidence_error"] = "receipt invalid or verification inputs changed"
                 return
             if results:
-                record["checker_rule_evidence"] = {"request_id": request_id, "scope": scope, "results": results}
+                record["checker_rule_evidence"] = {
+                    "request_id": request_id, "scope": scope, "results": results,
+                    "verification_context": verification_context,
+                }
 
         yield {"env": {
             **os.environ, "MIGRATION_RULE_CHECK_REQUEST": str(request), "MIGRATION_RULE_CHECK_RECEIPT": str(response),
