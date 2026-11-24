@@ -4501,13 +4501,15 @@ def _reference_output(run_path, outputs, path):
     return data
 
 
-def _replace_reference_output(path, data):
+def _replace_reference_output(path, data, expected):
     with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
     try:
         temporary.write_bytes(data)
         if path.exists():
             shutil.copymode(path, temporary)
+        if target_hash(path) != expected:
+            raise ValueError("参考資料への追従中に下書きが変更されました。保存版を確認してください。")
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -4534,6 +4536,22 @@ def _reference_edit_output(raw, current, candidate, edit):
     if combined == current:
         return raw
     return codecs.BOM_UTF8 + combined.replace("\n", target_newline(raw)).encode("utf-8")
+
+
+def _stage_reference_adoption(run_path, worktree, targets, merged, versions, queue):
+    adoption = {
+        **versions, **_stage_reference_outputs(run_path, merged),
+        "backup": _save_capsule_checkpoint(run_path, worktree, targets, versions["before"]),
+        "editor_edits": _reference_edit_versions(queue["edits"]),
+    }
+    if queue["edits"]:
+        history = {}
+        for name, edit in queue["edits"].items():
+            record_operator_edit(history, name, edit["base"], edit["content"])
+        data = json.dumps(history.get("operator_edits", {}), ensure_ascii=False).encode("utf-8")
+        safe_target(run_path, Path(adoption["output"]) / "operator-edits.json").write_bytes(data)
+        adoption["operator_edits_sha256"] = hashlib.sha256(data).hexdigest()
+    return adoption
 
 
 def _record_reference_conflict_resolution(run_path, worktree, canonical, targets, capsule, pending, record):
@@ -4586,12 +4604,9 @@ def _record_reference_conflict_resolution(run_path, worktree, canonical, targets
                     if candidate is None:
                         raise ValueError(f"別の追従案と手修正が競合しています: {name}")
             merged[path] = candidate
-        pending["adoption"] = {
-            **_stage_reference_outputs(run_path, merged), "before": before,
-            "backup": _save_capsule_checkpoint(run_path, worktree, targets, before),
-            "generated": conflict["generated"], "editor_edits": _reference_edit_versions(queue["edits"]),
-            "draft": draft, "reference_hashes": captured,
-        }
+        pending["adoption"] = _stage_reference_adoption(run_path, worktree, targets, merged, {
+            "before": before, "draft": draft, "reference_hashes": captured, "generated": conflict["generated"],
+        }, queue)
         write_run_record(record_path, record)
 
 
@@ -4633,12 +4648,93 @@ def _stage_reference_proposal(run_path, worktree, targets, proposal, baseline, b
         pending["conflict"] = {**versions, **_stage_reference_outputs(run_path, proposed),
                                "targets": conflicts, "message": message, "unresolved_edits": unresolved}
         return message
-    pending["adoption"] = {
-        **versions, **_stage_reference_outputs(run_path, merged),
-        "backup": _save_capsule_checkpoint(run_path, worktree, targets, before),
-        "editor_edits": _reference_edit_versions(queue["edits"]),
-    }
+    pending["adoption"] = _stage_reference_adoption(run_path, worktree, targets, merged, versions, queue)
     return None
+
+
+def _check_reference_adoption_basis(worktree, targets, capsule, pending, *, require_current):
+    active = target_context_snapshot(capsule, pending["snapshot"])
+    _, captured = target_context_inventory(active)
+    conflict = pending.get("conflict", {})
+    expected = pending["adoption"].get("reference_hashes", conflict.get("reference_hashes", captured))
+    if (captured != expected or any(target_hash(safe_target(active, Path("files") / name)) != digest
+                                    for name, digest in captured.items())):
+        raise ValueError("反映に使った参考資料の保存版が一致しません。" + _REFERENCE_RESOLUTION_GUIDANCE)
+    if require_current and compare_target_context(worktree, targets, active)[2]:
+        raise ValueError("反映を再開する前に参考資料が更新されました。解消案は保存されています。"
+                         + _REFERENCE_RESOLUTION_GUIDANCE)
+
+
+def _reference_operator_history(run_path, adoption):
+    if "operator_edits_sha256" not in adoption:
+        return None
+    data = safe_target(run_path, Path(adoption["output"]) / "operator-edits.json").read_bytes()
+    if hashlib.sha256(data).hexdigest() != adoption["operator_edits_sha256"]:
+        raise ValueError("参考資料の反映に使った手修正の履歴が一致しません。")
+    return json.loads(data)
+
+
+def _finish_reference_editor_edits(queue, adoption, edit_versions, history):
+    if history is not None:
+        for name, diffs in history.items():
+            queue.setdefault("operator_edits", {}).setdefault(name, []).extend(diffs)
+    for name, version in adoption["editor_edits"].items():
+        if edit_versions.get(name) == version:
+            edit = queue["edits"].pop(name)
+            if history is None:
+                record_operator_edit(queue, name, edit["base"], edit["content"])
+    queue["last_reference_adoption"] = adoption["output"]
+
+
+def _complete_reference_adoption(run_path, worktree, canonical, targets, capsule, pending, record, *, recovering):
+    adoption = pending["adoption"]
+    before, after = adoption["before"], adoption["after"]
+    journal = record.get("target_apply_pending", {})
+    conflict = pending.get("conflict", {})
+    planned_draft = adoption.get("draft") or conflict.get("draft") or before
+    adopted_edits = adoption.get("editor_edits", {})
+    record_path = run_path / "run.json"
+    with editor_queue(run_path) as queue, worktree_source_lock(worktree):
+        current = _reference_target_versions(worktree, targets)
+        draft = _reference_target_versions(canonical, targets)
+        if any(digest not in (before[name], after[name]) for name, digest in current.items()):
+            raise ValueError("参考資料への追従中に移行先が変更されました。" + _REFERENCE_RESOLUTION_GUIDANCE)
+        if any(digest not in (planned_draft[name], after[name]) for name, digest in draft.items()):
+            raise ValueError("参考資料への追従中に下書きが変更されました。保存版を確認してください。")
+        if any(name not in current or version != {"before": before[name], "after": after[name]}
+               for name, version in journal.items()):
+            raise ValueError("参考資料の反映と保存されたファイル適用の版が一致しません。")
+        edit_versions = _reference_edit_versions(queue["edits"])
+        accounted = queue.get("last_reference_adoption") == adoption["output"]
+        if not accounted and not journal and current == before and draft == planned_draft:
+            if edit_versions and edit_versions != adopted_edits:
+                pending.pop("adoption")
+                write_run_record(record_path, record)
+                raise ValueError("見直し後に編集が保存されました。成果物は上書きしていません。もう一度再開してください。")
+            if adopted_edits and edit_versions != adopted_edits:
+                raise ValueError("保存した参考資料の解消案が確認できません。" + _REFERENCE_RESOLUTION_GUIDANCE)
+            if conflict and any(prompt["status"] != "sent" for prompt in queue["prompts"]):
+                raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
+
+        unfinished_human_adoption = bool(adopted_edits) and (current != after or draft != after)
+        _check_reference_adoption_basis(worktree, targets, capsule, pending,
+                                        require_current=not recovering or unfinished_human_adoption)
+        record_editor = bool(adopted_edits) and not accounted
+        history = _reference_operator_history(run_path, adoption) if record_editor else None
+        outputs = {path: _reference_output(run_path, adoption, path) for path in targets
+                   if draft[path.as_posix()] != after[path.as_posix()]}
+        for path, data in outputs.items():
+            _replace_reference_output(safe_target(canonical, path), data, draft[path.as_posix()])
+        if journal:
+            finish_pending_targets(canonical, worktree, targets, record, record_path)
+            current.update((name, after[name]) for name in journal)
+        changed = tuple(path for path in targets if current[path.as_posix()] != after[path.as_posix()])
+        if changed:
+            apply_agent_targets(canonical, worktree, changed, current, record, record_path)
+        if _reference_target_versions(worktree, targets) != after:
+            raise ValueError("参考資料への追従中に移行先が変更されました。" + _REFERENCE_RESOLUTION_GUIDANCE)
+        if record_editor:
+            _finish_reference_editor_edits(queue, adoption, edit_versions, history)
 
 
 def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, *, migration_complete):
@@ -4694,7 +4790,7 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
                     record[key] = pending["previous_results"][key]
             write_run_record(record_path, record)
     activate_target_context(capsule, target_context_snapshot(capsule, pending["snapshot"]))
-    if record.get("target_apply_pending"):
+    if record.get("target_apply_pending") and not pending.get("adoption"):
         finish_pending_targets(canonical, worktree, targets, record, record_path)
     if stopped := pending.get("previous_draft"):
         with worktree_source_lock(worktree):
@@ -4741,60 +4837,10 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
             if conflict:
                 raise ValueError(conflict)
     if adoption := pending.get("adoption"):
-        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
-            adopted_edits = adoption.get("editor_edits", {})
-            edit_versions = _reference_edit_versions(queue["edits"])
-            current = _reference_target_versions(worktree, targets)
-            conflict = pending.get("conflict", {})
-            staged_draft = adoption.get("draft") or conflict.get("draft")
-            if edit_versions and edit_versions != adopted_edits:
-                if (not record.get("target_apply_pending") and current == adoption["before"] and staged_draft
-                        and _reference_target_versions(canonical, targets) == staged_draft):
-                    pending.pop("adoption")
-                    write_run_record(record_path, record)
-                    raise ValueError("見直し後に編集が保存されました。成果物は上書きしていません。もう一度再開してください。")
-                raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
-            if conflict and any(prompt["status"] != "sent" for prompt in queue["prompts"]):
-                raise ValueError("見直し中に編集・指示が追加されました。先に確認してください。")
-            if current not in (adoption["before"], adoption["after"]):
-                raise ValueError("参考資料への追従中に移行先が変更されました。" + _REFERENCE_RESOLUTION_GUIDANCE)
-            if adopted_edits and (not recovering_adoption or current != adoption["after"] or current == adoption["before"]):
-                if edit_versions != adopted_edits:
-                    raise ValueError("保存した参考資料の解消案が確認できません。" + _REFERENCE_RESOLUTION_GUIDANCE)
-                active = target_context_snapshot(capsule, pending["snapshot"])
-                _, captured = target_context_inventory(active)
-                _, _, changes = compare_target_context(worktree, targets, active)
-                expected = adoption.get("reference_hashes")
-                if expected is None:
-                    expected = pending["conflict"]["reference_hashes"]
-                if (changes or captured != expected
-                        or any(target_hash(safe_target(active, Path("files") / name)) != digest
-                               for name, digest in captured.items())):
-                    raise ValueError("反映を再開する前に参考資料が更新されました。解消案は保存されています。"
-                                     + _REFERENCE_RESOLUTION_GUIDANCE)
-            changed = tuple(path for path in targets if current[path.as_posix()] != adoption["after"][path.as_posix()])
-            outputs = {path: _reference_output(run_path, adoption, path) for path in
-                       (targets if adopted_edits else changed)}
-            if adopted_edits:
-                draft = _reference_target_versions(canonical, targets)
-                expected_draft = adoption.get("draft")
-                if expected_draft is None:
-                    expected_draft = pending["conflict"]["draft"]
-                if any(digest not in {expected_draft[name], adoption["after"][name]}
-                       for name, digest in draft.items()):
-                    raise ValueError("参考資料への追従中に下書きが変更されました。保存版を確認してください。")
-            for path, data in outputs.items():
-                destination = safe_target(canonical, path)
-                if target_hash(destination) != adoption["after"][path.as_posix()]:
-                    _replace_reference_output(destination, data)
-            if changed:
-                apply_agent_targets(canonical, worktree, changed, current, record, record_path)
-            for name in edit_versions:
-                edit = queue["edits"].pop(name)
-                record_operator_edit(queue, name, edit["base"], edit["content"])
-            current = adoption["after"].copy()
+        _complete_reference_adoption(run_path, worktree, canonical, targets, capsule, pending, record,
+                                     recovering=recovering_adoption)
         record["reference_refresh_baseline"] = {"capsule": record["completed_capsules"], "checkpoint": adoption["generated"]}
-        record["target_hashes"] = current
+        record["target_hashes"] = adoption["after"].copy()
     _, previous = target_context_inventory(target_context_snapshot(capsule, pending["previous"]))
     for name, change in pending["changes"].items():
         if change != "削除":
