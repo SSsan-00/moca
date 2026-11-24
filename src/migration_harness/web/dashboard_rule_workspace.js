@@ -9,6 +9,15 @@
     node("archive").hidden = true;
   }
   let draft, source = "new", busy = false, timer, token, uploadedBytes;
+  let renderedMessages = [];
+  const input = node("instruction");
+  const send = node("message");
+  const composer = node("composer");
+  const history = node("history");
+  const updateFeed = bindJunieChat(node("chat-feed"), node("chat-latest"), composer, input, send);
+  const syncSend = () => {
+    send.disabled = busy || !draft || draft.live?.status === "running" || !input.value.trim();
+  };
   const status = text => { node("status").textContent = text; };
   const request = async (query, action) => {
     if (demo) return demo(query, action);
@@ -23,23 +32,64 @@
     const was = draft?.id;
     draft = data;
     node("draft").hidden = !data || data.applied;
-    if (!data || data.applied) return;
+    if (!data || data.applied) {
+      syncSend();
+      return;
+    }
     const running = data.live?.status === "running";
     const options = [new Option("新しいMarkdown", "new"), ...data.files.map(file => new Option(file.name, file.source))];
     node("sources").replaceChildren(...options);
     node("sources").value = options.some(item => item.value === source) ? source : "new";
-    node("history").replaceChildren(...data.messages.map(message => {
-      const entry = document.createElement("p");
-      entry.textContent = `${message.role === "operator" ? "あなた" : "Junie"}：${message.text}`;
-      return entry;
-    }));
-    node("live").textContent = data.live?.text || "";
+    updateFeed(() => {
+      renderHistory(data.messages, was !== data.id);
+      node("chat-empty").hidden = running || Boolean(data.messages.length);
+      node("live-turn").hidden = !running;
+      const liveText = data.live?.text || "返信を待っています…";
+      if (running && node("live").textContent !== liveText) node("live").textContent = liveText;
+      showPermission(data.live?.permission);
+      node("proposal").hidden = !data.proposal;
+      const proposalText = data.proposal?.text || "";
+      if (node("proposal-text").textContent !== proposalText) node("proposal-text").textContent = proposalText;
+    }, was !== data.id);
+    syncSend();
     node("unresolved").textContent = data.unresolved.join("／");
     node("stop").hidden = !running;
-    for (const id of ["message", "optimize", "save-source", "save-classification", "preview", "apply", "accept"]) {
+    for (const id of ["optimize", "save-source", "save-classification", "preview", "apply", "accept"]) {
       node(id).disabled = running;
     }
-    const permission = data.live?.permission;
+    const preview = data.preview;
+    node("review").hidden = !preview;
+    if (token !== preview?.token || was !== data.id) node("confirm").checked = false;
+    token = preview?.token;
+    node("text-diff").textContent = preview?.text_diff || "本文の差分はありません。";
+    node("toml-diff").textContent = preview?.toml_diff || "";
+    const files = new Map(data.files.map(file => [file.source, file.name]));
+    node("coverage").textContent = preview?.rules.map(rule => [
+      `${rule.destination}：${rule.usage === "required" ? "必須" : rule.description}`,
+      ...rule.parts.map(part => `  ${files.get(part.source)} L${part.start}–${part.end}`),
+    ].join("\n")).join("\n\n") || "";
+    clearTimeout(timer);
+    if (running) timer = setTimeout(poll, 400);
+    if (data.live?.status === "error") status(data.live.text);
+    else if (data.live?.status === "ready") status(data.live.new_session ? "整理セッションを開始しました。" : "同じ整理セッションで回答しました。");
+  }
+  function renderHistory(messages, reset) {
+    let unchanged = 0;
+    if (!reset) {
+      while (unchanged < messages.length && unchanged < renderedMessages.length &&
+             messages[unchanged].role === renderedMessages[unchanged].role &&
+             messages[unchanged].text === renderedMessages[unchanged].text) unchanged++;
+    }
+    while (history.children.length > unchanged) history.lastElementChild.remove();
+    for (const {role, text} of messages.slice(unchanged)) {
+      const entry = document.createElement("li");
+      const outgoing = role === "operator";
+      entry.append(junieChatBubble(outgoing ? "あなた" : "Junie", text, outgoing));
+      history.append(entry);
+    }
+    renderedMessages = messages;
+  }
+  function showPermission(permission) {
     const oldPermission = node("permission").dataset.id;
     if (oldPermission !== (permission?.id || "")) {
       node("permission").dataset.id = permission?.id || "";
@@ -58,23 +108,6 @@
         }
       }
     }
-    node("proposal").hidden = !data.proposal;
-    node("proposal-text").textContent = data.proposal?.text || "";
-    const preview = data.preview;
-    node("review").hidden = !preview;
-    if (token !== preview?.token || was !== data.id) node("confirm").checked = false;
-    token = preview?.token;
-    node("text-diff").textContent = preview?.text_diff || "本文の差分はありません。";
-    node("toml-diff").textContent = preview?.toml_diff || "";
-    const files = new Map(data.files.map(file => [file.source, file.name]));
-    node("coverage").textContent = preview?.rules.map(rule => [
-      `${rule.destination}：${rule.usage === "required" ? "必須" : rule.description}`,
-      ...rule.parts.map(part => `  ${files.get(part.source)} L${part.start}–${part.end}`),
-    ].join("\n")).join("\n\n") || "";
-    clearTimeout(timer);
-    if (running) timer = setTimeout(poll, 400);
-    if (data.live?.status === "error") status(data.live.text);
-    else if (data.live?.status === "ready") status(data.live.new_session ? "整理セッションを開始しました。" : "同じ整理セッションで回答しました。");
   }
   async function poll() {
     const id = draft?.id;
@@ -107,6 +140,7 @@
   async function submit(action, extra = {}) {
     if (busy) return;
     busy = true;
+    syncSend();
     try {
       const was = draft?.id;
       const result = await request(null, {action, id: was, revision: draft?.revision, ...extra});
@@ -116,11 +150,12 @@
       if (["start", "apply"].includes(action)) await refresh();
       if (action === "apply") status(demo ? "デモの反映が完了しました。実際のTOMLは変わりません。" :
         "TOMLに反映しました。次のRunから適用されます。");
-      if (action === "message" || action === "optimize") node("instruction").value = "";
+      if (["message", "optimize"].includes(action) && input.value === extra.text) input.value = "";
     } catch (error) {
       status(error.message);
     } finally {
       busy = false;
+      syncSend();
     }
   }
   function showArchives(archives) {
@@ -177,8 +212,12 @@
       || window.confirm("既存の必須事項を詳細へ移しますか？適用範囲と例外を確認してください。");
     if (confirm_scope) submit("classification", {source, usage, description: node("description").value, confirm_scope});
   });
-  for (const action of ["message", "optimize"]) node(action).addEventListener("click", () =>
-    submit(action, {text: node("instruction").value}));
+  input.addEventListener("input", syncSend);
+  composer.addEventListener("submit", event => {
+    event.preventDefault();
+    if (!send.disabled) submit("message", {text: input.value});
+  });
+  node("optimize").addEventListener("click", () => submit("optimize", {text: input.value}));
   for (const action of ["accept", "stop", "preview"]) node(action).addEventListener("click", () => submit(action));
   node("apply").addEventListener("click", () => submit("apply", {preview: token, confirmed: node("confirm").checked}));
   node("list-archive").addEventListener("click", async () => {

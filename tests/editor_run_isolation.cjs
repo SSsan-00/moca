@@ -89,6 +89,7 @@ const context = vm.createContext({
   URL: {createObjectURL() { return "blob:worker"; }}, Blob, URLSearchParams,
   Option: class extends Element { constructor(label, value) { super(); this.textContent = label; this.value = value; } },
 });
+vm.runInContext(fs.readFileSync(process.argv[4], "utf8"), context);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), context);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const tick = () => timers[0]();
