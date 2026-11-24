@@ -309,7 +309,7 @@ class ReferenceRefreshTests(unittest.TestCase):
 
 
 class ReferenceConflictEditorTests(SavedRunFixture):
-    def saved_targets(self, *, complete=False, multi=False, stopped=False):
+    def saved_targets(self, *, complete=False, multi=False, stopped=False, second_base="second baseline\n"):
         self.targets = (Path("Example.cs"), Path("Second.cs")) if multi else (Path("Example.cs"),)
         self.config["units"][0]["targets"] = [path.as_posix() for path in self.targets]
         self.agent = self.run_path / "agent-workspace"
@@ -324,7 +324,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.human = self.base.replace("reference A", "manual behavior").replace("old label", "keep this hand edit")
         self.resolved = self.human.replace("manual behavior", "resolved for reference B")
         for index, path in enumerate(self.targets):
-            text = self.base if not index else "second baseline\n"
+            text = self.base if not index else second_base
             for root in (self.worktree, self.agent):
                 (root / path).write_bytes(text.encode("utf-8-sig"))
         hashes = {path.as_posix(): target_hash(self.worktree / path) for path in self.targets}
@@ -361,7 +361,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             (proposal / self.targets[1]).write_text("second follows reference B\n", encoding="utf-8-sig")
         return proposal
 
-    def open_editor(self):
+    def open_editor(self, target="Example.cs"):
         view = dashboard.Dashboard()
         view.observe(self.record())
         view.ready(self.config, self.record())
@@ -379,7 +379,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         def editor(contents=None):
             path = url + "editor"
             if contents is None:
-                path += "?" + urlencode({"run_id": self.run_id, "target": "Example.cs"})
+                path += "?" + urlencode({"run_id": self.run_id, "target": target})
             data = None if contents is None else json.dumps(contents).encode("utf-8")
             headers = {"Content-Type": "application/json", "Origin": f"{parsed.scheme}://{parsed.netloc}"}
             with urlopen(Request(path, data, headers), timeout=5) as reply:
@@ -388,15 +388,18 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         return editor
 
     def save_resolution(self):
-        editor = self.open_editor()
+        return self.save_editor("Example.cs", self.resolved)
+
+    def save_editor(self, target, content):
+        editor = self.open_editor(target)
         _, before = editor()
-        status, after = editor({"kind": "save", "run_id": self.run_id, "target": "Example.cs",
-                                "base": before["content"], "content": self.resolved,
+        status, after = editor({"kind": "save", "run_id": self.run_id, "target": target,
+                                "base": before["content"], "content": content,
                                 "edit_id": (before.get("edit") or {}).get("id")})
         self.assertEqual(status, 200)
         self.assertEqual(after["save_timing"], "resume")
         self.assertTrue(after["queued"])
-        self.assertEqual(after["edit"]["content"], self.resolved)
+        self.assertEqual(after["edit"]["content"], content)
         return after
 
     def resume_fixture(self):
@@ -460,6 +463,64 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         verify.assert_called_once()
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.resolved)
         self.assertEqual((self.worktree / "Second.cs").read_text(encoding="utf-8-sig"), "second follows reference B\n")
+
+    def check_resolution_with_second_edit(self, *, proposed_change=None, overlaps=False):
+        base = "start\nreference A\n1\n2\n3\n4\nold label\nend\n"
+        self.saved_targets(complete=True, multi=True, second_base=base)
+        second_name = self.targets[1].name
+        second = self.worktree / second_name
+        second_agent = self.agent / second_name
+        old, new = ("reference A", "human reference choice") if overlaps else ("old label", "human label")
+        draft = base.replace(old, new)
+        candidate = base if proposed_change is None else base.replace("reference A", proposed_change)
+
+        def propose(*args):
+            proposal = self.propose(*args)
+            (proposal / second_name).write_bytes(candidate.replace("\n", "\r\n").encode("utf-8-sig"))
+            return proposal
+
+        def verify_targets(*_args):
+            expected = candidate.replace(old, new)
+            for root in (self.worktree, self.agent):
+                self.assertEqual((root / "Example.cs").read_text(encoding="utf-8-sig"), self.resolved)
+                self.assertEqual((root / second_name).read_text(encoding="utf-8-sig"), expected)
+            return {"status": "verified"}
+
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
+              patch.object(workflow, "_verify_worktree", side_effect=verify_targets) as verify):
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.resume_fixture()
+            pending = self.record()["reference_refresh"]
+            self.assertEqual(pending["conflict"]["targets"], ["Example.cs"])
+            saved = {"Example.cs": self.save_resolution()["edit"], second_name: self.save_editor(second_name, draft)["edit"]}
+            if overlaps:
+                paths = (self.target, second, self.agent / "Example.cs", second_agent)
+                before = tuple(path.read_bytes() for path in paths)
+                for _ in range(2):
+                    with self.assertRaisesRegex(ValueError, "別の追従案と手修正が競合しています: Second\\.cs"):
+                        self.resume_fixture()
+                self.assertEqual(tuple(path.read_bytes() for path in paths), before)
+                self.assertEqual(self.record()["reference_refresh"], pending)
+                with workflow.editor_queue(self.run_path) as queue:
+                    self.assertEqual(queue["edits"], saved)
+                verify.assert_not_called()
+            else:
+                self.assertEqual(self.resume_fixture()["status"], "verified")
+                self.assertNotIn("reference_refresh", self.record())
+                with workflow.editor_queue(self.run_path) as queue:
+                    self.assertEqual(queue["edits"], {})
+                    self.assertEqual(len(queue["operator_edits"][second_name]), 1)
+                verify.assert_called_once()
+        model.assert_called_once()
+
+    def test_reference_resolution_keeps_second_edit_when_proposal_does_not_change_it(self):
+        self.check_resolution_with_second_edit()
+
+    def test_reference_resolution_merges_independent_second_edits(self):
+        self.check_resolution_with_second_edit(proposed_change="reference B")
+
+    def test_reference_resolution_leaves_overlapping_second_edit_pending(self):
+        self.check_resolution_with_second_edit(proposed_change="reference B", overlaps=True)
 
     def test_unrelated_pending_instruction_and_edit_stay_queued(self):
         self.saved_targets()
