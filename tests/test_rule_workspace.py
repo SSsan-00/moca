@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from itertools import product
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
@@ -16,6 +17,32 @@ from migration_harness.files import sha256_file
 from migration_harness.web.dashboard import _save_settings
 from migration_harness.rules.rule_workspace import RuleWorkspace
 from migration_harness.rules.rule_chat import RuleChat, decode_reply
+
+
+class RuleReplyTests(unittest.TestCase):
+    def test_reply_preserves_unicode_separators_inside_the_json(self):
+        for separator in ("\u2028", "\u2029", "\u0085"):
+            value = f"前{separator}後"
+            payload = {
+                "message": value, "unresolved": [value],
+                "edit": {"source": "new", "name": "new.md", "text": value + "\r\n"},
+                "plan": {"format_version": 2, "documents": [{"title": value}]},
+            }
+            payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+            for newline in ("\n", "\r\n", "\r"):
+                body = payload_text.replace("\n", newline)
+                for prefix, fence in product(("", "\ufeff"), (None, "```", "```json")):
+                    text = body if fence is None else newline.join((fence, body, "```"))
+                    with self.subTest(separator=ascii(separator), newline=ascii(newline), bom=bool(prefix), fence=fence):
+                        self.assertEqual(decode_reply(prefix + text), payload)
+
+    def test_plain_or_invalid_replies_are_returned_verbatim(self):
+        for text in (
+            "  説明です。\u2028続き\r\n", "\ufeff", "[]", '{"message":1}',
+            "\ufeff```json\r\n{invalid}\r\n```",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(decode_reply(text), {"message": text})
 
 
 class RuleWorkspaceTests(unittest.TestCase):
@@ -319,6 +346,7 @@ end_line = 1
         self.assertGreater(chat._connection_timeout(), junie_cli.ACP_TIMEOUT)
 
     def test_chat_proposals_are_not_written_until_accepted(self):
+        proposed = "前\u2028中\u2029後\u0085末\r\n"
         live = []
         workspace = self.workspace
 
@@ -335,7 +363,7 @@ end_line = 1
                 if ready:
                     return ""
                 text = "\ufeff```json\r\n" + json.dumps({"message": "案です", "unresolved": [],
-                    "edit": {"source": "new", "name": "chat.md", "text": "new rule\n"}}) + "\r\n```"
+                    "edit": {"source": "new", "name": "chat.md", "text": proposed}}, ensure_ascii=False) + "\r\n```"
                 for chunk in (text[:1], text[:20], text):
                     publish(None, chunk)
                     live.append(workspace.live["text"])
@@ -352,10 +380,13 @@ end_line = 1
         reopened = RuleWorkspace(self.config).snapshot(draft["id"])
         self.assertEqual(len(reopened["files"]), 1)
         self.assertEqual(reopened["messages"][-1]["text"], "案です")
+        self.assertEqual(reopened["unresolved"], [])
+        self.assertEqual(reopened["proposal"]["text"], proposed)
         self.assertFalse(any("\\u" in part or "edit" in part or "{" in part for part in live))
         accepted = self.send(reopened, "accept")
         self.assertEqual(len(accepted["files"]), 2)
-        self.assertIn("new rule", self.workspace.file_text(draft["id"], accepted["files"][1]["source"])["text"])
+        self.assertEqual(self.workspace.file_text(draft["id"], accepted["files"][1]["source"])["text"], proposed)
+        self.assertTrue(self.send(accepted, "preview")["preview"]["token"])
 
     def test_stop_between_reply_and_commit_does_not_save_proposal(self):
         entered, release = Event(), Event()
