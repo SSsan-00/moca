@@ -399,29 +399,33 @@ def _run_script_phase(
                 )
                 command_target_versions = before_command_versions if phase == "before_build" else verification_hashes
                 completed = run_process(invocation, label=f"スクリプト {phase}", cwd=cwd, stdout=log, stderr=subprocess.STDOUT, check=False)
-                if tracked:
-                    if completed.returncode < 0:
-                        _block_unknown_script(record)
-                    record.pop("script_inflight")
-
-                settled_once = completed.returncode == 0 and record is not None and once
-                if settled_once:
-                    record.setdefault("script_command_progress", {})[phase] = command_ids[:number]
+                if tracked and completed.returncode < 0:
+                    _block_unknown_script(record)
                 length = 0
                 if review_output and completed.returncode >= 0:
                     log.flush()
                     length = os.fstat(log.fileno()).st_size - start_output
-                repeatable_review = length > 0 and apply_decisions and command_target_versions is not None
-                if length > 0:
-                    decision = _script_decision_item(phase, command, number, completed.returncode, start_output, length)
+                decision = (_script_decision_item(phase, command, number, completed.returncode, start_output, length)
+                            if length > 0 else None)
+                settled_once = completed.returncode == 0 and record is not None and once
+                if settled_once:
+                    if apply_decisions and decision is not None:
+                        decision.update(previous_status=previous_status, previous_stage=previous_stage,
+                                        target_versions=None, log_sha256=None)
+                        record.setdefault("script_decisions_pending", {})[phase] = decision
+                    record.setdefault("script_command_progress", {})[phase] = command_ids[:number]
+                if tracked:
+                    record.pop("script_inflight")
+
+                repeatable_review = decision is not None and apply_decisions and command_target_versions is not None
+                if decision is not None:
                     if apply_decisions and settled_once:
+                        write_run_record(record_path, record)
                         decision["log_sha256"] = _script_output_sha256(run_path, decision)
                         decision["log_hash_scope"] = "full_range"
-                        decision["previous_status"], decision["previous_stage"] = previous_status, previous_stage
-                        record.setdefault("script_decisions_pending", {})[phase] = decision
                         decision["target_versions"] = _script_decision_versions(cwd, record)
                         write_run_record(record_path, record)
-                        _resolve_script_decision(config, run_path, cwd, record, decision)
+                        _resolve_script_decision(config, run_path, cwd, record, decision, verify_output=False)
                     else:
                         if tracked:
                             write_run_record(record_path, record)
@@ -563,9 +567,13 @@ def _script_decision_versions(cwd, record):
     return {path: review_target_hash(cwd, Path(path)) for path in record.get("targets", [record["target"]])}
 
 
-def _resolve_script_decision(config, run_path, cwd, record, decision):
+def _resolve_script_decision(config, run_path, cwd, record, decision, *, verify_output=True):
+    if verify_output:
+        _verify_saved_script_output(run_path, decision)
     expected = decision.get("target_versions")
-    if not decision.get("log_sha256") or expected != _script_decision_versions(cwd, record):
+    if expected is None:
+        raise ValueError("The saved script response has no verified target version; inspect the logs and start a new Run")
+    if expected != _script_decision_versions(cwd, record):
         raise ValueError("Target files changed since the script response was recorded")
     item = {key: value for key, value in decision.items() if key not in {"target_versions", "previous_status", "previous_stage"}}
     _review_script_output(config, run_path, record, item, apply_decisions=True)
@@ -4192,6 +4200,8 @@ def plan_checker_resume(config, run_id):
         raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
     with editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, _ = load_saved_run(config, run_id)
+        if record.get("script_decisions_pending"):
+            raise ValueError("Resolve the saved one-time script response before running the checker alone")
         if record.get("verification_script_pending") is not None:
             raise ValueError("Resolve the saved verification script response before running the checker alone")
         if (record["status"] not in VERIFIED_STATUSES | _CHECKER_RESUME_STATUSES
