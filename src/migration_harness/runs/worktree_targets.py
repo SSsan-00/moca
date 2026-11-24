@@ -37,6 +37,22 @@ def target_hash(path: Path) -> str | None:
     return sha256_file(path) if path.is_file() else None
 
 
+def target_application_versions(path: Path) -> tuple[str | None, str | None]:
+    if not path.is_file():
+        return None, None
+    with path.open("rb") as stream:
+        first = stream.read(len(codecs.BOM_UTF8))
+        raw = hashlib.sha256(first)
+        normalized = hashlib.sha256(codecs.BOM_UTF8 + first)
+        if first == codecs.BOM_UTF8:
+            normalized = raw
+        while chunk := stream.read(64 * 1024):
+            raw.update(chunk)
+            if normalized is not raw:
+                normalized.update(chunk)
+    return raw.hexdigest(), normalized.hexdigest()
+
+
 def review_target_hash(worktree: Path, relative_target: Path) -> str | None:
     """worktree内の通常ファイルだけをレビュー対象として照合する。"""
     target = worktree / relative_target

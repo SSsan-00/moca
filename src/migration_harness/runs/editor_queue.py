@@ -78,13 +78,15 @@ def _stage_editor_recovery(run_path, receipt):
     replace_run_record(path, {**receipt, "history_before": _digest(_read_queue(run_path / "editor.json").encode("utf-8"))})
 
 
-def stage_editor_adoption(run_path, queue, merged):
+def stage_editor_adoption(run_path, queue, merged, *, migration=None):
     entries = {}
     for name, (data, current, content) in merged.items():
         edit = queue["edits"][name]
         entries[name] = {"before": _digest(data), "after": _digest(target_edit_bytes(data or b"", content)),
                          "edit_id": edit["id"], "diff": _adopted_editor_diff(edit, current, content)}
     adoption = {"id": secrets.token_hex(16), "entries": entries}
+    if migration is not None:
+        adoption["migration"] = migration
     _stage_editor_recovery(run_path, {"adoption": adoption})
     return adoption
 
@@ -118,7 +120,11 @@ def _recover_editor_adoption(path, before, worktree, targets, record):
     if _digest(before.encode("utf-8")) != record["history_before"]:
         raise ValueError(_HISTORY_RECOVERY + " 編集履歴が外部で更新されたため、反映を停止しました。")
     with worktree_source_lock(worktree):
-        complete_editor_adoption(queue, worktree, targets, adoption)
+        root = worktree
+        if "migration" in adoption:
+            from ..workflow import _recover_migration_editor_adoption
+            root = _recover_migration_editor_adoption(path.parent, worktree, targets, queue, adoption)
+        complete_editor_adoption(queue, root, targets, adoption)
         if queue.get("last_editor_adoption") == adoption["id"]:
             replace_run_record(path, queue)
 
@@ -276,10 +282,6 @@ def _append_operator_diff(queue, target, diff):
 
 def record_operator_edit(queue: dict[str, Any], target: str, before: str, after: str) -> None:
     _append_operator_diff(queue, target, _operator_edit_diff(before, after))
-
-
-def record_adopted_editor_edit(queue, target, edit, current, adopted):
-    _append_operator_diff(queue, target, _adopted_editor_diff(edit, current, adopted))
 
 
 def add_prompt(queue: dict[str, Any], action: dict[str, Any]) -> None:

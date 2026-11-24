@@ -108,7 +108,8 @@
     }
     const running = data.live?.status === "running";
     renderModel();
-    const options = [new Option("新しいMarkdown", "new"), ...data.files.map(file => new Option(file.name, file.source))];
+    const options = [new Option("新しいMarkdown", "new"), ...data.files.map(file =>
+      new Option(file.name + (file.has_required_lines && file.usage === "reference" ? "（採用済み必須行あり）" : ""), file.source))];
     if (was !== data.id) source = selectedSources.get(data.id) ?? data.files[0]?.source ?? "new";
     if (!options.some(item => item.value === source)) source = data.files[0]?.source ?? "new";
     node("sources").replaceChildren(...options);
@@ -341,7 +342,7 @@
   node("save-classification").addEventListener("click", () => {
     const previous = draft?.files.find(file => file.source === source);
     const usage = node("usage").value;
-    const confirm_scope = previous?.usage !== "required" || usage === "required"
+    const confirm_scope = (previous?.usage !== "required" && !previous?.has_required_lines) || usage === "required"
       || window.confirm("既存の必須事項を詳細へ移しますか？適用範囲と例外を確認してください。");
     if (confirm_scope) submit("classification", {source, usage, description: node("description").value, confirm_scope});
   });

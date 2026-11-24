@@ -584,6 +584,51 @@ try {
   await wait(runEffort + ".value === 'medium' && !" + runEffort + ".disabled");
   const runSelection = await evaluate("fetch('run-model').then(r => r.json()).then(d => [d.model, d.effort])");
   assert.deepEqual(runSelection, ["fixture-luna", "medium"]);
+  await evaluate("(" + function () {
+    const fetchOriginal = window.fetch.bind(window);
+    const control = window.resumeModelFixture = {attempts: [], saved: false};
+    window.fetch = async (resource, options) => {
+      const body = options?.body && JSON.parse(options.body);
+      if (resource === "editor" && body?.kind === "model") {
+        control.pending = true;
+        const send = await new Promise(resolve => { control.release = resolve; });
+        control.pending = false;
+        if (!send) return new Response("fixture model save failed", {status: 409});
+        const reply = await fetchOriginal(resource, options);
+        control.saved = reply.ok;
+        return reply;
+      }
+      if (resource === "control" && body?.action === "resume") {
+        const response = await fetchOriginal(resource, options);
+        control.attempts.push({saved: control.saved, status: response.status, revision: body.model_revision});
+        return response;
+      }
+      return fetchOriginal(resource, options);
+    };
+  }.toString() + ")()");
+  await click("tab-progress");
+  await wait(field("toggle") + "?.matches(':enabled')");
+  const failedChange = runModel + ".value = 'fixture-lite'; " + runModel + ".dispatchEvent(new Event('change', {bubbles:true}))";
+  await evaluate(failedChange);
+  await wait("resumeModelFixture.pending");
+  await click("toggle");
+  await evaluate("resumeModelFixture.release(false)");
+  await wait(field("workspace-progress-feedback") + ".textContent.includes('モデル設定を保存できなかった')");
+  assert.deepEqual(await evaluate("resumeModelFixture.attempts"), []);
+  assert.equal(await evaluate("fetch('run-model').then(r => r.json()).then(d => d.model)"), "fixture-luna");
+  await evaluate(failedChange);
+  await wait("resumeModelFixture.pending");
+  await click("toggle");
+  await click("toggle");
+  assert.deepEqual(await evaluate("resumeModelFixture.attempts"), []);
+  await evaluate("resumeModelFixture.release(true)");
+  await wait("resumeModelFixture.attempts.length === 1");
+  const [attempt] = await evaluate("resumeModelFixture.attempts");
+  assert.deepEqual({saved: attempt.saved, status: attempt.status}, {saved: true, status: 202});
+  assert.match(attempt.revision, /^[0-9a-f]{24}$/);
+  assert.deepEqual(await evaluate("fetch('run-model').then(r => r.json()).then(d => [d.model, d.revision])"),
+    ["fixture-lite", attempt.revision]);
+  console.log("Browser Run model: a failed save blocks resume; a delayed valid save is used by one accepted resume");
   const liveTabs = await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)");
   const liveSteps = await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)");
   assert.equal(liveTabs.length, 6); assert.equal(liveSteps.length, 7);

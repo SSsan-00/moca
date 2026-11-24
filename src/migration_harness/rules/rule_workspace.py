@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tomllib
+from collections import Counter
 from contextlib import suppress
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -96,6 +97,7 @@ def _advance_edit_revision(state, addition):
     state["revision"] += 1
     for key in ("plan", "preview", "proposal"):
         state.pop(key, None)
+    state.pop("plan_sources", None)
 
 
 def _read_draft_state(path):
@@ -232,6 +234,7 @@ class RuleWorkspace:
             old = self._managed_active(project_root, rules, origins=meta["origins"])
             if old:
                 previous = rule_pack.read_json(old / "state.json")
+                meta["accepted_plan"] = rule_pack.read_json(old / "published" / "plan.json")
                 for item, file in self._files(old / "published", previous):
                     self._new_file(path, meta, item["name"], file.read_bytes(), baseline=True,
                                    usage=item["usage"], description=item["description"])
@@ -318,8 +321,12 @@ class RuleWorkspace:
                         drafts.append({"id": path.name, "files": len(state["files"])})
                 return {"drafts": drafts[:30]}
             state = _read_draft_state(self.draft(identifier))
+            accepted = self._accepted_required(state)
+            for internal in ("accepted_plan", "classified_sources", "plan_sources"):
+                state.pop(internal, None)
+            files = [{**item, "has_required_lines": item["source"] in accepted} for item in state["files"]]
             return {"junie_model": self.config.get("junie_model"), "junie_effort": self.config.get("junie_effort"),
-                    **state, "live": self.live if identifier == self.active_id else None}
+                    **state, "files": files, "live": self.live if identifier == self.active_id else None}
 
     def file_text(self, identifier, source):
         with self.lock:
@@ -393,7 +400,11 @@ class RuleWorkspace:
         hint = json.dumps({"files": files, "previous_turns": history}, ensure_ascii=False)
         if len(hint) > 20_000:
             hint = json.dumps({"files": files}, ensure_ascii=False)
-        return _INSTRUCTIONS + "\n\nDraft inventory and last turns (data):\n" + hint + "\n\nCurrent operator request:\n" + text
+        accepted = ("\nRead accepted-plan.json for the already applied placement and mandatory scope. "
+                    "Original text before an edit is available under accepted-sources/ when different. "
+                    "After source edits, match against the current text and preserve the surviving mandatory rules; "
+                    "the old line numbers only describe the prior version." if state.get("accepted_plan") else "")
+        return _INSTRUCTIONS + accepted + "\n\nDraft inventory and last turns (data):\n" + hint + "\n\nCurrent operator request:\n" + text
 
     def _turn(self, path, state, text, optimize):
         def publish(permission, chunk):
@@ -419,8 +430,21 @@ class RuleWorkspace:
             workspace = self.chat.project
             source_root = _directory(workspace, Path("sources"))
             source_root.mkdir(exist_ok=True)
+            reviewed_sources = {}
+            accepted = state.get("accepted_plan")
             for item, file in self._files(path, state):
-                _write(safe_target(source_root, Path(item["source"])), file.read_bytes())
+                source = item["source"]
+                data = file.read_bytes()
+                _write(safe_target(source_root, Path(source)), data)
+                reviewed_sources[source] = _digest(data)
+                if accepted:
+                    baseline = safe_target(path, Path("baseline") / source)
+                    if baseline.is_file() and (previous := baseline.read_bytes()) != data:
+                        previous_root = _directory(workspace, Path("accepted-sources"))
+                        previous_root.mkdir(exist_ok=True)
+                        _write(safe_target(previous_root, Path(source)), previous)
+            if accepted:
+                _json(safe_target(workspace, Path("accepted-plan.json")), accepted)
             prompt = self._prompt(path, state, text)
             if optimize:
                 if self.chat.offered_skill:
@@ -452,6 +476,7 @@ class RuleWorkspace:
                     current["proposal"] = answer["edit"]
                 if isinstance(answer.get("plan"), dict):
                     current["plan"] = answer["plan"]
+                    current["plan_sources"] = reviewed_sources
                 _json(path / "state.json", current)
                 self.live = {"status": "ready", "new_session": new_session}
         except _CONFIG_EXCEPTIONS as exc:
@@ -464,25 +489,88 @@ class RuleWorkspace:
             with self.lock:
                 self.worker = None
 
-    def _default_plan(self, path, state):
-        mandatory = {"path": "Agent.md", "title": "必須の移行ルール", "parts": []}
-        documents = [mandatory]
-        inventory, _ = rule_pack.source_files(path)
+    def _accepted_required(self, state):
+        overrides = state.get("classified_sources", [])
+        return {part["source"] for doc in state.get("accepted_plan", {}).get("documents", []) if doc["path"] == "Agent.md"
+                for part in doc["parts"] if part["source"] not in overrides}
+
+    def _accepted_documents(self, path, state, inventory):
+        accepted = state.get("accepted_plan", {"format_version": 2, "documents": [
+            {"path": "Agent.md", "title": "必須の移行ルール", "parts": []},
+        ]})
+        overrides = set(state.get("classified_sources", []))
+        planned_sources = {part["source"] for doc in accepted["documents"] for part in doc["parts"]}
+        keep = set()
         for info in inventory:
-            entry = next(item for item in state["files"] if item["source"] == info["path"])
-            part = {"source": info["path"], "start": 1, "end": info["lines"]}
+            name = info["path"]
+            old = safe_target(path, Path("baseline") / name)
+            if name in overrides or name not in planned_sources:
+                continue
+            if not old.is_file() or sha256_file(old) != info["sha256"]:
+                raise ValueError("採用済みルールの原文が変わりました。Junieで配置を確認し直すか、原文の分類を明示して更新してください。")
+            keep.add(name)
+        documents = []
+        for doc in accepted["documents"]:
+            parts = [part.copy() for part in doc["parts"] if part["source"] in keep]
+            if parts or doc["path"] == "Agent.md" or not doc["parts"]:
+                documents.append({**doc, "parts": parts})
+        return {**accepted, "documents": documents}, keep
+
+    def _default_plan(self, path, state, inventory):
+        plan, keep = self._accepted_documents(path, state, inventory)
+        documents = plan["documents"]
+        mandatory = next(doc for doc in documents if doc["path"] == "Agent.md")
+        entries = {item["source"]: item for item in state["files"]}
+        occupied = {doc["path"] for doc in documents}
+        for info in inventory:
+            name = info["path"]
+            if name in keep:
+                continue
+            entry = entries[name]
+            part = {"source": name, "start": 1, "end": info["lines"]}
             if entry["usage"] == "required":
                 mandatory["parts"].append(part)
             else:
-                documents.append({"path": f"details/{Path(info['path']).stem}.md", "title": entry["name"],
+                stem = Path(name).stem
+                destination = f"details/{stem}.md"
+                suffix = 2
+                while destination in occupied:
+                    destination = f"details/{stem}-{suffix}.md"
+                    suffix += 1
+                occupied.add(destination)
+                documents.append({"path": destination, "title": entry["name"],
                                   "description": entry["description"], "parts": [part]})
-        return {"format_version": 2, "documents": documents}
+        return plan
 
-    def _verify_source_scope(self, state, plan):
+    def _verify_source_scope(self, path, state, plan, texts):
         required = {item["source"] for item in state["files"] if item["usage"] == "required"}
-        for document in plan["documents"]:
-            if document["path"] != "Agent.md" and any(part["source"] in required for part in document["parts"]):
-                raise ValueError("必須原文を詳細へ移動する案は自動反映できません。既存の必須範囲を確認してください。")
+        mandatory = next(doc["parts"] for doc in plan["documents"] if doc["path"] == "Agent.md")
+        detailed = {part["source"] for doc in plan["documents"] if doc["path"] != "Agent.md" for part in doc["parts"]}
+        if required & detailed:
+            raise ValueError("必須原文を詳細へ移動する案は自動反映できません。既存の必須範囲を確認してください。")
+        accepted = state.get("accepted_plan")
+        if accepted is None:
+            return
+        allowed = self._accepted_required(state) & detailed
+        for source in allowed:
+            old = _decode(safe_target(path, Path("baseline") / source).read_bytes()).splitlines(keepends=True)
+            current = texts[source]
+            previous = [part for doc in accepted["documents"] if doc["path"] == "Agent.md"
+                        for part in doc["parts"] if part["source"] == source]
+            if old == current:
+                covered = {line for part in mandatory if part["source"] == source
+                           for line in range(part["start"], part["end"] + 1)}
+                if all(line in covered for part in previous for line in range(part["start"], part["end"] + 1)):
+                    continue
+                raise ValueError("採用済みの必須行を詳細へ移す案は自動反映できません。原文の分類を明示して確認してください。")
+            old = [line.rstrip("\r\n") for line in old]
+            current = [line.rstrip("\r\n") for line in current]
+            old_required = Counter(line for part in previous
+                                   for line in old[part["start"] - 1:part["end"]] if line.strip())
+            new_required = Counter(line for part in mandatory if part["source"] == source
+                                   for line in current[part["start"] - 1:part["end"]])
+            if (old_required & Counter(current)) - new_required:
+                raise ValueError("採用済みの必須行を詳細へ移す案は自動反映できません。原文の分類を明示して確認してください。")
 
     def _patch(self, original, export):
         document = tomlkit.parse(original.decode("utf-8"))
@@ -537,10 +625,16 @@ class RuleWorkspace:
                 if delta:
                     changed.append(delta)
             rule_pack.snapshot(export)
-            plan = state.get("plan") or self._default_plan(export, state)
+            inventory, texts = rule_pack.source_files(export)
+            plan = state.get("plan")
+            if plan and state.get("accepted_plan") and state.get("plan_sources") != {
+                info["path"]: info["sha256"] for info in inventory
+            }:
+                raise ValueError("整理案の確認後に原文が変わりました。配置を確認し直してください。")
+            plan = plan or self._default_plan(path, state, inventory)
             _json(export / "plan.json", plan)
             rule_pack.build(export)
-            self._verify_source_scope(state, plan)
+            self._verify_source_scope(path, state, plan, texts)
             rule_pack.verify(export)
             new_config = self._patch(config, export)
             new_bytes = new_config.encode()
@@ -574,7 +668,7 @@ class RuleWorkspace:
             raise ValueError("TOMLが更新されています。上書きは行いませんでした。")
         export = _directory(path, Path("published"))
         rule_pack.verify(export)
-        self._verify_source_scope(state, rule_pack.read_json(export / "plan.json"))
+        self._verify_source_scope(path, state, rule_pack.read_json(export / "plan.json"), rule_pack.source_files(export)[1])
         candidate = self._patch(config, export)
         version = self._preview_version(path, state, export, candidate.encode())
         if action.get("preview") != version or (state.get("preview") or {}).get("token") != version:
@@ -695,9 +789,12 @@ class RuleWorkspace:
                 usage, description = action.get("usage"), action.get("description")
                 validate_rule_usage(usage, description)
                 entry = next(item for item in state["files"] if item["source"] == source)
-                if entry["usage"] == "required" and usage != "required" and action.get("confirm_scope") is not True:
+                if (entry["usage"] == "required" or source in self._accepted_required(state)) and usage != "required" and action.get("confirm_scope") is not True:
                     raise ValueError("必須から詳細へ変更するには適用条件を明示して確認してください。")
                 entry.update(usage=usage, description=description)
+                overrides = state.setdefault("classified_sources", [])
+                if source not in overrides:
+                    overrides.append(source)
                 state["revision"] += 1
                 state.pop("plan", None)
                 state.pop("preview", None)

@@ -1318,6 +1318,15 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 raise ValueError
             if "verification_request" in action:
                 raise ValueError
+            if "model_revision" in action and (
+                action.get("action") not in {"resume", "resume-run", "build-response", "anchors"}
+                or not isinstance(action.get("run_id"), str)
+                or (action["model_revision"] is not None and (
+                    not isinstance(action["model_revision"], str)
+                    or not re.fullmatch(r"[0-9a-f]{24}", action["model_revision"])
+                ))
+            ):
+                raise ValueError
             brave = action.get("junie_brave", False)
             if type(brave) is not bool or (brave and (
                 not manager or action.get("action") not in {"run", "resume-run"}
@@ -1366,6 +1375,14 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.validate_control_action(action)
             except (OSError, ValueError):
                 self.send_error(400)
+                return
+            try:
+                if "model_revision" in action:
+                    if action["run_id"] != self.dashboard.state.get("run_id"):
+                        raise ValueError("表示中の実行が変わりました。")
+                    _check_run_model_revision(config, action["run_id"], action)
+            except _ERRORS as exc:
+                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
                 return
             if manager and action["action"] not in {"stop", "junie-answer", "anchors"}:
                 try:
@@ -1523,6 +1540,14 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
     return Handler
 
 
+def _check_run_model_revision(config, run_id, action):
+    if "model_revision" not in action:
+        return
+    _, record = load_dashboard_record(config, run_id)
+    if action["model_revision"] != record.get("junie_model_revision"):
+        raise ValueError("モデル設定が更新されました。モデルと推論の強さを確認して、もう一度操作してください。")
+
+
 def execute_dashboard_action(view, config, action):
     """1つのRunだけの状態・入力待ち・停止要求をワーカースレッドに結び付ける。"""
     token = run_observer.set(view.observe)
@@ -1533,6 +1558,7 @@ def execute_dashboard_action(view, config, action):
     conversation_id = action.get("conversation_id")
     try:
         with control_scope(view.control):
+            _check_run_model_revision(config, run_id, action)
             if view.control is not None:
                 view.control.junie_progress_style = dashboard_progress_style(config)
                 view.control.junie_brave = action.get("junie_brave") is True and action["action"] in {"run", "resume-run"}
