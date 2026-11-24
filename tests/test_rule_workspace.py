@@ -16,7 +16,7 @@ from migration_harness.config import load_config
 from migration_harness.files import sha256_file
 from migration_harness.junie.reply_text import unwrap_json_fence
 from migration_harness.web.dashboard import _save_settings
-from migration_harness.rules.rule_workspace import RuleWorkspace
+from migration_harness.rules.rule_workspace import RuleWorkspace, _diff
 from migration_harness.rules.rule_chat import RuleChat, decode_reply
 
 
@@ -54,6 +54,45 @@ class RuleReplyTests(unittest.TestCase):
 
 
 class RuleWorkspaceTests(unittest.TestCase):
+    def test_diff_keeps_lines_separate_when_final_newline_is_missing(self):
+        diff = _diff("old", "new", "rule.md")
+        self.assertIn("-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n", diff)
+
+    def test_model_selection_is_saved_and_restarts_the_next_chat(self):
+        sessions = []
+
+        class FakeChat:
+            offered_skill = False
+
+            def __init__(self, project, model, effort):
+                self.project = project
+                self.closed = False
+                sessions.append((model, effort, self))
+
+            def begin(self, _):
+                pass
+
+            def wait(self, *, ready=False, **_):
+                return "" if ready else json.dumps({"message": "確認しました", "unresolved": []})
+
+            def shutdown(self):
+                self.closed = True
+
+        draft = self.workspace.start()
+        with patch("migration_harness.rules.rule_workspace.RuleChat", FakeChat):
+            draft = self.send(draft, "model", model="gpt", effort="medium")
+            draft = self.send(draft, "message", text="確認")
+            if self.workspace.worker:
+                self.workspace.worker.join(3)
+            draft = self.workspace.snapshot(draft["id"])
+            self.assertEqual((draft["junie_model"], draft["junie_effort"]), ("gpt", "medium"))
+            draft = self.send(draft, "model", model="sonnet", effort="high")
+            self.assertTrue(sessions[0][2].closed)
+            self.send(draft, "message", text="続けて確認")
+            if self.workspace.worker:
+                self.workspace.worker.join(3)
+        self.assertEqual([(model, effort) for model, effort, _ in sessions], [("gpt", "medium"), ("sonnet", "high")])
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

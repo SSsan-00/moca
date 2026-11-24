@@ -504,6 +504,16 @@ try {
     const firstDraft = await value("rules-drafts");
 
     await checkRuleSourceEditor({evaluate, wait, field, change, click, value}, ruleConfigPath, firstDraft);
+    await change("rules-model", "fixture-luna", "change");
+    await wait(field("rules-model") + ".value === 'fixture-luna' && !" + field("rules-model") + ".disabled");
+    await change("rules-effort", "medium", "change");
+    await wait(field("rules-effort") + ".value === 'medium' && !" + field("rules-effort") + ".disabled");
+    const savedRuleModel = await evaluate("fetch('rule-workspace?id=" + firstDraft + "').then(r => r.json()).then(d => [d.junie_model, d.junie_effort])");
+    assert.deepEqual(savedRuleModel, ["fixture-luna", "medium"]);
+    await click("rules-preview");
+    await wait("!" + field("rules-review") + ".hidden");
+    assert(await evaluate("!!document.querySelector('#rules-text-diff .rule-diff-line[data-kind=add]')"));
+    assert(await evaluate("!!document.querySelector('#rules-text-diff .rule-diff-line[data-kind=remove]')"));
     await change("rules-text", "未保存の本文", "input");
     await revisitRules();
     assert.equal(await value("rules-text"), "未保存の本文");
@@ -564,6 +574,16 @@ try {
     [["message", "", ""], ["answer", "browser-permission", "allow"], ["stop", "", ""]]);
   await evaluate("stopRuleChatFixture()");
   console.log("Browser RuleWorkspace live actions: streaming text, permission, cancellation, and unsent draft remain distinct");
+  await click("tab-editor");
+  const runModel = "document.querySelector('#editor-prompt-form [data-run-model]')";
+  const runEffort = "document.querySelector('#editor-prompt-form [data-run-effort]')";
+  await wait(runModel + " && !" + runModel + ".disabled");
+  await evaluate(runModel + ".value = 'fixture-luna'; " + runModel + ".dispatchEvent(new Event('change', {bubbles:true}))");
+  await wait(runModel + ".value === 'fixture-luna' && !" + runModel + ".disabled");
+  await evaluate(runEffort + ".value = 'medium'; " + runEffort + ".dispatchEvent(new Event('change', {bubbles:true}))");
+  await wait(runEffort + ".value === 'medium' && !" + runEffort + ".disabled");
+  const runSelection = await evaluate("fetch('run-model').then(r => r.json()).then(d => [d.model, d.effort])");
+  assert.deepEqual(runSelection, ["fixture-luna", "medium"]);
   const liveTabs = await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)");
   const liveSteps = await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)");
   assert.equal(liveTabs.length, 6); assert.equal(liveSteps.length, 7);
@@ -642,13 +662,8 @@ try {
   assert.equal(await evaluate(editorBubble + ".querySelector('p').textContent"), editorSample);
   await wait("!!document.querySelector('#editor-prompts .junie-chat-bubble[data-side=incoming]')");
   const editorStyles = await evaluate(editorBubble + ".className");
-  const queuedEdit = editorBubble + ".querySelector('button')";
-  await wait("!!" + queuedEdit);
-  await evaluate(queuedEdit + ".click()");
-  assert.equal(await value("editor-prompt"), editorSample);
-  assert.equal(await evaluate(field("editor-cancel-prompt") + ".hidden"), false);
-  await click("editor-cancel-prompt");
-  assert.equal(await value("editor-prompt"), "");
+  assert.equal(await evaluate(editorBubble + ".querySelector('button')"), null, "queued instructions have no edit button");
+  assert.equal(await evaluate("getComputedStyle(" + editorBubble + ".querySelector('.junie-chat-sender')).position"), "absolute");
   if (process.env.HARNESS_CHAT_SCREENSHOTS) {
     await cdp("Emulation.setDeviceMetricsOverride", {width: 1280, height: 900, deviceScaleFactor: 1, mobile: false});
     await wait(editorBubble + ".offsetWidth > 0");
@@ -748,9 +763,12 @@ try {
   console.log("Browser demo: saved language and tone change log framing without changing original entries");
 
   await showRuleWorkspace();
-  await wait("!" + registered + ".hidden && " + field("rules-registered-name") + ".textContent === 'orders.md'");
-  await click("rules-start");
-  await wait("!" + field("rules-draft") + ".hidden");
+  await wait("!" + field("rules-draft") + ".hidden && " + field("rules-name") + ".value === 'orders.md'");
+  assert.equal(await evaluate(field("rules-import-label") + ".hidden"), true);
+  await change("rules-model", "gpt", "change");
+  await wait(field("rules-model") + ".value === 'gpt' && !" + field("rules-model") + ".disabled");
+  await change("rules-effort", "medium", "change");
+  await wait(field("rules-effort") + ".value === 'medium' && !" + field("rules-effort") + ".disabled");
   const instructionExample = field("rules-instruction-example");
   assert.equal(await evaluate("getComputedStyle(" + instructionExample + ").visibility"), "visible");
   await cdp("Emulation.setEmulatedMedia", {features: [{name: "prefers-reduced-motion", value: "no-preference"}]});
@@ -798,13 +816,11 @@ try {
   assert.equal(await evaluate(field("rules-chat-latest") + ".hidden"), true);
   await click("rules-optimize");
   await wait("!" + field("rules-proposal") + ".hidden");
-  console.log("Browser Junie chats: same components, IME-safe shortcut, queued edits, and manually followed history");
+  console.log("Browser Junie chats: same components, IME-safe shortcut and manually followed history");
   await click("rules-preview");
   await wait("!" + field("rules-review") + ".hidden");
-  const rulesConfirm = field("rules-confirm");
-  assert.deepEqual(await evaluate("[" + rulesConfirm + ".offsetWidth, " + rulesConfirm + ".offsetHeight]"), [16, 16]);
-  await evaluate("document.querySelector('.rule-confirm').click()");
-  assert(await evaluate("document.querySelector('#rules-confirm').checked"));
+  assert.equal(await evaluate("document.querySelector('#rules-confirm')"), null);
+  assert.equal(await evaluate("document.querySelector('#rules-toml-diff')"), null);
   for (const [width, height] of [[1280, 650], [390, 650], [1280, 440]]) {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: false});
     assert(await evaluate(ruleViewport), "rules demo fits " + width + "×" + height);

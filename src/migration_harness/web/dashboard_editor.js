@@ -23,7 +23,6 @@
   const form = find("#editor-prompt-form");
   const prompt = find("#editor-prompt");
   const sendButton = find("#editor-send");
-  const cancelEdit = find("#editor-cancel-prompt");
   const promptList = find("#editor-prompts");
   const updateFeed = bindJunieChat(find("#editor-chat-feed"), find("#editor-chat-latest"), form, prompt, sendButton);
   const documents = new Map();
@@ -43,9 +42,7 @@
   let shownPrompts;
   let chatRun;
   let selectedTarget;
-  let editPrompt;
   let promptEdits = 0;
-  let newPromptDraft = "";
   let refreshing;
   let saving = false;
   let sending = false;
@@ -359,28 +356,6 @@
     sendButton.disabled = switching || state?.run_id !== progress().run_id || !state?.can_prompt || sending || !prompt.value.trim();
   }
 
-  // 新規指示と送信待ちの指示編集を、ラベルと操作で区別する。
-  function promptMode() {
-    const active = Boolean(editPrompt);
-    prompt.setAttribute("aria-label", active ? "送信待ちの指示を編集" : "Junie に指示");
-    sendButton.querySelector("[data-send-icon]").hidden = active;
-    sendButton.querySelector("[data-send-label]").hidden = !active;
-    if (active) sendButton.removeAttribute("aria-label");
-    else sendButton.setAttribute("aria-label", "送信");
-    find("#editor-chat-shortcut").textContent = active ? "Ctrl+Enter で変更を保存" : "Ctrl+Enter で送信";
-    cancelEdit.hidden = !active;
-    cancelEdit.disabled = !active || sending;
-    updateSendButton();
-  }
-
-  // 保存または取消後に、編集中だった新規指示を入力欄へ戻す。
-  function finishPromptEdit() {
-    editPrompt = undefined;
-    prompt.value = newPromptDraft;
-    promptMode();
-    prompt.focus();
-  }
-
   // 送信した指示と、その応答を表示する行を作る。
   function chatTurn(text) {
     const item = document.createElement("li");
@@ -401,21 +376,9 @@
     const lastVerification = conversation.findLast(entry => entry.result_status);
     const expanded = new Set([...promptList.querySelectorAll("details[open]")].map(item => item.dataset.logKey));
     const turns = [...state.prompts.filter(message => !ids.has(message.id)).map(message => {
-      const {item, message: outgoing, reply} = chatTurn(message.text);
+      const {item, reply} = chatTurn(message.text);
       const label = {queued: "送信待ち", steering: "Junie に送信・処理中", applying: "反映確認中", sending: "処理中", sent: "送信済み"}[message.status];
       reply.append(Object.assign(document.createElement("p"), {textContent: label}));
-      if (message.status === "queued" && state.can_prompt) {
-        const button = Object.assign(document.createElement("button"), {className: "button", type: "button", textContent: "編集"});
-        button.addEventListener("click", () => {
-          if (editPrompt || sending) return;
-          editPrompt = message.id;
-          newPromptDraft = prompt.value;
-          prompt.value = message.text;
-          promptMode();
-          prompt.focus();
-        });
-        outgoing.append(button);
-      }
       return item;
     }), ...conversation.map(message => {
       const {item, reply} = chatTurn(message.text);
@@ -478,16 +441,9 @@
     const activity = find("#editor-junie-activity");
     activity.textContent = showAgent && !snapshot.ready ? snapshot.activity?.message || "" : "";
     activity.hidden = !activity.textContent;
-    find("#editor-prompt-timing").textContent = state.status_only ? "準備完了までは工程を確認できます。"
-      : state.conversation && !editPrompt ? "工程の確認、追加指示、ビルドやチェッカーの再実行を依頼できます。"
-      : !state.can_prompt ? "現在の工程では指示を登録できません。"
-      : state.prompt_timing === "repair_restart" ? "保存した編集を反映して Junie に指示を渡し直し、対応後に再ビルドします。"
-      : state.prompt_timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
-      : state.prompt_timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
-      : "現在の作業区間が終わると Junie に渡します。";
+    find("#editor-prompt-timing").textContent = !state.can_prompt ? "現在の工程では指示を登録できません。" : "";
     updateSendButton();
     prompt.disabled = switching || state.run_id !== progress().run_id || !state.can_prompt || sending;
-    cancelEdit.disabled = !editPrompt || sending;
   }
 
   // 保存版と未保存編集を照合して、表示中のRunの画面を更新する。
@@ -495,17 +451,14 @@
     if (expectedRevision !== revision || switching || (data.run_id && data.run_id !== progress().run_id)) return;
     const previous = state;
     if (previous?.run_id !== data.run_id) {
-      if (previous?.run_id) runDrafts.set(previous.run_id, {prompt: prompt.value, editPrompt, newPromptDraft});
+      if (previous?.run_id) runDrafts.set(previous.run_id, {prompt: prompt.value});
       const draft = runDrafts.get(data.run_id) || {};
       selectedTarget = undefined;
       phpSource = undefined;
       phpRequest++;
       phpEditor?.setValue("");
       language = data.targets.length ? "target" : "php";
-      editPrompt = draft.editPrompt;
-      newPromptDraft = draft.newPromptDraft || "";
       prompt.value = draft.prompt || "";
-      promptMode();
     }
     state = data;
     if (!data.run_id) {
@@ -671,7 +624,6 @@
   });
   phpPicker.addEventListener("change", () => loadPhp(phpPicker.value));
   save.addEventListener("click", saveDraft);
-  cancelEdit.addEventListener("click", finishPromptEdit);
   prompt.addEventListener("input", () => {
     promptEdits++;
     updateSendButton();
@@ -681,15 +633,17 @@
     event.preventDefault();
     const input = prompt.value, text = input.trim();
     if (!text || switching || state?.run_id !== progress().run_id || sending || !state?.can_prompt) return;
-    const runId = state.run_id, editing = editPrompt, editCount = promptEdits;
+    const runId = state.run_id, editCount = promptEdits;
     const showingRun = () => !switching && state?.run_id === runId && progress().run_id === runId;
-    const ownsDraft = () => editing === editPrompt && editCount === promptEdits && input === prompt.value;
+    const ownsDraft = () => editCount === promptEdits && input === prompt.value;
     sending = true;
     revision++;
     updateChat();
     report("#editor-prompt-error");
     try {
-      if (state.conversation && !editing) {
+      if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
+      if (!showingRun()) return;
+      if (state.conversation) {
         let submission = submittedMessages.get(runId);
         if (submission?.text !== text) {
           submission = {id: crypto.randomUUID().replaceAll("-", ""), text, status_only: layout.dataset.statusOnly === "true"};
@@ -706,14 +660,11 @@
         submittedMessages.delete(runId);
         return;
       }
-      const data = await request("editor", {kind: "prompt", run_id: runId, id: editing, text});
+      const data = await request("editor", {kind: "prompt", run_id: runId, text});
       if (!showingRun()) return;
       revision++;
       state.prompts = data.prompts;
-      if (ownsDraft()) {
-        if (editing) finishPromptEdit();
-        else prompt.value = "";
-      }
+      if (ownsDraft()) prompt.value = "";
     } catch (error) {
       if (showingRun()) report("#editor-prompt-error", error);
     } finally {
@@ -729,8 +680,7 @@
   window.harnessEditorStageDraft = (runId, text) => {
     if (switching || sending || runId !== progress().run_id) throw new Error("表示中の実行を選び直してください。");
     const displayed = state?.run_id === runId;
-    const draft = displayed ? {prompt: prompt.value, editPrompt} : (runDrafts.get(runId) || {});
-    if (draft.editPrompt) throw new Error("編集中の追加指示を閉じてから、もう一度実行してください。");
+    const draft = displayed ? {prompt: prompt.value} : (runDrafts.get(runId) || {});
     const value = [draft.prompt, text].filter(Boolean).join("\n\n");
     if (new TextEncoder().encode(value).length > 4000) {
       throw new Error("追加指示が長すぎます。エディタ側の下書きを整理してください。");
@@ -759,4 +709,111 @@
   document.addEventListener("harnessrunchange", () => { switching = false; revision++; refresh(); });
   setInterval(refresh, 750);
   workspaceTabs.addEventListener("harnesstab", refresh);
+})();
+
+(() => {
+  const groups = [...document.querySelectorAll(".run-model:has([data-run-model])")];
+  if (!groups.length) return;
+  const demo = window.harnessEditorDemo;
+  const request = demo ? demo.request : workspaceRequest;
+  const progress = demo ? () => demo.progress : () => snapshot;
+  let catalog = [], current, selectedModel = "", selectedEffort = "", saving = false, loading = false, generation = 0;
+  let pendingSave;
+  let catalogWarning = "";
+
+  function render(message = "") {
+    const options = catalog.slice();
+    if (selectedModel && !options.some(item => item.id === selectedModel)) options.push({id: selectedModel, name: selectedModel});
+    const efforts = options.find(item => item.id === selectedModel)?.efforts || [];
+    for (const group of groups) {
+      const model = group.querySelector("[data-run-model]");
+      const effort = group.querySelector("[data-run-effort]");
+      model.replaceChildren(new Option("Junieの既定モデル", ""), ...options.map(item => new Option(item.name, item.id)));
+      model.value = selectedModel;
+      const values = efforts.filter(value => Object.hasOwn(effortLabels, value));
+      effort.replaceChildren(new Option("モデルの既定値", ""), ...values.map(value => new Option(effortLabels[value], value)));
+      if (selectedEffort && !values.includes(selectedEffort)) {
+        const previous = new Option(`${selectedEffort}（未確認）`, selectedEffort);
+        previous.disabled = true;
+        effort.add(previous);
+      }
+      effort.value = selectedEffort;
+      model.disabled = !current?.can_select || saving;
+      effort.disabled = !current?.can_select || saving || !selectedModel || !values.length;
+      group.querySelector(".run-model-status").textContent = [message, catalogWarning].filter(Boolean).join(" ");
+    }
+  }
+
+  async function load() {
+    const runId = progress().run_id;
+    const version = ++generation;
+    loading = true;
+    current = undefined;
+    render("モデル設定を読み込んでいます。");
+    if (!runId) { loading = false; return; }
+    try {
+      const data = await request("run-model");
+      if (version !== generation || data.run_id !== progress().run_id) return;
+      current = data;
+      selectedModel = data.model || ""; selectedEffort = data.effort || "";
+      render();
+    } catch (error) {
+      if (version === generation) render(error.message);
+    } finally {
+      if (version === generation) loading = false;
+    }
+  }
+
+  async function saveSelection() {
+    if (!current?.can_select || saving || current.run_id !== progress().run_id) return false;
+    const version = generation;
+    let message;
+    saving = true; render("モデル設定を保存しています。");
+    try {
+      const data = await request("editor", {kind: "model", run_id: current.run_id, model: selectedModel,
+        effort: selectedEffort, model_revision: current.revision});
+      if (version !== generation) return false;
+      current = {run_id: data.run_id, can_select: true, model: data.junie_model, effort: data.junie_effort, revision: data.junie_model_revision};
+      message = "";
+      return true;
+    } catch (error) {
+      if (version === generation) {
+        selectedModel = current.model || ""; selectedEffort = current.effort || "";
+        message = `保存できませんでした。${error.message}`;
+      }
+      return false;
+    } finally {
+      saving = false;
+      render(version === generation ? message : undefined);
+    }
+  }
+  window.harnessRunModelReady = () => saving ? pendingSave : Promise.resolve(true);
+  for (const group of groups) {
+    group.querySelector("[data-run-model]").addEventListener("change", event => {
+      selectedModel = event.target.value; selectedEffort = "";
+      pendingSave = saveSelection();
+    });
+    group.querySelector("[data-run-effort]").addEventListener("change", event => {
+      selectedEffort = event.target.value;
+      pendingSave = saveSelection();
+    });
+  }
+  document.addEventListener("harnessrunselect", () => { generation++; current = undefined; render("実行を読み込んでいます。"); });
+  document.addEventListener("harnessrunchange", load);
+  setInterval(() => {
+    if (!loading && !saving && !current?.can_select && progress().run_id && progress().worktree_path) load();
+  }, 3000);
+  render("モデル一覧を読み込んでいます。");
+  (async () => {
+    const fallback = [...document.querySelector("#settings-junie-model").options].filter(option => option.value)
+      .map(option => ({id: option.value, name: option.text, ...(demo ? {efforts: option.value === "junie-lite" ? ["none"] : ["low", "medium", "high"]} : {})}));
+    try {
+      catalog = demo ? fallback : (await workspaceRequest("junie-models")).models;
+      if (!catalog.length) throw new Error("モデル候補がありません。");
+    } catch {
+      catalog = fallback;
+      catalogWarning = "モデル一覧を取得できないため、代表候補を表示しています。Junieを確認し、画面を開き直してください。";
+    }
+    await load();
+  })();
 })();

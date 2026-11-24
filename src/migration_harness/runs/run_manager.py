@@ -460,7 +460,7 @@ class RunManager:
                 hidden = set()
                 for run_id, record in records.items():
                     if include_usage:
-                        rows[run_id] = {key: record[key] for key in ("run_id", "unit_id", "created_at", "token_usage")
+                        rows[run_id] = {key: record[key] for key in ("run_id", "unit_id", "created_at", "token_usage", "cost_exchange")
                                         if key in record}
                     elif record.get("hidden_from_dashboard") is True:
                         hidden.add(run_id)

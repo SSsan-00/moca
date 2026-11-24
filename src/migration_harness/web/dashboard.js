@@ -221,7 +221,9 @@ async function refreshProgressPrompts() {
   syncProgressPrompts();
   try {
     const data = await workspaceRequest("prompts");
-    if (request === promptRequest && data.run_id === runId) progressPrompts = data;
+    if (request === promptRequest && data.run_id === runId) {
+      progressPrompts = {...data, timing: data.conversation ? "conversation" : data.timing};
+    }
   } catch (error) {
     if (request === promptRequest) {
       progressPrompts = undefined;
@@ -233,6 +235,7 @@ async function refreshProgressPrompts() {
   }
 }
 
+let pendingProgressMessage;
 async function submitProgressPrompt(text) {
   const runId = snapshot.run_id;
   const request = ++promptRequest;
@@ -240,9 +243,16 @@ async function submitProgressPrompt(text) {
   progressPrompt.showError();
   syncProgressPrompts();
   try {
-    const data = await workspaceRequest("prompts", {run_id: runId, text});
-    if (request === promptRequest && data.run_id === runId) {
-      progressPrompts = data;
+    if (progressPrompts?.conversation) {
+      if (pendingProgressMessage?.run_id !== runId || pendingProgressMessage?.text !== text) {
+        pendingProgressMessage = {kind: "conversation", run_id: runId, text, id: crypto.randomUUID().replaceAll("-", "")};
+      }
+      await workspaceRequest("editor", pendingProgressMessage);
+      pendingProgressMessage = undefined;
+    } else {
+      await workspaceRequest("prompts", {run_id: runId, text});
+    }
+    if (request === promptRequest && snapshot.run_id === runId) {
       progressPrompt.input.value = "";
     }
   } catch (error) {
@@ -250,6 +260,7 @@ async function submitProgressPrompt(text) {
   } finally {
     promptSaving = false;
     syncProgressPrompts();
+    refreshProgressPrompts();
   }
 }
 
@@ -1064,7 +1075,7 @@ const tokenRuns = bindTokenRuns(run => {
   }));
   renderTokenUsage(rows, run ? `${run.unit_id} の移行 · Run ID ${run.run_id}` : "",
     run?.running ? "Junieからの使用量の報告を待っています。" :
-      run ? "このRunには使用量の記録がありません。" : "", run?.running);
+      run ? "このRunには使用量の記録がありません。" : "", run?.running, run?.cost_exchange);
 });
 let tokenListRequest = 0;
 workspaceTabs.addEventListener("harnesstab", async () => {
@@ -1222,11 +1233,11 @@ function renderCheckerReview(data, showReview) {
 function renderTokens() {
   const data = snapshot;
   const usingJunie = !data.ready && (["junie_running", "editor_followup", "repairing"].includes(data.status) || data.generating_anchors);
-  renderRunTokenSummary(data.token_usage, usingJunie);
+  renderRunTokenSummary(data.token_usage, usingJunie, data.cost_exchange);
   if (element("#tab-tokens").getAttribute("aria-selected") === "true") {
     tokenRuns.setActive(data.run_id ? {
       run_id: data.run_id, unit_id: data.unit_id, created_at: data.created_at,
-      token_usage: data.token_usage, running: Boolean(usingJunie),
+      token_usage: data.token_usage, cost_exchange: data.cost_exchange, running: Boolean(usingJunie),
     } : undefined);
   }
 }
@@ -1517,12 +1528,18 @@ pendingFilter.addEventListener("click", () => {
 note.addEventListener("input", syncActions);
 accept.addEventListener("click", () => send("accept"));
 checkerInstruction.addEventListener("input", syncActions);
+let waitingForModel = false;
 resume.addEventListener("click", async () => {
-  const text = checkerInstruction.value.trim();
-  if (await send("resume", text ? {checker_instruction: text} : {})) {
-    checkerInstruction.value = "";
-    syncActions();
-  }
+  if (waitingForModel) return;
+  waitingForModel = true;
+  try {
+    if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
+    const text = checkerInstruction.value.trim();
+    if (await send("resume", text ? {checker_instruction: text} : {})) {
+      checkerInstruction.value = "";
+      syncActions();
+    }
+  } finally { waitingForModel = false; }
 });
 element("#checker-open-editor").addEventListener("click", () => {
   dialog.close();

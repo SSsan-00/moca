@@ -6,8 +6,9 @@ window.harnessDemoTransport = (() => {
   const settings = createDemoSettings();
   const accepted = new Set();
   const finding = "日付の表示形式が元のPHPと一致するか確認してください。";
+  const exchange = {status: "available", rate: 150, date: "2026-11-14", source: "サンプル"};
   const usage = [{phase: "migration", capsule: 1, input: 18420, output: 3240,
-    cache_read: 3200, cache_write: 480, responses: 1}];
+    cache_read: 3200, cache_write: 480, responses: 1, cost_usd: 0.07, cost_known: 1}];
   let stream, revision = 0;
   const runs = createDemoRuns(first, settings.units, notify, () => settings.read().form.junie);
 
@@ -16,7 +17,7 @@ window.harnessDemoTransport = (() => {
     const stage = {preparing: 0, prepared: 2, junie_running: 3, building: 4, checking: 5}[run.status] ?? 6;
     return {...run, status: run.status === "checker_needs_review" && !review ? "checker_accepted" : run.status,
       operation_id: run.run_id + "-operation", observed_at: Date.now() / 1000,
-      target, token_usage: run.tick > 3 ? usage : [], diff_viewer_enabled: false,
+      target, token_usage: run.tick > 3 ? usage : [], cost_exchange: exchange, diff_viewer_enabled: false,
       stage_timings: {[stage]: {elapsed_seconds: run.elapsed_seconds}}, build_resumable: !!(run.ready && run.worktree_path),
       ...(review ? {checker_exit_code: 0, checker_log_path: "demo/checker.log",
         review: {findings: [["format-date", finding, false]], locations: [{path: target, line: 10}]}} : {})};

@@ -7,6 +7,42 @@
   const drafts = new Map();
   let sequence = 0;
 
+  function diffFile(before, after, name) {
+    if (before === after) return "";
+    const lines = text => text.match(/[^\n]*\n|[^\n]+$/g) || [];
+    const old = lines(before), next = lines(after);
+    let start = 0, oldEnd = old.length, newEnd = next.length;
+    while (start < oldEnd && start < newEnd && old[start] === next[start]) start++;
+    while (oldEnd > start && newEnd > start && old[oldEnd - 1] === next[newEnd - 1]) { oldEnd--; newEnd--; }
+    const a = old.slice(start, oldEnd), b = next.slice(start, newEnd);
+    const result = old.slice(0, start).map(line => [" ", line]);
+    let grouped = false;
+    if (!a.length || !b.length) {
+      for (const line of a) result.push(["-", line]);
+      for (const line of b) result.push(["+", line]);
+    } else if (a.length * b.length <= 250_000) {
+      const lcs = Array.from({length: a.length + 1}, () => new Uint32Array(b.length + 1));
+      for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
+        lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+      }
+      let i = 0, j = 0;
+      while (i < a.length || j < b.length) {
+        if (i < a.length && j < b.length && a[i] === b[j]) { result.push([" ", a[i++]]); j++; }
+        else if (i < a.length && (j === b.length || lcs[i + 1][j] >= lcs[i][j + 1])) result.push(["-", a[i++]]);
+        else result.push(["+", b[j++]]);
+      }
+    } else {
+      // shortcut: very large demo edits are shown as one replaced block; use a scalable diff if needed.
+      grouped = true;
+      for (const line of a) result.push(["-", line]);
+      for (const line of b) result.push(["+", line]);
+    }
+    for (let i = oldEnd; i < old.length; i++) result.push([" ", old[i]]);
+    return `--- before/${name}\n+++ after/${name}\n@@ -1,${old.length} +1,${next.length} @@\n`
+      + (grouped ? "\\ 変更範囲が大きいため、変更前後をまとめて表示します。\n" : "")
+      + result.map(([prefix, line]) => prefix + line + (line.endsWith("\n") ? "" : "\n\\ No newline at end of file\n")).join("");
+  }
+
   window.harnessRuleWorkspaceDemo = (query, action) => {
     if (!action && query?.registered === "1") return {registered: {name: file.name, text: file.text}};
     if (!action && !query?.id) {
@@ -37,6 +73,10 @@
         entry.usage = action.usage;
         entry.description = action.description;
         break;
+      case "model":
+        draft.junie_model = action.model || null;
+        draft.junie_effort = action.effort || null;
+        break;
       case "message":
       case "optimize":
         draft.messages.push({role: "operator", text: action.text || "注文取消のルールを整理して"});
@@ -61,12 +101,7 @@
           + "\nusage = " + JSON.stringify(item.usage);
         draft.preview = {
           token: String(draft.revision),
-          text_diff: draft.files.length === 1 && draft.files[0].text === original ? "" : [
-            "--- 登録済みの原文",
-            "+++ 下書きの原文",
-            ...original.trimEnd().split("\n").map(line => "- " + line),
-            ...draft.files.flatMap(item => item.text.trimEnd().split("\n").map(line => "+ " + line)),
-          ].join("\n"),
+          text_diff: draft.files.map(item => diffFile(item.source === "orders" ? original : "", item.text, item.name)).join(""),
           toml_diff: rules.map(toml).join("\n\n"),
           rules,
         };

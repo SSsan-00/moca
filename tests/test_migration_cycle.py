@@ -20,6 +20,7 @@ class TaskGuidelinesTests(unittest.TestCase):
                 root = Path(directory).resolve()
                 agent = root / "agent"
                 agent.mkdir()
+                (root / "run.json").write_text(json.dumps({"completed_capsules": 1}), encoding="utf-8")
                 with (
                     patch.object(workflow, "handoff_prompt", return_value=""),
                     patch.object(workflow, "junie_usage_recorder", return_value=None),

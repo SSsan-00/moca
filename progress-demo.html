@@ -111,19 +111,17 @@
     .workspace-feedback:empty { display: none; }
     #workspace-runs { overflow: hidden; }
     #workspace-runs:not([hidden]) { display: flex; flex-direction: column; }
-    .runs-heading, .runs-new, .runs-toolbar, .runs-footer { flex: none; }
+    .runs-heading, .runs-new, .runs-toolbar { flex: none; }
     .runs-list { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     #workspace-run-feedback { flex: none; max-height: 6em; overflow: auto; margin-top: 0; margin-bottom: 8px; }
-    .runs-heading, .runs-toolbar, .runs-new-controls, .runs-footer, .run-context { display: flex; align-items: center; gap: 12px; }
+    .runs-heading, .runs-toolbar, .runs-new-controls, .run-context { display: flex; align-items: center; gap: 12px; }
     .runs-heading { justify-content: space-between; margin: 4px 0 18px; }
-    .runs-heading h1 { font-size: 26px; margin: 0 0 4px; }
-    .runs-heading p, .runs-hint, .runs-footer { color: var(--muted); font-size: 13px; margin: 0; }
+    .runs-heading h1 { font-size: 26px; margin: 0; }
     .parallel-limit { display: flex; align-items: center; gap: 14px; white-space: nowrap; color: var(--muted); }
     .parallel-limit strong { padding: 6px 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); }
     .runs-new { padding: 18px; overflow: visible; }
     .runs-new h2, .runs-toolbar h2 { font-size: 17px; margin: 0 0 10px; }
     .runs-new-controls .button { min-height: 40px; height: auto; }
-    .runs-hint { margin-top: 9px; }
     .junie-brave-option { margin-block: 9px 0; }
     .junie-brave-option label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
     .junie-brave-option p { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
@@ -164,10 +162,9 @@
     .run-actions .button { width: 100%; min-width: 0; min-height: 32px; height: 32px; padding: 5px 6px; font-size: 12px; }
     .run-actions [data-action="open-runprogress"] { grid-column: 1; }
     .run-actions [data-action="open-runeditor"] { grid-column: 2; }
-    .run-actions .run-text-action { grid-column: 3; border-color: transparent; background: transparent; color: var(--blue); }
+    .run-actions .run-text-action { grid-column: 3; }
     .run-actions [data-action="hide-run"] { grid-column: 4; }
     .runs-empty { padding: 24px; color: var(--muted); text-align: center; }
-    .runs-footer { justify-content: space-between; flex-wrap: wrap; margin: 12px 0; font-size: 12px; }
     .workspace-tabs .run-summary { margin-left: auto; font-size: 12px; padding-inline: 0; white-space: nowrap; }
     .run-summary .attention { color: var(--amber); }
     .run-context { margin-bottom: 10px; flex: none; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
@@ -179,7 +176,7 @@
     :is(.unit-picker summary, .run-filters button, #run-search, .run-context select):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
     @media (max-width: 900px) { .workspace-tabs .run-summary { display: none; } .runs-table td, .runs-table th { padding: 12px 10px; } }
     @media (max-width: 680px) {
-      .runs-heading { align-items: flex-start; gap: 8px; } .runs-heading p { max-width: 25em; } .runs-heading h1 { font-size: 22px; }
+      .runs-heading { align-items: flex-start; gap: 8px; } .runs-heading h1 { font-size: 22px; }
       .parallel-limit { gap: 5px; font-size: 12px; } .parallel-limit strong { padding: 5px 9px; }
       .runs-new { padding: 12px; } .runs-new-controls { flex-wrap: wrap; gap: 8px; } .unit-picker { flex-basis: 100%; }
       .runs-toolbar { gap: 10px; } #run-search { flex-basis: 100%; max-width: none; order: 3; } .run-filters { gap: 4px; }
@@ -195,7 +192,6 @@
     @media (max-height: 680px) {
       .runs-heading { margin: 0 0 8px; }
       .runs-heading h1 { margin: 0; font-size: 20px; }
-      .runs-heading p, .runs-hint, .runs-footer { display: none; }
       .runs-new { padding: 10px; }
       .runs-new h2 { margin-bottom: 6px; font-size: 14px; }
       .runs-toolbar { gap: 8px; margin: 10px 0 8px; }
@@ -283,7 +279,7 @@
     .junie-chat-attachment { margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
     .junie-chat-attachment pre { margin: 6px 0; }
     .junie-chat-attachment button { min-height: 32px; margin: 2px 5px 2px 0; }
-    .junie-chat .junie-chat-composer { flex: none; display: grid; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); }
+    .junie-chat .junie-chat-composer { position: relative; flex: none; display: grid; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); }
     .junie-chat .junie-chat-composer textarea {
       width: 100%; height: auto; min-height: 52px; max-height: 22dvh; margin: 0; resize: vertical; padding: 8px 10px;
       border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); font: inherit;
@@ -299,6 +295,22 @@
     .junie-chat .junie-chat-composer :is(button, textarea):focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
     .junie-chat .junie-chat-composer .prompt-example { inset-inline-start: 10px; }
     .junie-chat-hint { color: var(--muted); font-size: 11px; }
+    .junie-chat-sender { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .junie-chat-bubble { position: relative; }
+    .chat-composer { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); box-shadow: 0 2px 8px #1720330a; }
+    .chat-composer:focus-within { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-soft); }
+    :is(.junie-chat .junie-chat-composer, .review-dialog) .chat-composer textarea { display: block; width: 100%; min-height: 64px; height: auto; margin: 0; padding: 12px 14px; border: 0; border-radius: 0; background: transparent; color: var(--ink); font: inherit; resize: vertical; }
+    .chat-composer .prompt-field textarea:focus-visible { outline: 0; }
+    .chat-composer-footer { display: flex; align-items: flex-start; gap: 8px; padding: 0 8px 8px 12px; }
+    .chat-composer-footer > .chat-send { margin-inline-start: auto; }
+    .run-model { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; margin: 0; padding: 0; border: 0; }
+    .run-model label { position: relative; display: block; min-width: 0; margin: 0; font-weight: normal; }
+    .run-model label span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+    .run-model select { width: auto; max-width: min(155px, 100%); height: 38px; min-height: 38px; margin: 0; padding: 0 4px; color: var(--ink); background: transparent; border: 0; border-radius: 6px; font: 12px system-ui, sans-serif; }
+    .run-model-status { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+    .run-model-status:empty, #editor-prompt-timing:empty, #progress-prompt-timing:empty { display: none; }
+    .button.chat-send { width: 38px; height: 38px; min-height: 38px; padding: 0; border-radius: 50%; }
+    .chat-send svg { width: 19px; height: 19px; }
     @media (max-width: 680px) {
       .editor-layout .junie-chat { min-height: min(32rem, 74dvh); }
       .editor-layout .junie-chat-feed { max-height: 48dvh; }
@@ -409,6 +421,16 @@
     .rule-workspace #rules-confirm { flex: none; width: 16px; height: 16px; min-height: 0; margin: 3px 0 0; padding: 0; }
     .rule-workspace pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 19rem; overflow: auto; }
     .rule-workspace textarea { height: auto; min-height: 0; }
+    #rules-import-label[hidden] { display: none; }
+    .rule-diff { max-height: 19rem; overflow: auto; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+    .rule-diff-file { padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--ink); font-weight: 700; overflow-wrap: anywhere; }
+    .rule-diff-line { display: grid; grid-template-columns: 3.4em minmax(0, 1fr); gap: 6px; padding: 3px 10px; font: 12px/1.55 var(--mono); }
+    .rule-diff-line span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .rule-diff-line .rule-diff-label { font: 700 11px/1.7 system-ui, sans-serif; }
+    .rule-diff-line[data-kind="add"] { background: var(--green-soft); color: var(--green); }
+    .rule-diff-line[data-kind="remove"] { background: #fae8e8; color: #9b3030; }
+    :root[data-theme="dark"] .rule-diff-line[data-kind="remove"] { background: #3b2027; color: #ffa9a9; }
+    .rule-diff-empty { margin: 0; padding: 10px; color: var(--muted); }
     #rules-archive { flex: none; max-height: min(20vh, 12rem); overflow: auto; }
     .rule-workspace-columns > section.junie-chat { display: flex; flex-direction: column; padding: 0; gap: 0; overflow: hidden; }
     #rules-live-turn { display: grid; max-width: 48rem; margin: 10px auto 0; }
@@ -980,6 +1002,7 @@
                 <div><dt>出力</dt><dd id="run-token-output">—</dd></div>
               </dl>
               <p id="run-token-status">初回の使用量を待っています。</p>
+              <p class="editor-muted" id="run-token-cost"></p>
             </div>
           </div>
           <div class="capsule-top"><div class="capsule-title"><h2 id="capsule-title">カプセル本文の文字数</h2><span id="capsule-call">カプセル 1 / 3 · OrderHistoryPage</span></div><span>上限 250,000文字</span></div>
@@ -1057,25 +1080,25 @@
           <ol class="junie-chat-list" id="editor-prompts" aria-label="Junie との会話" aria-live="polite"></ol>
         </div>
         <form class="junie-chat-composer" id="editor-prompt-form">
-          <div class="prompt-field">
-            <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " required aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-chat-shortcut"></textarea>
-            <span class="prompt-example" id="editor-prompt-example" style="--characters: 14" aria-hidden="true"><span>例：日付の表示形式を維持する</span></span>
-          </div>
-          <div class="junie-chat-actions">
-            <p class="editor-muted" id="editor-prompt-timing"></p>
-            <div>
-              <span class="junie-chat-hint" id="editor-chat-shortcut">Ctrl+Enter で送信</span>
-              <button class="button" id="editor-cancel-prompt" type="button" disabled hidden>キャンセル</button>
-              <button class="button junie-chat-send" id="editor-send" type="submit" aria-keyshortcuts="Control+Enter" aria-label="送信" disabled><span data-send-icon><span aria-hidden="true">↑ </span>送信</span><span data-send-label hidden>変更を保存</span></button>
+          <div class="chat-composer">
+            <div class="prompt-field">
+              <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " required aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-chat-shortcut"></textarea>
+              <span class="prompt-example" id="editor-prompt-example" style="--characters: 14" aria-hidden="true"><span>例：日付の表示形式を維持する</span></span>
+            </div>
+            <div class="chat-composer-footer">
+              <fieldset class="run-model"><label><span>モデル</span><select data-run-model></select></label><label><span>推論の強さ</span><select data-run-effort></select></label><span class="run-model-status" role="status"></span></fieldset>
+              <button class="button junie-chat-send chat-send" id="editor-send" type="submit" aria-keyshortcuts="Control+Enter" aria-label="送信" disabled><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
             </div>
           </div>
+          <p class="editor-muted" id="editor-prompt-timing"></p>
+          <span class="junie-chat-sender" id="editor-chat-shortcut">Ctrl+Enter で送信</span>
         </form>
         <p class="workspace-feedback" id="editor-prompt-error" role="alert" hidden></p>
       </aside>
     </div>
   </section>
   <section class="workspace-pane" id="workspace-runs" role="tabpanel" aria-labelledby="tab-runs" tabindex="0" hidden>
-    <header class="runs-heading"><div><h1>実行</h1><p>移行単位をまとめて実行し、Runごとに進捗を確認できます。</p></div><span class="parallel-limit">同時実行数 <strong id="parallel-limit">—</strong></span></header>
+    <header class="runs-heading"><h1>実行</h1><span class="parallel-limit">同時実行数 <strong id="parallel-limit">—</strong></span></header>
     <form id="workspace-new-run" class="panel runs-new">
       <h2>新規実行</h2>
       <div class="runs-new-controls">
@@ -1086,13 +1109,11 @@
         <label><input type="checkbox" id="run-junie-brave" autocomplete="off" aria-describedby="run-junie-brave-hint" disabled>Junie Brave（今回のみ）</label>
         <p id="run-junie-brave-hint">1件の移行を実行するときだけ選べます。ファイルの変更やコマンドの実行などが個別の承認なしに行われる場合があります。</p>
       </div>
-      <p class="runs-hint">上限を超えたRunは実行待ちに追加されます。</p>
     </form>
     <section class="runs-list" aria-labelledby="runs-title">
       <div class="runs-toolbar"><h2 id="runs-title">実行一覧 <span id="run-count"></span></h2><div class="run-filters" id="run-filters" role="group" aria-label="実行状態で絞り込み"></div><input id="run-search" type="search" aria-label="移行単位・Run IDで検索" placeholder="移行単位・Run IDで検索"></div>
       <p class="workspace-feedback" id="workspace-run-feedback" role="status"></p>
       <div class="panel runs-table-wrap" role="region" aria-labelledby="runs-title" tabindex="0"><table class="runs-table"><thead><tr><th scope="col">移行単位 / Run ID</th><th scope="col">状態</th><th scope="col">現在の処理</th><th scope="col">経過時間</th><th scope="col">操作</th></tr></thead><tbody id="run-rows"></tbody></table><p id="runs-empty" class="runs-empty" role="status">実行一覧を読み込んでいます。</p></div>
-      <div class="runs-footer"><span>実行枠が空くと、待機中のRunを順に開始します。</span><span>詳細は「進捗」、編集は「エディタ」で行えます。</span></div>
     </section>
   </section>
   <section class="workspace-pane" id="workspace-rule-workspace" role="tabpanel" aria-labelledby="tab-rule-workspace" tabindex="0" hidden>
@@ -1118,7 +1139,7 @@
             <section aria-labelledby="rules-source-title">
               <h3 id="rules-source-title">原文の追加・編集</h3>
               <label>原文 <select id="rules-sources"></select></label>
-              <label>Markdownを取り込む <input id="rules-import" type="file" accept=".md,.markdown,.txt"></label>
+              <label id="rules-import-label">Markdownを取り込む <input id="rules-import" type="file" accept=".md,.markdown,.txt"></label>
               <label>ファイル名 <input id="rules-name" maxlength="160" placeholder="exceptions.md"></label>
               <label>Markdown本文 <textarea id="rules-text" rows="11"></textarea></label>
               <button type="button" id="rules-save-source">下書きに保存</button>
@@ -1136,25 +1157,23 @@
                 <p class="junie-chat-empty" id="rules-chat-empty">ルールの適用条件や例外を相談できます。提案は確認するまで原文に反映されません。</p>
                 <ol class="junie-chat-list" id="rules-history" aria-label="保存済みの会話" aria-live="polite"></ol>
                 <div id="rules-live-turn" hidden><div class="junie-chat-bubble" data-side="incoming">
-                  <span class="junie-chat-sender">Junie · 回答中</span><p id="rules-live" aria-live="off"></p>
+                  <span class="editor-muted">回答中</span><p id="rules-live" aria-live="off"></p>
                 </div></div>
                 <div id="rules-permission" class="junie-chat-attachment" role="group" aria-label="Junieからの確認" hidden></div>
                 <details id="rules-proposal" class="junie-chat-attachment" hidden><summary>Junieの本文変更案</summary><pre id="rules-proposal-text"></pre><button class="button" type="button" id="rules-accept">下書きに採用</button></details>
               </div>
               <form class="junie-chat-composer" id="rules-composer">
                 <label class="junie-chat-hint" for="rules-instruction">指示・質問</label>
-                <div class="prompt-field">
-                  <textarea id="rules-instruction" rows="2" placeholder=" " aria-describedby="rules-chat-shortcut"></textarea>
-                  <span class="prompt-example" id="rules-instruction-example" style="--characters: 25" aria-hidden="true"><span>例：どんな時に適用するか、Junieと相談できます</span></span>
-                </div>
-                <div class="junie-chat-actions">
-                  <span class="junie-chat-hint" id="rules-chat-shortcut">Ctrl+Enter で送信</span>
-                  <div>
-                    <button class="button" type="button" id="rules-optimize">整理案を作る</button>
-                    <button class="button" type="button" id="rules-stop" hidden>中断</button>
-                    <button class="button junie-chat-send" type="submit" id="rules-message" aria-keyshortcuts="Control+Enter" disabled><span aria-hidden="true">↑ </span>送信</button>
+                <div class="chat-composer">
+                  <div class="prompt-field">
+                    <textarea id="rules-instruction" rows="2" placeholder=" " aria-describedby="rules-chat-shortcut"></textarea>
+                    <span class="prompt-example" id="rules-instruction-example" style="--characters: 25" aria-hidden="true"><span>例：どんな時に適用するか、Junieと相談できます</span></span>
                   </div>
+                  <div class="chat-composer-footer"><fieldset class="run-model"><label><span>モデル</span><select id="rules-model"></select></label><label><span>推論の強さ</span><select id="rules-effort"></select></label><span class="run-model-status" id="rules-model-status" role="status"></span></fieldset><button class="button junie-chat-send chat-send" type="submit" id="rules-message" aria-keyshortcuts="Control+Enter" aria-label="指示を送信" disabled><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
                 </div>
+                <span class="junie-chat-sender" id="rules-chat-shortcut">Ctrl+Enter で送信</span>
+                <button class="button" type="button" id="rules-optimize">整理案を作る</button>
+                <button class="button" type="button" id="rules-stop" hidden>中断</button>
               </form>
             </section>
             <section aria-labelledby="rules-preview-title">
@@ -1162,10 +1181,7 @@
               <p id="rules-unresolved"></p>
               <button type="button" id="rules-preview">編集を完了して差分を確認</button>
               <div id="rules-review" hidden>
-                <details open><summary>原文の差分</summary><pre id="rules-text-diff"></pre></details>
-                <details open><summary>出力先・分類・原文の行範囲</summary><pre id="rules-coverage"></pre></details>
-                <details><summary>TOMLの差分</summary><pre id="rules-toml-diff"></pre></details>
-                <label class="rule-confirm"><input type="checkbox" id="rules-confirm"> 条件・例外・優先順位と、意図した変更を確認しました</label>
+                <details open><summary>原文の差分</summary><div id="rules-text-diff" class="rule-diff"></div></details>
                 <button type="button" id="rules-apply">次のRunから適用</button>
               </div>
             </section>
@@ -1385,6 +1401,7 @@
       </section>
       <div class="token-details">
       <p class="run-detail" id="token-run-id"></p>
+      <p class="run-detail" id="token-cost"></p>
       <p class="run-detail" id="token-status"></p>
       <dl class="token-summary" aria-label="Run全体の集計（トークン）">
         <div><dt>合計</dt><dd id="token-total"></dd></div>
@@ -1450,11 +1467,14 @@
         </div>
       </div>
       <footer class="checker-review-footer">
-        <label class="review-note-label" for="checker-instruction">Junie への追加指示（任意）</label>
-        <div class="prompt-field">
-          <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2" placeholder=" "
-                    aria-describedby="checker-instruction-status checker-instruction-example"></textarea>
-          <span class="prompt-example" id="checker-instruction-example" style="--characters: 14" aria-hidden="true"><span>例：状態変換を共通関数に移す</span></span>
+        <label class="review-note-label" for="checker-instruction">Junie への追加指示</label>
+        <div class="chat-composer">
+          <div class="prompt-field">
+            <textarea class="review-note" id="checker-instruction" maxlength="4000" rows="2" placeholder=" "
+                      aria-describedby="checker-instruction-status checker-instruction-example"></textarea>
+            <span class="prompt-example" id="checker-instruction-example" style="--characters: 14" aria-hidden="true"><span>例：状態変換を共通関数に移す</span></span>
+          </div>
+          <div class="chat-composer-footer"><fieldset class="run-model"><label><span>モデル</span><select data-run-model></select></label><label><span>推論の強さ</span><select data-run-effort></select></label><span class="run-model-status" role="status"></span></fieldset></div>
         </div>
         <p class="review-caveat" id="checker-instruction-status" role="status"></p>
         <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
@@ -1479,19 +1499,18 @@
         <h2 id="progress-prompt-title">Junie に指示</h2>
         <button class="review-close" id="close-progress-prompt" type="button" aria-label="閉じる">×</button>
       </header>
-      <p class="review-intro" data-demo-only>指示の受付と作業区間での反映をサンプルで試せます。</p>
+      <ol class="editor-chat-list" id="progress-prompt-list" aria-label="登録済みの指示" aria-live="polite" hidden></ol>
       <label class="review-note-label" for="progress-prompt">追加の指示</label>
-      <div class="prompt-field">
-        <textarea class="review-note" id="progress-prompt" rows="4" maxlength="4000" placeholder=" "
-                  aria-describedby="progress-prompt-timing progress-prompt-example" required></textarea>
-        <span class="prompt-example" id="progress-prompt-example" style="--characters: 13" aria-hidden="true"><span>例：注文の並び順を維持する</span></span>
+      <div class="chat-composer">
+        <div class="prompt-field">
+          <textarea class="review-note" id="progress-prompt" rows="2" maxlength="4000" placeholder=" "
+                    aria-describedby="progress-prompt-timing progress-prompt-example" required></textarea>
+          <span class="prompt-example" id="progress-prompt-example" style="--characters: 13" aria-hidden="true"><span>例：注文の並び順を維持する</span></span>
+        </div>
+        <div class="chat-composer-footer"><fieldset class="run-model"><label><span>モデル</span><select data-run-model></select></label><label><span>推論の強さ</span><select data-run-effort></select></label><span class="run-model-status" role="status"></span></fieldset><button class="button primary chat-send" id="progress-prompt-submit" type="submit" aria-label="指示を送信" disabled><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
       </div>
       <p class="review-intro" id="progress-prompt-timing" role="status"></p>
       <p class="review-caveat" id="progress-prompt-feedback" role="alert" hidden></p>
-      <ol class="editor-chat-list" id="progress-prompt-list" aria-label="登録済みの指示" hidden></ol>
-      <div class="review-actions">
-        <button class="button primary" id="progress-prompt-submit" type="submit" disabled>指示を登録</button>
-      </div>
     </form>
   </dialog>
   <dialog class="review-dialog" id="build-review-dialog" aria-labelledby="build-review-title">
@@ -1519,10 +1538,12 @@
           </div>
         </details>
         <label class="review-note-label" for="build-review-instruction">Junie への修正指示（任意）</label>
-        <div class="prompt-field">
-          <textarea class="review-note" id="build-review-instruction" maxlength="4000" spellcheck="false" placeholder=" "
-                    aria-describedby="build-review-hint build-review-example"></textarea>
-          <span class="prompt-example" id="build-review-example" style="--characters: 12" aria-hidden="true"><span>例：既存のモデル型を使う</span></span>
+        <div class="chat-composer">
+          <div class="prompt-field">
+            <textarea class="review-note" id="build-review-instruction" maxlength="4000" spellcheck="false" placeholder=" "
+                      aria-describedby="build-review-hint build-review-example"></textarea>
+            <span class="prompt-example" id="build-review-example" style="--characters: 12" aria-hidden="true"><span>例：既存のモデル型を使う</span></span>
+          </div>
         </div>
         <p class="review-caveat" id="build-review-hint">編集内容は、この実行の作業ツリーに保存されます。指示を入力すると、Junie が修正した後に再ビルドします。</p>
         <p class="review-caveat" id="build-review-feedback" role="status"></p>
@@ -1738,13 +1759,24 @@ function summarizeTokenUsage(rows) {
   }, {input: 0, output: 0, reported: false});
 }
 
-function renderRunTokenSummary(rows = [], waiting = false) {
+function estimatedCost(rows, exchange) {
+  const responses = rows.reduce((sum, row) => sum + (row.responses || 0), 0);
+  const known = rows.reduce((sum, row) => sum + (row.cost_known || 0), 0);
+  if (!responses || !known) return "推定費用：未取得";
+  if (exchange?.status !== "available") return "推定費用：為替レート未取得";
+  const dollars = rows.reduce((sum, row) => sum + (row.cost_usd || 0), 0);
+  const yen = new Intl.NumberFormat("ja-JP", {style: "currency", currency: "JPY", maximumFractionDigits: 2}).format(dollars * exchange.rate);
+  return `推定費用：${yen}${known < responses ? "（取得分のみ）" : "（記録分）"} · 1 USD = ${exchange.rate}円（${exchange.date} ${exchange.source}）`;
+}
+
+function renderRunTokenSummary(rows = [], waiting = false, exchange) {
   const {input, output, reported} = summarizeTokenUsage(rows);
   document.querySelector("#run-token-counts").hidden = !reported;
   const status = document.querySelector("#run-token-status");
   status.hidden = reported;
   const message = waiting ? "初回の使用量を待っています。" : "使用量の記録がありません。";
   if (status.textContent !== message) status.textContent = message;
+  document.querySelector("#run-token-cost").textContent = estimatedCost(rows, exchange);
   for (const [selector, count] of [["#run-token-input", input], ["#run-token-output", output]]) {
     const node = document.querySelector(selector);
     const text = reported ? count.toLocaleString("ja-JP") : "—";
@@ -1752,7 +1784,7 @@ function renderRunTokenSummary(rows = [], waiting = false) {
   }
 }
 
-function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
+function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false, exchange) {
   const tokenNumber = new Intl.NumberFormat("ja-JP");
   const {input: inputTokens, output: outputTokens, reported: hasUsage} = summarizeTokenUsage(rows);
   const maxCallTokens = rows.reduce((max, call) => Math.max(max, call.input + call.output), 1);
@@ -1773,6 +1805,7 @@ function renderTokenUsage(rows, runLabel, emptyMessage = "", running = false) {
     ? `${running ? "集計中 · " : ""}Junieが報告した分を集計`
     : emptyMessage;
   document.querySelector("#token-run-id").textContent = runLabel;
+  document.querySelector("#token-cost").textContent = runLabel ? estimatedCost(rows, exchange) : "";
   document.querySelector("#token-total").textContent = hasUsage ? tokenNumber.format(inputTokens + outputTokens) : "—";
   document.querySelector("#token-input").textContent = hasUsage ? tokenNumber.format(inputTokens) : "—";
   document.querySelector("#token-output").textContent = hasUsage ? tokenNumber.format(outputTokens) : "—";
@@ -2105,30 +2138,29 @@ function showMigrationLedger(ledger, snapshot, compare) {
       feedback.textContent = error?.message || "";
       feedback.hidden = !error;
     }
-    function render({timing, prompts = []} = {}, {available = true, loading = false, saving = false} = {}) {
+    function render({timing, prompts = [], conversation = []} = {}, {available = true, loading = false, saving = false} = {}) {
       if (!dialog.open) return;
       const bytes = new TextEncoder().encode(input.value.trim()).length;
       send.disabled = !available || !timing || saving || !bytes || bytes > 4_000;
       input.readOnly = saving;
       const message = bytes > 4_000 ? "指示を 4,000 バイト以下にしてください。"
-        : timing === "repair_restart" ? "保存した編集を反映して Junie に指示を渡し直し、対応後に再ビルドします。"
-        : timing === "immediate" ? "実行中の Junie にすぐ渡します。反映の完了までお待ちください。"
-        : timing === "checkpoint" ? "現在の作業区間が終わると Junie に渡します。"
-        : timing === "resume" ? "同じ実行を再開したときに Junie に渡します。"
+        : timing ? ""
         : loading ? "指示を読み込んでいます…" : "現在の工程では指示を登録できません。";
       if (timingNote.textContent !== message) timingNote.textContent = message;
-      const key = JSON.stringify(prompts);
+      const key = JSON.stringify([prompts, conversation]);
       if (key === renderedPrompts) return;
       renderedPrompts = key;
-      list.replaceChildren(...prompts.map(({text, status}) => {
+      const ids = new Set(conversation.map(message => message.id));
+      const entries = [...prompts.filter(message => !ids.has(message.id)), ...conversation];
+      list.replaceChildren(...entries.map(({text, status, question, answer, plan, message}) => {
         const item = document.createElement("li");
-        item.append(
-          Object.assign(document.createElement("span"), {className: "editor-muted", textContent: labels[status]}),
-          Object.assign(document.createElement("p"), {textContent: text}),
-        );
+        const outgoing = junieChatBubble("あなた", text, true);
+        const reply = junieChatBubble("ハーネス", [...new Set([question, answer && `回答：${answer}`,
+          plan, message || labels[status] || "受け付けました。"].filter(Boolean))].join("\n"));
+        item.append(outgoing, reply);
         return item;
       }));
-      list.hidden = !prompts.length;
+      list.hidden = !entries.length;
     }
     button.addEventListener("click", () => {
       showError();
@@ -2138,9 +2170,16 @@ function showMigrationLedger(ledger, snapshot, compare) {
     });
     document.querySelector("#close-progress-prompt").addEventListener("click", () => dialog.close());
     input.addEventListener("input", inputChanged);
-    document.querySelector("#progress-prompt-form").addEventListener("submit", event => {
+    let submitting = false;
+    document.querySelector("#progress-prompt-form").addEventListener("submit", async event => {
       event.preventDefault();
-      if (!send.disabled) submit(input.value.trim());
+      if (send.disabled || submitting) return;
+      submitting = true;
+      const text = input.value.trim();
+      try {
+        if (window.harnessRunModelReady && !await window.harnessRunModelReady()) return;
+        if (dialog.open && input.value.trim() === text) await submit(text);
+      } finally { submitting = false; }
     });
     return {button, dialog, input, render, showError};
   }
@@ -2462,11 +2501,11 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
 <div id="static-demo" hidden></div>
 <script defer src="./src/migration_harness/web/dashboard_runs_demo.js"></script>
 <script defer src="./src/migration_harness/web/dashboard_settings_demo.js"></script>
-<script defer src="./src/migration_harness/web/dashboard_editor_demo.js"></script>
-<script defer src="./src/migration_harness/web/dashboard_rule_workspace_demo.js"></script>
-<script defer src="./src/migration_harness/web/dashboard_demo.js"></script>
+<script defer src="./src/migration_harness/web/dashboard_editor_demo.js?polish=1"></script>
+<script defer src="./src/migration_harness/web/dashboard_rule_workspace_demo.js?polish=1"></script>
+<script defer src="./src/migration_harness/web/dashboard_demo.js?polish=1"></script>
 <script defer src="./src/migration_harness/web/dashboard.js"></script>
-<script defer src="./src/migration_harness/web/dashboard_editor.js"></script>
-<script defer src="./src/migration_harness/web/dashboard_rule_workspace.js"></script>
+<script defer src="./src/migration_harness/web/dashboard_editor.js?polish=1"></script>
+<script defer src="./src/migration_harness/web/dashboard_rule_workspace.js?polish=1"></script>
 </body>
 </html>
