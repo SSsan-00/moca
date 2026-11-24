@@ -1,12 +1,20 @@
 import codecs
+import io
 import json
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Thread
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, urlopen
 
+from fixtures import SavedRunFixture
 from migration_harness.context import source_context
 from migration_harness import workflow
+from migration_harness.web import dashboard
 from migration_harness.runs.worktree_targets import target_hash
 
 
@@ -298,3 +306,215 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.assertNotIn("checker_exit_code", verify.call_args.args[-1])
         self.assertTrue(verify.call_args.args[-1]["checker_required"])
         self.assertEqual(result["status"], "checker_succeeded")
+
+
+class ReferenceConflictEditorTests(SavedRunFixture):
+    def saved_targets(self, *, complete=False, multi=False, stopped=False):
+        self.targets = (Path("Example.cs"), Path("Second.cs")) if multi else (Path("Example.cs"),)
+        self.config["units"][0]["targets"] = [path.as_posix() for path in self.targets]
+        self.agent = self.run_path / "agent-workspace"
+        self.agent.mkdir()
+        self.capsule = self.run_path / "capsule"
+        self.reference = self.worktree / "refs" / "Library.cs"
+        self.reference.parent.mkdir()
+        self.reference.write_text("reference A", encoding="utf-8")
+        source_context.stage_target_context(self.worktree, self.targets, self.capsule, self.agent,
+                                           policy={"roots": [], "folders": ["refs"]})
+        self.base = "start\nreference A\n1\n2\n3\n4\nold label\nend\n"
+        self.human = self.base.replace("reference A", "manual behavior").replace("old label", "keep this hand edit")
+        self.resolved = self.human.replace("manual behavior", "resolved for reference B")
+        for index, path in enumerate(self.targets):
+            text = self.base if not index else "second baseline\n"
+            for root in (self.worktree, self.agent):
+                (root / path).write_bytes(text.encode("utf-8-sig"))
+        hashes = {path.as_posix(): target_hash(self.worktree / path) for path in self.targets}
+        record = self.record()
+        record.update(targets=list(hashes), target_hashes=hashes, capsule_checkpoints={"1": workflow._save_capsule_checkpoint(
+            self.run_path, self.worktree, self.targets, hashes,
+        )})
+        if not complete:
+            manifest_path = self.capsule / "manifest.json"
+            manifest = json.loads(manifest_path.read_bytes())
+            second = self.capsule / "second.txt"
+            second.write_bytes(b"second capsule")
+            manifest["parts"].append({"index": 2, "path": str(second), "chars": 14})
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            record.update(status="interrupted", current_capsule=2, context_capsules=2)
+        (self.worktree / self.targets[0]).write_bytes(self.human.encode("utf-8-sig"))
+        with workflow.editor_queue(self.run_path) as queue:
+            workflow.record_operator_edit(queue, "Example.cs", self.base, self.human)
+        if stopped:
+            (self.agent / self.targets[0]).write_bytes(b"unfinished migration draft")
+            record["stopped_migration_draft"] = workflow._save_target_snapshot(
+                self.run_path, {path.as_posix(): self.agent / path for path in self.targets},
+                {path.as_posix(): target_hash(self.worktree / path) for path in self.targets},
+                workspace_unchanged=True,
+            )
+        self.save_record(record)
+        self.reference.write_text("reference B", encoding="utf-8")
+
+    def propose(self, *_):
+        proposal = self.run_path / "fixture-proposal"
+        proposal.mkdir(exist_ok=True)
+        (proposal / self.targets[0]).write_text(self.base.replace("reference A", "model choice"), encoding="utf-8-sig")
+        if len(self.targets) > 1:
+            (proposal / self.targets[1]).write_text("second follows reference B\n", encoding="utf-8-sig")
+        return proposal
+
+    def open_editor(self):
+        view = dashboard.Dashboard()
+        view.observe(self.record())
+        view.ready(self.config, self.record())
+        output = io.StringIO()
+        with redirect_stdout(output):
+            server = view.server(self.config, b"", b"")
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.shutdown)
+        url = output.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+        parsed = urlsplit(url)
+
+        def editor(contents=None):
+            path = url + "editor"
+            if contents is None:
+                path += "?" + urlencode({"run_id": self.run_id, "target": "Example.cs"})
+            data = None if contents is None else json.dumps(contents).encode("utf-8")
+            headers = {"Content-Type": "application/json", "Origin": f"{parsed.scheme}://{parsed.netloc}"}
+            with urlopen(Request(path, data, headers), timeout=5) as reply:
+                return reply.status, json.load(reply)
+
+        return editor
+
+    def save_resolution(self):
+        editor = self.open_editor()
+        _, before = editor()
+        status, after = editor({"kind": "save", "run_id": self.run_id, "target": "Example.cs",
+                                "base": before["content"], "content": self.resolved,
+                                "edit_id": (before.get("edit") or {}).get("id")})
+        self.assertEqual(status, 200)
+        self.assertEqual(after["save_timing"], "resume")
+        self.assertTrue(after["queued"])
+        self.assertEqual(after["edit"]["content"], self.resolved)
+        return after
+
+    def resume_fixture(self):
+        return workflow.resume_with_junie(self.config, self.run_id)
+
+    def test_http_resolution_continues_partial_run_and_preserves_old_reference_and_stopped_draft(self):
+        self.saved_targets(stopped=True)
+        stopped = self.record()["stopped_migration_draft"]
+
+        def migrate(command, completion, token, targets, **kwargs):
+            self.assertIn("context segment 2 of 2", command[-1])
+            self.assertEqual(targets[0].read_text(encoding="utf-8-sig"), self.resolved)
+            completion.write_text(token, encoding="utf-8")
+            return 0
+
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+              patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result)):
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                    self.resume_fixture()
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
+            self.save_resolution()
+            self.assertEqual(self.resume_fixture()["completed_capsules"], 2)
+        model.assert_called_once()
+        continuation.assert_called_once()
+        history = self.record()["reference_refresh_history"][0]
+        old = workflow._verified_target_snapshot(self.run_path, history["adoption"]["backup"])
+        self.assertEqual(old["Example.cs"].read_text(encoding="utf-8-sig"), self.human)
+        self.assertEqual(history["archived_draft"], stopped)
+        self.assertEqual(workflow._verified_target_snapshot(self.run_path, stopped)["Example.cs"].read_bytes(),
+                         b"unfinished migration draft")
+        self.assertEqual((self.capsule / "target-context/files/refs/Library.cs").read_text(encoding="utf-8"), "reference A")
+        self.assertEqual((self.agent / "refs/Library.cs").read_text(encoding="utf-8"), "reference B")
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.resolved)
+        self.assertEqual((self.agent / "Example.cs").read_text(encoding="utf-8-sig"), self.resolved)
+        with workflow.editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["edits"], {})
+            self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 2)
+
+    def test_completed_multiple_targets_resume_after_failed_adoption_without_repeating_model(self):
+        self.saved_targets(complete=True, multi=True)
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(workflow, "_verify_worktree", return_value={"status": "verified"}) as verify):
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.resume_fixture()
+            self.save_resolution()
+            with patch.object(workflow, "apply_agent_targets", side_effect=OSError("simulated failure")):
+                with self.assertRaisesRegex(OSError, "simulated failure"):
+                    self.resume_fixture()
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
+            self.assertIn("adoption", self.record()["reference_refresh"])
+            self.reference.write_text("reference C", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "反映を再開する前に参考資料が更新"):
+                self.resume_fixture()
+            self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
+            self.reference.write_text("reference B", encoding="utf-8")
+            self.assertEqual(self.resume_fixture()["status"], "verified")
+        model.assert_called_once()
+        verify.assert_called_once()
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.resolved)
+        self.assertEqual((self.worktree / "Second.cs").read_text(encoding="utf-8-sig"), "second follows reference B\n")
+
+    def test_unrelated_pending_instruction_and_edit_stay_queued(self):
+        self.saved_targets()
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model:
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.resume_fixture()
+            saved = self.save_resolution()
+            with workflow.editor_queue(self.run_path) as queue:
+                queue["prompts"].append({"id": "fixture", "text": "Check an unrelated item", "status": "queued"})
+            with self.assertRaisesRegex(ValueError, "未送信の指示"):
+                self.resume_fixture()
+            with workflow.editor_queue(self.run_path) as queue:
+                self.assertEqual(queue["edits"]["Example.cs"], saved["edit"])
+                self.assertEqual(queue["prompts"], [{"id": "fixture", "text": "Check an unrelated item", "status": "queued"}])
+        model.assert_called_once()
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
+
+    def test_editor_save_error_and_request_for_another_run_do_not_adopt(self):
+        self.saved_targets()
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model:
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.resume_fixture()
+            editor = self.open_editor()
+            _, before = editor()
+            action = {"kind": "save", "run_id": self.run_id, "target": "Example.cs",
+                      "base": before["content"], "content": self.resolved, "edit_id": None}
+            with self.assertRaises(HTTPError) as wrong_run:
+                editor({**action, "run_id": "00000000-0000-0000-0000-000000000000"})
+            wrong_run.exception.close()
+            with (patch("migration_harness.runs.editor_queue.replace_run_record", side_effect=OSError("disk failure")),
+                  self.assertRaises(HTTPError) as failed):
+                editor(action)
+            with failed.exception as reply:
+                self.assertEqual(reply.code, 409)
+                self.assertIn("disk failure", reply.read().decode("utf-8"))
+            self.assertIsNone(editor()[1]["edit"])
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.resume_fixture()
+        model.assert_called_once()
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
+
+    def test_new_reference_or_target_version_leaves_saved_resolution_untouched(self):
+        self.saved_targets()
+        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model:
+            with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                self.resume_fixture()
+            saved = self.save_resolution()
+            for path in (self.reference, self.target, self.agent / "Example.cs"):
+                with self.subTest(path=path):
+                    before = path.read_bytes()
+                    path.write_bytes(b"different version")
+                    with self.assertRaisesRegex(ValueError, "版が競合時と異なります"):
+                        self.resume_fixture()
+                    self.assertEqual(path.read_bytes(), b"different version")
+                    with workflow.editor_queue(self.run_path) as queue:
+                        self.assertEqual(queue["edits"]["Example.cs"], saved["edit"])
+                    path.write_bytes(before)
+        model.assert_called_once()

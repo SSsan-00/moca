@@ -723,7 +723,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 raise ValueError("設定された移行先ファイルを選んでください。")
             agent = run_path / "agent-workspace"
             phase = record["status"]
-            root = agent if phase in AGENT_PHASES and agent.is_dir() and not agent.is_symlink() else worktree
+            resolving_references = bool(record.get("reference_refresh", {}).get("conflict"))
+            root = agent if (not resolving_references and phase in AGENT_PHASES
+                             and agent.is_dir() and not agent.is_symlink()) else worktree
             try:
                 target_stamp = _editor_stamp(safe_target(root, Path(name))) if name else None
                 content_version = _editor_version(run_id, str(root), name, target_stamp)
@@ -737,7 +739,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 content_version, adopted_stamp, record.get("stopped_migration_draft"),
                 names, phase, record.get("current_capsule"), record.get("operator_question"),
                 record.get("completed_capsules"), record.get("context_capsules"), record.get("script_phase"),
-                _editor_stamp(run_path / "editor.json"),
+                _editor_stamp(run_path / "editor.json"), resolving_references,
                 _editor_stamp(run_path.parent / ".preparation-conversations" / (run_id + ".json")), live,
                 *(state.get(key) for key in ("ready", "generating_anchors", "stop_requested")),
             )
@@ -796,10 +798,12 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 agent_root = run_path / "agent-workspace"
                 if agent_root.is_symlink():
                     raise ValueError("Junie の作業場所がシンボリックリンクです。")
-                from_agent = phase in AGENT_PHASES and agent_root.is_dir()
+                resolving_references = bool(record.get("reference_refresh", {}).get("conflict"))
+                from_agent = not resolving_references and phase in AGENT_PHASES and agent_root.is_dir()
                 root = agent_root if from_agent else worktree
                 busy_other = state.get("generating_anchors") or state.get("stop_requested")
-                queued = bool(queue["edits"] or not state.get("ready") or busy_other or phase in AGENT_PHASES)
+                queued = bool(resolving_references or queue["edits"] or not state.get("ready")
+                              or busy_other or phase in AGENT_PHASES)
                 prompt_timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
                                               live=bool(self.dashboard.control and self.dashboard.control.junie_steering
                                                         and not queue["edits"]))
