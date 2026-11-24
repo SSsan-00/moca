@@ -131,15 +131,24 @@ class WindowsJob:
 
     def has_processes_other_than(self, exited_pid):
         # Job membership can still include the launcher after its process handle is signaled.
-        members = _JobProcessIds()
-        if not self._query(self.handle, _BASIC_PROCESS_ID_LIST, ctypes.byref(members), ctypes.sizeof(members), None):
-            error = ctypes.get_last_error()
-            if error == _ERROR_MORE_DATA:
+        for _ in range(2):
+            members = _JobProcessIds()
+            if not self._query(self.handle, _BASIC_PROCESS_ID_LIST, ctypes.byref(members), ctypes.sizeof(members), None):
+                error = ctypes.get_last_error()
+                if error == _ERROR_MORE_DATA:
+                    return True
+                raise ctypes.WinError(error)
+            if members.listed > len(members.ids):
+                break
+            if any(pid != exited_pid for pid in members.ids[:members.listed]):
                 return True
-            raise ctypes.WinError(error)
-        if members.assigned != members.listed or members.listed > len(members.ids):
-            raise OSError("Windows Job returned an incomplete process list")
-        return any(pid != exited_pid for pid in members.ids[:members.listed])
+            if members.assigned == members.listed:
+                return False
+            if members.assigned > 1:
+                break
+            # The count and PID list may briefly disagree about the departing launcher.
+            # Re-read immediately only if no other process was reported.
+        raise OSError(f"Windows Job returned an incomplete process list ({members.assigned=} {members.listed=})")
 
     def stop(self, deadline):
         if self.active_processes() and not self._terminate(self.handle, 1):

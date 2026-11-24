@@ -32,8 +32,9 @@ class ConfiguredProcessControlTests(unittest.TestCase):
             with self.assertRaises(ConfiguredProcessIncomplete):
                 run_process([sys.executable, "-c", "pass"], label="fixture", synchronous=True)
 
-    def test_reported_launcher_pid_alone_does_not_imply_a_surviving_child(self):
+    def run_with_job_membership(self, reports):
         start = WindowsJob.start
+        remaining = iter(reports)
 
         def return_stale_launcher(job, process):
             start(job, process)
@@ -44,17 +45,36 @@ class ConfiguredProcessControlTests(unittest.TestCase):
                     return query(handle, info, output, size, returned)
                 self.assertIsNotNone(process.returncode)
                 members = ctypes.cast(output, ctypes.POINTER(_JobProcessIds)).contents
-                members.assigned = members.listed = 1
-                members.ids[0] = process.pid
+                members.assigned, pid_offsets = next(remaining)
+                members.listed = len(pid_offsets)
+                for index, offset in enumerate(pid_offsets):
+                    members.ids[index] = process.pid + offset
                 return True
 
             job._query = report
 
         with patch.object(WindowsJob, "start", return_stale_launcher):
-            completed = run_process([sys.executable, "-c", "print('fixture output')"], label="fixture",
-                                    synchronous=True, capture_output=True)
+            try:
+                return run_process([sys.executable, "-c", "print('fixture output')"], label="fixture",
+                                   synchronous=True, capture_output=True)
+            finally:
+                self.assertIsNone(next(remaining, None), "unused simulated Job membership report")
+
+    def test_reported_launcher_pid_alone_does_not_imply_a_surviving_child(self):
+        completed = self.run_with_job_membership([(1, [0])])
         self.assertEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout.splitlines(), [b"fixture output"])
+
+    def test_incomplete_lone_member_is_rechecked_once_without_a_wait(self):
+        completed = self.run_with_job_membership([(1, []), (0, [])])
+        self.assertEqual(completed.returncode, 0)
+        with self.assertRaises(ConfiguredProcessIncomplete) as failure:
+            self.run_with_job_membership([(1, []), (1, [])])
+        self.assertRegex(str(failure.exception.__cause__), r"assigned=1 .*listed=0")
+
+    def test_reported_child_is_not_rechecked_even_if_membership_counts_disagree(self):
+        with self.assertRaises(ConfiguredProcessIncomplete):
+            self.run_with_job_membership([(0, [1])])
 
     def test_child_that_can_exit_after_membership_check_is_still_incomplete(self):
         contains_other = WindowsJob.has_processes_other_than
