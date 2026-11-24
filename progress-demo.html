@@ -170,7 +170,9 @@
     .run-actions .run-remove-action { grid-area: remove; border-color: transparent; background: transparent; color: var(--muted); }
     .run-actions .run-remove-action:not(:disabled):hover { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber-ink); }
     @media (min-width: 1080px) {
-      .run-actions { grid-template-columns: auto auto auto; grid-template-areas: "view execute remove"; gap: 10px; min-width: 0; }
+      .run-actions { grid-template-columns: max-content max-content max-content; grid-template-areas: "view execute remove";
+        width: max-content; min-width: 0; gap: 10px; }
+      .run-view-actions { flex-wrap: nowrap; }
       .run-execution-actions { grid-auto-columns: max-content; }
       .run-actions .run-remove-action { border-inline-start-color: var(--line); border-start-start-radius: 0; border-end-start-radius: 0; }
     }

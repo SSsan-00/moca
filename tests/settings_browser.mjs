@@ -954,8 +954,11 @@ try {
   const designRun = "run-2026-11-14-001";
   await click("tab-runs");
   await wait(runAction(designRun, "resume-stage") + "?.matches(':enabled')");
+  const placements = [];
   for (const [width, height] of [[360, 540], [580, 620], [780, 640], [1280, 650]]) {
     await cdp("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: 1, mobile: false});
+    await wait("innerWidth === " + width);
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     const layout = await evaluate("(" + function (run) {
       const row = document.querySelector('tr[data-run-id="' + run + '"]');
       const actions = row.querySelector(".run-actions");
@@ -972,18 +975,22 @@ try {
         return rect.left >= rowBox.left - 1 && rect.right <= rowBox.right + 1;
       });
       const top = element => Math.round(element.getBoundingClientRect().top);
+      const middle = element => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.top + bounds.height / 2;
+      };
+      const navButtons = [...navigation.querySelectorAll("button")];
       return {
         navigation: names(navigation), execution: names(execution), remove: remove.dataset.action,
         allFit: within && actions.scrollWidth <= actions.clientWidth + 1 && rowBox.right <= viewport.right + 1,
         primary: buttons[0].classList.contains("primary"),
         executeTogether: Math.abs(top(buttons[0]) - top(buttons[1])) <= 1,
-        viewAndExecuteTogether: Math.abs(top(navigation) - top(execution)) < 8,
+        navigationTogether: Math.abs(top(navButtons[0]) - top(navButtons[1])) <= 1,
+        viewAndExecuteTogether: Math.abs(middle(navigation) - middle(execution)) <= 1,
+        gridAreas: getComputedStyle(actions).gridTemplateAreas,
       };
     }.toString() + ")(" + JSON.stringify(designRun) + ")");
-    assert.deepEqual(layout, {
-      navigation: ["open-runprogress", "open-runeditor"], execution: ["resume-run", "resume-stage"], remove: "hide-run",
-      allFit: true, primary: true, executeTogether: true, viewAndExecuteTogether: width >= 1080,
-    }, "action groups and non-wrapping execution controls at width " + width);
+    placements.push({width, layout});
   }
   await evaluate("(" + function () {
     const transport = window.harnessDemoTransport;
@@ -1049,6 +1056,14 @@ try {
     ["plan", designRun, "migration", null, false, false], ["plan", designRun, "checker", null, false, false],
     ["start", designRun, "checker", "saved-checker", false, false],
   ]);
+  for (const {width, layout} of placements) {
+    const desktop = width >= 1080;
+    assert.deepEqual(layout, {
+      navigation: ["open-runprogress", "open-runeditor"], execution: ["resume-run", "resume-stage"], remove: "hide-run",
+      allFit: true, primary: true, executeTogether: true, navigationTogether: true, viewAndExecuteTogether: desktop,
+      gridAreas: desktop ? '"view execute remove"' : '"view remove" "execute execute"',
+    }, "action groups and non-wrapping controls at width " + width);
+  }
   await evaluate("restoreResumeDesignTransport()");
   console.log("Browser resume: action groups fit at 360-1280 px; only migration and checker options; saved plan starts without range fields");
   await cdp("Emulation.setDeviceMetricsOverride", {width: 390, height: 480, deviceScaleFactor: 1, mobile: false});
