@@ -17,6 +17,12 @@ _OVERRIDES = frozenset({
     "directory.build.props", "directory.build.targets", "directory.build.rsp",
     "directory.packages.props", "global.json", "msbuild.rsp",
 })
+_COMPILATION_ENVIRONMENT = frozenset({
+    "allowunsafeblocks", "assemblysearchpaths", "checkforoverflowunderflow", "defaultlanguagesourceextension",
+    "features", "nocompilerstandardlib", "nostandardlib", "platformtarget", "runtimeidentifier", "runtimeidentifiers",
+    "targetframeworkidentifier", "targetframeworkrootpath", "targetframeworkversion", "targetingpackroot",
+    "treatwarningsaserrors", "usewindowsforms", "usewpf", "warninglevel", "warningsaserrors", "warningsnotaserrors",
+})
 _PROPERTIES = {
     "TargetFramework": {"net9.0"},
     "Nullable": {"enable", "disable", "annotations", "warnings"},
@@ -79,7 +85,8 @@ def _check_project_overrides(project):
     prefixes = ("msbuild", "custombefore", "customafter", "directorybuild", "roslyntargets", "csc",
                 "referenceassembly", "frameworkpathoverride", "enabledefault", "defaultitemexclude", "razor",
                 "compilertool", "disableimplicit", "disableframework")
-    if any(key.casefold() in properties or key.casefold().startswith(prefixes) for key in os.environ):
+    overridden = properties | _COMPILATION_ENVIRONMENT
+    if any(key in overridden or key.startswith(prefixes) for key in map(str.casefold, os.environ)):
         raise ProjectContextUnavailable("project_configuration")
     for parent in project.parents:
         if any((parent / name).exists() for name in _OVERRIDES):
@@ -120,7 +127,10 @@ def _project_sources(root, project, target, deadline):
                 entries += 1
                 if entries > _MAX_ENTRIES or monotonic() > deadline:
                     raise ProjectContextUnavailable("project_too_large")
-                if item.name.startswith(".") or parent == root and item.name.lower() in {"obj", "bin"}:
+                if parent == root and item.name.lower() in {"obj", "bin"}:
+                    continue
+                if item.name.startswith(".") and (
+                        not item.name.lower().endswith(".cs") or item.is_dir(follow_symlinks=False)):
                     continue
                 metadata = item.stat(follow_symlinks=False)
                 if (stat.S_ISLNK(metadata.st_mode)
@@ -160,7 +170,7 @@ def editor_project_snapshot(worktree, configured_project, target):
     if not path.is_relative_to(context_root):
         raise ProjectContextUnavailable("project_required")
     target_path = path.relative_to(context_root)
-    if (any(part.startswith(".") for part in target_path.parts)
+    if (any(part.startswith(".") for part in target_path.parts[:-1])
             or target_path.parts[0].lower() in {"bin", "obj"}):
         raise ProjectContextUnavailable("project_required")
     _check_project_overrides(project)

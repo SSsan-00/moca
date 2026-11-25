@@ -160,6 +160,20 @@ export async function checkEditorSemantics({evaluate, wait, sourceEditor, config
     await set(savedCSharp);
   }
   await wait(status + ".includes('構文・型・参照: 指摘なし')");
+  const dotted = path.join(tree, ".Hidden.cs");
+  const dottedDraft = "class Dotted { HiddenEditorDependency Value = new(); }";
+  await fs.writeFile(dotted, "public class HiddenEditorDependency {}");
+  try {
+    await set(dottedDraft);
+    await wait(status + ".includes('構文・型・参照: 指摘なし')");
+    await fs.unlink(dotted);
+    await assertMarker("CS0246", 1, dottedDraft.indexOf("HiddenEditorDependency") + 1);
+    assert.equal(await source(), dottedDraft);
+  } finally {
+    await fs.rm(dotted, {force: true});
+    await set(savedCSharp);
+  }
+  console.log("Browser editor: a dotted C# file resolves a real draft type and removal refreshes its marker");
   console.log("Browser editor: external dependency changes invalidate even an in-flight result without losing an unsaved draft");
   assert.deepEqual(await Promise.all([razorPath, codeBehindPath, "Example.cs"].map(file =>
     fs.readFile(path.join(tree, file), "utf8"))), [savedRazor, savedCodeBehind, savedCSharp]);
