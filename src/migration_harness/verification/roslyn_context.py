@@ -100,8 +100,12 @@ def _check_project_overrides(project):
 
 @lru_cache(maxsize=32)
 def _project_description(project, stamp):
+    return _parse_project_description(_read_file(project, _MAX_DESCRIPTOR, stamp))
+
+
+def _parse_project_description(raw):
     try:
-        root = ElementTree.fromstring(_read_file(project, _MAX_DESCRIPTOR, stamp))
+        root = ElementTree.fromstring(raw)
     except ElementTree.ParseError:
         return None, None
     sdk = root.get("Sdk")
@@ -111,8 +115,7 @@ def _project_description(project, stamp):
     return root, sdk == "Microsoft.NET.Sdk.Web"
 
 
-def _project_settings(project, stamp):
-    root, _ = _project_description(project, stamp)
+def _project_settings(root):
     if root is None:
         raise ProjectContextUnavailable("project_configuration")
     settings = {}
@@ -225,15 +228,9 @@ def editor_project_snapshot(worktree, configured_project, target):
     return ProjectSnapshot(worktree, project, descriptor, path, web, sources, imports, revision, deadline)
 
 
-def editor_project_context(worktree, configured_project, target, *, snapshot=None):
-    snapshot = snapshot or editor_project_snapshot(worktree, configured_project, target)
-    project = snapshot.project
-    context_root = project.parent
-    path = snapshot.target
-    settings = _project_settings(project, snapshot.descriptor)
-    if path.suffix.lower() == ".cshtml" and (
-            not snapshot.web or path.name.casefold() in {"_viewimports.cshtml", "_viewstart.cshtml"}):
-        raise ProjectContextUnavailable("project_configuration")
+def _read_documents(snapshot, descriptor, *, include_text=False):
+    fingerprint = hashlib.sha256(snapshot.revision.encode("ascii"))
+    fingerprint.update(hashlib.sha256(descriptor).digest())
     remaining = _MAX_BYTES
 
     def collect(paths, max_file_bytes):
@@ -242,18 +239,47 @@ def editor_project_context(worktree, configured_project, target, *, snapshot=Non
         for source, stamp in paths:
             if monotonic() > snapshot.deadline:
                 raise ProjectContextUnavailable("project_too_large")
-            resolved = safe_target(snapshot.worktree, source.relative_to(snapshot.worktree))
-            raw = _read_file(resolved, min(remaining, max_file_bytes), stamp)
+            relative = source.relative_to(snapshot.worktree)
+            raw = _read_file(safe_target(snapshot.worktree, relative), min(remaining, max_file_bytes), stamp)
             remaining -= len(raw)
-            documents.append({"Path": source.relative_to(context_root).as_posix(), "Text": raw.decode("utf-8-sig")})
+            fingerprint.update(hashlib.sha256(raw).digest())
+            if include_text:
+                documents.append({
+                    "Path": source.relative_to(snapshot.project.parent).as_posix(), "Text": raw.decode("utf-8-sig"),
+                })
         return documents
 
-    return {
-        "Sources": collect(snapshot.sources, _MAX_BYTES), "Imports": collect(snapshot.imports, _MAX_DESCRIPTOR),
-        "ProjectPath": path.relative_to(context_root).as_posix(),
-        "Web": snapshot.web, "AssemblyName": settings.get("AssemblyName", project.stem),
+    sources = collect(snapshot.sources, _MAX_BYTES)
+    imports = collect(snapshot.imports, _MAX_DESCRIPTOR)
+    return sources, imports, fingerprint.hexdigest()
+
+
+def editor_content_proof(snapshot):
+    descriptor = _read_file(snapshot.project, _MAX_DESCRIPTOR, snapshot.descriptor)
+    return _read_documents(snapshot, descriptor)[2]
+
+
+def editor_project_context(worktree, configured_project, target, *, snapshot=None, with_proof=False):
+    snapshot = snapshot or editor_project_snapshot(worktree, configured_project, target)
+    project = snapshot.project
+    path = snapshot.target
+    descriptor = _read_file(project, _MAX_DESCRIPTOR, snapshot.descriptor)
+    root, web = _parse_project_description(descriptor)
+    if web != snapshot.web:
+        _project_description.cache_clear()
+        raise ProjectContextUnavailable("project_changed")
+    settings = _project_settings(root)
+    if path.suffix.lower() == ".cshtml" and (
+            not web or path.name.casefold() in {"_viewimports.cshtml", "_viewstart.cshtml"}):
+        raise ProjectContextUnavailable("project_configuration")
+    sources, imports, proof = _read_documents(snapshot, descriptor, include_text=True)
+    context = {
+        "Sources": sources, "Imports": imports,
+        "ProjectPath": path.relative_to(project.parent).as_posix(),
+        "Web": web, "AssemblyName": settings.get("AssemblyName", project.stem),
         "RootNamespace": settings.get("RootNamespace", project.stem.replace("-", "_")),
         "ImplicitUsings": settings.get("ImplicitUsings") in {"enable", "true"},
-        "OutputType": settings.get("OutputType", "Exe" if snapshot.web else "Library"),
+        "OutputType": settings.get("OutputType", "Exe" if web else "Library"),
         "Nullable": settings.get("Nullable", "disable"),
     }
+    return (context, proof) if with_proof else context

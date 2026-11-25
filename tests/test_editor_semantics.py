@@ -1,4 +1,5 @@
 import io
+import os
 import stat
 import subprocess
 import tempfile
@@ -119,7 +120,7 @@ class EditorSemanticTests(unittest.TestCase):
                 roslyn_context._read_file(path, len(original) - 1, expected)
             open_file.assert_not_called()
 
-    def test_read_rejects_a_same_length_rewrite_after_fetching_bytes(self):
+    def test_read_rejects_a_same_length_rewrite_with_changed_stamp(self):
         path = self.root / "Dependency.cs"
         before, after = b"class A {}", b"class B {}"
         path.write_bytes(before)
@@ -131,6 +132,7 @@ class EditorSemanticTests(unittest.TestCase):
                 result = super().read(size)
                 with open_path(path, "wb") as destination:
                     destination.write(after)
+                os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns - 1_000_000_000))
                 return result
 
         with patch.object(Path, "open", return_value=RewriteDuringRead(before)):
@@ -138,6 +140,7 @@ class EditorSemanticTests(unittest.TestCase):
                 roslyn_context._read_file(path, 1024, roslyn_context._stamp(info))
         self.assertEqual(path.read_bytes(), after)
         self.assertEqual(path.stat().st_size, info.st_size)
+        self.assertNotEqual(path.stat().st_mtime_ns, info.st_mtime_ns)
 
     def test_dotted_csharp_reparse_point_does_not_supply_a_reference_version(self):
         name = ".Linked.cs"
@@ -197,9 +200,10 @@ class EditorSemanticTests(unittest.TestCase):
         run = roslyn_syntax._run_editor
         def during_analysis(*args, **kwargs):
             result = run(*args, **kwargs)
-            previous_size = dependency.stat().st_size
+            before = dependency.stat()
             dependency.write_text("public class D { public string Value; }", encoding="utf-8")
-            self.assertEqual(dependency.stat().st_size, previous_size)
+            os.utime(dependency, ns=(before.st_atime_ns, before.st_mtime_ns - 1_000_000_000))
+            self.assertEqual(dependency.stat().st_size, before.st_size)
             return result
 
         with patch.object(roslyn_syntax, "_run_editor", side_effect=during_analysis):

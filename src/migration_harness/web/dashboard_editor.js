@@ -122,7 +122,7 @@
     if (diagnostics.hidden) return;
     setText("#editor-diagnostic-status", " · 診断待ち");
     setText("#editor-diagnostic-note", "入力が止まると、保存せずにこの下書きを診断します。");
-    let busyRetries = 0, semanticRetries = 0, payload;
+    let busyRetries = 0, semanticRetries = 0, projectChangeRetried = false, payload;
     function enqueue(delay) {
       diagnosticTimer = setTimeout(() => {
         if (!valid()) return;
@@ -156,9 +156,10 @@
       setText("#editor-diagnostic-note", notes[reason] || "型・参照の解析器を利用できません。正式ビルドで確認してください。");
     }
 
-    async function lookupContext() {
+    async function lookupContext(verifyRevision) {
       const result = await request("roslyn-diagnostics", {
-        run_id: run, target, version: payload.version, mode: "context"
+        run_id: run, target, version: payload.version, mode: "context",
+        ...(verifyRevision ? {verify_revision: verifyRevision} : {}),
       });
       if (!valid()) return;
       if (result.version !== payload.version || result.target !== target) throw Error("診断の依存版を確認できません。");
@@ -202,15 +203,27 @@
           enqueueSemantic(diagnosticBusyDelays[semanticRetries++]);
           return;
         }
+        if (result.reason === "project_changed" && !projectChangeRetried) {
+          projectChangeRetried = true;
+          enqueueSemantic(diagnosticBusyDelays[0]);
+          return;
+        }
         if (result.context_revision) {
-          const latest = await lookupContext();
+          const latest = await lookupContext(result.context_proof ? result.context_revision : null);
           if (!latest) return;
           if (latest.reason === "analyzer_busy") {
             showSemanticUnavailable(latest.reason, true);
             watchContext(result.context_revision, true);
             return;
           }
-          if (latest.context_revision !== result.context_revision) {
+          if (result.context_proof && latest.reason) {
+            renderDiagnostics(file, payload, {findings: [], razor: []}, valid);
+            showSemanticUnavailable(latest.reason, true);
+            watchContext(result.context_revision);
+            return;
+          }
+          if (latest.context_revision !== result.context_revision ||
+              (result.context_proof && latest.context_proof !== result.context_proof)) {
             scheduleDiagnostics();
             return;
           }

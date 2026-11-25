@@ -1362,7 +1362,11 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         worker=self.server.editor_semantic_worker,
                     )
                 elif mode == "context":
-                    result = editor_context_revision(worktree, config["build_project"], target, version)
+                    verify = action.get("verify_revision")
+                    if verify is not None and (not isinstance(verify, str) or not re.fullmatch("[0-9a-f]{64}", verify)):
+                        raise ValueError("診断した依存版の形式が無効です。")
+                    result = editor_context_revision(worktree, config["build_project"], target, version,
+                                                     verify_revision=verify)
                 else:
                     raise ValueError("診断の種類が不正です。")
                 self.send_body(200, "application/json", json.dumps(result, ensure_ascii=False).encode("utf-8"))

@@ -127,8 +127,10 @@ max_bytes = 9007199254740993 # preserve this value
             other_run = run.parent / other_run_id
             other_tree = worktree.parent / other_run_id
             post = server.RequestHandlerClass.do_POST
+            retained_dependency = None
 
             def allow_fixture_resume(handler):
+                nonlocal retained_dependency
                 if handler.path == fixture_root + "fixture-editor-queue":
                     view.publish({**view.state, "ready": False})
                 elif handler.path == fixture_root + "fixture-editor-adopt":
@@ -151,6 +153,20 @@ max_bytes = 9007199254740993 # preserve this value
                     view.publish({**view.state, "ready": True})
                     handler.send_body(200 if adopted else 409, "application/json", b"{}")
                     return
+                elif handler.path in {fixture_root + "fixture-preserve-dependency-stamp",
+                                      fixture_root + "fixture-restore-dependency-stamp"}:
+                    dependency = worktree / "Pages/Index.cshtml.cs"
+                    if handler.path.endswith("preserve-dependency-stamp"):
+                        original = dependency.read_bytes()
+                        retained_dependency = (original, dependency.stat())
+                        source = original.replace(b"Number", b"Rename")
+                    else:
+                        source = retained_dependency[0]
+                    stamp = retained_dependency[1]
+                    dependency.write_bytes(source)
+                    os.utime(dependency, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                    current = dependency.stat()
+                    self.assertEqual((current.st_size, current.st_mtime_ns), (stamp.st_size, stamp.st_mtime_ns))
                 elif handler.path == fixture_root + "fixture-editor-pin-reference":
                     record_path = run / "run.json"
                     saved = json.loads(record_path.read_bytes())
