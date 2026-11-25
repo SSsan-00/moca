@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,3 +54,45 @@ class EditorSemanticTests(unittest.TestCase):
             project.assert_not_called()
             self.assertTrue(roslyn_syntax._EDITOR_SLOTS.acquire(blocking=False))
             roslyn_syntax._EDITOR_SLOTS.release()
+
+    def test_metadata_probe_tracks_actual_inputs_without_reading_project_or_source_text(self):
+        dependency = self.root / "Dependency.cs"
+        imports = self.root / "_ViewImports.cshtml"
+        dependency.write_bytes(b"class Dependency {}")
+        imports.write_bytes(b"@using System")
+        with patch.object(roslyn_context, "_read_file", side_effect=AssertionError("poll must not read file content")):
+            def revision():
+                return roslyn_syntax.editor_context_revision(
+                    self.root, "Fixture.csproj", "Pages/Index.cshtml", "v4",
+                )["context_revision"]
+            versions = [revision()]
+            self.assertEqual(revision(), versions[0])
+            dependency.write_bytes(b"public class Dependency {}")
+            versions.append(revision())
+            self.project.write_text(self.descriptor.replace("net9.0", "net8.0"), encoding="utf-8")
+            versions.append(revision())
+            imports.write_bytes(b"@using Other.Namespace")
+            versions.append(revision())
+            dependency.unlink()
+            versions.append(revision())
+            self.assertTrue(all(versions))
+            self.assertEqual(len(set(versions)), len(versions))
+
+    def test_semantic_response_rejects_an_input_changed_after_the_snapshot(self):
+        dependency = self.root / "Dependency.cs"
+        dependency.write_bytes(b"class Dependency {}")
+        original = roslyn_context.editor_project_snapshot(self.root, "Fixture.csproj", "Page.cs").revision
+
+        def changed(*args):
+            dependency.write_bytes(b"public class RenamedDependency {}")
+            return subprocess.CompletedProcess([], 0, b'{"findings":[],"razor":[],"skipped":[],"truncated":false}')
+
+        with patch.object(roslyn_syntax, "_prepare_tool", return_value=[]), (
+            patch.object(roslyn_syntax, "_framework_references", return_value=[])
+        ), patch.object(roslyn_syntax, "_run_editor", side_effect=changed):
+            report = roslyn_syntax.editor_semantic_diagnostics(
+                self.root, "Fixture.csproj", "Page.cs", "class Page {}", "v5",
+            )
+        self.assertEqual((report["status"], report["reason"], report["context_revision"]),
+                         ("unavailable", "project_changed", original))
+        self.assertFalse(report["findings"])

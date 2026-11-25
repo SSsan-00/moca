@@ -13,12 +13,13 @@ from xml.etree import ElementTree
 
 from ..execution import ConfiguredProcessIncomplete, check_cancelled, run_process
 from ..files import safe_target
-from .roslyn_context import ProjectContextUnavailable, editor_project_context
+from .roslyn_context import ProjectContextUnavailable, editor_project_context, editor_project_snapshot
 
 _SCRIPTS = [Path(__file__).with_name(name) for name in ("roslyn_program.cs", "roslyn_semantic.cs")]
 _TOOL_LOCK = threading.Lock()
 _EDITOR_SLOTS = threading.BoundedSemaphore(2)
 _SEMANTIC_SLOT = threading.BoundedSemaphore(1)
+_CONTEXT_SLOTS = threading.BoundedSemaphore(2)
 _DOTNET_9 = re.compile(r"9\.0\.(\d+) \[(.+)\]")
 _SUPPORTED = frozenset({".cs", ".cshtml"})
 _tool_directory = None
@@ -180,26 +181,49 @@ def _run_editor(command, mode, payload, timeout):
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+def editor_context_revision(worktree: Path, project: str | None, target: str, version: str) -> dict:
+    revision = reason = None
+    if not _CONTEXT_SLOTS.acquire(blocking=False):
+        reason = "analyzer_busy"
+    else:
+        try:
+            revision = editor_project_snapshot(worktree, project, target).revision
+        except ProjectContextUnavailable as exc:
+            reason = str(exc)
+        except (OSError, ValueError):
+            reason = "project_configuration"
+        finally:
+            _CONTEXT_SLOTS.release()
+    return {"context_revision": revision, "reason": reason, "version": version, "target": target}
+
+
 def editor_semantic_diagnostics(worktree: Path, project: str | None, target: str, content: str, version: str) -> dict:
     started = monotonic()
-    reason = None
+    reason = context_revision = None
     if Path(target).suffix.lower() not in _SUPPORTED:
         reason = "unsupported_file_type"
     elif not _SEMANTIC_SLOT.acquire(blocking=False):
         reason = "analyzer_busy"
     else:
         try:
-            context = editor_project_context(worktree, project, target)
+            snapshot = editor_project_snapshot(worktree, project, target)
+            context_revision = snapshot.revision
+            context = editor_project_context(worktree, project, target, snapshot=snapshot)
             command = _prepare_tool()
             packs = ["Microsoft.NETCore.App.Ref"] + (["Microsoft.AspNetCore.App.Ref"] if context["Web"] else [])
             context["References"] = [str(path) for pack in packs for path in _framework_references(_tool_dotnet_root, pack)]
             payload = json.dumps({"Target": {"Path": target, "Text": content}, "Project": context},
                                  ensure_ascii=False).encode("utf-8")
             completed = _run_editor(command, "--semantic", payload, 8)
+            if editor_project_snapshot(worktree, project, target).revision != context_revision:
+                raise ProjectContextUnavailable("project_changed")
             report = _decode_output(completed, [target], started)
             if report.get("skipped"):
                 reason = report["skipped"][0]["reason"]
-            if report["status"] == "errors":
+                if reason == "razor_unmapped_errors" and report["findings"]:
+                    report.update(status="partial", reason=reason)
+                    reason = None
+            elif report["status"] == "errors":
                 report["reason"] = "semantic_errors"
         except ProjectContextUnavailable as exc:
             reason = str(exc)
@@ -213,4 +237,5 @@ def editor_semantic_diagnostics(worktree: Path, project: str | None, target: str
             _SEMANTIC_SLOT.release()
     if reason:
         report = _result(started, "unavailable", reason)
-    return {"findings": [], "razor": [], "truncated": False, **report, "version": version, "target": target}
+    return {"findings": [], "razor": [], "truncated": False, **report, "version": version, "target": target,
+            "context_revision": context_revision}

@@ -103,14 +103,19 @@ internal static partial class Program
         var references = context.References.Select(path => MetadataReference.CreateFromFile(path));
         var compilation = CSharpCompilation.Create(context.AssemblyName, sources, references,
             new CSharpCompilationOptions(output, nullableContextOptions: nullable));
+        var unmapped = false;
         foreach (var diagnostic in compilation.GetSemanticModel(subject).GetDiagnostics())
         {
             if (diagnostic.Severity != DiagnosticSeverity.Error || diagnostic.Location.SourceTree != subject)
                 continue;
             var span = diagnostic.Location.SourceSpan;
             if (razor is not null && !TryMapRazorSpan(razor, subject.GetText(), original, span, out span))
+            {
+                unmapped = true;
                 continue;
-            if (findings.Count == MaxFindings) return Result(truncated: true);
+            }
+            if (findings.Count == MaxFindings)
+                return Result(unmapped ? "razor_unmapped_errors" : null, truncated: true);
             var position = original.Lines.GetLinePosition(span.Start);
             findings.Add(new
             {
@@ -119,7 +124,7 @@ internal static partial class Program
                 message = diagnostic.GetMessage(CultureInfo.InvariantCulture)
             });
         }
-        return Result();
+        return Result(unmapped ? "razor_unmapped_errors" : null);
     }
 
     private static bool RequiresProjectEvaluation(SyntaxTree tree)
