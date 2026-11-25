@@ -1,4 +1,5 @@
 import {checkBuildReviewDrafts} from "./build_review_drafts_browser.mjs";
+import {checkEditorSemantics} from "./editor_semantic_browser.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -593,6 +594,7 @@ try {
   await wait("document.getElementById('editor-diagnostic-status').textContent.includes('指摘なし')");
   assert.equal(await evaluate("monaco.editor.getModelMarkers({owner:'syntax'}).length"), 0);
   console.log("Browser editor: unsaved C# syntax, real compiler marker and click location, saved text unchanged");
+  await checkEditorSemantics({evaluate, wait, sourceEditor, config: ruleConfigPath, run: expectedRun});
   const runModel = "document.querySelector('#editor-prompt-form [data-run-model]')";
   const runEffort = "document.querySelector('#editor-prompt-form [data-run-effort]')";
   await wait(runModel + " && !" + runModel + ".disabled");

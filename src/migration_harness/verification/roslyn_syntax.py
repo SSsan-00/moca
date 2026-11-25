@@ -1,4 +1,4 @@
-"""Local SDK Roslyn/Razor diagnostics. Neither mode runs MSBuild or writes migration targets."""
+"""Local SDK Roslyn/Razor diagnostics. Does not run MSBuild or write migration targets."""
 
 import json
 import os
@@ -9,17 +9,21 @@ import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
+from xml.etree import ElementTree
 
 from ..execution import ConfiguredProcessIncomplete, check_cancelled, run_process
 from ..files import safe_target
+from .roslyn_context import ProjectContextUnavailable, editor_project_context
 
-_SCRIPT = Path(__file__).with_name("roslyn_program.cs")
+_SCRIPTS = [Path(__file__).with_name(name) for name in ("roslyn_program.cs", "roslyn_semantic.cs")]
 _TOOL_LOCK = threading.Lock()
 _EDITOR_SLOTS = threading.BoundedSemaphore(2)
+_SEMANTIC_SLOT = threading.BoundedSemaphore(1)
 _DOTNET_9 = re.compile(r"9\.0\.(\d+) \[(.+)\]")
 _SUPPORTED = frozenset({".cs", ".cshtml"})
 _tool_directory = None
 _tool_command = None
+_tool_dotnet_root = None
 
 
 def _environment():
@@ -32,8 +36,20 @@ def _checked_process(command, cwd, timeout):
                        synchronous=True, timeout=timeout, env=_environment())
 
 
+def _framework_references(dotnet_root, name):
+    pack = dotnet_root / "packs" / name
+    versions = [(int(path.name.rsplit(".", 1)[1]), path / "ref" / "net9.0") for path in pack.glob("9.0.*")
+                if re.fullmatch(r"9\.0\.\d+", path.name)]
+    if not versions:
+        raise OSError(".NET 9 reference pack not available")
+    references = sorted(max(versions)[1].glob("*.dll"))
+    if not references:
+        raise OSError("empty .NET 9 reference pack")
+    return references
+
+
 def _prepare_tool():
-    global _tool_directory, _tool_command
+    global _tool_directory, _tool_command, _tool_dotnet_root
     while not _TOOL_LOCK.acquire(timeout=0.1):
         check_cancelled()
     try:
@@ -51,12 +67,7 @@ def _prepare_tool():
         _, sdk = max(sdks, key=lambda item: item[0])
         roslyn = sdk / "Roslyn" / "bincore"
         razor = sdk / "Sdks" / "Microsoft.NET.Sdk.Razor" / "tools"
-        pack = sdk.parent.parent / "packs" / "Microsoft.NETCore.App.Ref"
-        refs = [path / "ref" / "net9.0" for path in pack.glob("9.0.*")
-                if re.fullmatch(r"9\.0\.\d+", path.name)]
-        if not refs:
-            raise OSError(".NET 9 reference pack not available")
-        reference = max(refs, key=lambda path: int(path.parents[1].name.rsplit(".", 1)[1]))
+        references = _framework_references(sdk.parent.parent, "Microsoft.NETCore.App.Ref")
         libraries = [
             roslyn / "Microsoft.CodeAnalysis.dll", roslyn / "Microsoft.CodeAnalysis.CSharp.dll",
             razor / "Microsoft.CodeAnalysis.Razor.Compiler.dll", razor / "Microsoft.AspNetCore.Razor.Utilities.Shared.dll",
@@ -67,8 +78,9 @@ def _prepare_tool():
             root = Path(directory.name)
             dst = root / "RoslynSyntax.dll"
             response = root / "compiler.rsp"
-            arguments = ["-nologo", "-target:exe", "-langversion:latest", "-nullable:enable", f'-out:"{dst}"', f'"{_SCRIPT}"']
-            arguments += [f'-r:"{path}"' for path in [*reference.glob("*.dll"), *libraries]]
+            arguments = ["-nologo", "-target:exe", "-langversion:latest", "-nullable:enable", f'-out:"{dst}"']
+            arguments += [f'"{path}"' for path in _SCRIPTS]
+            arguments += [f'-r:"{path}"' for path in [*references, *libraries]]
             response.write_text("\n".join(arguments) + "\n", encoding="utf-8")
             for library in libraries:
                 shutil.copyfile(library, root / library.name)
@@ -83,7 +95,7 @@ def _prepare_tool():
             raise
         if _tool_directory is not None:
             _tool_directory.cleanup()
-        _tool_directory, _tool_command = directory, [dotnet, "exec", str(dst)]
+        _tool_directory, _tool_command, _tool_dotnet_root = directory, [dotnet, "exec", str(dst)], sdk.parent.parent
         return _tool_command
     finally:
         _TOOL_LOCK.release()
@@ -149,9 +161,7 @@ def editor_diagnostics(target: str, content: str, version: str) -> dict:
         try:
             command = _prepare_tool()
             payload = json.dumps([{"Path": target, "Text": content}]).encode("utf-8")
-            completed = subprocess.run([*command, "--stdin"], input=payload, cwd=Path(command[-1]).parent,
-                                       capture_output=True, timeout=4, check=False, env=_environment(),
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            completed = _run_editor(command, "--stdin", payload, 4)
             report = _decode_output(completed, [target], started)
             if report.get("razor") and not report.get("findings"):
                 report.update(status="errors", reason="razor_syntax")
@@ -162,3 +172,45 @@ def editor_diagnostics(target: str, content: str, version: str) -> dict:
         finally:
             _EDITOR_SLOTS.release()
     return {"findings": [], "razor": [], "skipped": [], "truncated": False, **report, "version": version, "target": target}
+
+
+def _run_editor(command, mode, payload, timeout):
+    return subprocess.run([*command, mode], input=payload, cwd=Path(command[-1]).parent, capture_output=True,
+                          timeout=timeout, check=False, env=_environment(),
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def editor_semantic_diagnostics(worktree: Path, project: str | None, target: str, content: str, version: str) -> dict:
+    started = monotonic()
+    reason = None
+    if Path(target).suffix.lower() not in _SUPPORTED:
+        reason = "unsupported_file_type"
+    elif not _SEMANTIC_SLOT.acquire(blocking=False):
+        reason = "analyzer_busy"
+    else:
+        try:
+            context = editor_project_context(worktree, project, target)
+            command = _prepare_tool()
+            packs = ["Microsoft.NETCore.App.Ref"] + (["Microsoft.AspNetCore.App.Ref"] if context["Web"] else [])
+            context["References"] = [str(path) for pack in packs for path in _framework_references(_tool_dotnet_root, pack)]
+            payload = json.dumps({"Target": {"Path": target, "Text": content}, "Project": context},
+                                 ensure_ascii=False).encode("utf-8")
+            completed = _run_editor(command, "--semantic", payload, 8)
+            report = _decode_output(completed, [target], started)
+            if report.get("skipped"):
+                reason = report["skipped"][0]["reason"]
+            if report["status"] == "errors":
+                report["reason"] = "semantic_errors"
+        except ProjectContextUnavailable as exc:
+            reason = str(exc)
+        except (ElementTree.ParseError, UnicodeError, ValueError):
+            reason = "project_configuration"
+        except subprocess.TimeoutExpired:
+            reason = "timeout"
+        except OSError:
+            reason = "analyzer_unavailable"
+        finally:
+            _SEMANTIC_SLOT.release()
+    if reason:
+        report = _result(started, "unavailable", reason)
+    return {"findings": [], "razor": [], "truncated": False, **report, "version": version, "target": target}

@@ -67,7 +67,7 @@ anchor_reference = ["anchors.json"]
 [[units]]
 id = "例"
 source = "example.php"
-target = "Example.cs"
+targets = ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs"]
 [units.target_context]
 max_bytes = 9007199254740993 # preserve this value
 """, encoding="utf-8")
@@ -77,8 +77,20 @@ max_bytes = 9007199254740993 # preserve this value
             worktree = root / "trees" / run_id
             run.mkdir(parents=True)
             worktree.mkdir(parents=True)
+            (worktree / "App.csproj").write_text(
+                '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net9.0</TargetFramework>'
+                '<ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>', encoding="utf-8",
+            )
+            (worktree / "Example.cs").write_bytes(b"public class Example { public int Number => 42; }")
+            (worktree / "Pages").mkdir()
+            (worktree / "_ViewImports.cshtml").write_bytes(b"@using Sample\n")
+            (worktree / "Pages/Index.cshtml").write_bytes(b"@page\n@model IndexModel\n<p>@Model.Number</p>\n")
+            (worktree / "Pages/Index.cshtml.cs").write_bytes(
+                b"namespace Sample; public class IndexModel { public int Number => 42; }\n",
+            )
             record = {
                 "run_id": run_id, "unit_id": "例", "target": "Example.cs",
+                "targets": ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs"],
                 "project_root": config["project_root"], "worktree_path": str(worktree.resolve()),
                 "status": "script_failed", "script_phase": "before_migration",
                 "completed_capsules": 1, "context_capsules": 3,

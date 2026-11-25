@@ -10,7 +10,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.AspNetCore.Mvc.Razor.Extensions;
 using Microsoft.AspNetCore.Razor.Language;
 
-internal static class Program
+internal static partial class Program
 {
     private sealed record Target(string Path, string? Text);
 
@@ -22,6 +22,7 @@ internal static class Program
         if (args.Length != 1) return 2;
         Console.OutputEncoding = new UTF8Encoding(false);
         Console.InputEncoding = new UTF8Encoding(false, true);
+        if (args[0] == "--semantic") return RunSemantic();
         var targets = args[0] == "--stdin"
             ? JsonSerializer.Deserialize<Target[]>(Console.In.ReadToEnd()) ?? []
             : (JsonSerializer.Deserialize<string[]>(File.ReadAllText(args[0])) ?? [])
@@ -79,7 +80,7 @@ internal static class Program
     {
         var engine = RazorProjectEngine.Create(RazorConfiguration.Default,
             RazorProjectFileSystem.Create(Directory.GetCurrentDirectory()), builder => RazorExtensions.Register(builder));
-        var doc = engine.Process(RazorSourceDocument.ReadFrom(new MemoryItem(path, source)), FileKinds.Legacy, [], []);
+        var doc = engine.Process(RazorSourceDocument.ReadFrom(new MemoryItem(Path.GetFileName(path), source)), FileKinds.Legacy, [], []);
         foreach (var diagnostic in doc.GetCSharpDocument().Diagnostics)
         {
             var span = diagnostic.Span;
@@ -99,9 +100,9 @@ internal static class Program
     private sealed class MemoryItem(string path, string source) : RazorProjectItem
     {
         public override string BasePath => "/";
-        public override string FilePath => "/" + Path.GetFileName(path);
+        public override string FilePath => "/" + path;
         public override string PhysicalPath => Path.GetFullPath(path);
-        public override string RelativePhysicalPath => Path.GetFileName(path);
+        public override string RelativePhysicalPath => path;
         public override bool Exists => true;
         public override Stream Read() => new MemoryStream(Encoding.UTF8.GetBytes(source));
     }
