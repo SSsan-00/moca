@@ -54,6 +54,7 @@
   const diagnosticLimit = 2;
   const diagnosticBusyDelays = [500, 1000, 2000, 4000, 8000, 8000];
   let diagnosticGeneration = 0, diagnosticTimer, diagnosticInFlight = 0, pendingDiagnosis, markedModel;
+  let semanticTimer, semanticInFlight = false, pendingSemantic;
 
   function startPendingDiagnosis() {
     if (!pendingDiagnosis || diagnosticInFlight >= diagnosticLimit) return;
@@ -62,10 +63,46 @@
     return diagnose();
   }
 
+  function startPendingSemantic() {
+    if (semanticInFlight || !pendingSemantic) return;
+    const diagnose = pendingSemantic;
+    pendingSemantic = undefined;
+    return diagnose();
+  }
+
+  function renderDiagnostics(file, payload, result, valid) {
+    const findings = [...result.findings, ...result.razor];
+    const markers = findings.map(item => {
+      const parts = payload.content.slice(item.start, item.start + item.length).split("\n");
+      return {severity: window.monaco.MarkerSeverity.Error, code: item.code, message: item.message,
+        startLineNumber: item.line, startColumn: item.column, endLineNumber: item.line + parts.length - 1,
+        endColumn: parts.length === 1 ? item.column + Math.max(1, parts[0].length) : parts.at(-1).length + 1};
+    });
+    window.monaco.editor.setModelMarkers(file.model, "syntax", markers);
+    markedModel = file.model;
+    diagnosticList.replaceChildren(...markers.map(marker => {
+      const li = document.createElement("li");
+      const button = Object.assign(document.createElement("button"), {type: "button",
+        textContent: `${marker.startLineNumber}行 ${marker.startColumn}列 · ${marker.code}  ${marker.message}`});
+      button.addEventListener("click", () => {
+        if (!valid()) return;
+        const view = diffOpen ? diff.getModifiedEditor() : editor;
+        const position = {lineNumber: marker.startLineNumber, column: marker.startColumn};
+        view.setPosition(position);
+        view.revealPositionInCenter(position);
+        view.focus();
+      });
+      li.append(button);
+      return li;
+    }));
+    return findings.length;
+  }
+
   function scheduleDiagnostics() {
     const generation = ++diagnosticGeneration;
     clearTimeout(diagnosticTimer);
-    pendingDiagnosis = undefined;
+    clearTimeout(semanticTimer);
+    pendingDiagnosis = pendingSemantic = undefined;
     if (markedModel) window.monaco.editor.setModelMarkers(markedModel, "syntax", []);
     markedModel = undefined;
     diagnosticList.replaceChildren();
@@ -78,7 +115,7 @@
     if (diagnostics.hidden) return;
     setText("#editor-diagnostic-status", " · 診断待ち");
     setText("#editor-diagnostic-note", "入力が止まると、保存せずにこの下書きを診断します。");
-    let busyRetries = 0, payload;
+    let busyRetries = 0, semanticRetries = 0, payload;
     function enqueue(delay) {
       diagnosticTimer = setTimeout(() => {
         if (!valid()) return;
@@ -86,6 +123,59 @@
         if (diagnosticInFlight >= diagnosticLimit) setText("#editor-diagnostic-status", " · 空き待ち");
         return startPendingDiagnosis();
       }, delay);
+    }
+    function enqueueSemantic(delay = 0) {
+      semanticTimer = setTimeout(() => {
+        if (!valid()) return;
+        pendingSemantic = diagnoseSemantic;
+        return startPendingSemantic();
+      }, delay);
+    }
+
+    function showSemanticUnavailable(reason, retry = false) {
+      const notes = {
+        project_required: "対象を含む単一の .NET 9 C# プロジェクトが必要です。正式ビルドで確認してください。",
+        project_configuration: "このプロジェクト構成の型・参照を安全に再現できません。正式ビルドで確認してください。",
+        project_too_large: "エディタで確認できるプロジェクトの上限を超えています。",
+        project_changed: "診断中に作業ツリーが変わりました。最新版で再診断できます。",
+        razor_context: "この Razor の生成条件を再現できません。正式ビルドで確認してください。",
+        analyzer_busy: "ほかの型・参照診断を実行中です。",
+        timeout: "型・参照の診断が制限時間内に終わりませんでした。"
+      };
+      diagnosticRetry.hidden = !retry;
+      setText("#editor-diagnostic-status", " · 構文: 指摘なし / 型・参照: 未確認");
+      setText("#editor-diagnostic-note", notes[reason] || "型・参照の解析器を利用できません。正式ビルドで確認してください。");
+    }
+
+    async function diagnoseSemantic() {
+      if (!valid()) return;
+      semanticInFlight = true;
+      try {
+        const result = await request("roslyn-diagnostics", {...payload, mode: "semantic"});
+        if (!valid() || result.version !== payload.version || result.target !== target) return;
+        if (result.status === "unavailable" && result.reason === "analyzer_busy" &&
+            semanticRetries < diagnosticBusyDelays.length) {
+          enqueueSemantic(diagnosticBusyDelays[semanticRetries++]);
+          return;
+        }
+        if (result.status !== "clear" && result.status !== "errors") {
+          showSemanticUnavailable(result.reason,
+            !["project_required", "project_configuration", "project_too_large", "razor_context"].includes(result.reason));
+          return;
+        }
+        const count = renderDiagnostics(file, payload, result, valid);
+        setText("#editor-diagnostic-status", count
+          ? ` · 型・参照: ${count}件${result.truncated ? "以上" : ""}` : " · 構文・型・参照: 指摘なし");
+        const checked = target.toLowerCase().endsWith(".cshtml")
+          ? "元の Razor に対応する C# を確認しました。タグヘルパー等を含む全体は正式ビルドで確認してください。"
+          : "この構成で確認できる型・参照を診断しました。最終結果は正式ビルドで確認してください。";
+        setText("#editor-diagnostic-note", result.truncated ? "表示上限に達しました。" + checked : checked);
+      } catch {
+        if (valid()) showSemanticUnavailable(null, true);
+      } finally {
+        semanticInFlight = false;
+        startPendingSemantic();
+      }
     }
 
     async function diagnose() {
@@ -102,38 +192,22 @@
           enqueue(diagnosticBusyDelays[busyRetries++]);
           return;
         }
-        const findings = [...result.findings, ...result.razor];
-        const markers = findings.map(item => {
-          const parts = payload.content.slice(item.start, item.start + item.length).split("\n");
-          return {severity: window.monaco.MarkerSeverity.Error, code: item.code, message: item.message,
-            startLineNumber: item.line, startColumn: item.column, endLineNumber: item.line + parts.length - 1,
-            endColumn: parts.length === 1 ? item.column + Math.max(1, parts[0].length) : parts.at(-1).length + 1};
-        });
-        window.monaco.editor.setModelMarkers(file.model, "syntax", markers);
-        markedModel = file.model;
-        diagnosticList.replaceChildren(...markers.map(marker => {
-          const li = document.createElement("li");
-          const button = Object.assign(document.createElement("button"), {type: "button",
-            textContent: `${marker.startLineNumber}行 ${marker.startColumn}列 · ${marker.code}  ${marker.message}`});
-          button.addEventListener("click", () => {
-            if (!valid()) return;
-            const view = diffOpen ? diff.getModifiedEditor() : editor;
-            const position = {lineNumber: marker.startLineNumber, column: marker.startColumn};
-            view.setPosition(position);
-            view.revealPositionInCenter(position);
-            view.focus();
-          });
-          li.append(button);
-          return li;
-        }));
+        const count = renderDiagnostics(file, payload, result, valid);
+        if (result.supports_semantic && result.status === "clear" && !count) {
+          setText("#editor-diagnostic-status", " · 構文: 指摘なし / 型・参照: 確認中");
+          setText("#editor-diagnostic-note", "作業ツリーから型・参照を確認しています。編集中でもそのまま続けられます。");
+          enqueueSemantic();
+          return;
+        }
         const unavailable = result.status === "unavailable" || result.status === "blocked";
         diagnosticRetry.hidden = !unavailable || result.reason === "demo";
-        const status = unavailable ? "診断できません" : findings.length ? `${findings.length}件${result.truncated ? "以上" : ""}` : "指摘なし";
+        const status = unavailable ? "診断できません" : count ? `${count}件${result.truncated ? "以上" : ""}` : "指摘なし";
         setText("#editor-diagnostic-status", " · " + status);
         const reasons = {demo: "静的デモでは診断を実行しません。", timeout: "診断が時間内に終了しませんでした。",
-          analyzer_busy: "ほかの診断を処理中です。"};
+          analyzer_busy: "ほかの診断を実行中です。"};
         setText("#editor-diagnostic-note", unavailable ? reasons[result.reason] || "解析器を利用できません。正式ビルドで確認してください。"
           : result.truncated ? "表示件数の上限に達しました。まず表示された箇所を確認してください。"
+          : count ? "現在の下書きの構文診断です。構文エラーを修正してから型・参照を確認します。"
           : "現在の下書きの構文診断です。型や参照の正しさは正式ビルドで確認してください。");
       } catch (error) {
         if (!valid()) return;

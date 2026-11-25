@@ -1303,7 +1303,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             return True
 
         def send_roslyn_diagnostics(self, action: dict[str, Any]) -> None:
-            from migration_harness.verification.roslyn_syntax import editor_diagnostics
+            from migration_harness.verification.roslyn_syntax import editor_diagnostics, editor_semantic_diagnostics
 
             try:
                 run_id = action.get("run_id")
@@ -1312,14 +1312,21 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 if (state.get("run_id") != run_id or not state.get("worktree_path")
                         or self.headers.get("X-Run-ID", run_id) != run_id):
                     raise ValueError("表示中の実行が変わりました。")
-                _, _, _, unit = load_saved_run(config, run_id)
+                _, worktree, _, unit = load_saved_run(config, run_id)
                 target, version = action.get("target"), action.get("version")
                 if target not in [p.as_posix() for p in target_paths(unit) if p.suffix.lower() in EDITOR_TARGET_SUFFIXES]:
                     raise ValueError("設定された移行先ファイルを選んでください。")
                 if not isinstance(version, str) or not 0 < len(version) <= 128:
                     raise ValueError("診断する下書きの版が無効です。")
                 content = editor_text(action.get("content"))
-                result = editor_diagnostics(target, content, version)
+                mode = action.get("mode", "syntax")
+                if mode == "syntax":
+                    result = editor_diagnostics(target, content, version)
+                    result["supports_semantic"] = True
+                elif mode == "semantic":
+                    result = editor_semantic_diagnostics(worktree, config["build_project"], target, content, version)
+                else:
+                    raise ValueError("診断の種類が不正です。")
                 self.send_body(200, "application/json", json.dumps(result, ensure_ascii=False).encode("utf-8"))
             except _ERRORS as exc:
                 self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
