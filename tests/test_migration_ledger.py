@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, stub_syntax_diagnostics
 from migration_harness.runs import run_records
 from migration_harness import workflow
 from migration_harness.web.diff_viewer import capture_workspace, save_workspace
@@ -66,7 +66,7 @@ class LedgerReviewTest(HarnessCase):
                 stream.write(b"another build\n")
             return subprocess.CompletedProcess(command, exit_code)
 
-        with patch.object(workflow.subprocess, "run", side_effect=build_or_run):
+        with stub_syntax_diagnostics(), patch.object(workflow.subprocess, "run", side_effect=build_or_run):
             return workflow.resume_with_junie(self.settings, self.run_id)
 
     def source(self):

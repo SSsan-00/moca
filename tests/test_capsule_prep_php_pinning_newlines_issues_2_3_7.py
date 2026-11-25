@@ -10,7 +10,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, stub_syntax_diagnostics
 from migration_harness.context import capsules
 from migration_harness.context.context_evidence import find_feature, read_context
 from migration_harness import cli, workflow
@@ -105,6 +105,7 @@ class CapsulePreparationTests(HarnessCase):
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(junie_cli, "run_interactive", side_effect=junie) as agent,
             patch.object(workflow.subprocess, "run", side_effect=build_or_run_git),
+            stub_syntax_diagnostics(),
         ):
             cli.main()
 

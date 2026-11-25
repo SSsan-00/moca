@@ -30,8 +30,9 @@ class RoslynPreflightTests(SavedRunFixture):
             result = workflow.resume_with_junie(self.config, self.run_id)
         return result, calls, junie.call_count
 
-    def test_clear_still_builds_with_no_preflight_artifact(self):
+    def test_only_configured_target_is_checked_before_build(self):
         self.target.write_text(VALID, encoding="utf-8")
+        (self.worktree / "Excluded.cs").write_text(INVALID, encoding="utf-8")
         result, calls, attempts = self.run_verification()
         self.assertEqual(result["status"], "build_succeeded")
         self.assertEqual(len(calls), 1)
