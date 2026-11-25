@@ -289,7 +289,8 @@
       if (acceptedSource && acceptedSource !== "new") localEdits.delete(editKey(was, acceptedSource));
       for (const file of new Set([editor, ...localEdits.values()])) {
         if (file?.id === result.id && file.revision === (extra.revision ?? revision)
-            && file.source !== acceptedSource && (!file.pending || file === editor)) file.revision = result.revision;
+            && (acceptedSource === "new" || file.source !== acceptedSource)
+            && (!file.pending || file === editor)) file.revision = result.revision;
       }
       display(result);
       if (action === "start" || was !== result.id) await loadSource();
