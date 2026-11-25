@@ -69,6 +69,7 @@ from .runs.editor_queue import (
     editor_save_pending,
     editor_target,
     editor_text,
+    finish_applied_editor_edit,
     finish_prompts,
     merge_edit,
     record_operator_edit,
@@ -4979,7 +4980,7 @@ def _finish_reference_editor_edits(queue, adoption, edit_versions, history):
             queue.setdefault("operator_edits", {}).setdefault(name, []).extend(diffs)
     for name, version in adoption["editor_edits"].items():
         if edit_versions.get(name) == version:
-            edit = queue["edits"].pop(name)
+            edit = finish_applied_editor_edit(queue, name, adoption["after"][name])
             if history is None:
                 record_operator_edit(queue, name, edit["base"], edit["content"])
     queue["last_reference_adoption"] = adoption["output"]

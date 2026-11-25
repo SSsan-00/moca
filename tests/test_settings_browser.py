@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from migration_harness import workflow
 from migration_harness.config import target_paths
+from migration_harness.context.source_context import stage_target_context
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.web import dashboard
@@ -142,6 +143,35 @@ max_bytes = 9007199254740993 # preserve this value
                     view.publish({**view.state, "ready": True})
                     handler.send_body(200 if adopted else 409, "application/json", b"{}")
                     return
+                elif handler.path == fixture_root + "fixture-editor-pin-reference":
+                    record_path = run / "run.json"
+                    saved = json.loads(record_path.read_bytes())
+                    unit = config["units"][0]
+                    targets = target_paths(unit)
+                    capsule = run / "capsule"
+                    agent = run / "agent-workspace"
+                    reference = worktree / "refs" / "Library.cs"
+                    reference.parent.mkdir()
+                    reference.write_bytes(b"reference A")
+                    stage_target_context(worktree, targets, capsule, agent, policy={"roots": [], "folders": ["refs"]})
+                    (capsule / "manifest.json").write_text('{"parts": [{"index": 1}]}', encoding="utf-8")
+                    saved["target_hashes"] = target_versions(worktree, unit)
+                    saved["capsule_checkpoints"] = {"1": workflow._save_capsule_checkpoint(
+                        run, worktree, targets, saved["target_hashes"],
+                    )}
+                    record_path.write_text(json.dumps(saved), encoding="utf-8")
+                    with editor_queue(run) as queue:
+                        queue["operator_edits"].clear()
+                    reference.write_bytes(b"reference B")
+                elif handler.path == fixture_root + "fixture-editor-refresh-reference":
+                    saved = json.loads((run / "run.json").read_bytes())
+                    proposal = run / "reference-proposal-fixture"
+                    with patch.object(workflow, "_propose_reference_refresh", return_value=proposal):
+                        workflow._refresh_target_context_on_resume(
+                            config, config["units"][0], run, worktree, saved, migration_complete=True,
+                        )
+                    view.observe(saved)
+                    view.ready(config, saved)
                 elif handler.path == fixture_root + "fixture-editor-switch":
                     if view.state["run_id"] == run_id:
                         other_run.mkdir()
