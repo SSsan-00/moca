@@ -1,3 +1,4 @@
+import {checkBuildReviewDrafts} from "./build_review_drafts_browser.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -271,6 +272,7 @@ try {
   assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
+  await checkBuildReviewDrafts({url, evaluate, click, change, value, wait});
   // Reopen the same Run in a new document instead of relying on Chrome's reload scheduling.
   const recoveryUrl = new URL(url);
   recoveryUrl.searchParams.set("run", expectedRun);
@@ -1036,28 +1038,61 @@ try {
     transport.fetch = async (resource, options) => {
       const url = new URL(resource, location.href);
       const data = options?.body && JSON.parse(options.body);
-      const response = await previous(resource, options);
       if (url.pathname.endsWith("/resume-plan")) {
-        const query = Object.fromEntries(url.searchParams);
-        if (response.ok) query.version = (await response.clone().json()).version;
-        requests.push({kind: "plan", data: query});
+        const entry = {kind: "plan", data: Object.fromEntries(url.searchParams)};
+        requests.push(entry);
+        try {
+          const response = await previous(resource, options);
+          entry.status = response.status;
+          try {
+            if (response.ok) {
+              entry.response = await response.clone().json();
+              entry.data.version = entry.response.version;
+            } else entry.error = await response.clone().text();
+          } catch (error) { entry.error = error.message; }
+          return response;
+        } catch (error) {
+          entry.error = error.message;
+          throw error;
+        }
       }
+      const response = await previous(resource, options);
       if (resource === "control" && data?.action === "resume-run") requests.push({kind: "start", data});
       return response;
     };
     window.restoreResumeDesignTransport = () => { transport.fetch = previous; };
   }.toString() + ")()");
   const dialog = field("resume-stage-dialog"), startButton = field("resume-stage-start");
+  const demoRun = run => "harnessDemoTransport.fetch('workspace').then(r => r.json()).then(d => d.runs.find(x => x.run_id === "
+    + JSON.stringify(run) + "))";
+  const demoRunStatus = run => demoRun(run) + ".then(run => run?.status)";
+  async function waitForConfirmedPlan(run, stage) {
+    try {
+      await wait(dialog + ".open && " + startButton + "?.matches(':enabled')");
+    } catch (error) {
+      const state = await evaluate("(" + function (run, stage) {
+        const field = id => document.getElementById(id);
+        const plans = window.resumeDesignRequests.filter(entry =>
+          entry.kind === "plan" && entry.data.run_id === run && entry.data.start_stage === stage);
+        return {open: field("resume-stage-dialog").open, stage: field("resume-stage").value,
+          startDisabled: field("resume-stage-start").disabled, previewDisabled: field("resume-stage-preview").disabled,
+          summary: field("resume-stage-summary").textContent, plans};
+      }.toString() + ")(" + JSON.stringify(run) + "," + JSON.stringify(stage) + ")");
+      throw new Error(`Resume plan was not accepted: ${JSON.stringify({run, stage, fixture: await evaluate(demoRun(run)), ...state})}`,
+        {cause: error});
+    }
+  }
   async function choosePlan(run, stage) {
+    const fixture = await evaluate(demoRun(run));
+    assert(fixture?.ready && fixture.worktree_path, "resume fixture not ready: " + JSON.stringify(fixture));
+    await wait(runAction(run, "resume-stage") + "?.matches(':enabled')");
     await evaluate(runAction(run, "resume-stage") + ".click()");
     await wait(dialog + ".open");
     if (stage !== "migration") await change("resume-stage", stage);
     assert(await evaluate(startButton + ".disabled"), "start requires a confirmed plan");
     await click("resume-stage-preview");
-    await wait(startButton + "?.matches(':enabled')");
+    await waitForConfirmedPlan(run, stage);
   }
-  const demoRunStatus = run => "harnessDemoTransport.fetch('workspace').then(r => r.json()).then(d => d.runs.find(x => x.run_id === "
-    + JSON.stringify(run) + ")?.status)";
   async function stopDemoStage(run) {
     const body = JSON.stringify({action: "stop", run_id: run});
     assert.equal(await evaluate("harnessDemoTransport.fetch('control', {method:'POST', body:" + JSON.stringify(body)
@@ -1090,7 +1125,37 @@ try {
   await stopDemoStage(designRun);
 
   const buildRun = "demo-partners";
-  await choosePlan(buildRun, "build-through");
+  await evaluate(runAction(designRun, "resume-stage") + ".click()");
+  await wait(dialog + ".open");
+  await wait(runAction(buildRun, "resume-stage") + "?.matches(':enabled')");
+  const reopenedPlan = await evaluate("(" + async function (otherRun) {
+    const dialog = document.getElementById("resume-stage-dialog");
+    const stage = document.getElementById("resume-stage");
+    const transport = window.harnessDemoTransport;
+    const fetch = transport.fetch;
+    const closed = new Promise(resolve => dialog.addEventListener("close", () => resolve(dialog.open), {once: true}));
+    let deliver;
+    const plan = new Promise(resolve => { deliver = resolve; });
+    transport.fetch = async (resource, options) => {
+      const response = await fetch(resource, options);
+      const url = new URL(resource, location.href);
+      if (url.pathname.endsWith("/resume-plan")) {
+        // Release the valid plan after the browser delivers the previous opening's close event.
+        deliver({reopened: await closed, status: response.status, run: url.searchParams.get("run_id")});
+      }
+      return response;
+    };
+    try {
+      dialog.close();
+      otherRun.click();
+      stage.value = "build-through";
+      stage.dispatchEvent(new Event("change", {bubbles: true}));
+      document.getElementById("resume-stage-preview").click();
+      return await plan;
+    } finally { transport.fetch = fetch; }
+  }.toString() + ")(" + runAction(buildRun, "resume-stage") + ")");
+  assert.deepEqual(reopenedPlan, {reopened: true, status: 200, run: buildRun});
+  await waitForConfirmedPlan(buildRun, "build-through");
   assert.match(await evaluate(field("resume-stage-summary") + ".textContent"), /ビルド → チェッカー/);
   await click("resume-stage-start");
   await wait("!" + dialog + ".open");
@@ -1109,7 +1174,7 @@ try {
   await change("resume-stage", "checker");
   assert.equal(await evaluate(startButton + ".disabled"), true);
   await click("resume-stage-preview");
-  await wait(startButton + "?.matches(':enabled')");
+  await waitForConfirmedPlan(checkerRun, "checker");
   await click("resume-stage-start");
   await wait("!" + dialog + ".open");
   await wait("(" + demoRunStatus(checkerRun) + ").then(status => status === 'checking')");

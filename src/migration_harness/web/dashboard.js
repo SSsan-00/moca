@@ -157,7 +157,7 @@ let buildViewRun;
 let buildFile;
 let buildRequest = 0;
 let buildLoading = false;
-let buildEditSubmitted = false;
+const buildDrafts = new Map();
 const progressPrompt = bindProgressPromptDialog({
   open: refreshProgressPrompts, submit: submitProgressPrompt,
   inputChanged() { promptInputRevision++; syncProgressPrompts(); },
@@ -290,6 +290,27 @@ async function submitProgressPrompt(text) {
   }
 }
 
+function buildDraft(runId) {
+  if (!buildDrafts.has(runId)) buildDrafts.set(runId, {files: new Map(), instruction: ""});
+  return buildDrafts.get(runId);
+}
+
+function finishBuildSubmission(draft) {
+  const sent = draft.submission;
+  if (!sent?.accepted || sent.succeeded === undefined) return;
+  delete draft.submission;
+  if (!sent.succeeded) return;
+  const visible = buildViewRun === sent.runId;
+  if (sent.file && draft.files.get(sent.target) === sent.file) {
+    draft.files.delete(sent.target);
+    if (visible && buildFile === sent.file.base) buildFile = undefined;
+  }
+  if (draft.instruction === sent.instruction) {
+    draft.instruction = "";
+    if (visible) buildInstruction.value = "";
+  }
+}
+
 function buildEditIsDirty() {
   return !!buildFile && buildSource.value !== buildFile.content;
 }
@@ -304,18 +325,18 @@ function syncBuildReview(canAct) {
     || new TextEncoder().encode(buildFile.crlf ? source.replaceAll("\n", "\r\n") : source).length
       + buildFile.bomBytes > buildFile.maxBytes
   );
-  buildTarget.disabled = submitting || edited;
+  buildTarget.disabled = submitting || buildLoading;
   buildSource.readOnly = buildInstruction.readOnly = submitting || !snapshot.resumable;
   buildReset.hidden = !edited;
   buildReset.disabled = submitting;
-  buildSubmit.disabled = !canAct || !snapshot.resumable || buildLoading || tooLarge;
+  buildSubmit.disabled = !canAct || !snapshot.resumable || buildLoading || tooLarge || buildViewRun !== snapshot.run_id;
   buildSubmit.textContent = instructed
     ? (edited ? "保存して Junie に修正を依頼" : "Junie に修正を依頼して再開")
     : snapshot.review_kind === "roslyn_preflight" ? (edited ? "保存して再診断" : "再診断して再開")
     : (edited ? "保存して再ビルド" : "再ビルド");
   if (buildFile) {
     buildFileStatus.textContent = tooLarge ? `${buildFile.maxBytes / (1024 * 1024)} MiB を超えています。作業ツリーで編集してください。`
-      : edited ? "未保存の編集があります。別のファイルを選ぶには、保存するか最新の内容を読み込み直してください。" : "";
+      : edited ? "このファイルの編集は未保存です。保存の対象は選択中のファイルだけです。" : "";
   }
 }
 
@@ -328,9 +349,12 @@ async function fetchBuildReview(runId, target) {
 }
 
 // 選択中に開始した取得だけをビルド確認の入力に反映する。
-async function loadBuildSource() {
+async function loadBuildSource(reload = false) {
   const request = ++buildRequest;
   const target = buildTarget.value;
+  const draft = buildDraft(buildViewRun);
+  draft.target = target;
+  const saved = draft.files.get(target);
   buildFile = undefined;
   buildSource.value = "";
   buildSource.hidden = element("#build-review-source-label").hidden = true;
@@ -339,16 +363,29 @@ async function loadBuildSource() {
   syncActions();
   if (!target) return;
   try {
-    const file = await fetchBuildReview(buildViewRun, target);
-    if (request !== buildRequest) return;
-    buildSource.value = file.content;
-    buildFile = {
-      target, version: file.version, content: buildSource.value,
-      maxBytes: file.max_bytes, crlf: file.crlf, bomBytes: file.bom_bytes,
-    };
+    if (saved && !reload) {
+      buildFile = saved.base;
+      buildSource.value = saved.value;
+    } else {
+      const file = await fetchBuildReview(buildViewRun, target);
+      if (request !== buildRequest) return;
+      draft.files.delete(target);
+      buildSource.value = file.content;
+      buildFile = {
+        target, version: file.version, content: buildSource.value,
+        maxBytes: file.max_bytes, crlf: file.crlf, bomBytes: file.bom_bytes,
+      };
+    }
     buildSource.hidden = element("#build-review-source-label").hidden = false;
   } catch (error) {
-    if (request === buildRequest) buildFileStatus.textContent = `ファイルを開けませんでした。\n${error.message}`;
+    if (request === buildRequest) {
+      if (saved) {
+        buildFile = saved.base;
+        buildSource.value = saved.value;
+        buildSource.hidden = element("#build-review-source-label").hidden = false;
+      }
+      buildFeedback.textContent = `ファイルを開けませんでした。\n${error.message}`;
+    }
   } finally {
     if (request === buildRequest) {
       buildLoading = false;
@@ -360,13 +397,12 @@ async function loadBuildSource() {
 async function openBuildReview() {
   const request = ++buildRequest;
   const runId = snapshot.run_id;
-  const newRun = buildViewRun !== runId;
+  if (buildViewRun !== runId) element("#build-review-editor").open = false;
   buildViewRun = runId;
-  if (newRun) {
-    buildFile = undefined;
-    buildInstruction.value = buildSource.value = "";
-    element("#build-review-editor").open = false;
-  }
+  const draft = buildDraft(runId);
+  buildFile = undefined;
+  buildSource.value = "";
+  buildInstruction.value = draft.instruction;
   const errors = element("#build-review-errors");
   const logSection = element("#build-review-log-section");
   const editor = element("#build-review-editor");
@@ -398,11 +434,11 @@ async function openBuildReview() {
       ? (review.truncated ? "Junieの修正差分（一部を表示）" : "Junieの修正差分")
       : (review.truncated ? "ビルド出力（末尾 64 KiB）" : "ビルド出力");
     logSection.hidden = !review.log;
-    const selected = buildFile?.target || (!newRun && buildTarget.value) || review.preferred_target;
+    const selected = draft.target ?? review.preferred_target;
     buildTarget.replaceChildren(new Option("ファイルを選択", ""), ...review.targets.map(path => new Option(path, path)));
     buildTarget.value = review.targets.includes(selected) ? selected : "";
     editor.hidden = !review.targets.length;
-    if (!buildEditIsDirty()) await loadBuildSource();
+    await loadBuildSource();
   } catch (error) {
     if (request === buildRequest) {
       errors.textContent = snapshot.error || "ビルド工程で停止しました。";
@@ -1031,7 +1067,9 @@ function bindResumeStage() {
     resumeSummary.textContent = "";
   }
   resumeStage.addEventListener("change", clearResumePlan);
-  resumeDialog.addEventListener("close", clearResumePlan);
+  resumeDialog.addEventListener("close", () => {
+    if (!resumeDialog.open) clearResumePlan();
+  });
   resumePreview.addEventListener("click", async () => {
     clearResumePlan();
     const generation = resumeGeneration;
@@ -1363,10 +1401,6 @@ function render() {
   const showBuildReview = data.ready && data.status === "build_failed";
   const preflightReview = showBuildReview && data.review_kind === "roslyn_preflight";
   if (!showBuildReview && buildDialog.open) buildDialog.close();
-  if (data.ready && buildEditSubmitted) {
-    buildEditSubmitted = false;
-    if (!data.error_details && !data.message) buildFile = undefined;
-  }
   const waitingForJunie = !!data.junie_request;
   const verificationFinished = data.ready && verifiedStatuses.has(data.status);
   const stopped = data.ready && !verificationFinished && (data.resumable || showReview || showBuildReview
@@ -1533,7 +1567,7 @@ async function send(action, fields = {finding_id: findings.value, reason: note.v
   if (submitting || !connected) return;
   const runId = snapshot.run_id;
   try {
-    if (action === "resume" || action === "build-response") {
+    if (action === "resume") {
       return await withSavedRunModel(runId, model => sendControl(action, {...fields, ...model}),
         () => selectedRunId === runId && snapshot.run_id === runId);
     }
@@ -1550,7 +1584,7 @@ function showControlError(action, error) {
   else element("#workspace-progress-feedback").textContent = message;
 }
 
-async function sendControl(action, fields) {
+async function sendControl(action, fields, onError = error => showControlError(action, error)) {
   if (submitting || !connected) return;
   if (action === "stop") {
     if (!connected || !snapshot.cancellable || snapshot.stop_requested || stopPendingOperation !== undefined) return;
@@ -1569,7 +1603,7 @@ async function sendControl(action, fields) {
     return true;
   } catch (error) {
     if (action === "stop") stopPendingOperation = undefined;
-    showControlError(action, error);
+    onError(error);
   } finally {
     submitting = false;
     syncActions();
@@ -1727,24 +1761,53 @@ reviewButton.addEventListener("click", () => {
   else send("resume");
 });
 element("#build-review-close").addEventListener("click", () => buildDialog.close());
-buildTarget.addEventListener("change", loadBuildSource);
+buildTarget.addEventListener("change", () => loadBuildSource());
 buildReset.addEventListener("click", () => {
-  loadBuildSource();
+  loadBuildSource(true);
   buildTarget.focus();
 });
-buildSource.addEventListener("input", syncActions);
-buildInstruction.addEventListener("input", syncActions);
+buildSource.addEventListener("input", () => {
+  if (buildFile) {
+    const files = buildDraft(buildViewRun).files;
+    if (buildEditIsDirty()) files.set(buildFile.target, {base: buildFile, value: buildSource.value});
+    else files.delete(buildFile.target);
+  }
+  syncActions();
+});
+buildInstruction.addEventListener("input", () => {
+  buildDraft(buildViewRun).instruction = buildInstruction.value;
+  syncActions();
+});
 element("#build-review-form").addEventListener("submit", async event => {
   event.preventDefault();
   if (buildSubmit.disabled) return;
-  const edit = buildEditIsDirty() ? {
-    target: buildFile.target, version: buildFile.version, content: buildSource.value,
-  } : null;
-  buildEditSubmitted = !!edit;
-  if (await send("build-response", {instruction: buildInstruction.value.trim(), edit})) {
-    if (buildDialog.open) buildDialog.close();
-  } else {
-    buildEditSubmitted = false;
+  const runId = buildViewRun;
+  const draft = buildDraft(runId);
+  const target = buildFile?.target;
+  const file = draft.files.get(target);
+  const instruction = draft.instruction;
+  const request = buildRequest;
+  const current = () => runId === selectedRunId && runId === snapshot.run_id && buildDialog.open
+    && request === buildRequest && file === draft.files.get(target) && instruction === draft.instruction;
+  try {
+    await withSavedRunModel(runId, async model => {
+      const submission = {runId, target, file, instruction, revision: dashboardRevision};
+      draft.submission = submission;
+      const edit = file ? {target, version: file.base.version, content: file.value} : null;
+      const accepted = await sendControl("build-response", {instruction: instruction.trim(), edit, ...model}, error => {
+        if (current()) showControlError("build-response", error);
+      });
+      if (accepted) {
+        const close = current();
+        submission.accepted = true;
+        finishBuildSubmission(draft);
+        if (close) buildDialog.close();
+      } else {
+        delete draft.submission;
+      }
+    }, current);
+  } catch (error) {
+    if (current()) showControlError("build-response", error);
   }
 });
 for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
@@ -1850,6 +1913,17 @@ function receiveProgress(event) {
     migrationCompletion = undefined;
   }
   dashboardRevision = Number(event.lastEventId);
+  const buildState = buildDrafts.get(data.run_id);
+  const sent = buildState?.submission;
+  if (sent && dashboardRevision > sent.revision && !data.queued && sent.succeeded === undefined) {
+    if (!data.ready && data.operation_id) sent.started = true;
+    if (data.ready) {
+      // Cancelling a queued response also restores build_failed without a message.
+      const advanced = verifiedStatuses.has(data.status) || checkerReviewStatuses.has(data.status);
+      sent.succeeded = !data.error_details && !data.message && (advanced || (data.status === "build_failed" && !!sent.started));
+      finishBuildSubmission(buildState);
+    }
+  }
   if (snapshot.ready || snapshot.operation_id !== stopPendingOperation) stopPendingOperation = undefined;
   if (accepted) note.value = "";
   if (progressChanged) {

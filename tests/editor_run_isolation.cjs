@@ -77,7 +77,7 @@ function createEditor(host, options = {}) {
 }
 const pending = [];
 const timers = [];
-let debounce;
+let debounce, debounceDelay;
 let editorTransport;
 const context = vm.createContext({
   document, window: {monaco: {
@@ -92,7 +92,8 @@ const context = vm.createContext({
     if (editorTransport) return editorTransport(path, body);
     return new Promise((resolve, reject) => pending.push({path, body, resolve, reject}));
   },
-  setTimeout(callback) { debounce = callback; return callback; }, clearTimeout(timer) { if (debounce === timer) debounce = undefined; },
+  setTimeout(callback, delay) { debounce = callback; debounceDelay = delay; return callback; },
+  clearTimeout(timer) { if (debounce === timer) debounce = undefined; },
   ResizeObserver: class { observe() {} }, MutationObserver: class { observe() {} },
   addEventListener() {}, setInterval(callback) { timers.push(callback); },
   URL: {createObjectURL() { return "blob:worker"; }}, Blob, URLSearchParams,
@@ -102,6 +103,12 @@ vm.runInContext(fs.readFileSync(process.argv[4], "utf8"), context);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), context);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const tick = () => timers[0]();
+function fireDebounce() {
+  assert.equal(typeof debounce, "function", "expected a scheduled diagnosis");
+  const callback = debounce;
+  debounce = undefined;
+  return callback();
+}
 const model = () => editors.get(find("#editor-code")).getModel();
 const response = (runId, content = `class ${runId} {}`) => ({
   run_id: runId, targets: ["Page.cs"], target: "Page.cs", content,
@@ -543,6 +550,109 @@ async function checkConversationFileSwitch() {
   assert.equal(turns.children.length, 3);
 }
 
+async function checkLatestDiagnosticAfterSaturation() {
+  const run = "DiagnosticRun", target = "Page.cshtml.cs", markup = "Page.cshtml";
+  const sync = (file, content) => ({...response(run, content), targets: [target, markup], target: file});
+  const choose = file => find("#editor-target-buttons").emit("click", {target: {dataset: {target: file}}});
+  const diagnosisRequests = () => pending.filter(item => item.path === "roslyn-diagnostics");
+  const outcome = (item, reason, findings = []) => ({
+    target: item.body.target, version: item.body.version, status: reason ? "unavailable" : findings.length ? "errors" : "clear",
+    reason, findings, razor: [],
+  });
+  const finding = {line: 1, column: 1, start: 0, length: 2, code: "CS1513", message: "synthetic error"};
+
+  await select(run);
+  take().resolve(sync(target, "class Initial {}"));
+  await flush();
+  const file = model();
+  const submit = text => { file.setValue(text); return fireDebounce(); };
+  const aDone = submit("class A {");
+  const a = take("roslyn-diagnostics");
+  const bDone = submit("class B {");
+  const b = take("roslyn-diagnostics");
+  const superseded = submit("class Superseded {");
+  const queued = submit("class C {");
+  assert.equal(diagnosisRequests().length, 0, "keep two active requests and only one queued generation");
+  await superseded;
+  await queued;
+
+  a.resolve(outcome(a, null, [finding]));
+  await aDone;
+  const c = take("roslyn-diagnostics");
+  assert.equal(c.body.content, "class C {", "never dispatch the intermediate queued edit");
+  c.resolve(outcome(c, "analyzer_busy"));
+  await flush();
+  assert.equal(find("#editor-diagnostic-retry").hidden, true, "a transient busy result is retried automatically");
+  b.resolve(outcome(b, null, [finding]));
+  await bDone;
+  assert.equal(find("#editor-diagnostic-list").children.length, 0, "the previous findings stay hidden");
+
+  const cDone = fireDebounce();
+  const current = take("roslyn-diagnostics");
+  assert.deepEqual(current.body, c.body, "retry the same immutable latest draft, not the previous input");
+  current.resolve(outcome(current, null, [finding]));
+  await cDone;
+  assert.equal(file.markers[0].code, "CS1513");
+
+  const busy = submit("class Busy {");
+  const first = take("roslyn-diagnostics");
+  first.resolve(outcome(first, "analyzer_busy"));
+  await busy;
+  const delays = [];
+  while (debounce) {
+    delays.push(debounceDelay);
+    assert(delays.length <= 8, "continuous busy must not retry indefinitely");
+    const retryDone = fireDebounce();
+    const retry = take("roslyn-diagnostics");
+    assert.deepEqual(retry.body, first.body);
+    retry.resolve(outcome(retry, "analyzer_busy"));
+    await retryDone;
+  }
+  assert(delays.length > 0 && delays.every(delay => delay >= 500) && delays.reduce((sum, delay) => sum + delay, 0) <= 24_000,
+    "busy retries are spaced, finite, and wait at most 24 seconds in total");
+  assert.equal(find("#editor-diagnostic-retry").hidden, false, "manual retry stays available after the limit");
+  await find("#editor-diagnostic-retry").emit("click");
+  const manualDone = fireDebounce();
+  const manual = take("roslyn-diagnostics");
+  manual.resolve(outcome(manual, "timeout"));
+  await manualDone;
+  assert.equal(debounce, undefined, "timeout must not be retried like busy");
+  assert.equal(find("#editor-diagnostic-retry").hidden, false);
+
+  const busyPending = async (text) => {
+    const done = submit(text);
+    const wait = take("roslyn-diagnostics");
+    wait.resolve(outcome(wait, "analyzer_busy"));
+    await done;
+    return debounce;
+  };
+  const obsoleteDraft = await busyPending("class OldDraft {");
+  const replacementDone = submit("class Corrected {}");
+  const replacement = take("roslyn-diagnostics");
+  await obsoleteDraft();
+  assert.equal(diagnosisRequests().length, 0, "changing the draft cancels its busy retry");
+  replacement.resolve(outcome(replacement, null));
+  await replacementDone;
+  const obsoleteFile = await busyPending("class OldTarget {");
+  await choose(markup);
+  take().resolve(sync(markup, "@page"));
+  await flush();
+  await obsoleteFile();
+  assert.equal(diagnosisRequests().length, 0, "switching files cancels the other file's busy retry");
+  const markupDone = fireDebounce();
+  const razor = take("roslyn-diagnostics");
+  assert.equal(razor.body.target, markup);
+  razor.resolve(outcome(razor, "analyzer_busy"));
+  await markupDone;
+  const obsoleteRun = debounce;
+  await select("A");
+  take().resolve(response("A"));
+  await flush();
+  await obsoleteRun();
+  assert.equal(diagnosisRequests().length, 0, "switching runs cancels previous retries even after the new editor loads");
+  console.log("Dashboard: only the newest syntax diagnosis is queued, transient busy recovers, and stale or permanent failures do not retry.");
+}
+
 async function checkQueuedEditorHttp(address, runId) {
   const host = new URL(address);
   assert.equal(host.hostname, "127.0.0.1");
@@ -737,11 +847,11 @@ async function checkQueuedEditorHttp(address, runId) {
   await find("#editor-target-buttons").emit("click", {target: {dataset: {target: "Page.cs"}}});
   const b = model();
   b.setValue("class Draft {");
-  const previousDiagnosis = debounce();
+  const previousDiagnosis = fireDebounce();
   const older = take("roslyn-diagnostics");
   assert.equal(older.body.content, "class Draft {");
   b.setValue("class Draft {}");
-  const freshDiagnosis = debounce();
+  const freshDiagnosis = fireDebounce();
   const newer = take("roslyn-diagnostics");
   const responseFor = ({body}, findings) => ({target: body.target, version: body.version, status: findings.length ? "errors" : "clear", findings, razor: []});
   newer.resolve(responseFor(newer, []));
@@ -751,7 +861,7 @@ async function checkQueuedEditorHttp(address, runId) {
   await previousDiagnosis;
   assert.deepEqual([...b.markers], [], "an obsolete result must not add markers to the corrected draft");
   b.setValue("class NewDraft {");
-  const switchedDiagnosis = debounce();
+  const switchedDiagnosis = fireDebounce();
   const oldRun = take("roslyn-diagnostics");
   await select("A");
   take().resolve(response("A"));
@@ -759,6 +869,7 @@ async function checkQueuedEditorHttp(address, runId) {
   oldRun.resolve(responseFor(oldRun, fictional));
   await switchedDiagnosis;
   assert.equal(find("#editor-diagnostic-list").children.length, 0, "same target name in another Run is independent");
+  await checkLatestDiagnosticAfterSaturation();
   await checkConversationFileSwitch();
   console.log("Dashboard: Razor target changes preserve Run chat receipts, unsent drafts, and retry IDs.");
   console.log("Dashboard: same-file run isolation, delayed responses, drafts, saves, and recovery passed.");

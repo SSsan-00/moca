@@ -2431,19 +2431,30 @@ def _attempt_repair(
                 if any(target_hash(safe_target(agent_root, Path(name))) != digest
                        for name, digest in draft["targets"].items()):
                     raise CheckerRepairBlocked("handoff_unsafe", "切り替え中にJunieの下書きが更新されました。内容を確認して再開してください。")
+                refresh_error = None
                 with editor_queue(run_path) as queue:
                     # Junieの終了後にだけ途中の変更を反映し、その版と手修正を合流する。
                     record["target_hashes"] = draft["base"].copy()
                     apply_agent_targets(agent_root, worktree, repair_targets, draft["base"], record, record_path)
                     merged = _apply_editor_edits(queue, agent_root, worktree, targets, record, record_path)
                     if merged:
-                        extra = dispatch_prompts(queue)
-                        attempt["operator_instruction"] = "\n".join(filter(None, (attempt.get("operator_instruction"), extra)))
-                        attempt.pop("draft", None)
-                        attempt.pop("selection", None)
-                        record.update(status="repairing")
-                        record.pop("error", None)
-                        write_run_record(record_path, record)
+                        details = attempt["details"]
+                        try:
+                            if details.get("roslyn_versions") is not None:
+                                findings = _refresh_roslyn_repair(run_path, worktree, targets, record, details)
+                        except (OSError, ValueError, RuntimeError, KeyboardInterrupt) as error:
+                            refresh_error = error
+                        else:
+                            extra = dispatch_prompts(queue)
+                            attempt["operator_instruction"] = "\n".join(filter(None, (attempt.get("operator_instruction"), extra)))
+                            attempt.pop("draft", None)
+                            attempt.pop("selection", None)
+                            record.update(status="repairing")
+                            record.pop("error", None)
+                            write_run_record(record_path, record)
+                if refresh_error is not None:
+                    # Commit the editor adoption before propagating a diagnostic or version failure.
+                    raise refresh_error
                 if not merged:
                     raise CheckerRepairBlocked("operator_conflict", "編集が競合しました。エディタで解消してから再開してください。")
                 repair_targets = targets
@@ -2456,7 +2467,7 @@ def _attempt_repair(
             # 使用量保存などが終了未確認を包んだ場合も、未確認の下書きは再利用しない。
             _discard_unconfirmed_draft(record)
         elif not isinstance(exc, CheckerRepairBlocked) or exc.reason not in {
-            "operator_conflict", "handoff_unsafe", "stopped_draft", "input_budget",
+            "operator_conflict", "handoff_unsafe", "stopped_draft", "input_budget", "verification_inputs_changed",
         }:
             _charge_repair(record)
         raise
@@ -3074,6 +3085,46 @@ def _roslyn_diagnostic_lines(report):
             for item in report.get("findings", [])]
 
 
+def _roslyn_fingerprints(report):
+    counts = Counter((item["path"], item["code"], item["message"]) for item in report.get("findings", []))
+    return {hashlib.sha256(json.dumps((key, i)).encode("utf-8")).hexdigest()
+            for key, count in counts.items() for i in range(count)}
+
+
+def _refresh_roslyn_repair(run_path, worktree, targets, record, details):
+    adopted = record["target_hashes"].copy()
+
+    def verify_adoption():
+        if adopted != {path.as_posix(): review_target_hash(worktree, path) for path in targets}:
+            raise CheckerRepairBlocked("verification_inputs_changed", "Saved targets changed outside the editor handoff.")
+
+    with worktree_source_lock(worktree):
+        verify_adoption()
+        report = syntax_diagnostics(worktree, run_path, targets)
+        verify_adoption()
+    if report["status"] == "blocked":
+        raise CheckerRepairBlocked("handoff_unsafe", "The refreshed syntax diagnostic did not stop safely.")
+    summary = "\n".join(_roslyn_diagnostic_lines(report))
+    if report.get("truncated") or len(summary) > 8_000:
+        raise CheckerRepairBlocked("handoff_unsafe", "The refreshed syntax diagnostic is too large to send.")
+    fingerprints = sorted(_roslyn_fingerprints(report))
+    details.update(roslyn_versions=adopted, findings=fingerprints)
+    # Keep the outer preflight's report object in sync if continuation fails.
+    current = record.setdefault("roslyn_preflight", {})
+    current.clear()
+    current.update(report, status="repairing", target_versions=adopted, fingerprints=fingerprints)
+    _record_roslyn_time(record, report)
+    if summary:
+        return summary
+    if report["status"] == "clear":
+        return "No C# syntax errors remain. Preserve the merged edits and follow the operator's instruction."
+    return "Current C# syntax diagnostics are unavailable. Do not use old diagnostics; follow the operator's instruction."
+
+
+def _record_roslyn_time(record, report):
+    record["roslyn_preflight_seconds"] = [*record.get("roslyn_preflight_seconds", [])[-4:], report["seconds"]]
+
+
 _BUILD_DIAGNOSTIC = re.compile(
     r"(?P<path>.+?)\((?P<location>\d+(?:,\d+){0,3})\)\s*:\s*"
     r"(?:error|エラー)\s+(?P<code>(?:CS|RZ)\d+)\s*:\s*(?P<message>.+)",
@@ -3631,16 +3682,14 @@ def _roslyn_before_build(config, run_path, worktree, targets, record, *, expecte
                 report.update(status="blocked", reason="targets_changed_during_diagnostic")
         report["target_versions"] = hashes
         record["roslyn_preflight"] = report
-        record["roslyn_preflight_seconds"] = [*record.get("roslyn_preflight_seconds", [])[-4:], report["seconds"]]
+        _record_roslyn_time(record, report)
         write_run_record(record_path, record, timing_stage=4)
         if report["status"] in {"clear", "unavailable"}:
             return "build"
         if report["status"] == "errors":
             history = record.setdefault("repair_history", [])
             findings = report["findings"]
-            counts = Counter((item["path"], item["code"], item["message"]) for item in findings)
-            fingerprints = {hashlib.sha256(json.dumps((key, i)).encode("utf-8")).hexdigest()
-                            for key, count in counts.items() for i in range(count)}
+            fingerprints = _roslyn_fingerprints(report)
             prior = next((attempt for attempt in reversed(history)
                           if attempt.get("roslyn_preflight") and "instruction" not in attempt), None)
             summary = "\n".join(_roslyn_diagnostic_lines(report))
