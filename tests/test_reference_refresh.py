@@ -142,6 +142,16 @@ class ReferenceRefreshTests(unittest.TestCase):
                 self.refresh()
         self.assertEqual((self.worktree / self.target).read_text(encoding="utf-8-sig"), self.base_text)
 
+    def test_legacy_joined_eof_diff_cannot_silently_discard_an_unlocated_edit(self):
+        self.put(self.ref, "new reference")
+        with workflow.editor_queue(self.run) as queue:
+            queue["operator_edits"] = {"Page.cs": ["--- \n+++ \n@@ -1 +1 @@\n-previous+old reference behavior"]}
+        before = (self.worktree / self.target).read_bytes()
+        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose),
+              self.assertRaisesRegex(ValueError, "手修正と競合")):
+            self.refresh()
+        self.assertEqual((self.worktree / self.target).read_bytes(), before)
+
     def test_later_reference_change_checks_conflict_after_previous_merge_kept_hand_edit(self):
         self.put(self.ref, "revision B")
         self.put(self.target, self.base_text.replace("old label", "operator label"))
@@ -307,6 +317,86 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.assertNotIn("checker_exit_code", verify.call_args.args[-1])
         self.assertTrue(verify.call_args.args[-1]["checker_required"])
         self.assertEqual(result["status"], "checker_succeeded")
+
+
+class RecordedEditsResumeTests(SavedRunFixture):
+    source = (
+        "class Example\n{\n    string First()\n    {\n        return string.Empty;\n    }\n\n"
+        "    string Second()\n    {\n        return null;\n    }\n}\n"
+    )
+
+    def resume_with_recorded_edit(self, original, edited, checkpoint, proposal, *, conflict):
+        target = Path(self.target.name)
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        capsule = self.run_path / "capsule"
+        reference = self.worktree / "refs" / "Library.cs"
+        reference.parent.mkdir()
+        reference.write_text("reference A", encoding="utf-8")
+        source_context.stage_target_context(self.worktree, (target,), capsule, agent,
+                                            policy={"roots": [], "folders": ["refs"]})
+        with workflow.editor_queue(self.run_path) as queue:
+            workflow.record_operator_edit(queue, target.name, original, edited)
+        before = checkpoint.replace("\n", "\r\n").encode("utf-8-sig")
+        for path in (self.target, agent / target):
+            path.write_bytes(before)
+        hashes = {target.name: target_hash(self.target)}
+        record = self.record()
+        record.update(target_hashes=hashes, capsule_checkpoints={"1": workflow._save_capsule_checkpoint(
+            self.run_path, self.worktree, (target,), hashes)})
+        self.save_record(record)
+        reference.write_text("reference B", encoding="utf-8")
+        proposed = self.run_path / "proposal"
+        proposed.mkdir()
+        (proposed / target).write_text(proposal, encoding="utf-8-sig")
+        with (patch.object(workflow, "_propose_reference_refresh", return_value=proposed),
+              patch.object(workflow, "_verify_worktree", return_value={"status": "verified"}) as verify):
+            if conflict:
+                with self.assertRaisesRegex(ValueError, "手修正と競合"):
+                    workflow.resume_with_junie(self.config, self.run_id)
+                verify.assert_not_called()
+                self.assertEqual(self.record()["reference_refresh"]["conflict"]["targets"], [target.name])
+            else:
+                self.assertEqual(workflow.resume_with_junie(self.config, self.run_id)["status"], "verified")
+                verify.assert_called_once()
+                self.assertNotIn("reference_refresh", self.record())
+        expected = before if conflict else proposal.replace("\n", "\r\n").encode("utf-8-sig")
+        for path in (self.target, agent / target):
+            self.assertEqual(path.read_bytes(), expected)
+
+    def test_resume_applies_inverse_lines_in_a_different_method(self):
+        edited = self.source.replace("string.Empty;", "null;")
+        checkpoint = "// lines shifted since the editor save\n" + edited
+        first, second = checkpoint.split("Second()")
+        proposal = first + "Second()" + second.replace("return null;", "return string.Empty;")
+        self.resume_with_recorded_edit(self.source, edited, checkpoint, proposal, conflict=False)
+
+    def test_resume_protects_the_same_shifted_method_and_keeps_both_files_intact(self):
+        edited = self.source.replace("string.Empty;", "null;")
+        checkpoint = "// lines shifted since the editor save\n" + edited
+        proposal = checkpoint.replace("return null;", "return string.Empty;", 1)
+        self.resume_with_recorded_edit(self.source, edited, checkpoint, proposal, conflict=True)
+
+    def test_indistinguishable_saved_context_stops_on_a_possible_reversal(self):
+        original = self.source.replace("        return", "        Prepare();\n        Read();\n        return")
+        original = original.replace(";\n    }", ";\n        // trailing context\n    }")
+        edited = original.replace("string.Empty;", "null;")
+        proposal = edited.replace("return null;", "return string.Empty;", 1)
+        self.resume_with_recorded_edit(original, edited, edited, proposal, conflict=True)
+
+    def test_restoring_a_deleted_line_at_the_saved_boundary_stops(self):
+        original = self.source.replace("        return string.Empty;", "        Log();\n        return string.Empty;")
+        self.resume_with_recorded_edit(original, self.source, self.source, original, conflict=True)
+
+    def test_inserting_a_deleted_line_in_another_method_is_allowed(self):
+        original = self.source.replace("        return string.Empty;", "        Log();\n        return string.Empty;")
+        proposal = self.source.replace("        return null;", "        Log();\n        return null;")
+        self.resume_with_recorded_edit(original, self.source, self.source, proposal, conflict=False)
+
+    def test_replacing_an_unterminated_final_line_keeps_the_manual_edit_protected(self):
+        original = "class Example {}"
+        edited = "class Renamed {}"
+        self.resume_with_recorded_edit(original, edited, edited, original, conflict=True)
 
 
 class ReferenceConflictEditorTests(SavedRunFixture):

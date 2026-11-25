@@ -267,7 +267,10 @@ def merge_edit(base: str, draft: str, current: str) -> str | None:
 
 
 def _operator_edit_diff(before, after):
-    return "".join(unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), n=2)) if before != after else ""
+    if before == after:
+        return ""
+    lines = unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), n=2)
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in lines)
 
 
 def _adopted_editor_diff(edit, current, adopted):
