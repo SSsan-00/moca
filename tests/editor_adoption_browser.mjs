@@ -110,7 +110,8 @@ export async function checkMergedEditorSave(options) {
   const {evaluate, wait, sourceEditor, run, root} = options;
   const {save, get, content, set, fixture} = editorActions(options);
   const tree = path.join(root, "trees", run);
-  const agent = path.join(root, "runs", run, "agent-workspace");
+  const runPath = path.join(root, "runs", run);
+  const agent = path.join(runPath, "agent-workspace");
   const file = path.join(tree, target);
   const example = (first, last) => `class Stable {
     int First = ${first};
@@ -124,14 +125,18 @@ export async function checkMergedEditorSave(options) {
 }
 `;
   const resetReads = text => wait(sourceEditor + "?.getValue() === " + JSON.stringify(text));
-  const prepare = async (lost = false, conflict = false) => {
+  const prepare = async ({lost = false, conflict = false, reference = false} = {}) => {
     await fs.writeFile(file, example(1, 1));
     await resetReads(example(1, 1));
-    for (const name of (await get()).targets) {
-      const copy = path.join(agent, name);
-      await fs.mkdir(path.dirname(copy), {recursive: true});
-      await fs.copyFile(path.join(tree, name), copy);
+    const proposal = reference ? path.join(runPath, "reference-proposal-fixture") : agent;
+    for (const destination of new Set([agent, proposal])) {
+      for (const name of (await get()).targets) {
+        const copy = path.join(destination, name);
+        await fs.mkdir(path.dirname(copy), {recursive: true});
+        await fs.copyFile(path.join(tree, name), copy);
+      }
     }
+    if (reference) assert.equal(await fixture("pin-reference"), 200);
     assert.equal(await fixture("queue"), 200);
     await set(example(2, 1));
     await evaluate(`editorReceipts.saves.length = editorReceipts.polls.length = 0; editorReceipts.dropResponse = ${lost}`);
@@ -141,14 +146,14 @@ export async function checkMergedEditorSave(options) {
     if (!lost) await wait(status + ".includes('ファイルへ反映待ち')");
     else await wait(selector("editor-error") + ".textContent.includes('dropped successful')");
     await set(example(3, conflict ? 3 : 1));
-    await fs.writeFile(path.join(agent, target), example(1, 2));
-    assert.equal(await fixture("merge"), 200);
+    await fs.writeFile(path.join(proposal, target), example(1, 2));
+    assert.equal(await fixture(reference ? "refresh-reference" : "merge"), 200);
     return first;
   };
   await observeEditorReceipts(evaluate);
   try {
-    for (const lost of [false, true]) {
-      const first = await prepare(lost);
+    for (const variant of [{}, {lost: true}, {reference: true}]) {
+      const first = await prepare(variant);
       await wait(`editorReceipts.polls.some(data => data.content === ${JSON.stringify(example(2, 2))})`);
       await wait("!" + selector("editor-update") + ".hidden");
       const adopted = await get();
@@ -169,9 +174,10 @@ export async function checkMergedEditorSave(options) {
       assert.equal(await fixture("merge"), 200);
       await resetReads(example(3, 2));
       assert.equal((await get()).content, example(3, 2));
+      if (variant.reference) console.log("Browser editor: reference refresh merges a queued save and accepts later edits without reverting the proposal");
     }
 
-    await prepare(false, true);
+    await prepare({conflict: true});
     await wait(selector("editor-save-timing") + ".textContent.includes('追加の編集を次の反映時に合流')");
     await save();
     await wait("editorReceipts.saves.at(-1)?.status === 200 && editorReceipts.saves.length === 2");

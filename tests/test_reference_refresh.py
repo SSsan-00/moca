@@ -481,12 +481,12 @@ class ReferenceConflictEditorTests(SavedRunFixture):
     def save_resolution(self):
         return self.save_editor("Example.cs", self.resolved)
 
-    def save_editor(self, target, content, *, resolve=False):
+    def save_editor(self, target, content, *, resolve=False, save_id=None):
         editor = self.open_editor(target)
         _, before = editor()
         status, after = editor({"kind": "save", "run_id": self.run_id, "target": target,
                                 "base": before["content"], "content": content,
-                                "edit_id": (before.get("edit") or {}).get("id"), "resolve": resolve})
+                                "edit_id": (before.get("edit") or {}).get("id"), "resolve": resolve, "save_id": save_id})
         self.assertEqual(status, 200)
         self.assertEqual(after["save_timing"], "resume")
         self.assertTrue(after["queued"])
@@ -588,7 +588,8 @@ class ReferenceConflictEditorTests(SavedRunFixture):
     def test_newer_reference_invalidates_proposal_without_losing_concurrent_edit(self):
         self.reference_and_queued_edit(during_proposal=True, overlap=False, first_failure="new reference")
 
-    def interrupted_adoption(self, *, fail_second=False, canonical_failure=False, complete_without_edit=False):
+    def interrupted_adoption(self, *, fail_second=False, canonical_failure=False, complete_without_edit=False,
+                             save_id=None):
         second_base = "work copy\n1\n2\n3\nold second label\n"
         self.saved_targets(complete=complete_without_edit, multi=fail_second, second_base=second_base)
         self.target.write_bytes(self.base.encode("utf-8-sig"))
@@ -597,7 +598,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         first_edit = self.base
         if not complete_without_edit:
             first_edit = first_edit.replace("old label", "first human edit")
-            self.save_editor("Example.cs", first_edit)
+            self.save_editor("Example.cs", first_edit, save_id=save_id)
         if fail_second:
             self.save_editor("Second.cs", second_base.replace("old second label", "second-file human edit"))
         planned = first_edit.replace("reference A", "model choice")
@@ -654,7 +655,12 @@ class ReferenceConflictEditorTests(SavedRunFixture):
               patch.object(workflow.junie_cli, "require_interactive_cli"),
               patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
               patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify):
-            planned = self.interrupted_adoption(fail_second=fail_second, canonical_failure=canonical_failure)
+            first_save = "1" * 32
+            planned = self.interrupted_adoption(fail_second=fail_second, canonical_failure=canonical_failure,
+                                                save_id=first_save)
+            _, interrupted = self.open_editor()()
+            self.assertNotIn("accepted_save_id", interrupted)
+            first_edit = interrupted["edit"]["id"]
             expected = planned
             if legacy:
                 record = self.record()
@@ -663,7 +669,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             if resave:
                 self.assertEqual(self.open_editor()()[1]["content"], planned)
                 expected = planned.replace("\n2\n", "\nsecond human edit\n")
-                self.save_editor("Example.cs", expected)
+                self.save_editor("Example.cs", expected, save_id="2" * 32)
             self.assertEqual(self.resume_fixture()["completed_capsules"], 2)
             self.resume_fixture()
         model.assert_called_once()
@@ -679,6 +685,10 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.assertEqual(len(record["reference_refresh_history"]), 1)
         with workflow.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
+            if resave:
+                self.assertNotIn("after", queue["save_requests"][first_save])
+            else:
+                self.assertEqual(queue["save_requests"][first_save]["after"], target_hash(self.target))
             changes = queue["operator_edits"]["Example.cs"]
             self.assertEqual(len(changes), 2 if resave and not legacy else 1)
             if not legacy:
@@ -688,6 +698,22 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             if fail_second:
                 self.assertEqual(len(queue["operator_edits"]["Second.cs"]), 1)
                 self.assertIn("+second-file human edit", queue["operator_edits"]["Second.cs"][0])
+        if not resave:
+            editor = self.open_editor()
+            _, adopted = editor()
+            self.assertEqual(adopted["accepted_save_id"], first_save)
+            self.assertEqual(adopted["accepted_edit_id"], first_edit)
+            self.assertEqual(adopted["accepted_version"], target_hash(self.target))
+            self.target.write_bytes(expected.encode("utf-8"))
+            self.assertNotIn("accepted_save_id", editor()[1])
+            extra = expected.replace("first human edit", "additional human edit")
+            with self.assertRaises(HTTPError) as stale:
+                editor({"kind": "save", "run_id": self.run_id, "target": self.target.name, "save_id": "3" * 32,
+                        "content": extra, "base": self.base.replace("old label", "first human edit"), "edit_id": None,
+                        "adoption": {"save_id": first_save, "edit_id": first_edit, "version": adopted["accepted_version"]}})
+            with stale.exception as response:
+                self.assertEqual(response.code, 409)
+            self.assertEqual(self.target.read_text(encoding="utf-8"), expected)
 
     def test_replacement_failure_recovery_without_another_save(self):
         self.check_resuming_interrupted_adoption()

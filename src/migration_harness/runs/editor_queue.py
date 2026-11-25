@@ -108,11 +108,7 @@ def complete_editor_adoption(queue, worktree, targets, adoption):
     for name in applied:
         adoption_entry = entries[name]
         _append_operator_diff(queue, name, adoption_entry["diff"])
-        save_id = queue["edits"][name].get("save_id")
-        receipt = queue.get("save_requests", {}).get(save_id)
-        if receipt and receipt["target"] == name and receipt.get("queued_edit") == adoption_entry["edit_id"]:
-            receipt["after"] = adoption_entry["after"]
-        del queue["edits"][name]
+        finish_applied_editor_edit(queue, name, adoption_entry["after"])
     if applied:
         queue["last_editor_adoption"] = adoption["id"]
 
@@ -138,6 +134,14 @@ def record_queued_editor_save(queue, edit, save_id, intent):
     if save_id is not None:
         edit["save_id"] = save_id
     _record_save_request(queue, save_id, intent, queued_edit=edit["id"])
+
+
+def finish_applied_editor_edit(queue, name, applied_version):
+    edit = queue["edits"].pop(name)
+    receipt = queue.get("save_requests", {}).get(edit.get("save_id"))
+    if receipt and receipt["target"] == name and receipt.get("queued_edit") == edit["id"]:
+        receipt["after"] = applied_version
+    return edit
 
 
 def applied_editor_save_id(queue, name, original, content):
