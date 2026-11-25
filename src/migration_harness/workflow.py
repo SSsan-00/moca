@@ -51,11 +51,9 @@ from .verification.checker_output import (
 from .command_paths import build_command_for_worktree, expand_command_paths, script_command_for_phase
 from .context.context_evidence import boundary_hints
 from .context.context_handoff import (
-    handoff_prompt, junie_memo_request, operator_notes_from_receipt, save_junie_memo, unresolved_junie_memos,
-    unresolved_operator_notes,
+    handoff_prompt, junie_memo_request, save_junie_memo, unresolved_junie_memos, unresolved_operator_notes,
 )
 from .context.context_plan import navigation_plan
-from .verification.repair_context import diagnostic_php_ranges
 from .context.target_evidence import diagnostic_references
 from .config import find_unit, target_paths
 from .verification.grounded_evidence import grounded_diagnostic, has_environment_diagnostic
@@ -1454,15 +1452,10 @@ def _record_junie_input(config, record_path, record, phase, prompt, guidelines, 
 
 
 def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, inputs, *args,
-                        embedded_input=(), operator_receipt=None, **kwargs):
+                        embedded_input=(), **kwargs):
     """実行するたびに、確定した指示の容量を照合する。"""
     def observe(prompt):
         _record_junie_input(config, record_path, record, phase, prompt, guidelines, root, inputs, embedded_input)
-
-    def publish_operator_receipt():
-        if record.get("operator_handoff_receipt") != operator_receipt:
-            record["operator_handoff_receipt"] = operator_receipt
-            write_run_record(record_path, record, timing_stage=record.get("active_stage"))
 
     def observe_steering(instruction):
         """ACPで送る追加指示の容量を計測し、送信前に制限を適用する。"""
@@ -1499,13 +1492,11 @@ def _run_budgeted_junie(config, record_path, record, phase, guidelines, root, in
     permission_token = junie_cli.permission_observer.set(observe_permission if dashboard else None)
     reference_token = junie_cli.reference_read_scope.set(reads)
     token = junie_cli.launch_input_observer.set(observe)
-    accepted_token = junie_cli.launch_accepted_observer.set(publish_operator_receipt if operator_receipt else None)
     steering_token = junie_cli.steering_input_observer.set(observe_steering)
     try:
         return junie_cli.run_interactive(*args, **kwargs)
     finally:
         junie_cli.steering_input_observer.reset(steering_token)
-        junie_cli.launch_accepted_observer.reset(accepted_token)
         junie_cli.launch_input_observer.reset(token)
         junie_cli.reference_read_scope.reset(reference_token)
         junie_cli.permission_observer.reset(permission_token)
@@ -1614,9 +1605,8 @@ def _run_editor_followup(
         "Do not access files outside this workspace or run builds, tests, or checkers. "
         f"When finished, write exactly {token} to {completion.name} as the final file action."
     )
-    operator_receipt = {}
     handoff = handoff_prompt(record_path.parent, agent_root, targets, record,
-                             draft=record.get("stopped_migration_draft"), operator_receipt=operator_receipt)
+                             draft=record.get("stopped_migration_draft"))
     prompt = context + handoff + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
                                       guidelines=guidelines, **run_model_options(record_path.parent, record, config))
@@ -1628,7 +1618,6 @@ def _run_editor_followup(
             config, record_path, record, "editor_followup", guidelines, agent_root, inputs,
             command, completion, token, tuple(safe_target(agent_root, target) for target in targets),
             worktree=worktree, targets=targets, allowed=allowed, other_files=other_files, resumed_draft=prior, memo=memo,
-            operator_receipt=operator_receipt,
             report_usage=junie_usage_recorder(record_path.parent, "migration", record["completed_capsules"]),
             prompts=LivePrompts(record_path.parent),
         )
@@ -1947,9 +1936,8 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
         scripted_handoff = script_handoff_context(
             run_path, record, config.get("scripts", {}), _script_decision_versions(worktree_root, record),
         )
-    operator_receipt = {}
     handoff = handoff_prompt(run_path, agent_root, relative_targets, record, through=index,
-                             draft=draft, operator_receipt=operator_receipt)
+                             draft=draft)
     prompt = context + plan_hint + scripted_handoff + handoff + memo_request + prompt
     other_files = _unlisted_workspace_files(agent_root, allowed, verified_sources)
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
@@ -1960,7 +1948,7 @@ def _execute_migration_capsule(config, run_path, record, worktree_root, agent_ro
                 config, record_path, record, "migration", guidelines, agent_root, inputs,
                 command, completion_path, completion_token, agent_targets,
                 worktree=worktree_root, targets=relative_targets, allowed=allowed, other_files=other_files,
-                memo=memo, through=index, operator_receipt=operator_receipt,
+                memo=memo, through=index,
                 report_usage=junie_usage_recorder(run_path, "migration", index),
                 prompts=LivePrompts(run_path),
             )
@@ -2303,7 +2291,7 @@ def _run_checker(
     rule_results = record.get("checker_rule_evidence", {}).get("results", {})
     if any(item["kind"] == "failed" for item in rule_results.values()):
         record.update(status="checker_needs_review", checker_review_reason="rule_not_reflected",
-                      error="独立チェッカーが未反映のルールを検出しました。移行台帳で確認してください。")
+                      error="独立チェッカーが未反映のルールを検出しました。チェッカーのログを確認してください。")
         use_raw_output = False
     if rule_results and record["status"] != "checker_succeeded":
         for name in [name for name, item in rule_results.items() if item["kind"] == "passed"]:
@@ -2905,18 +2893,6 @@ def _repair_target(
     )
     references = diagnostic_references(capsule, findings)
     plan["diagnostic_references"] = references
-    if not resume_draft and not attempt["details"].get("raw_checker_output"):
-        source_ranges = diagnostic_php_ranges(
-            capsule, manifest, record, worktree, repair_targets, before, findings, attempt["details"].get("kind"),
-        )
-        if source_ranges:
-            plan["diagnostic_php_ranges"] = source_ranges
-            plan_hint += (
-                "Start navigation at these fixed PHP ranges linked by an operator-confirmed mapping for this target version: "
-                + "; ".join(f"{item['file']} {item['path'][:120]!r}:{item['start_line']}-{item['end_line']}"
-                            for item in source_ranges)
-                + ". They are starting points, not proof of causation or limits on the saved source ranges to review. "
-            )
     if references:
         plan_hint += (
             "The diagnostic names pinned read-only paths; use them as navigation hints, not proof of causation: "
@@ -2925,9 +2901,7 @@ def _repair_target(
             + ". "
         )
     record["last_context_plan"] = plan
-    operator_receipt = {}
-    handoff = handoff_prompt(run_path, agent_root, targets, record, draft=stopped_draft if resume_draft else None,
-                             operator_receipt=operator_receipt)
+    handoff = handoff_prompt(run_path, agent_root, targets, record, draft=stopped_draft if resume_draft else None)
     prompt = context + plan_hint + handoff + memo_request + prompt
     command = junie_cli.build_command(agent_root, prompt + supplied, max_steps, guidelines=guidelines,
                                       **run_model_options(run_path, record, config))
@@ -2940,7 +2914,7 @@ def _repair_target(
         exit_code = _run_budgeted_junie(
             config, run_path / "run.json", record, phase, guidelines, agent_root, inputs,
             command, completion_path, token, agent_targets,
-            operator_receipt=operator_receipt, report_usage=junie_usage_recorder(run_path, phase),
+            report_usage=junie_usage_recorder(run_path, phase),
             prompts=LivePrompts(run_path, interrupt_for_edits=True),
         )
     except (KeyboardInterrupt, junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError, junie_cli.JunieStopError) as exc:
@@ -4014,32 +3988,14 @@ def run_with_junie(config: dict[str, Any], unit_id: str, *, run_id: str | None =
         return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
 
 
-def _migration_review_version(record, target_hashes):
-    payload = [record.get("migration_reviews", {}), record.get("migration_mappings", {}),
-               record.get("completed_capsules"), target_hashes]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-
-
-def migration_ledger(
-    config: dict[str, Any], run_id: str, *, operator_through: int | None = None, operator_receipt: str | None = None,
-    include_review_version: bool = False,
-) -> dict[str, Any]:
-    """保存した対応と判断を現在の移行先で照合し、閲覧用の状態をまとめる。"""
+def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """保存した対応を現在の移行先で照合し、閲覧用の状態をまとめる。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     _, manifest = load_capsule_manifest(run_path)
-    if operator_through is not None and (
-        type(operator_through) is not int or not 1 <= operator_through <= len(manifest["parts"])
-    ):
-        raise ValueError("メモのカプセル番号がこのRunの範囲外です。")
     mappings = record.get("migration_mappings", {})
-    reviews = record.get("migration_reviews", {})
     target_names = target_paths(unit)
     targets = [path.as_posix() for path in target_names]
-    operator_notes = (
-        operator_notes_from_receipt(run_path, target_names, record, operator_receipt, through=operator_through)
-        if operator_receipt is not None
-        else unresolved_operator_notes(run_path, worktree, target_names, record, through=operator_through)
-    )
+    operator_notes = unresolved_operator_notes(run_path, worktree, target_names, record)
     hashes: dict[str, str | None] = {}
 
     def current_hash(path: str) -> str | None:
@@ -4051,7 +4007,7 @@ def migration_ledger(
         return hashes[path]
 
     capsules = []
-    reviewed = total = 0
+    total = 0
     for part in manifest["parts"]:
         sources = []
         for index, source in enumerate(part.get("sources", [])):
@@ -4061,30 +4017,7 @@ def migration_ledger(
             # 表示用IDの範囲番号は1始まり、保存済み辞書のキーは0始まり。
             entry["id"] = f"{part['index']}:{index + 1}"
             key = f"{part['index']}:{index}"
-            review = reviews.get(key)
-            mapping = mappings.get(key) or (review.get("mapping") if review else None)
-            if review:
-                state = review["state"]
-                if state == "confirmed":
-                    saved_mapping = review.get("mapping")
-                    # 旧Runの候補付き確認も、対応するファイルの版で判定する。
-                    checked_targets = (
-                        {saved_mapping["path"]: saved_mapping["sha256"]} if saved_mapping else review["target_hashes"]
-                    )
-                    if (
-                        not checked_targets
-                        or any(digest is None or current_hash(path) != digest for path, digest in checked_targets.items())
-                        or (saved_mapping and (
-                            not mapping or any(mapping.get(field) != saved_mapping.get(field)
-                                               for field in ("path", "start_line", "end_line", "sha256"))
-                        ))
-                    ):
-                        state = "stale"
-                entry["review"] = {"state": state, "reason": review["reason"]}
-                if review["state"] == "confirmed" and not review.get("mapping"):
-                    entry["review"]["targets"] = list(review["target_hashes"])
-                if state in {"confirmed", "excluded"} and review["reason"].strip():
-                    reviewed += 1
+            mapping = mappings.get(key)
             if mapping:
                 path = mapping["path"]
                 valid = current_hash(path) == mapping["sha256"]
@@ -4155,85 +4088,18 @@ def migration_ledger(
         "run_id": run_id,
         "target": unit["target"],
         "targets": targets,
-        **({"review_version": _migration_review_version(record, {name: current_hash(name) for name in targets})}
-           if include_review_version else {}),
         "capsules": capsules,
         "unresolved_junie_memos": unresolved_junie_memos(
             run_path, worktree, tuple(Path(path) for path in targets), record,
         ),
         "unresolved_operator_notes": operator_notes,
         "completion": {
-            # ビルド・チェッカーの成功に加え、すべてのPHP範囲に根拠付きの判断が必要。
-            "complete": verification_passed and total > 0 and reviewed == total,
+            "complete": verification_passed and total > 0,
             "verification_passed": verification_passed,
             **({"verification_input_status": input_status} if input_status else {}),
-            "reviewed": reviewed,
             "total": total,
         },
     }
-
-
-def review_migration_ranges(
-    config: dict[str, Any], run_id: str, range_ids: list[str], state: str, reason: str,
-    *, confirmed_targets: list[str] | None = None, expected_version: str | None = None,
-) -> None:
-    """選んだ範囲の判断と根拠を、対象ファイルの版とともに一括で記録する。"""
-    if not range_ids or state not in {"confirmed", "excluded", "needs_review"} or not reason.strip():
-        raise ValueError("対象範囲、判断、理由を指定してください。")
-    if confirmed_targets and state != "confirmed":
-        raise ValueError("移行先を指定できるのは確認済みの判断だけです。")
-    run_path, worktree, _, unit = load_saved_run(config, run_id)
-    _, manifest = load_capsule_manifest(run_path)
-    entries = {
-        f"{part['index']}:{index + 1}": (part["index"], index)
-        for part in manifest["parts"]
-        for index, source in enumerate(part.get("sources", []))
-        if is_php_input(source)
-    }
-    manual_hashes = {}
-    allowed_targets = set(target_paths(unit))
-    for name in confirmed_targets or []:
-        path = Path(name)
-        if path not in allowed_targets:
-            raise ValueError(f"review target is outside the configured migration targets: {name}")
-        digest = review_target_hash(worktree, path)
-        if digest is None:
-            raise ValueError(f"review target is missing or unsafe: {name}")
-        manual_hashes[path.as_posix()] = digest
-    with edit_run_record(run_path / "run.json") as (record, changes):
-        if expected_version is not None:
-            current = {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}
-            if (_migration_review_version(record, current) != expected_version
-                    or any(current.get(name) != digest for name, digest in manual_hashes.items())):
-                raise ValueError("移行先または判断が更新されました。台帳を確認し直してください。")
-        if record.get("target_apply_pending") or record.get("status") in {
-            "junie_running", "editor_followup", "repairing", "building", "checking", "script_running",
-        }:
-            raise ValueError("wait for migration, build or verification to finish before recording a range review")
-        decisions = record.get("migration_reviews", {})
-        for identifier in range_ids:
-            if identifier not in entries:
-                raise ValueError(f"PHP range not found in this Run: {identifier}")
-            capsule, index = entries[identifier]
-            key = f"{capsule}:{index}"
-            decision = {"state": state, "reason": reason.strip(), "target_hashes": {}}
-            if state == "confirmed":
-                # 対応候補がなくても、利用者が確認した移行先を明示すればその版に判断をひも付ける。
-                mapping = record.get("migration_mappings", {}).get(key)
-                if capsule > record["completed_capsules"]:
-                    raise ValueError(f"範囲 {identifier} の移行はまだ完了していません。")
-                if manual_hashes:
-                    decision["target_hashes"] = manual_hashes
-                else:
-                    if not mapping:
-                        raise ValueError(f"範囲 {identifier} に対応候補がありません。確認した移行先を選択してください。")
-                    digest = review_target_hash(worktree, Path(mapping["path"]))
-                    if digest is None or digest != mapping["sha256"]:
-                        raise ValueError(f"range {identifier} changed after its comparison; generate a new candidate")
-                    decision["target_hashes"] = {mapping["path"]: digest}
-                    decision["mapping"] = mapping
-            decisions[key] = decision
-        changes["migration_reviews"] = decisions
 
 
 def record_migration_candidates(
@@ -4534,7 +4400,7 @@ def _stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
             target_hashes=plan["targets"].copy(),
             migration_rewind={"draft": draft, "restore_from": plan["draft_targets"]},
         )
-        for key in ("checker_reviews", "migration_reviews", "migration_mappings", "review_file_hashes", "checker_success_message",
+        for key in ("checker_reviews", "migration_mappings", "review_file_hashes", "checker_success_message",
                     "checker_review_reason", "repair_history"):
             if key in record:
                 operation.setdefault("superseded_reviews", {})[key] = record.pop(key)
@@ -5105,7 +4971,7 @@ def _refresh_target_context_on_resume(config, unit, run_path, worktree, record, 
             if key in record:
                 pending.setdefault("previous_results", {})[key] = record.pop(key)
         record["status"] = "junie_finished" if migration_complete else "interrupted"
-        write_run_record(record_path, record, invalidate_migration_reviews=True)
+        write_run_record(record_path, record, invalidate_migration_mappings=True)
     elif not pending.get("adoption"):
         original = target_context_snapshot(capsule, pending["previous"])
         policy, hashes, changes = compare_target_context(worktree, targets, original)
@@ -5348,7 +5214,7 @@ def _resume_with_junie(
         record.setdefault("resume_operations", []).append(operation)
         for key in ("verification", "build_exit_code", "checker_exit_code", "build_operation_id", "checker_build", "error"):
             record.pop(key, None)
-        write_run_record(run_path / "run.json", record, invalidate_migration_reviews="rewind_to" in plan)
+        write_run_record(run_path / "run.json", record, invalidate_migration_mappings="rewind_to" in plan)
         return _run_prepared_with_junie(
             config, unit, run_path, result, record, resuming=True, through_capsule=plan["through_capsule"],
             expected_capsule_hashes=plan["capsule_hashes"],

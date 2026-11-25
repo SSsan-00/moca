@@ -10,12 +10,9 @@ if not exist "%HARNESS%" (
   echo .venv\Scripts\python -m pip install -e .
   exit /b 2
 )
-if "%~1"=="" goto dashboard
-if /I "%~1"=="d" goto dashboard
-if /I "%~1"=="dashboard" goto dashboard
-echo Usage: h.cmd
-exit /b 2
-
-:dashboard
+if not "%~1"=="" (
+  echo Usage: moca
+  exit /b 2
+)
 "%HARNESS%" dashboard --config "%CONFIG%"
 exit /b %errorlevel%

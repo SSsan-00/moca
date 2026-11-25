@@ -49,10 +49,6 @@ class LedgerReviewTest(HarnessCase):
         record = json.loads(self.record_path.read_bytes())
         record.update(status="junie_finished", completed_capsules=1)
         run_records.write_run_record(self.record_path, record)
-        workflow.review_migration_ranges(
-            self.settings, self.run_id, ["1:1"], "confirmed", "Reviewed",
-            confirmed_targets=[self.target.name],
-        )
 
     def verify(self, exit_code=0):
         run_process = subprocess.run
@@ -83,8 +79,7 @@ class LedgerReviewTest(HarnessCase):
         self.target.write_text("public void Changed() {}\n", encoding="utf-8")
         self.assertFalse(self.completion()["complete"])
 
-    # 移行先の編集後も判断理由を保持し、従来の確認を失効させることを検証する。
-    def test_keeps_review_reason_and_flags_stale_after_edit(self):
+    def test_candidate_mapping_becomes_stale_after_edit(self):
         record = json.loads(self.record_path.read_text(encoding="utf-8"))
         record.update(status="build_succeeded", completed_capsules=1)
         run_records.write_run_record(self.record_path, record)
@@ -98,46 +93,19 @@ class LedgerReviewTest(HarnessCase):
         self.assertEqual(self.source()["mapping"]["start_line"], 1)
         self.assertEqual(self.source()["mapping"]["snapshot_id"], snapshot)
 
-        workflow.review_migration_ranges(self.settings, self.run_id, ["1:1"], "confirmed", "Compared outputs")
-        self.assertEqual(self.source()["review"], {"state": "confirmed", "reason": "Compared outputs"})
+        self.assertTrue(self.source()["mapping"]["valid"])
         self.target.write_text("public void Changed() {}\n", encoding="utf-8")
-        self.assertEqual(self.source()["review"], {"state": "stale", "reason": "Compared outputs"})
-        with self.assertRaisesRegex(ValueError, "generate a new candidate"):
-            workflow.review_migration_ranges(self.settings, self.run_id, ["1:1"], "confirmed", "Outdated")
+        self.assertFalse(self.source()["mapping"]["valid"])
 
-    # 一括判断で無効な範囲を含めた場合に部分保存されないことを検証する。
-    def test_exclusion_can_be_saved_and_invalid_batch_leaves_no_partial_changes(self):
-        with self.assertRaisesRegex(ValueError, "PHP range not found"):
-            workflow.review_migration_ranges(self.settings, self.run_id, ["1:1", "2:1"], "excluded", "Unused")
-        self.assertNotIn("review", self.source())
-        workflow.review_migration_ranges(self.settings, self.run_id, ["1:1"], "excluded", "Unused")
-        self.assertEqual(self.source()["review"], {"state": "excluded", "reason": "Unused"})
-        workflow.review_migration_ranges(self.settings, self.run_id, ["1:1"], "needs_review", "Check call sites")
-        self.assertEqual(self.source()["review"], {"state": "needs_review", "reason": "Check call sites"})
-
-    def test_anchor_usage_keeps_reviews_written_by_another_process(self):
+    def test_anchor_usage_keeps_mappings_after_stale_record_write(self):
         self.prepare_for_verification()
         self.verify()
         run_path = self.record_path.parent
         stale_record = json.loads(self.record_path.read_bytes())
-        review_command = [sys.executable, "-c",
-            "import sys; from pathlib import Path; from migration_harness.config import load_config; "
-            "from migration_harness.workflow import review_migration_ranges; "
-            "review_migration_ranges(load_config(Path(sys.argv[1])), sys.argv[2], ['1:1'], sys.argv[3], sys.argv[4], "
-            "confirmed_targets=sys.argv[5:] or None)", self.settings["config_path"], self.run_id]
         report = run_records.junie_usage_recorder(run_path, "anchors")
         report([18, 4, 5, 3, 1])
-        subprocess.run([
-            *review_command, "confirmed", "Confirmed again", self.target.name,
-        ], check=True, capture_output=True)
         report([1, 0, 0, 0, 1])
-        self.assertEqual(self.source()["review"], {
-            "state": "confirmed", "reason": "Confirmed again", "targets": [self.target.name],
-        })
         self.assertTrue(self.completion()["complete"])
-        subprocess.run([
-            *review_command, "needs_review", "Different result",
-        ], check=True, capture_output=True)
         report([2, 1, 0, 0, 1])
 
         hashes = {}
@@ -149,9 +117,8 @@ class LedgerReviewTest(HarnessCase):
         run_records.write_run_record(self.record_path, stale_record)
 
         source = self.source()
-        self.assertEqual(source["review"], {"state": "needs_review", "reason": "Different result"})
         self.assertEqual(source["mapping"]["snapshot_id"], snapshot)
-        self.assertFalse(self.completion()["complete"])
+        self.assertTrue(self.completion()["complete"])
         saved = json.loads(self.record_path.read_bytes())
         self.assertEqual(saved["token_usage"], [{
             "phase": "anchors", "capsule": None, "input": 21, "output": 5,
@@ -203,12 +170,11 @@ class LedgerReviewTest(HarnessCase):
             with self.subTest(edit=edit):
                 edit()
                 self.assertEqual(self.completion(), {
-                    "complete": True, "verification_passed": True, "reviewed": 1, "total": 1,
+                    "complete": True, "verification_passed": True, "total": 1,
                 })
 
         (worktree / "obj" / "Generated.cs").write_text("ignored change", encoding="utf-8")
         self.assertTrue(self.completion()["complete"])
-        self.assertEqual(self.source()["review"]["state"], "confirmed")
 
     def test_checker_and_hook_changes_are_applied_on_reverification(self):
         worktree = self.target.parent

@@ -8,10 +8,10 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from migration_harness.junie import junie_cli
-from migration_harness.web.diff_viewer import capture_workspace, save_workspace, snapshot_bytes
+from migration_harness.web.diff_viewer import capture_workspace, save_workspace
 from migration_harness.execution import check_cancelled, report_activity
 from migration_harness.runs.run_records import junie_usage_recorder, load_saved_run
-from migration_harness.workflow import migration_ledger, record_migration_candidates
+from migration_harness.workflow import record_migration_candidates
 
 
 def _pane_lines(text: str) -> list[str]:
@@ -50,46 +50,6 @@ def _reference_examples(path: Path) -> list[dict[str, str]]:
     return examples
 
 
-def _reviewed_examples(config: dict[str, Any], run_id: str) -> list[dict[str, str]]:
-    """同じRunで人が確認した範囲から、保存済みの対応行だけを抜き出す。"""
-    ledger = migration_ledger(config, run_id)
-    confirmed = [
-        source for capsule in ledger["capsules"] for source in capsule["sources"]
-        if source.get("review", {}).get("state") == "confirmed" and source.get("mapping", {}).get("snapshot_id")
-    ]
-    examples: list[dict[str, str]] = []
-    seen: set[tuple[str, int, int]] = set()
-    snapshots: dict[str, dict[str, Any]] = {}
-
-    def bounds(segments: list[dict[str, Any]], area: dict[str, Any]) -> tuple[int, int]:
-        segment = next(item for item in segments if Path(item["fileName"]) == Path(area["path"]))
-        offset = segment["startLine"] - 2
-        return offset + area["start_line"], offset + area["end_line"]
-
-    for source in confirmed[:12]:
-        mapping = source["mapping"]
-        snapshot_id = mapping["snapshot_id"]
-        try:
-            if snapshot_id not in snapshots:
-                snapshots[snapshot_id] = json.loads(snapshot_bytes(config, run_id, snapshot_id))["workspace"]
-            workspace = snapshots[snapshot_id]
-            left, right = _pane_lines(workspace["leftText"]), _pane_lines(workspace["rightText"])
-            left_first, left_last = bounds(workspace["leftSegments"], source)
-            right_first, right_last = bounds(workspace["rightSegments"], mapping)
-            for entry in workspace["anchors"]["manualAnchors"]:
-                a, b = _anchor_pair(entry, left, right, first_line=0)
-                key = (snapshot_id, a, b)
-                if left_first <= a <= left_last and right_first <= b <= right_last and key not in seen:
-                    seen.add(key)
-                    examples.append({"left": left[a][:240], "right": right[b][:240]})
-                    if len(examples) == 12:
-                        return examples
-        except (OSError, ValueError, KeyError, StopIteration, TypeError):
-            # 古い比較データがなくても、今回の比較だけで提案を続ける。
-            continue
-    return examples
-
-
 def _reference_examples_for_paths(references: list[Path]) -> list[dict[str, str]]:
     examples = []
     for index, reference in enumerate(references, 1):
@@ -100,11 +60,6 @@ def _reference_examples_for_paths(references: list[Path]) -> list[dict[str, str]
             raise ValueError(f"アンカーの参考ワークスペースJSONを読み込めません: {reference}\n{exc}") from exc
         report_activity(f"アンカーの参照JSONを読み込みました（{index}/{len(references)}件）。")
     return examples
-
-
-def _automatic_examples(config: dict[str, Any], run_id: str) -> list[dict[str, str]]:
-    references = config.get("diff_viewer_anchor_reference")
-    return _reference_examples_for_paths(references) if references else _reviewed_examples(config, run_id)
 
 
 def _validated_anchors(path: Path, left: list[str], right: list[str]) -> list[dict[str, int]]:
@@ -134,10 +89,8 @@ def generate_anchors(
         raise ValueError("アンカーを生成するには、設定で差分ビューアーを有効にしてください。")
     target_hashes: dict[str, str] = {}
     run_path, payload = capture_workspace(config, run_id, focus=focus, target_hashes=target_hashes)
-    if reference is None:
-        examples = _automatic_examples(config, run_id)
-    else:
-        examples = _reference_examples_for_paths([reference] if isinstance(reference, Path) else reference)
+    references = (config.get("diff_viewer_anchor_reference") or []) if reference is None else reference
+    examples = _reference_examples_for_paths([references] if isinstance(references, Path) else references)
     workspace = payload["workspace"]
     left, right = _pane_lines(workspace["leftText"]), _pane_lines(workspace["rightText"])
     with TemporaryDirectory(prefix="migration-review-") as temporary:

@@ -81,13 +81,13 @@ class ContextHandoffTests(unittest.TestCase):
         ])
         self.assertEqual(before, self.record.read_bytes())
 
-    def test_overflow_counts_current_notes_and_gives_bounded_locations_and_real_lookup(self):
+    def test_overflow_counts_current_notes_and_gives_bounded_locations(self):
         from migration_harness.context.context_handoff import unresolved_operator_notes
 
         notes = [self.add(f"operator marker {i}") for i in range(10)]
         prompt = handoff_prompt(self.run, self.root, self.targets, {}, through=1)
         self.assertIn("7 additional pending operator note(s) omitted", prompt)
-        self.assertIn("移行台帳", prompt)
+        self.assertIn("review this run's saved notes", prompt)
         for item in notes[-3:]:
             self.assertIn(item["note"], prompt)
         for item in notes[:-3]:
@@ -137,46 +137,6 @@ class ContextHandoffTests(unittest.TestCase):
                 states = {row["id"]: row["state"] for row in rows}
                 self.assertEqual("pending", states[a["id"]])
                 self.assertEqual("needs_review", states[bad["id"]])
-
-    def test_operator_launch_receipt_is_exact_read_only_and_verifies_live_inputs(self):
-        from migration_harness.context.context_handoff import operator_notes_from_receipt
-
-        record = {"run_id": "test", "detail_overrides": {}}
-        notes = [self.add(f"First target note {i}") for i in range(4)]
-        saved_receipt = {}
-        prompt = handoff_prompt(self.run, self.root, self.targets, record, through=1, operator_receipt=saved_receipt)
-        self.assertNotIn("operator_handoff_receipt", record)
-        record["operator_handoff_receipt"] = saved_receipt
-        receipt = saved_receipt["id"]
-        raw = json.dumps(saved_receipt)
-        for text in ("Demo.cs", "demo.php", "php-0001", "First target note"):
-            self.assertNotIn(text, raw)
-        self.assertEqual({row["target_hashes"]["Demo.cs"] for row in notes}, set(saved_receipt["target_digests"]))
-        self.assertIn(receipt, prompt)
-        self.assertIn(notes[0]["id"], prompt)
-        self.assertNotIn(notes[0]["note"], prompt)
-        self.add("A late edit after prompt", supersedes=notes[0]["id"])
-        self.target.write_text("class Changed {}", encoding="utf-8")
-        self.add("An unrelated note for the currently adopted target")
-        before = json.dumps(record)
-        lookup = lambda **kwargs: operator_notes_from_receipt(self.run, self.targets, record, receipt, **kwargs)
-        self.assertEqual([row["id"] for row in reversed(notes)], [row["id"] for row in lookup()])
-        self.assertEqual(before, json.dumps(record))
-        with self.assertRaises(ValueError):
-            lookup(through=2)
-        for field, invalid in (("run_id", "another run"), ("detail_overrides", {"new-rule": False})):
-            original = record[field]
-            record[field] = invalid
-            with self.assertRaises(ValueError):
-                lookup()
-            record[field] = original
-        with self.assertRaises(ValueError):
-            operator_notes_from_receipt(self.run, self.targets, record, "0" * 64)
-        with self.assertRaises(ValueError):
-            operator_notes_from_receipt(self.run, (Path("Different.cs"),), record, receipt)
-        (self.run / "capsule/php-sources/0001.php").write_text("not the fixed version", encoding="utf-8")
-        with self.assertRaises(ValueError):
-            lookup()
 
     def test_changed_corrupt_or_out_of_scope_replacement_does_not_hide_pending_predecessor(self):
         from migration_harness.context.context_handoff import unresolved_operator_notes

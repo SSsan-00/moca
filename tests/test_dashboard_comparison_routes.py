@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import shutil
 import subprocess
 import unittest
@@ -24,51 +23,21 @@ from migration_harness.web.diff_viewer import review_html
 
 
 class DashboardComparisonRoutesTests(HarnessCase):
-    def test_ledger_review_from_dashboard_validates_and_persists_target_version(self):
+    def test_migration_ledger_is_read_only(self):
         (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
         (self.project / "Page.cs").write_text("class Page {}\n", encoding="utf-8")
         self.commit_project()
         config = self.config()
         prepared = prepare_fixture(config, "sample")
         run_id = prepared["run_id"]
-        record_path = Path(prepared["run_path"]) / "run.json"
-        record = json.loads(record_path.read_bytes())
-        workflow.write_run_record(record_path, {**record, "status": "build_succeeded", "completed_capsules": 1})
-        decision = {"run_id": run_id, "range_id": "1:1", "state": "confirmed", "reason": "Compared", "targets": []}
-
         with self.live_dashboard(config, run_id) as url:
             self.ready_event(url)
-            with urlopen(url + "migration-ledger?review_version=1", timeout=3) as response:
-                decision["version"] = json.load(response)["review_version"]
-            for invalid in (decision, {**decision, "targets": ["Other.cs"]}, {**decision, "reason": ""}):
-                with self.subTest(invalid=invalid), self.assertRaises(HTTPError) as rejected:
-                    self.post(url, "migration-ledger", invalid, 200)
-                self.assertEqual(rejected.exception.code, 409)
-                rejected.exception.close()
-            with workflow.execution_lock(config, run_id):
-                with self.assertRaises(HTTPError) as rejected:
-                    self.post(url, "migration-ledger", {**decision, "targets": ["Page.cs"]}, 200)
-                self.assertEqual(rejected.exception.code, 409)
-                rejected.exception.close()
-            target = Path(prepared["worktree_path"]) / "Page.cs"
-            target.write_text("class ChangedBeforeReview {}\n", encoding="utf-8")
             with self.assertRaises(HTTPError) as rejected:
-                self.post(url, "migration-ledger", {**decision, "targets": ["Page.cs"]}, 200)
-            self.assertEqual(rejected.exception.code, 409)
-            rejected.exception.close()
-            with urlopen(url + "migration-ledger?review_version=1", timeout=3) as response:
-                decision["version"] = json.load(response)["review_version"]
-            self.post(url, "migration-ledger", {**decision, "targets": ["Page.cs"]}, 200)
-            with self.assertRaises(HTTPError) as rejected:
-                self.post(url, "migration-ledger", {**decision, "state": "excluded"}, 200)
-            self.assertEqual(rejected.exception.code, 409)
+                self.post(url, "migration-ledger", {"run_id": run_id, "range_id": "1:1"}, 200)
+            self.assertEqual(rejected.exception.code, 404)
             rejected.exception.close()
             with urlopen(url + "migration-ledger", timeout=3) as response:
-                source = json.load(response)["capsules"][0]["sources"][0]
-            self.assertEqual(source["review"], {"state": "confirmed", "reason": "Compared", "targets": ["Page.cs"]})
-            target.write_text("class Changed {}\n", encoding="utf-8")
-            with urlopen(url + "migration-ledger", timeout=3) as response:
-                self.assertEqual(json.load(response)["capsules"][0]["sources"][0]["review"]["state"], "stale")
+                self.assertEqual(json.load(response)["capsules"][0]["sources"][0]["id"], "1:1")
 
     def test_rewind_prompt_and_ledger_agree_on_launch_target_before_adoption(self):
         from migration_harness.context.context_handoff import record_handoff
@@ -105,25 +74,12 @@ class DashboardComparisonRoutesTests(HarnessCase):
                 self.assertIn("1 additional pending operator note", prompt)
                 self.assertIn(notes[0]["id"], prompt)
                 self.assertNotIn(notes[0]["note"], prompt)
-                match = re.search(r"launch memo reference ID ([0-9a-f]{64})", prompt)
-                self.assertIsNotNone(match)
-                receipt = match.group(1)
+                self.assertIn("review this run's saved notes", prompt)
                 junie_cli.launch_input_observer.get()(prompt)
-                junie_cli.launch_accepted_observer.get()()
                 before = record_path.read_bytes()
-                with urlopen(dashboard_url + "migration-ledger?operator_through=1", timeout=3) as response:
+                with urlopen(dashboard_url + "migration-ledger", timeout=3) as response:
                     current = json.load(response)
-                path = dashboard_url + "migration-ledger?operator_through=1&operator_receipt="
-                with urlopen(path + receipt, timeout=3) as response:
-                    historical = json.load(response)
                 self.assertEqual([], current["unresolved_operator_notes"])
-                self.assertEqual([n["id"] for n in reversed(notes)], [r["id"] for r in historical["unresolved_operator_notes"]])
-                self.assertEqual(current["completion"], historical["completion"])
-                for invalid in ("0" * 64, receipt + "&operator_receipt=" + receipt):
-                    with self.assertRaises(HTTPError) as error:
-                        urlopen(path + invalid, timeout=3)
-                    self.assertEqual(409, error.exception.code)
-                    error.exception.close()
                 self.assertEqual(before, record_path.read_bytes())
                 self.assertEqual(t1, adopted.read_bytes())
                 self.assertEqual(t0, agent.read_bytes())
@@ -148,7 +104,7 @@ class DashboardComparisonRoutesTests(HarnessCase):
         self.assertEqual(2, calls)
         self.assertEqual(1, result["completed_capsules"])
 
-    def test_omitted_operator_note_can_be_retrieved_from_the_same_capsule_scope(self):
+    def test_ledger_shows_current_operator_notes_without_a_scope_form(self):
         from migration_harness.context.context_handoff import handoff_prompt, record_handoff
 
         (self.project / "source.php").write_text("<?php\n" + ("echo 2;" + " " * 75 + "\n") * 30, encoding="utf-8")
@@ -167,27 +123,18 @@ class DashboardComparisonRoutesTests(HarnessCase):
         later = record_handoff(*args, "php-0001", 30, 30, "later scope only", supersedes=earlier["id"])
         before = (run / "run.json").read_bytes()
         prompt = handoff_prompt(*args, through=1)
-        self.assertIn("through capsule 1", prompt)
+        self.assertIn("review this run's saved notes", prompt)
         self.assertIn(earlier["id"], prompt)
         for item in (earlier, later):
             self.assertNotIn(item["note"], prompt)
         with self.live_dashboard(config, run_id) as url:
             self.ready_event(url)
-            with urlopen(url + "migration-ledger?operator_through=1", timeout=3) as response:
-                scoped = json.load(response)
             with urlopen(url + "migration-ledger", timeout=3) as response:
                 full = json.load(response)
-            for ledger, expected, excluded in ((scoped, earlier, later), (full, later, earlier)):
-                rows = ledger["unresolved_operator_notes"]
-                self.assertEqual(4, len(rows))
-                self.assertIn((expected["id"], expected["note"]), [(row["id"], row["note"]) for row in rows])
-                self.assertNotIn(excluded["id"], [row["id"] for row in rows])
-            self.assertEqual(scoped["completion"], full["completion"])
-            for query in ("0", "9999", "", "one", "1&operator_through=2"):
-                with self.subTest(query=query), self.assertRaises(HTTPError) as error:
-                    urlopen(url + "migration-ledger?operator_through=" + query, timeout=3)
-                self.assertEqual(409, error.exception.code)
-                error.exception.close()
+            rows = full["unresolved_operator_notes"]
+            self.assertEqual(4, len(rows))
+            self.assertIn((later["id"], later["note"]), [(row["id"], row["note"]) for row in rows])
+            self.assertNotIn(earlier["id"], [row["id"] for row in rows])
         self.assertEqual(before, (run / "run.json").read_bytes())
 
     @unittest.skipUnless(shutil.which("node"), "JavaScript runtime is required for the import race regression")
@@ -372,41 +319,6 @@ for (const mode of ["delayed", "ready", "slow-start", "abandoned", "unsupported"
         marker = b'<script id="harness-review-workspace" type="application/json">'
         self.assertEqual(json.loads(html.split(marker, 1)[1].split(b"</script>", 1)[0]), payload)
         return payload
-
-    def test_rule_verification_dashboard_requires_evidence_and_current_version(self):
-        (self.project / "source.php").write_text("<?php echo 42;", encoding="utf-8")
-        (self.project / "Page.cs").write_text("class Page {}", encoding="utf-8")
-        (self.project / "required.md").write_text("Preserve the result.", encoding="utf-8")
-        self.commit_project()
-        config = self.config()
-        config["units"][0]["inputs"].append({
-            "path": "required.md", "role": "migration_rules", "usage": "required", "encoding": "utf-8",
-            "start_line": 1, "end_line": None, "shared": True,
-        })
-        run = prepare_fixture(config, "sample")
-        run_id = run["run_id"]
-        with self.live_dashboard(config, run_id) as url:
-            self.ready_event(url)
-            endpoint = "rule-review?run_id=" + run_id
-            with urlopen(url + endpoint, timeout=5) as response:
-                initial = json.load(response)
-            rule = initial["rules"][0]
-            self.assertEqual(rule["verification_state"], "human_review_needed")
-            decision = {"run_id": run_id, "rule": rule["file"], "version": initial["version"],
-                        "kind": "passed", "start": 1, "end": 1, "reason": "Compared C# with PHP."}
-            with self.assertRaises(HTTPError) as incomplete:
-                self.post(url, "rule-review", decision, 200)
-            self.assertEqual(incomplete.exception.code, 409)
-            decision["reference"] = "source.php:1, Page.cs:1"
-            verified = self.post(url, "rule-review", decision, 200)
-            self.assertEqual(verified["rules"][0]["verification_state"], "passed")
-            (Path(run["worktree_path"]) / "Page.cs").write_text("class Changed {}", encoding="utf-8")
-            with self.assertRaises(HTTPError) as stale:
-                self.post(url, "rule-review", {**decision, "version": verified["version"]}, 200)
-            self.assertEqual(stale.exception.code, 409)
-            with urlopen(url + endpoint, timeout=5) as response:
-                current = json.load(response)
-            self.assertEqual(current["rules"][0]["verification_state"], "human_review_needed")
 
     def test_comparisons_stay_with_creating_run_after_open_run_and_settings_save(self):
         (self.project / "source.php").write_text("<?php echo 'Hello';\n", encoding="utf-8")

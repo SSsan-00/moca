@@ -9,7 +9,7 @@
 | Run工程 | [workflow.py](../src/migration_harness/workflow.py) が `run.json` の準備、カプセル、ビルド、チェッカー、修正、検証記録を更新する。ダッシュボード表示用の `ready` や `queued` は工程の成否とは別。実行待ちは [RunManager](../src/migration_harness/runs/run_manager.py) が FIFO 順に扱い、`dashboard-queue.json` に操作IDと起動済み状態を保存する。 |
 | 編集 | [dashboard.py](../src/migration_harness/web/dashboard.py) と [editor_queue.py](../src/migration_harness/runs/editor_queue.py) が Run・対象・編集版を照合し、手修正と追加指示を `editor.json` に保存する。即時保存できない編集は保留され、workflow の境界で適用する。対象の版が異なる場合は上書きせず停止し、競合と編集内容を残す。Junie結果の複数ファイル反映は `target_apply_pending` のハッシュで中断後の続きと外部変更を識別する。 |
 | 会話 | [junie_conversation.py](../src/migration_harness/junie/junie_conversation.py) が受信本文を `editor.json` に記録してからHTTP 202を返す。照会、確認への回答、ビルド後チェッカー、Junieへの追加指示を振り分ける。回答は元の質問ID、検証依頼は対象版と先行ビルドの操作IDに結び付ける。実行開始は `running`、結果は指示ID・対象ハッシュ・ログとともに保存する。 |
-| 検証・完了 | workflow がビルドと必要なチェッカーを別々に記録する。 [migration_ledger](../src/migration_harness/workflow.py) は対象ハッシュ、構成、フック、カプセル、検証結果と理由付きの範囲レビューを照合する。検証成功だけでは移行完了にならず、全範囲の確認または理由付き除外が必要。 |
+| 検証・完了 | workflow がビルドと必要なチェッカーを別々に記録する。 [migration_ledger](../src/migration_harness/workflow.py) は対象ハッシュ、構成、フック、カプセルと検証結果を照合する。全カプセルの処理と検証が済むと検証済みになる。 |
 
 待機ジョブは再起動時に未起動分だけ復元する。起動済みジョブは再実行せず、保存されたRunから利用者が再開する。実行中にJunieの終了を確認できなかった場合、同じRunの会話依頼を保留し、`blocked_conversations` に理由を保存する。保留依頼の失敗記録を書けない間もメモリ上の保留を解除せず、保存を再試行する。保留理由または起動済み印が残っていれば再起動後もそのRunを止める。両方の永続記録が失われた場合の再起動後の保証はないため、残存プロセスと記録を確認してから新しい依頼を送る。別Runは個別の保存が可能なら継続する。
 

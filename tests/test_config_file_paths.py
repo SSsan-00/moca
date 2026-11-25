@@ -115,8 +115,6 @@ class ConfigFilePathTests(HarnessCase):
         ledger = workflow.migration_ledger(config, prepared["run_id"])
         source = ledger["capsules"][0]["sources"][0]
         self.assertEqual(source["path"], external.as_posix())
-        workflow.review_migration_ranges(config, prepared["run_id"], [source["id"]], "excluded", "fixture")
-        self.assertEqual(workflow.migration_ledger(config, prepared["run_id"])["capsules"][0]["sources"][0]["review"]["state"], "excluded")
 
     def test_configured_reference_is_passed_to_junie_and_errors_are_not_ignored(self):
         second_reference = self.root / "another.json"
@@ -146,10 +144,7 @@ class ConfigFilePathTests(HarnessCase):
         self.assertEqual(json.loads(output.read_bytes())["workspace"]["anchors"]["manualAnchors"], [{"leftLineNo": 1, "rightLineNo": 0}])
         second_reference.write_text("invalid", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, second_reference.name):
-            review_anchors._automatic_examples(config, prepared["run_id"])
-        config["diff_viewer_anchor_reference"] = []
-        with patch.object(review_anchors, "_reviewed_examples", return_value=[{"left": "saved", "right": "saved"}]) as automatic:
-            self.assertEqual(review_anchors._automatic_examples(config, prepared["run_id"]), automatic.return_value)
+            review_anchors.generate_anchors(config, prepared["run_id"])
 
     def test_reference_form_round_trip_and_clear(self):
         content = tomlkit.dumps(self.raw)

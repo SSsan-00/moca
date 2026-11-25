@@ -893,8 +893,6 @@ class JunieConversationTests(SavedRunFixture):
         default = self.config["checker_command"]
         toml = self.config.copy()
         self.config.update(checker_from_cli=True, toml_checker_command=default, checker_command=["cli-checker"])
-        workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Reviewed",
-                                         confirmed_targets=[self.target.name])
         mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"), ("checker", 0, b""))
         with mocked:
             identifier, _ = self.send("ビルドして")
@@ -923,8 +921,6 @@ class JunieConversationTests(SavedRunFixture):
     def test_restarted_conversation_cannot_drop_the_cli_checker_requirement(self):
         override = ["cli-checker"]
         self.config.update(checker_from_cli=True, toml_checker_command=None, checker_command=override)
-        workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Reviewed",
-                                         confirmed_targets=[self.target.name])
         mocked, calls = self.mock_commands(("dotnet", 0, b"ok"))
         with mocked:
             first, _ = self.send("ビルドして")
@@ -950,8 +946,7 @@ class JunieConversationTests(SavedRunFixture):
                 self.assertEqual(calls, [])
                 self.assertEqual(self.record(), before)
                 completion = self.request("migration-ledger")[1]["completion"]
-                self.assertEqual(completion, {"complete": False, "verification_passed": False,
-                                              "reviewed": 1, "total": 1})
+                self.assertEqual(completion, {"complete": False, "verification_passed": False, "total": 1})
 
         self.restart_server(checker_from_cli=True, checker_command=override)
         mocked, calls = self.mock_commands(("dotnet", 0, b"ok"), ("checker", 0, b""))
@@ -1033,8 +1028,6 @@ class JunieConversationTests(SavedRunFixture):
         self.save_record(record)
         (self.run_path / "agent-workspace").mkdir()
         self.config.update(checker_from_cli=checker is not None, toml_checker_command=None, checker_command=checker)
-        workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Reviewed",
-                                         confirmed_targets=[self.target.name])
         mocked, calls = self.mock_commands(("dotnet", 0, b"ok"))
         with mocked:
             first, _ = self.send("ビルドして")
@@ -1282,15 +1275,13 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual(self.send(message, second)[1]["status"], "done")
             completion = self.request("migration-ledger")[1]["completion"]
             self.assertTrue(completion["verification_passed"])
-            self.assertFalse(completion["complete"])
+            self.assertTrue(completion["complete"])
         self.assertEqual(calls, [("dotnet", original), ("dotnet", edited), ("fixture-checker", edited)])
         self.assertIsNone(self.request("editor")[1]["edit"])
         self.assertEqual(self.record()["status"], "checker_succeeded")
         self.assertNotEqual(initial["built_targets"], final["built_targets"])
         self.assertEqual(final["built_targets"], self.record()["verification"]["target_hashes"])
         self.assertEqual(self.record()["verification"]["configured_checker_command"], ["fixture-checker"])
-        workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Reviewed",
-                                         confirmed_targets=[self.target.name])
         self.assertTrue(self.request("migration-ledger")[1]["completion"]["complete"])
 
     def add_saved_run(self, unit_id):

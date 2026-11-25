@@ -161,7 +161,7 @@ def main() -> None:
     except KeyboardInterrupt as exc:
         run_id = getattr(exc, "run_id", None)
         if run_id:
-            print(f"Interrupted. Saved run {run_id}; open the dashboard with h.cmd and resume the saved run.", file=sys.stderr)
+            print(f"Interrupted. Saved run {run_id}; open the dashboard with moca.cmd and resume the saved run.", file=sys.stderr)
         else:
             print("Interrupted.", file=sys.stderr)
         raise SystemExit(130)

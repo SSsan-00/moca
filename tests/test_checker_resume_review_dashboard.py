@@ -737,7 +737,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
     build = ("dotnet", 0, b"rebuilt edited target\n")
     diagnostic = b"MIG101 Example.cs:1 warning: use SharedUtility\n"
 
-    def test_migration_requires_current_verification_and_all_range_decisions(self):
+    def test_migration_requires_current_verification_without_range_decisions(self):
         def completion():
             return workflow.migration_ledger(self.config, self.run_id)["completion"]
 
@@ -756,28 +756,11 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         path.write_text(json.dumps(manifest), encoding="utf-8")
         check_passed = ("fixture-checker", 0, b"")
         self.resume(self.build, check_passed)
-        self.assertEqual(completion(), {"complete": False, "verification_passed": True, "reviewed": 0, "total": 3})
-
-        def confirm(range_id, target):
-            workflow.review_migration_ranges(
-                self.config, self.run_id, [range_id], "confirmed", "Checked source and destination",
-                confirmed_targets=[target.name],
-            )
-
-        confirm("1:1", self.target)
-        confirm("1:2", secondary)
-        self.assertFalse(completion()["complete"])
-        workflow.review_migration_ranges(self.config, self.run_id, ["1:3"], "excluded", "Unused legacy code")
-        self.assertTrue(completion()["complete"])
+        self.assertEqual(completion(), {"complete": True, "verification_passed": True, "total": 3})
 
         self.target.write_text("class Edited {}", encoding="utf-8")
         ledger = workflow.migration_ledger(self.config, self.run_id)
-        self.assertEqual(
-            [source["review"]["state"] for source in ledger["capsules"][0]["sources"]],
-            ["stale", "confirmed", "excluded"],
-        )
         self.assertFalse(ledger["completion"]["complete"])
-        confirm("1:1", self.target)
         self.assertFalse(completion()["verification_passed"])
         self.resume(self.build, ("fixture-checker", 1, self.diagnostic))
         self.assertFalse(completion()["complete"])

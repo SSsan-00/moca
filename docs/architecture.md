@@ -1,4 +1,4 @@
-# PHP → C# 移行ハーネスのアーキテクチャ
+# MoCAのアーキテクチャ
 
 Python のハーネスが入力の固定、実行順序、ファイル反映、検証、再開を管理します。Junie CLI はハーネスが用意した作業領域で C#／Razor を生成・修正し、.NET SDK と任意のチェッカーは別の Git worktree で動きます。添付の構成図を起点に、現在の実装の呼び出し順と保存境界を示します。設定項目の一覧は [技術仕様](../SPEC.md)、並行処理の契約は [Run の状態とロック契約](run-state-contracts.md) を参照してください。
 
@@ -100,22 +100,19 @@ before_build・対象 hash と設定を記録]
         Repairable -->|いいえ| VerifyStop
     end
 
-    subgraph S4[4 Diff Viewer・台帳レビュー]
+    subgraph S4[4 Diff Viewer・移行台帳]
         direction LR
         Snapshot[固定 PHP と現在の移行先を比較
 必要なら対応行候補を生成]
-        Review{全 PHP 範囲に
-有効な判断と理由がある}
         Ledger{verification_passed
-かつ PHP 範囲が1件以上
-かつ reviewed == total}
+かつ PHP 範囲が1件以上}
         Complete[completion.complete = true]
-        NotComplete[未完了
-版変更は stale・再検証]
-        Verified --> Snapshot --> Review --> Ledger
+        NotComplete[未検証
+版変更は再検証]
+        Verified --> Ledger
+        Snapshot -.-> Ledger
         Ledger -->|はい| Complete
         Ledger -->|いいえ| NotComplete
-        Review -.->|不足・対象版変更| NotComplete
     end
 
     PrepFail -.->|修復後は新しい Run| Start
@@ -208,7 +205,7 @@ sequenceDiagram
     participant Manager as RunManager
     participant Flow as workflow
 
-    User->>CLI: h.cmd
+    User->>CLI: moca.cmd
     CLI->>Config: 指定 TOML を読み込み・検証
     CLI->>HTTP: ローカル画面を起動
     HTTP->>Manager: 保存済みの待機ジョブを読み込む
@@ -219,7 +216,7 @@ sequenceDiagram
     HTTP-->>User: SSE で状態と進捗を配信
 ```
 
-- Windows の `h.cmd` は隣接する仮想環境の `php-to-csharp-harness.exe` と `harness.local.toml` を使います。Python のエントリーポイントは `migration_harness.cli:main` です。初回の `dashboard` は指定 TOML がなくても設定画面を開けます。保存操作で内容を検証し、読み込み時の版と照合して置き換えます。保存済み Run の選択と再開は画面から行います。 [h.cmd](../h.cmd) · [cli.py](../src/migration_harness/cli.py) · [dashboard.py](../src/migration_harness/web/dashboard.py)
+- Windows の `moca.cmd` は隣接する仮想環境の `php-to-csharp-harness.exe` と `harness.local.toml` を使います。Python のエントリーポイントは `migration_harness.cli:main` です。初回の `dashboard` は指定 TOML がなくても設定画面を開けます。保存操作で内容を検証し、読み込み時の版と照合して置き換えます。保存済み Run の選択と再開は画面から行います。 [moca.cmd](../moca.cmd) · [cli.py](../src/migration_harness/cli.py) · [dashboard.py](../src/migration_harness/web/dashboard.py)
 - サーバーは `127.0.0.1` の空きポートにバインドし、ランダムな URL 接頭辞を使います。GET は Host と接頭辞、POST は Host と Origin を照合します。`GET …/events` は Run 別の連番付き SSE を配信し、再接続時は `Last-Event-ID` より後の直近保持分（最大 100 件）を返します。 [dashboard.py](../src/migration_harness/web/dashboard.py)
 - `RunManager` が操作 ID を付けて FIFO キューに登録し、最大 5 件を別スレッドで実行します。同じ移行単位の実行中・待機中の重複を拒否します。`<run_root>/dashboard-queue.json` から未起動のジョブを復元し、起動済みの工程は繰り返さず保存状態を表示します。Junieの終了未確認が解消されるまでは同じRunの会話依頼を保留し、その理由を再起動後も復元します。ワーカーが使う設定は実行枠へ入る際にコピーします。 [run_manager.py](../src/migration_harness/runs/run_manager.py) · [junie_conversation.py](../src/migration_harness/junie/junie_conversation.py)
 
@@ -362,7 +359,7 @@ flowchart TD
 
 `workflow.py` はビルド前の対象版と設定を保存し、ビルド後に対象を再照合します。チェッカー診断は、対象と出力上限を確認してから修正用の指示と再発判定へ渡します。修正準備では必要な停止下書きを照合してから入力を同期し、完了記録と現物を確認した結果だけを採用します。
 
-## 6. レビューと移行完了の判定
+## 6. 比較と検証結果
 
 ```mermaid
 flowchart TD
@@ -370,18 +367,17 @@ flowchart TD
     Tree["worktree の現在の C# / Razor"]
     Snapshot["比較スナップショット<br/>テキスト・ファイル境界・任意のアンカー"]
     Candidate["対応行の候補"]
-    Review["各 PHP 範囲をレビュー<br/>理由付きで確認または除外"]
     Saved["保存済み検証結果<br/>対象ハッシュ・設定・終了コード"]
     Fresh{"現在の版と設定で<br/>verification_passed"}
-    All{"PHP 範囲が 1 件以上あり<br/>すべて確認または除外済み"}
+    All{"PHP 範囲が 1 件以上ある"}
     Decision{"両条件を満たす"}
     Complete["completion.complete = true"]
     Pending["移行台帳は未完了"]
 
     PHP --> Snapshot
     Tree --> Snapshot
-    Snapshot --> Candidate --> Review --> All
-    PHP --> Review
+    Snapshot --> Candidate
+    PHP --> All
     Tree --> Fresh
     Saved --> Fresh
     Fresh --> Decision
@@ -391,10 +387,10 @@ flowchart TD
 ```
 
 1. Diff Viewer は固定済み PHP と取得時点の移行先を比較します。通常の比較スナップショットは worktree を使い、移行実行中のライブ比較では条件に応じて Junie の下書きを使います。固定比較は `review-snapshots/<ID>.json` に保存します。Junie のアンカー生成では対応行の座標を検証し、比較スナップショットと対象ハッシュにひも付く対応候補を記録します。固定済み PHP を持たない旧 Run は manifest の入力パスの現行ファイルを読みます。 [diff_viewer.py](../src/migration_harness/web/diff_viewer.py) · [review_anchors.py](../src/migration_harness/web/review_anchors.py)
-2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。ダッシュボードの **進捗 → 移行台帳** で PHP 範囲と記録済みの判断を閲覧し、必要なら Diff Viewer で比較できます。範囲ごとに確認済み・対象外・要確認と理由を記録します。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [dashboard.py](../src/migration_harness/web/dashboard.py) · [workflow.py](../src/migration_harness/workflow.py)
-3. `verification_passed` には、反映保留がないこと、全カプセル完了、ビルド成功、必要なチェッカーの成功または有効な承認、検証フックの成功、対象ハッシュと設定の一致が必要です。照合する設定はビルド先、チェッカーコマンド、検証フックです。`completion.complete` はこれに加えて、PHP 範囲が 1 件以上あり、全件に有効な確認または理由付き除外がある場合に成立します。 [workflow.py](../src/migration_harness/workflow.py)
+2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。ダッシュボードの **進捗 → 移行台帳** で PHP 範囲と対応候補を閲覧し、必要なら Diff Viewer で比較できます。 [dashboard.py](../src/migration_harness/web/dashboard.py) · [workflow.py](../src/migration_harness/workflow.py)
+3. `verification_passed` には、反映保留がないこと、全カプセル完了、ビルド成功、必要なチェッカーの成功または有効な承認、検証フックの成功、対象ハッシュと設定の一致が必要です。照合する設定はビルド先、チェッカーコマンド、検証フックです。`completion.complete` はこれに加えて、PHP 範囲が 1 件以上ある場合に成立します。 [workflow.py](../src/migration_harness/workflow.py)
 
-`run.json` の `build_succeeded`、`checker_succeeded`、`checker_accepted` は検証工程の状態です。移行の完了判定は台帳を参照してください。通常の台帳判定は移行先と検証設定を照合します。チェッカー単独再開に対応した構成では、`build_receipt.py` が作業ツリー、.NET 起動ファイルと SDK 参照パック、成果物を照合し、その再開結果を台帳に表示する際にも確認します。依存ソースやコマンド実体を変更した場合は再検証が必要です。実行時の振る舞いを検証するテストは、プロジェクトのフックやチェッカーで指定できます。 [技術仕様](../SPEC.md)
+`run.json` の `build_succeeded`、`checker_succeeded`、`checker_accepted` は検証工程の状態です。台帳は現在の移行先と検証設定を照合します。チェッカー単独再開に対応した構成では、`build_receipt.py` が作業ツリー、.NET 起動ファイルと SDK 参照パック、成果物を照合し、その再開結果を台帳に表示する際にも確認します。依存ソースやコマンド実体を変更した場合は再検証が必要です。実行時の振る舞いを検証するテストは、プロジェクトのフックやチェッカーで指定できます。 [技術仕様](../SPEC.md)
 
 ## 7. 停止・失敗後にどこから再開するか
 

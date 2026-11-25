@@ -71,7 +71,6 @@ from migration_harness.runs.run_records import (
     validate_run_id,
 )
 from migration_harness.runs.recovery_status import recovery_status
-from migration_harness.rules.rule_review import review_rules
 from migration_harness.rules.rule_workspace import RuleWorkspace
 from migration_harness.web.settings_form import build_settings_draft
 from migration_harness.junie.junie_notifications import (
@@ -98,7 +97,6 @@ from migration_harness.workflow import (
     resolve_stopped_repair,
     resume_with_junie,
     review_checker,
-    review_migration_ranges,
     run_with_junie,
     script_recovery,
 )
@@ -566,9 +564,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     self.send_body(200, content_type, asset)
             elif self.path.partition("?")[0] == prefix + "editor":
                 self.send_editor()
-            elif self.path.partition("?")[0] == prefix + "rule-review":
-                run_id = parse_qs(urlsplit(self.path).query).get("run_id", [None])[0] or self.headers.get("X-Run-ID")
-                self.send_rule_review(run_id)
             elif self.path.partition("?")[0] == prefix + "recovery":
                 try:
                     run_id = parse_qs(urlsplit(self.path).query).get("run_id", [""])[0]
@@ -645,21 +640,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 run_id = self.dashboard.state.get("run_id")
                 if run_id and self.dashboard.state.get("worktree_path"):
                     try:
-                        query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
-                        scope = query.get("operator_through")
-                        if scope is not None and (len(scope) != 1 or not scope[0].isascii() or not scope[0].isdecimal()):
-                            raise ValueError("メモのカプセル番号は正の整数で指定してください。")
-                        receipt = query.get("operator_receipt")
-                        if receipt is not None and len(receipt) != 1:
-                            raise ValueError("起動時メモの参照IDは1件だけ指定してください。")
-                        review_version = query.get("review_version")
-                        if review_version is not None and review_version != ["1"]:
-                            raise ValueError("台帳の確認方法を選び直してください。")
-                        ledger = migration_ledger(
-                            config, run_id, operator_through=int(scope[0]) if scope else None,
-                            operator_receipt=receipt[0] if receipt else None,
-                            include_review_version=review_version is not None,
-                        )
+                        ledger = migration_ledger(config, run_id)
                     except _ERRORS as exc:
                         self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
                     else:
@@ -1198,8 +1179,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
         def do_POST(self) -> None:
             if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
                                   prefix + "build-response", prefix + "editor", prefix + "roslyn-diagnostics", prefix + "prompts",
-                                  prefix + "rule-workspace", prefix + "rule-review", prefix + "junie-requests",
-                                  prefix + "migration-ledger", prefix + "recovery-plan"):
+                                  prefix + "rule-workspace", prefix + "junie-requests",
+                                  prefix + "recovery-plan"):
                 if (self.path.partition("?")[0] == prefix + "editor-php"
                         and self.headers.get("Host") == self.expected_host
                         and self.headers.get("Origin") == "http://" + self.expected_host):
@@ -1244,10 +1225,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.send_prompts(action)
             elif route == "comparison":
                 self.create_comparison(action)
-            elif route == "rule-review":
-                self.send_rule_review(action.get("run_id"), action)
-            elif route == "migration-ledger":
-                self.save_migration_review(action)
             elif route == "recovery-plan":
                 self.save_recovery_plan(action)
             else:
@@ -1321,48 +1298,6 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 with self.dashboard.condition:
                     self.recovery_view(run_id)
                 self.send_body(200, "application/json", json.dumps(preview, ensure_ascii=False).encode("utf-8"))
-            except _ERRORS as exc:
-                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
-
-        def save_migration_review(self, action):
-            try:
-                if set(action) != {"run_id", "range_id", "state", "reason", "targets", "version"}:
-                    raise ValueError("確認する範囲と判断を指定してください。")
-                run_id, range_id = action["run_id"], action["range_id"]
-                validate_run_id(run_id)
-                targets, reason = action["targets"], action["reason"]
-                if (not isinstance(range_id, str) or not re.fullmatch(r"[0-9]+:[0-9]+", range_id)
-                        or action["state"] not in {"confirmed", "excluded", "needs_review"}
-                        or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000
-                        or not isinstance(action["version"], str) or not re.fullmatch(r"[0-9a-f]{64}", action["version"])
-                        or not isinstance(targets, list) or len(targets) > 100
-                        or any(not isinstance(target, str) or not target for target in targets)
-                        or self.headers.get("X-Run-ID", run_id) != run_id):
-                    raise ValueError("確認する範囲、判断、理由を見直してください。")
-                with self.dashboard.condition:
-                    if (self.dashboard.state.get("run_id") != run_id or not self.dashboard.state.get("ready")
-                            or manager and run_id in manager.jobs):
-                        raise ValueError("処理が終わってから判断を記録してください。")
-                    with execution_lock(config, run_id):
-                        review_migration_ranges(config, run_id, [range_id], action["state"], reason,
-                                                confirmed_targets=targets, expected_version=action["version"])
-                    self.dashboard.publish({**self.dashboard.state,
-                                            "ledger_revision": self.dashboard.state.get("ledger_revision", 0) + 1})
-                self.send_body(200, "application/json", b"{}")
-            except _ERRORS as exc:
-                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
-
-        def send_rule_review(self, run_id, action=None):
-            try:
-                validate_run_id(run_id)
-                if self.dashboard.state.get("run_id") != run_id or not self.dashboard.state.get("ready"):
-                    raise ValueError("停止中または完了した実行を選んでください。")
-                fields = ("rule", "kind", "version", "start", "end", "reason", "reference")
-                if action is not None and (set(action) - {"run_id", *fields} or not isinstance(action.get("kind"), str)):
-                    raise ValueError("確認するルールと判定を指定してください。")
-                options = {key: action[key] for key in fields if key in action} if action is not None else {}
-                report = review_rules(config, run_id, **options)
-                self.send_body(200, "application/json", json.dumps(report, ensure_ascii=False).encode("utf-8"))
             except _ERRORS as exc:
                 self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
 
