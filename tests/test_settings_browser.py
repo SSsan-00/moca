@@ -81,7 +81,7 @@ max_bytes = 9007199254740993 # preserve this value
                 '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net9.0</TargetFramework>'
                 '<ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>', encoding="utf-8",
             )
-            (worktree / "Example.cs").write_bytes(b"public class Example { public int Number => 42; }")
+            (worktree / "Example.cs").write_bytes(b"public class Example { public int Number => new Sample.IndexModel().Number; }")
             (worktree / "Pages").mkdir()
             (worktree / "_ViewImports.cshtml").write_bytes(b"@using Sample\n")
             (worktree / "Pages/Index.cshtml").write_bytes(b"@page\n@model IndexModel\n<p>@Model.Number</p>\n")

@@ -322,7 +322,8 @@ function finishBuildSubmission(draft) {
 }
 
 function buildEditIsDirty() {
-  return !!buildFile && buildSource.value !== buildFile.content;
+  return !!buildFile && (buildSource.value !== buildFile.content
+    || !!buildDrafts.get(buildViewRun)?.files.get(buildFile.target)?.unconfirmed?.size);
 }
 
 // 保存時の文字コード・改行を考慮し、編集と再ビルドを有効にする。
@@ -1810,7 +1811,9 @@ buildReset.addEventListener("click", () => {
 buildSource.addEventListener("input", () => {
   if (buildFile) {
     const files = buildDraft(buildViewRun).files;
-    if (buildEditIsDirty()) files.set(buildFile.target, {base: buildFile, value: buildSource.value});
+    if (buildEditIsDirty()) files.set(buildFile.target, {
+      base: buildFile, value: buildSource.value, unconfirmed: files.get(buildFile.target)?.unconfirmed,
+    });
     else files.delete(buildFile.target);
   }
   syncActions();
@@ -1819,24 +1822,44 @@ buildInstruction.addEventListener("input", () => {
   buildDraft(buildViewRun).instruction = buildInstruction.value;
   syncActions();
 });
+function checkBuildSaveReceipt(saved, attempt) {
+  if (saved.run_id !== attempt.run_id || saved.target !== attempt.target || saved.accepted_save_id !== attempt.save_id
+      || saved.content !== attempt.content || !/^[0-9a-f]{64}$/.test(saved.accepted_version) || saved.queued)
+    throw Error("下書きが保存されたことを確認できません。");
+}
+
 async function saveRecoveredBuildDraft(runId, draft, file, current) {
   if (!file || !current() || submitting) return;
   const target = file.base.target;
-  file.saveId ??= crypto.randomUUID().replaceAll("-", "");
+  const unconfirmed = file.unconfirmed ??= new Map();
+  let savedChanges = false;
   submitting = true;
   syncActions();
   try {
-    const saved = await workspaceRequest("editor", {kind: "save", run_id: runId, target,
-      base: file.base.content, base_version: file.base.version, content: file.value, save_id: file.saveId});
-    if (saved.run_id !== runId || saved.accepted_save_id !== file.saveId || saved.queued)
-      throw Error("下書きが保存されたことを確認できません。");
+    let confirmed = false;
+    if (unconfirmed.size) {
+      const saved = await workspaceRequest("editor?" + new URLSearchParams({run_id: runId, target}));
+      if (!current()) return;
+      const prior = unconfirmed.get(saved.accepted_save_id);
+      if (prior) {
+        checkBuildSaveReceipt(saved, prior);
+        savedChanges = true;
+        buildFile = file.base = {...file.base, content: saved.content, version: saved.accepted_version};
+        unconfirmed.clear();
+        confirmed = file.value === saved.content;
+      }
+    }
+    if (!confirmed) {
+      const prior = [...unconfirmed.values()].find(sent => sent.base_version === file.base.version && sent.content === file.value);
+      const attempt = prior ?? {kind: "save", run_id: runId, target,
+        base: file.base.content, base_version: file.base.version, content: file.value,
+        save_id: crypto.randomUUID().replaceAll("-", "")};
+      unconfirmed.set(attempt.save_id, attempt);
+      checkBuildSaveReceipt(await workspaceRequest("editor", attempt), attempt);
+      savedChanges = true;
+    }
     const visible = current();
     if (draft.files.get(target) === file) draft.files.delete(target);
-    if (snapshot.run_id === runId && verifiedStatuses.has(snapshot.status)) {
-      migrationCompletion = {verification_passed: false, verification_input_status: true};
-      render();
-      if (snapshot.worktree_path) loadMigrationLedger({keepCompletion: true});
-    }
     if (visible) {
       if (hasBuildDraft(draft)) openBuildReview(true);
       else buildDialog.close();
@@ -1845,6 +1868,11 @@ async function saveRecoveredBuildDraft(runId, draft, file, current) {
     if (current()) buildFeedback.textContent = error.message;
   } finally {
     submitting = false;
+    if (savedChanges && snapshot.run_id === runId && verifiedStatuses.has(snapshot.status)) {
+      migrationCompletion = {verification_passed: false, verification_input_status: true};
+      render();
+      if (snapshot.worktree_path) loadMigrationLedger({keepCompletion: true});
+    }
     syncActions();
   }
 }

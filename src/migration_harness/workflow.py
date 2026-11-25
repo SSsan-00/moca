@@ -74,6 +74,7 @@ from .runs.editor_queue import (
     record_operator_edit,
     stage_editor_adoption,
 )
+from .runs.reference_edits import recorded_reference_edit_overlap
 from .errors import format_error
 from .execution import (
     ConfiguredProcessIncomplete,
@@ -4648,19 +4649,6 @@ def _reference_refresh_sources(run_path, record):
     return _verified_target_snapshot(run_path, checkpoint)
 
 
-def _recorded_reference_edit_overlap(old, new, operator_edits):
-    if not operator_edits:
-        return False
-    candidate = {line.rstrip("\n") for line in unified_diff(old.splitlines(True), new.splitlines(True), n=0)}
-    for edit in operator_edits:
-        for line in edit.splitlines():
-            if line.startswith(("+", "-")) and not line.startswith(("+++", "---")) and line[1:].strip():
-                inverse = ("-" if line[0] == "+" else "+") + line[1:]
-                if inverse in candidate:
-                    return True
-    return False
-
-
 class _ReferenceRefreshConflict(ValueError):
     def __init__(self, message, conflicts, merged):
         super().__init__(message)
@@ -4690,7 +4678,7 @@ def _reference_refresh_merge(worktree, targets, proposal, baseline, before, diff
         differences.extend(unified_diff(old.splitlines(True), new.splitlines(True),
                                         fromfile=f"変更前/{name}", tofile=f"修正案/{name}", n=2))
         result = merge_edit(old, new, human)
-        if result is None or _recorded_reference_edit_overlap(old, new, operator_edits.get(name, ())):
+        if result is None or recorded_reference_edit_overlap(old, new, operator_edits.get(name, ())):
             conflicts.append(name)
         else:
             merged[target] = current if result == human else codecs.BOM_UTF8 + result.replace(

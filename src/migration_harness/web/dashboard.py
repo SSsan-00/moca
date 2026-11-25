@@ -930,6 +930,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 if name and edit is None and read_error is None:
                     if accepted := applied_editor_save_id(queue, name, original, content):
                         payload["accepted_save_id"] = accepted
+                        if after := queue["save_requests"][accepted].get("after"):
+                            payload["accepted_version"] = after
                 if name and from_agent and (draft := record.get("stopped_migration_draft")):
                     payload["stopped_draft"] = True
                     with suppress(OSError, ValueError):
@@ -1303,7 +1305,9 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             return True
 
         def send_roslyn_diagnostics(self, action: dict[str, Any]) -> None:
-            from migration_harness.verification.roslyn_syntax import editor_diagnostics, editor_semantic_diagnostics
+            from migration_harness.verification.roslyn_syntax import (
+                editor_context_revision, editor_diagnostics, editor_semantic_diagnostics,
+            )
 
             try:
                 run_id = action.get("run_id")
@@ -1318,13 +1322,16 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     raise ValueError("設定された移行先ファイルを選んでください。")
                 if not isinstance(version, str) or not 0 < len(version) <= 128:
                     raise ValueError("診断する下書きの版が無効です。")
-                content = editor_text(action.get("content"))
                 mode = action.get("mode", "syntax")
                 if mode == "syntax":
-                    result = editor_diagnostics(target, content, version)
+                    result = editor_diagnostics(target, editor_text(action.get("content")), version)
                     result["supports_semantic"] = True
                 elif mode == "semantic":
-                    result = editor_semantic_diagnostics(worktree, config["build_project"], target, content, version)
+                    result = editor_semantic_diagnostics(
+                        worktree, config["build_project"], target, editor_text(action.get("content")), version,
+                    )
+                elif mode == "context":
+                    result = editor_context_revision(worktree, config["build_project"], target, version)
                 else:
                     raise ValueError("診断の種類が不正です。")
                 self.send_body(200, "application/json", json.dumps(result, ensure_ascii=False).encode("utf-8"))

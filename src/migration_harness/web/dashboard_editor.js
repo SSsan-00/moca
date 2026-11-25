@@ -54,7 +54,7 @@
   const diagnosticLimit = 2;
   const diagnosticBusyDelays = [500, 1000, 2000, 4000, 8000, 8000];
   let diagnosticGeneration = 0, diagnosticTimer, diagnosticInFlight = 0, pendingDiagnosis, markedModel;
-  let semanticTimer, semanticInFlight = false, pendingSemantic;
+  let semanticTimer, contextTimer, semanticInFlight = false, pendingSemantic;
 
   function startPendingDiagnosis() {
     if (!pendingDiagnosis || diagnosticInFlight >= diagnosticLimit) return;
@@ -102,6 +102,7 @@
     const generation = ++diagnosticGeneration;
     clearTimeout(diagnosticTimer);
     clearTimeout(semanticTimer);
+    clearTimeout(contextTimer);
     pendingDiagnosis = pendingSemantic = undefined;
     if (markedModel) window.monaco.editor.setModelMarkers(markedModel, "syntax", []);
     markedModel = undefined;
@@ -138,13 +139,50 @@
         project_configuration: "このプロジェクト構成の型・参照を安全に再現できません。正式ビルドで確認してください。",
         project_too_large: "エディタで確認できるプロジェクトの上限を超えています。",
         project_changed: "診断中に作業ツリーが変わりました。最新版で再診断できます。",
+        context_unavailable: "型・参照の依存版を確認できません。再確認を待つか、正式ビルドで確認してください。",
         razor_context: "この Razor の生成条件を再現できません。正式ビルドで確認してください。",
+        razor_unmapped_errors: "Razor のモデル型や生成された C# を一部確認できませんでした。正式ビルドで確認してください。",
         analyzer_busy: "ほかの型・参照診断を実行中です。",
         timeout: "型・参照の診断が制限時間内に終わりませんでした。"
       };
       diagnosticRetry.hidden = !retry;
       setText("#editor-diagnostic-status", " · 構文: 指摘なし / 型・参照: 未確認");
       setText("#editor-diagnostic-note", notes[reason] || "型・参照の解析器を利用できません。正式ビルドで確認してください。");
+    }
+
+    async function lookupContext() {
+      const result = await request("roslyn-diagnostics", {
+        run_id: run, target, version: payload.version, mode: "context"
+      });
+      if (!valid()) return;
+      if (result.version !== payload.version || result.target !== target) throw Error("診断の依存版を確認できません。");
+      return result;
+    }
+
+    function watchContext(expected, wasUnconfirmed = false) {
+      contextTimer = setTimeout(async () => {
+        if (!valid()) return;
+        try {
+          const latest = await lookupContext();
+          if (!latest) return;
+          if (latest.reason === "analyzer_busy") {
+            if (!wasUnconfirmed) {
+              renderDiagnostics(file, payload, {findings: [], razor: []}, valid);
+              showSemanticUnavailable(latest.reason, true);
+            }
+            watchContext(expected, true);
+          } else if (wasUnconfirmed || latest.context_revision !== expected) {
+            scheduleDiagnostics();
+          } else {
+            watchContext(expected);
+          }
+        } catch {
+          if (!valid()) return;
+          renderDiagnostics(file, payload, {findings: [], razor: []}, valid);
+          showSemanticUnavailable("context_unavailable", true);
+          watchContext(expected, true);
+        }
+      }, 2250);
     }
 
     async function diagnoseSemantic() {
@@ -158,18 +196,36 @@
           enqueueSemantic(diagnosticBusyDelays[semanticRetries++]);
           return;
         }
-        if (result.status !== "clear" && result.status !== "errors") {
+        if (result.context_revision) {
+          const latest = await lookupContext();
+          if (!latest) return;
+          if (latest.reason === "analyzer_busy") {
+            showSemanticUnavailable(latest.reason, true);
+            watchContext(result.context_revision, true);
+            return;
+          }
+          if (latest.context_revision !== result.context_revision) {
+            scheduleDiagnostics();
+            return;
+          }
+          watchContext(result.context_revision);
+        }
+        if (!["clear", "errors", "partial"].includes(result.status)) {
           showSemanticUnavailable(result.reason,
-            !["project_required", "project_configuration", "project_too_large", "razor_context"].includes(result.reason));
+            !["project_required", "project_configuration", "project_too_large", "razor_context",
+              "razor_unmapped_errors"].includes(result.reason));
           return;
         }
         const count = renderDiagnostics(file, payload, result, valid);
+        const partial = result.status === "partial";
         setText("#editor-diagnostic-status", count
-          ? ` · 型・参照: ${count}件${result.truncated ? "以上" : ""}` : " · 構文・型・参照: 指摘なし");
+          ? ` · 型・参照: ${count}件${result.truncated ? "以上" : ""}${partial ? " / 一部未確認" : ""}`
+          : " · 構文・型・参照: 指摘なし");
         const checked = target.toLowerCase().endsWith(".cshtml")
           ? "元の Razor に対応する C# を確認しました。タグヘルパー等を含む全体は正式ビルドで確認してください。"
           : "この構成で確認できる型・参照を診断しました。最終結果は正式ビルドで確認してください。";
-        setText("#editor-diagnostic-note", result.truncated ? "表示上限に達しました。" + checked : checked);
+        setText("#editor-diagnostic-note", (result.truncated ? "表示上限に達しました。" : "")
+          + (partial ? "元の Razor の位置を特定できない指摘があります。正式ビルドで確認してください。" : checked));
       } catch {
         if (valid()) showSemanticUnavailable(null, true);
       } finally {
