@@ -1095,7 +1095,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     else:
                         value = rules.snapshot(identifier)
             except _ERRORS as exc:
-                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
+                status = 500 if isinstance(exc, OSError) and action and action.get("action") == "edit" else 409
+                self.send_body(status, "text/plain; charset=utf-8", format_error(exc).encode())
             else:
                 self.send_body(200, "application/json", json.dumps(value, ensure_ascii=False).encode())
 

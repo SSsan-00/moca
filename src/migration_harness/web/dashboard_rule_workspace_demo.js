@@ -60,6 +60,7 @@
     const entry = draft.files.find(item => item.source === (action?.source ?? query?.source));
     if (!action) return query.source ? {text: entry.text, revision: draft.revision} : structuredClone(draft);
 
+    let acceptedEdit;
     switch (action.action) {
       case "edit":
         if (entry) entry.text = action.text;
@@ -67,6 +68,7 @@
           if (!action.name?.trim()) throw Error("ファイル名を入力してください。");
           draft.files.push({...file, source: "file-" + draft.revision, name: action.name, text: action.text});
         }
+        acceptedEdit = {id: action.save_id, source: entry?.source ?? draft.files.at(-1).source};
         break;
       case "classification":
         if (!entry) throw Error("原文を選んでください。");
@@ -118,6 +120,6 @@
     }
     if (!["preview", "apply"].includes(action.action)) draft.preview = null;
     draft.revision++;
-    return structuredClone(draft);
+    return structuredClone(acceptedEdit ? {...draft, accepted_edit: acceptedEdit} : draft);
   };
 })();

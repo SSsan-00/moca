@@ -11,6 +11,7 @@
   let draft, source = "new", busy = false, timer, token, uploadedBytes;
   let registeredRequest = 0, draftRequest = 0, sourceRequest = 0, editor;
   const selectedSources = new Map();
+  const localEdits = new Map();
   let renderedMessages = [];
   const input = node("instruction");
   const send = node("message");
@@ -79,9 +80,21 @@
   }
   const canEditSource = () => hasDraft() && !busy && draft.live?.status !== "running"
     && editor?.id === draft.id && editor.source === source;
+  const editKey = (id, source) => JSON.stringify([id, source]);
+  const unsaved = file => file.pending || file.text !== file.savedText || file.name !== file.savedName || file.bytes !== file.savedBytes;
+  function rememberEditor() {
+    if (!editor) return;
+    Object.assign(editor, {text: node("text").value, name: node("name").value, bytes: uploadedBytes});
+    const key = editKey(editor.id, editor.source);
+    if (unsaved(editor)) localEdits.set(key, editor); else localEdits.delete(key);
+    syncEditor();
+  }
   function syncEditor() {
-    for (const id of ["text", "name", "import", "save-source"]) node(id).disabled = !canEditSource();
-    node("accept").disabled = !canEditSource() || !draft?.proposal;
+    const editable = canEditSource();
+    for (const id of ["text", "name", "import", "save-source", "discard-source"]) node(id).disabled = !editable;
+    node("name").readOnly = source !== "new" || !!editor?.pending;
+    node("discard-source").hidden = !editor || !unsaved(editor);
+    node("accept").disabled = !editable || !draft?.proposal;
     for (const id of ["sources", "drafts", "start"]) node(id).disabled = busy;
   }
   const request = async (query, action) => {
@@ -90,7 +103,7 @@
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(action),
     } : undefined);
-    if (!response.ok) throw Error(await response.text());
+    if (!response.ok) throw Object.assign(Error(await response.text()), {status: response.status});
     return response.json();
   };
   function display(data) {
@@ -232,12 +245,22 @@
     syncEditor();
     const entry = draft.files.find(item => item.source === node("sources").value);
     selectSource(entry);
+    const pending = localEdits.get(editKey(draft.id, source));
+    if (pending) {
+      editor = pending;
+      node("text").value = pending.text;
+      node("name").value = pending.name;
+      uploadedBytes = pending.bytes;
+      syncEditor();
+      return;
+    }
     try {
-      const response = entry ? await request({id: draft.id, source}) : {text: "", revision: draft.revision};
+      const response = entry ? await request({id: draft.id, source}) : {text: "", revision: (await request({id: draft.id})).revision};
       if (generation !== sourceRequest) return;
       node("text").value = response.text;
       uploadedBytes = undefined;
-      editor = {id: draft.id, source, revision: response.revision, savedText: node("text").value};
+      editor = {id: draft.id, source, revision: response.revision, version: response.version,
+        text: node("text").value, savedText: node("text").value, name: node("name").value, savedName: node("name").value};
       syncEditor();
     } catch (error) {
       if (generation === sourceRequest) status(error.message);
@@ -245,6 +268,11 @@
   }
   async function submit(action, extra = {}) {
     if (busy) return;
+    rememberEditor();
+    if ((action === "preview" || action === "apply") && [...localEdits.values()].some(file => file.id === draft?.id)) {
+      status("未保存の編集があります。該当する原文を選び、下書きに保存するか破棄してから進んでください。");
+      return;
+    }
     busy = true;
     renderModel();
     syncEditor();
@@ -255,7 +283,14 @@
       const acceptedSource = action === "accept" ? draft?.proposal?.source : undefined;
       const result = await request(null, {action, id: was, revision, ...extra});
       if (result.archives) return showArchives(result.archives);
-      if (editor?.id === result.id && editor.revision === (extra.revision ?? revision)) editor.revision = result.revision;
+      if (action === "edit" && (result.id !== was || result.accepted_edit?.id !== extra.save_id
+          || !result.files.some(file => file.source === result.accepted_edit.source)))
+        throw Error("下書きの保存を確認できません。もう一度保存してください。");
+      if (acceptedSource && acceptedSource !== "new") localEdits.delete(editKey(was, acceptedSource));
+      for (const file of new Set([editor, ...localEdits.values()])) {
+        if (file?.id === result.id && file.revision === (extra.revision ?? revision)
+            && file.source !== acceptedSource && (!file.pending || file === editor)) file.revision = result.revision;
+      }
       display(result);
       if (action === "start" || was !== result.id) await loadSource();
       else if (acceptedSource === source && source !== "new") await loadSource({retainText: true});
@@ -265,6 +300,10 @@
       if (["message", "optimize"].includes(action) && input.value === extra.text) input.value = "";
       return result;
     } catch (error) {
+      if (action === "edit" && error.status >= 400 && error.status < 500 && editor?.pending?.save_id === extra.save_id) {
+        delete editor.pending;
+        rememberEditor();
+      }
       status(error.message);
     } finally {
       busy = false;
@@ -291,6 +330,7 @@
   node("start").addEventListener("click", () => { ++draftRequest; return submit("start"); });
   node("drafts").addEventListener("change", async () => {
     if (busy) return;
+    rememberEditor();
     const generation = ++draftRequest;
     const id = node("drafts").value;
     display(null);
@@ -302,10 +342,19 @@
       await loadSource();
     } catch (error) { if (generation === draftRequest) status(error.message); }
   });
-  node("sources").addEventListener("change", () => { if (hasDraft() && !busy) return loadSource(); });
+  node("sources").addEventListener("change", () => {
+    if (!hasDraft() || busy) return;
+    rememberEditor();
+    return loadSource();
+  });
   node("model").addEventListener("change", () => submit("model", {model: node("model").value, effort: ""}));
   node("effort").addEventListener("change", () => submit("model", {model: node("model").value, effort: node("effort").value}));
-  node("text").addEventListener("input", () => { if (canEditSource()) uploadedBytes = undefined; });
+  node("text").addEventListener("input", () => {
+    if (!canEditSource()) return;
+    uploadedBytes = undefined;
+    rememberEditor();
+  });
+  node("name").addEventListener("input", () => { if (canEditSource()) rememberEditor(); });
   node("import").addEventListener("change", async event => {
     const file = event.target.files[0];
     if (!file || !canEditSource()) return;
@@ -327,28 +376,47 @@
     finally {
       if (generation === sourceRequest) {
         editor = target;
-        syncEditor();
+        rememberEditor();
       }
       event.target.value = "";
     }
   });
+  async function saveSource(request) {
+    editor.pending = request;
+    const result = await submit("edit", request);
+    if (!result) return false;
+    const accepted = result.accepted_edit;
+    const file = editor;
+    localEdits.delete(editKey(file.id, file.source));
+    if (file.source === "new") {
+      selectSource(result.files.find(item => item.source === accepted.source));
+      file.source = source;
+    }
+    file.version = accepted.version;
+    file.revision = result.revision;
+    file.savedName = node("name").value;
+    file.savedText = request.text;
+    file.savedBytes = request.bytes;
+    delete file.pending;
+    rememberEditor();
+    return true;
+  }
   node("save-source").addEventListener("click", async () => {
     if (!canEditSource()) return;
     ++sourceRequest;
-    const existing = source === "new" ? new Set(draft.files.map(file => file.source)) : null;
-    const text = node("text").value;
-    const result = await submit("edit", {source, revision: editor.revision, name: node("name").value,
-      text, bytes: uploadedBytes});
-    const created = existing && result?.files.find(file => !existing.has(file.source));
-    if (created) {
-      selectSource(created);
-      editor.source = source;
+    rememberEditor();
+    const {pending, text, name, bytes} = editor;
+    if (pending && !await saveSource(pending)) return;
+    if (!pending || pending.text !== text || pending.name !== name || pending.bytes !== bytes) {
+      if (!await saveSource({source, revision: editor.revision, base_version: editor.version,
+        save_id: crypto.randomUUID().replaceAll("-", ""), text, name: node("name").value, bytes})) return;
     }
-    if (result) {
-      editor.savedText = text;
-      editor.savedBytes = uploadedBytes;
-      status("下書きに保存しました。");
-    }
+    status("下書きに保存しました。");
+  });
+  node("discard-source").addEventListener("click", () => {
+    if (!canEditSource() || !unsaved(editor) || !window.confirm("未保存の編集を破棄して、保存済みの本文を読み直しますか？")) return;
+    localEdits.delete(editKey(editor.id, editor.source));
+    return loadSource();
   });
   node("save-classification").addEventListener("click", () => {
     const previous = draft?.files.find(file => file.source === source);
@@ -365,9 +433,10 @@
   node("optimize").addEventListener("click", () => submit("optimize", {text: input.value}));
   node("accept").addEventListener("click", () => {
     if (node("accept").disabled) return;
-    const dirty = node("text").value !== editor.savedText || uploadedBytes !== editor.savedBytes;
-    if (source !== "new" && draft.proposal.source === source && dirty
-        && !window.confirm("このMarkdownには未保存の変更があります。変更を破棄して提案を採用しますか？")) return;
+    rememberEditor();
+    const target = draft.proposal.source;
+    if (target !== "new" && localEdits.has(editKey(draft.id, target))
+        && !window.confirm("提案対象のMarkdownには未保存の変更があります。変更を破棄して提案を採用しますか？")) return;
     return submit("accept");
   });
   for (const action of ["stop", "preview"]) node(action).addEventListener("click", () => submit(action));

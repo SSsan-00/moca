@@ -11,6 +11,7 @@ import {checkRuleSourceEditor} from "./rule_source_browser.mjs";
 import {checkRuleProposalAdoption} from "./rule_proposal_browser.mjs";
 import {beginPhase, cdp, evaluate, eventually, finishBrowser, navigate, reportBrowserFailure,
   socket, startBrowser, wait} from "./chromium_browser.mjs";
+import {checkRuleDraftProtection, checkRuleSaveRecovery} from "./rule_draft_browser.mjs";
 
 const [executable, profile, url, notificationUrl, expectedRun, liveLogPath, ruleConfigPath] = process.argv.slice(2);
 let staticServer;
@@ -407,6 +408,8 @@ try {
     await wait(sourceValue + ".selectedOptions[0]?.textContent === 'z-first.md' && " +
       draftPicker + ".value && " + draftPicker + ".value !== " + JSON.stringify(firstDraft));
     await checkRuleProposalAdoption({evaluate, wait, field, change, click, value}, ruleConfigPath, await value("rules-drafts"));
+    await checkRuleDraftProtection({evaluate, wait, field, change, click, value});
+    await checkRuleSaveRecovery({evaluate, wait, field, change, click, value});
     await change("rules-drafts", firstDraft);
     await wait(sourceValue + ".value === 'new'");
     await change("rules-drafts", "");

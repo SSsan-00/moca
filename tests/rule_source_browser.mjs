@@ -120,6 +120,11 @@ export async function checkRuleSourceEditor({evaluate, wait, field, change, clic
     await ready();
     await select(selected);
     await ready();
+    assert.equal(await value(text), "古い版からの編集");
+    await evaluate("window.ruleIO.originalConfirm = window.confirm; window.confirm = () => true");
+    try { await click("rules-discard-source"); }
+    finally { await evaluate("window.confirm = window.ruleIO.originalConfirm"); }
+    await ready();
     assert.equal(await value(text), "別の画面から更新");
     await change(text, "最新の版から編集", "input");
     await click(save);
