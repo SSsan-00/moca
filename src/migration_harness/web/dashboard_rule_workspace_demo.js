@@ -81,11 +81,11 @@
       case "optimize":
         draft.messages.push({role: "operator", text: action.text || "注文取消のルールを整理して"});
         draft.messages.push({role: "junie", text: "（サンプル応答）通常の取消禁止と、決済前の例外を分ける案です。例外を適用する条件と、理由の記録は残します。"});
-        draft.proposal = {text: addition};
+        draft.proposal = {source: draft.files[0].source, text: addition};
         break;
       case "accept":
         if (draft.proposal) {
-          const target = draft.files[0];
+          const target = draft.files.find(item => item.source === draft.proposal.source);
           if (!target.text.includes(addition)) target.text = target.text.trimEnd() + "\n" + addition;
           draft.proposal = null;
         }

@@ -22,6 +22,7 @@ from migration_harness.web import dashboard
 from migration_harness.junie.junie_notifications import RunNotice
 from migration_harness.junie.junie_thoughts import FILENAME as JUNIE_LOG_NAME
 from ui_dependencies import node_executable, require_ui_dependency
+from stopped_repair_browser_fixture import stopped_repair_run
 
 
 class SettingsBrowserTests(unittest.TestCase):
@@ -181,6 +182,17 @@ max_bytes = 9007199254740993 # preserve this value
                         (other_run / "run.json").write_text(json.dumps(selected), encoding="utf-8")
                     else:
                         selected = json.loads((run / "run.json").read_bytes())
+                    view.observe(selected)
+                    view.ready(config, selected)
+                elif handler.path in {fixture_root + "fixture-stopped-repair-build", fixture_root + "fixture-stopped-repair-checker"}:
+                    phase = handler.path.rsplit("-", 1)[-1]
+                    selected = stopped_repair_run(config, record, worktree, phase)
+                    view.observe(selected)
+                    view.ready(config, selected)
+                    handler.send_body(200, "application/json", json.dumps({"run_id": selected["run_id"]}).encode())
+                    return
+                elif handler.path == fixture_root + "fixture-stopped-repair-reset":
+                    selected = json.loads((run / "run.json").read_bytes())
                     view.observe(selected)
                     view.ready(config, selected)
                 elif handler.path == fixture_root + "fixture-resumable":

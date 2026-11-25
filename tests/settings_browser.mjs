@@ -1,4 +1,5 @@
 import {checkBuildReviewDrafts} from "./build_review_drafts_browser.mjs";
+import {checkStoppedRepairRecovery} from "./stopped_repair_browser.mjs";
 import {checkAdoptedEditorSave, checkMergedEditorSave} from "./editor_adoption_browser.mjs";
 import {checkEditorSemantics} from "./editor_semantic_browser.mjs";
 import assert from "node:assert/strict";
@@ -9,6 +10,7 @@ import {fileURLToPath, pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
 import {checkRuleSourceEditor} from "./rule_source_browser.mjs";
+import {checkRuleProposalAdoption} from "./rule_proposal_browser.mjs";
 
 const [executable, profile, url, notificationUrl, expectedRun, liveLogPath, ruleConfigPath] = process.argv.slice(2);
 let socket, sequence = 0;
@@ -286,6 +288,7 @@ try {
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
   console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reopen");
+  await checkStoppedRepairRecovery({evaluate, wait, field, restoredRun: expectedRun});
   await navigate("Page.navigate", {url});
   await wait("document.documentElement.dataset.liveReady === 'true' && !!window.harnessRuns");
   await click("tab-runs");
@@ -527,7 +530,8 @@ try {
     await wait(markdown + ".value === ''");
     await click("rules-start");
     await wait(sourceValue + ".selectedOptions[0]?.textContent === 'z-first.md' && " +
-      draftPicker + ".value !== " + JSON.stringify(firstDraft));
+      draftPicker + ".value && " + draftPicker + ".value !== " + JSON.stringify(firstDraft));
+    await checkRuleProposalAdoption({evaluate, wait, field, change, click, value}, ruleConfigPath, await value("rules-drafts"));
     await change("rules-drafts", firstDraft);
     await wait(sourceValue + ".value === 'new'");
     await change("rules-drafts", "");

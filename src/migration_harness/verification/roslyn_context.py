@@ -3,6 +3,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from time import monotonic
 from xml.etree import ElementTree
@@ -13,12 +14,14 @@ _MAX_ENTRIES = 5000
 _MAX_SOURCES = 400
 _MAX_BYTES = 8 * 1024 * 1024
 _MAX_DESCRIPTOR = 64 * 1024
+_WEB_DEPENDENCY_DIRECTORIES = frozenset({"node_modules", "jspm_packages", "bower_components"})
 _OVERRIDES = frozenset({
     "directory.build.props", "directory.build.targets", "directory.build.rsp",
     "directory.packages.props", "global.json", "msbuild.rsp",
 })
 _COMPILATION_ENVIRONMENT = frozenset({
-    "allowunsafeblocks", "assemblysearchpaths", "checkforoverflowunderflow", "defaultlanguagesourceextension",
+    "allowunsafeblocks", "appdesignerfolder", "assemblysearchpaths", "checkforoverflowunderflow",
+    "defaultlanguagesourceextension", "defaultwebcontentitemexcludes",
     "features", "nocompilerstandardlib", "nostandardlib", "platformtarget", "runtimeidentifier", "runtimeidentifiers",
     "targetframeworkidentifier", "targetframeworkrootpath", "targetframeworkversion", "targetingpackroot",
     "treatwarningsaserrors", "usewindowsforms", "usewpf", "warninglevel", "warningsaserrors", "warningsnotaserrors",
@@ -93,11 +96,22 @@ def _check_project_overrides(project):
             raise ProjectContextUnavailable("project_configuration")
 
 
-def _project_settings(project, stamp):
-    root = ElementTree.fromstring(_read_file(project, _MAX_DESCRIPTOR, stamp))
+@lru_cache(maxsize=32)
+def _project_description(project, stamp):
+    try:
+        root = ElementTree.fromstring(_read_file(project, _MAX_DESCRIPTOR, stamp))
+    except ElementTree.ParseError:
+        return None, None
     sdk = root.get("Sdk")
     if (root.tag != "Project" or set(root.attrib) != {"Sdk"}
             or sdk not in {"Microsoft.NET.Sdk", "Microsoft.NET.Sdk.Web"}):
+        return None, None
+    return root, sdk == "Microsoft.NET.Sdk.Web"
+
+
+def _project_settings(project, stamp):
+    root, _ = _project_description(project, stamp)
+    if root is None:
         raise ProjectContextUnavailable("project_configuration")
     settings = {}
     for group in root:
@@ -113,21 +127,31 @@ def _project_settings(project, stamp):
             settings[item.tag] = value
     if "TargetFramework" not in settings:
         raise ProjectContextUnavailable("project_configuration")
-    return sdk == "Microsoft.NET.Sdk.Web", settings
+    return settings
 
 
-def _project_sources(root, project, target, deadline):
+def _excluded_directory(parts, web):
+    parts = tuple(part.casefold() for part in parts)
+    return bool(parts) and (parts[0] in {"bin", "obj"} or web and (
+        parts[0] == "wwwroot" or parts[:2] in {("properties", "publishprofiles"),
+                                              ("properties", "servicedependencies")}
+        or any(part in _WEB_DEPENDENCY_DIRECTORIES for part in parts)
+    ))
+
+
+def _project_sources(root, project, target, deadline, web):
     entries = 0
     files = []
     directories = [root]
     while directories:
         parent = directories.pop()
+        prefix = parent.relative_to(root).parts
         with os.scandir(parent) as children:
             for item in children:
                 entries += 1
                 if entries > _MAX_ENTRIES or monotonic() > deadline:
                     raise ProjectContextUnavailable("project_too_large")
-                if parent == root and item.name.lower() in {"obj", "bin"}:
+                if _excluded_directory((*prefix, item.name), web):
                     continue
                 if item.name.startswith(".") and (
                         not item.name.lower().endswith(".cs") or item.is_dir(follow_symlinks=False)):
@@ -156,6 +180,7 @@ class ProjectSnapshot:
     project: Path
     descriptor: tuple[int, int, int]
     target: Path
+    web: bool | None
     sources: list[tuple[Path, tuple[int, int, int]]]
     imports: list[tuple[Path, tuple[int, int, int]]]
     revision: str
@@ -170,15 +195,16 @@ def editor_project_snapshot(worktree, configured_project, target):
     if not path.is_relative_to(context_root):
         raise ProjectContextUnavailable("project_required")
     target_path = path.relative_to(context_root)
-    if (any(part.startswith(".") for part in target_path.parts[:-1])
-            or target_path.parts[0].lower() in {"bin", "obj"}):
-        raise ProjectContextUnavailable("project_required")
     _check_project_overrides(project)
     deadline = monotonic() + 2
     descriptor = _stamp(project.stat())
-    sources = _project_sources(context_root, project, path, deadline)
+    _, web = _project_description(project, descriptor)
+    parent_parts = target_path.parts[:-1]
+    if any(part.startswith(".") for part in parent_parts) or _excluded_directory(parent_parts, web):
+        raise ProjectContextUnavailable("project_required")
+    sources = _project_sources(context_root, project, path, deadline, web) if web is not None else []
     imports = []
-    if path.suffix.lower() == ".cshtml":
+    if web is not None and path.suffix.lower() == ".cshtml":
         for directory in reversed([p for p in path.parents if p.is_relative_to(context_root)]):
             relative = (directory / "_ViewImports.cshtml").relative_to(worktree)
             item = safe_target(worktree, relative)
@@ -188,7 +214,7 @@ def editor_project_snapshot(worktree, configured_project, target):
         (item.relative_to(context_root).as_posix(), metadata)
         for item, metadata in [(project, descriptor), *sources, *imports]
     ]).encode("utf-8")).hexdigest()
-    return ProjectSnapshot(worktree, project, descriptor, path, sources, imports, revision, deadline)
+    return ProjectSnapshot(worktree, project, descriptor, path, web, sources, imports, revision, deadline)
 
 
 def editor_project_context(worktree, configured_project, target, *, snapshot=None):
@@ -196,9 +222,9 @@ def editor_project_context(worktree, configured_project, target, *, snapshot=Non
     project = snapshot.project
     context_root = project.parent
     path = snapshot.target
-    web, settings = _project_settings(project, snapshot.descriptor)
+    settings = _project_settings(project, snapshot.descriptor)
     if path.suffix.lower() == ".cshtml" and (
-            not web or path.name.casefold() in {"_viewimports.cshtml", "_viewstart.cshtml"}):
+            not snapshot.web or path.name.casefold() in {"_viewimports.cshtml", "_viewstart.cshtml"}):
         raise ProjectContextUnavailable("project_configuration")
     remaining = _MAX_BYTES
 
@@ -217,9 +243,9 @@ def editor_project_context(worktree, configured_project, target, *, snapshot=Non
     return {
         "Sources": collect(snapshot.sources, _MAX_BYTES), "Imports": collect(snapshot.imports, _MAX_DESCRIPTOR),
         "ProjectPath": path.relative_to(context_root).as_posix(),
-        "Web": web, "AssemblyName": settings.get("AssemblyName", project.stem),
+        "Web": snapshot.web, "AssemblyName": settings.get("AssemblyName", project.stem),
         "RootNamespace": settings.get("RootNamespace", project.stem.replace("-", "_")),
         "ImplicitUsings": settings.get("ImplicitUsings") in {"enable", "true"},
-        "OutputType": settings.get("OutputType", "Exe" if web else "Library"),
+        "OutputType": settings.get("OutputType", "Exe" if snapshot.web else "Library"),
         "Nullable": settings.get("Nullable", "disable"),
     }

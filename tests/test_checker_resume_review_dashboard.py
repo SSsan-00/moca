@@ -1753,6 +1753,40 @@ class SavedDashboardTests(SavedRunFixture):
 
         self.open_dashboard(inspect)
 
+    def test_recovery_keeps_legacy_migration_and_protection_states(self):
+        original = self.record()
+
+        def inspect(url):
+            self.get_ready_event(url)
+            for changes, draft, process_check in (
+                ({}, None, False),
+                ({"repair_pending": {"snapshot": "legacy-snapshot"}}, "repair", False),
+                ({"repair_pending": {"draft": {"snapshot": "modern-snapshot"}},
+                  "unconfirmed_command": {"log": "unconfirmed.log"}}, "repair", True),
+                ({"repair_pending": {"draft": {"snapshot": "modern-snapshot"}},
+                  "stopped_migration_draft": {"snapshot": "migration-snapshot"}}, "migration", False),
+                ({"repair_pending": {"draft": {"targets": {}}}}, None, False),
+            ):
+                with self.subTest(changes=changes):
+                    self.save_record({**original, **changes})
+                    with urlopen(f"{url}recovery?run_id={self.run_id}", timeout=3) as response:
+                        data = json.load(response)
+                    self.assertEqual((data["draft"], data["needs_process_check"]), (draft, process_check))
+                    self.assertEqual(data["unconfirmed_command"], changes.get("unconfirmed_command"))
+
+            with editor_queue(self.run_path) as queue:
+                queue["edits"][self.target.name] = {
+                    "id": "fixture-edit", "base": "class Original {}", "content": "class Manual {}", "status": "conflict",
+                }
+            self.save_record({**original, "repair_pending": {"draft": {"snapshot": "modern-snapshot"}}})
+            with urlopen(f"{url}recovery?run_id={self.run_id}", timeout=3) as response:
+                data = json.load(response)
+            self.assertEqual(data["draft"], "repair")
+            self.assertTrue(data["conflict"])
+            self.assertEqual(data["pending_edits"], 1)
+
+        self.open_dashboard(inspect)
+
     def test_checker_dashboard_displays_raw_output_and_resumes_with_instruction(self):
         raw = b'{"expected": 42, "actual": 0}\n'
         self.checker_log.write_bytes(raw)
