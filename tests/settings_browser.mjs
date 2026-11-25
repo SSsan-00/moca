@@ -1,155 +1,24 @@
 import {checkBuildReviewDrafts} from "./build_review_drafts_browser.mjs";
 import {checkStoppedRepairRecovery} from "./stopped_repair_browser.mjs";
 import {checkAdoptedEditorSave, checkMergedEditorSave} from "./editor_adoption_browser.mjs";
-import {checkEditorSemantics} from "./editor_semantic_browser.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {createServer} from "node:http";
 import {fileURLToPath, pathToFileURL} from "node:url";
-import {spawn} from "node:child_process";
 import {setTimeout as pause} from "node:timers/promises";
 import {checkRuleSourceEditor} from "./rule_source_browser.mjs";
 import {checkRuleProposalAdoption} from "./rule_proposal_browser.mjs";
+import {beginPhase, cdp, evaluate, eventually, finishBrowser, navigate, reportBrowserFailure,
+  socket, startBrowser, wait} from "./chromium_browser.mjs";
+import {checkRuleDraftProtection, checkRuleSaveRecovery} from "./rule_draft_browser.mjs";
 
 const [executable, profile, url, notificationUrl, expectedRun, liveLogPath, ruleConfigPath] = process.argv.slice(2);
-let socket, sequence = 0;
-const pending = new Map();
-async function eventually(read, label, attempts = 100) {
-  for (let index = 0; index < attempts; index++) {
-    const value = await read();
-    if (value) return value;
-    await pause(100);
-  }
-  throw new Error("Timed out: " + label);
-}
-async function cdp(method, params = {}, waitMs = 10_000) {
-  const id = ++sequence;
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error("Browser command timed out: " + method));
-    }, waitMs);
-    pending.set(id, message => {
-      clearTimeout(timeout);
-      pending.delete(id);
-      if (message.error) reject(new Error(message.error.message));
-      else resolve(message.result);
-    });
-    socket.send(JSON.stringify({id, method, params}));
-  });
-}
-
-async function connectPage(debuggerUrl, deadline) {
-  socket = new WebSocket(debuggerUrl);
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Chromium DevTools socket did not open")),
-      Math.max(1, deadline - performance.now()));
-    socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, {once: true});
-    socket.addEventListener("error", () => {
-      clearTimeout(timer);
-      reject(new Error("Chromium DevTools socket failed to open"));
-    }, {once: true});
-  });
-  socket.addEventListener("message", event => {
-    const message = JSON.parse(event.data);
-    if (message.method === "Runtime.exceptionThrown") console.error("Browser error", message.params.exceptionDetails?.exception?.description || message.params.exceptionDetails?.text);
-    pending.get(message.id)?.(message);
-  });
-  await cdp("Runtime.enable");
-  await cdp("Page.enable", {}, Math.max(1, deadline - performance.now()));
-}
-
-// Launch Chromium with a fresh profile and wait for the DevTools endpoint.
-async function startBrowser() {
-  const failures = [];
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const directory = `${profile}-${attempt}`;
-    const chrome = spawn(executable, [
-      "--headless", "--remote-debugging-port=0", "--no-first-run", "--disable-background-networking",
-      "--disable-extensions", "--enable-logging=stderr", "--user-data-dir=" + directory, "about:blank",
-    ], {stdio: ["ignore", "ignore", "pipe"]});
-    let spawnError, stderr = "";
-    chrome.once("error", error => { spawnError = error; });
-    chrome.stderr.setEncoding("utf8");
-    chrome.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-8192); });
-    let ready = false;
-    try {
-      const deadline = performance.now() + 25_000;
-      while (performance.now() < deadline) {
-        if (spawnError) throw spawnError;
-        if (chrome.exitCode !== null || chrome.signalCode !== null) {
-          throw new Error(`Chromium exited during startup (code=${chrome.exitCode}, signal=${chrome.signalCode})`);
-        }
-        const portFile = await fs.readFile(path.join(directory, "DevToolsActivePort"), "utf8").catch(error => {
-          // Windows may briefly lock the file while Chromium publishes the port.
-          if (error.code === "ENOENT" || error.code === "EBUSY") return "";
-          throw error;
-        });
-        const port = portFile.split("\n")[0].trim();
-        if (/^[0-9]+$/.test(port)) {
-          const endpoint = `http://127.0.0.1:${port}/json/list`;
-          const pages = await fetch(endpoint, {signal: AbortSignal.timeout(500)})
-            .then(response => response.ok ? response.json() : null)
-            .catch(() => null);
-          const page = pages?.find(item => item.type === "page" && item.webSocketDebuggerUrl);
-          if (page) {
-            await connectPage(page.webSocketDebuggerUrl, deadline);
-            ready = true;
-            return chrome;
-          }
-        }
-        await pause(100);
-      }
-      throw new Error("Timed out waiting for Chromium DevTools");
-    } catch (error) {
-      failures.push(`Attempt ${attempt}: ${error.message}\n${stderr.trim() || "(no browser stderr)"}`);
-    } finally {
-      if (!ready) {
-        socket?.close();
-        socket = null;
-        if (chrome.exitCode === null && chrome.signalCode === null) chrome.kill();
-      }
-    }
-  }
-  throw new Error(`Chromium did not start:\n${failures.join("\n")}`);
-}
-
 let staticServer;
-const chrome = await startBrowser();
+beginPhase("Chromium startup");
+const chrome = await startBrowser(executable, profile);
+let success = false;
 try {
-  function pageLoaded() {
-    return new Promise((resolve, reject) => {
-      const receive = event => {
-        if (JSON.parse(event.data).method !== "Page.loadEventFired") return;
-        clearTimeout(timer);
-        socket.removeEventListener("message", receive);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        socket.removeEventListener("message", receive);
-        reject(new Error("Browser page did not finish loading"));
-      }, 15_000);
-      socket.addEventListener("message", receive);
-    });
-  }
-  async function navigate(method, params) {
-    await Promise.all([pageLoaded(), cdp(method, params)]);
-  }
-  async function evaluate(expression, userGesture = false) {
-    const result = await cdp("Runtime.evaluate", {expression, returnByValue: true, awaitPromise: true, userGesture});
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
-    return result.result.value;
-  }
-  const wait = (expression, attempts) => eventually(async () => {
-    try {
-      return await evaluate(expression);
-    } catch (error) {
-      // Chrome may replace the JavaScript context during a real navigation.
-      if (!/Execution context was destroyed|Cannot find context|Inspected target navigated or closed/.test(error.message)) throw error;
-      return false;
-    }
-  }, expression, attempts);
   const field = id => `document.getElementById(${JSON.stringify(id)})`;
   const click = id => evaluate(`${field(id)}.click()`);
   const change = (id, value, event = "change") => evaluate(`
@@ -159,6 +28,7 @@ try {
   const folders = "settings-context-folders";
   const save = 'document.querySelector("#workspace-config-form button[type=submit]")';
   const toml = field("workspace-config");
+  beginPhase("notification and initial dashboard");
   console.log("Browser:", (await cdp("Browser.getVersion")).product);
   await cdp("Page.addScriptToEvaluateOnNewDocument", {source: "(" + function () {
     if (!new URL(location.href).searchParams.has("notice")) return;
@@ -198,6 +68,7 @@ try {
     throw new Error(`${error.message}; last dashboard state: ${JSON.stringify(observed)}`, {cause: error});
   }
   console.log("Browser notification: opaque activation showed the failed Run in Progress");
+  beginPhase("Junie log and Unicode");
   const liveLog = "junieLog.windows.get(" + JSON.stringify(expectedRun) + ")?.popup.document";
   const logRow = index => liveLog + "?.querySelector('[data-log-entries] li:nth-child(" + index + ")')";
   const logAt = "2026-11-14T01:42:03Z";
@@ -276,6 +147,7 @@ try {
   assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
+  beginPhase("build review and recovery");
   await checkBuildReviewDrafts({url, evaluate, click, change, value, wait, run: expectedRun,
     tree: path.join(path.dirname(ruleConfigPath), "trees", expectedRun)});
   // Reopen the same Run in a new document instead of relying on Chrome's reload scheduling.
@@ -288,6 +160,7 @@ try {
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
   console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reopen");
+  beginPhase("stopped repair and validation");
   await checkStoppedRepairRecovery({evaluate, wait, field, restoredRun: expectedRun});
   await navigate("Page.navigate", {url});
   await wait("document.documentElement.dataset.liveReady === 'true' && !!window.harnessRuns");
@@ -341,6 +214,7 @@ try {
   assert(await evaluate("document.querySelector('#workspace-run-feedback').textContent.includes('実移行は未実行')"));
   await evaluate("restoreDryRunFetch()");
   console.log("Browser validation: one button starts, cancels and resets; migration is not started");
+  beginPhase("settings model and persistence");
 
   await click("tab-settings");
   await wait(`!${field("settings-context-roots")}.matches(":disabled")`);
@@ -420,6 +294,7 @@ try {
   assert.equal(await value("settings-anchor-reference"), "anchors.json");
   assert(!(await evaluate(`${field("settings-viewer-html")}.disabled`)));
   console.log("Browser settings: simplified controls, saved values and viewer path retention");
+  beginPhase("cross-Run Junie checks");
   await evaluate(`(() => {
     const original = window.fetch;
     window.fixturePermissionQueue = [
@@ -458,6 +333,7 @@ try {
     run_id: "different-run", operation_id: "op-one", request_id: "one", option_id: "allow",
   });
   console.log("Browser Junie checks: cross-Run queue, exact answer, active tab and editor selection retained");
+  beginPhase("rule workspace preview and proposal editing");
   const rulePanel = field("workspace-rule-workspace");
   async function showRuleWorkspace() {
     assert(await evaluate(field("tab-settings") + ".nextElementSibling === " + field("tab-rule-workspace")));
@@ -532,6 +408,8 @@ try {
     await wait(sourceValue + ".selectedOptions[0]?.textContent === 'z-first.md' && " +
       draftPicker + ".value && " + draftPicker + ".value !== " + JSON.stringify(firstDraft));
     await checkRuleProposalAdoption({evaluate, wait, field, change, click, value}, ruleConfigPath, await value("rules-drafts"));
+    await checkRuleDraftProtection({evaluate, wait, field, change, click, value});
+    await checkRuleSaveRecovery({evaluate, wait, field, change, click, value});
     await change("rules-drafts", firstDraft);
     await wait(sourceValue + ".value === 'new'");
     await change("rules-drafts", "");
@@ -540,6 +418,7 @@ try {
     await fs.writeFile(ruleConfigPath, baseRuleConfig);
   }
   console.log("Browser RuleWorkspace: first configured Markdown previews without a draft, skips unavailable files, and preserves source and unsaved edits");
+  beginPhase("rule workspace live actions");
   await evaluate("(" + function () {
     const original = window.fetch;
     window.stopRuleChatFixture = () => { window.fetch = original; };
@@ -600,7 +479,7 @@ try {
   await wait("document.getElementById('editor-diagnostic-status').textContent.includes('指摘なし')");
   assert.equal(await evaluate("monaco.editor.getModelMarkers({owner:'syntax'}).length"), 0);
   console.log("Browser editor: unsaved C# syntax, real compiler marker and click location, saved text unchanged");
-  await checkEditorSemantics({evaluate, wait, sourceEditor, config: ruleConfigPath, run: expectedRun});
+  beginPhase("live editor save recovery and Run model");
   await checkAdoptedEditorSave({evaluate, wait, click, sourceEditor, run: expectedRun});
   const runModel = "document.querySelector('#editor-prompt-form [data-run-model]')";
   const runEffort = "document.querySelector('#editor-prompt-form [data-run-effort]')";
@@ -660,6 +539,7 @@ try {
   const liveTabs = await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)");
   const liveSteps = await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)");
   assert.equal(liveTabs.length, 6); assert.equal(liveSteps.length, 7);
+  beginPhase("demo navigation and chat");
   const demoUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "progress-demo.html"));
   await navigate("Page.navigate", {url: demoUrl.href});
   const ready = 'document.documentElement.dataset.liveReady === "true" && document.querySelector(".run-detail").textContent.includes("run-2026-11-14-001")';
@@ -776,6 +656,7 @@ try {
   await click("demo-notice-answer");
   assert.match(await evaluate(`${field("demo-notice-state")}.textContent`), /回答を記録/);
   console.log("Browser demo: opening suppresses reminders without answering the confirmation");
+  beginPhase("demo notification and saved preferences");
   await click("tab-settings");
   await wait(field("settings-junie-log-tone") + ".matches(':disabled')");
   await click("tab-runs");
@@ -834,6 +715,7 @@ try {
   assert.deepEqual(await evaluate(rawLog), originalEntries);
   await evaluate(log + ".defaultView.close()");
   console.log("Browser demo: saved language and tone change log framing without changing original entries");
+  beginPhase("demo Junie conversation");
 
   await showRuleWorkspace();
   await wait("!" + field("rules-draft") + ".hidden && " + field("rules-name") + ".value === 'orders.md'");
@@ -890,6 +772,7 @@ try {
   await click("rules-optimize");
   await wait("!" + field("rules-proposal") + ".hidden");
   console.log("Browser Junie chats: same components, IME-safe shortcut and manually followed history");
+  beginPhase("demo responsive rule layout and review");
   await click("rules-preview");
   await wait("!" + field("rules-review") + ".hidden");
   assert.equal(await evaluate("document.querySelector('#rules-confirm')"), null);
@@ -929,6 +812,7 @@ try {
     assert(await evaluate(reviewLayout), "checker instructions stay visible while findings scroll at " + width + "×" + height);
   }
   console.log("Browser review: findings scroll while instructions and actions stay visible");
+  beginPhase("demo Run model switching");
 
   const selectedDemo = "document.querySelector('.run-detail').textContent";
   const runAction = (id, action) => "document.querySelector(" +
@@ -977,6 +861,7 @@ try {
   assert.equal(await evaluate("listModelWait.started"), 0, "switching via the actual run list cancels the waiting resume");
   await evaluate("listModelWait.restore()");
   console.log("Browser run list: another Run can be selected while a model save is pending");
+  beginPhase("demo resume plans and action layout");
 
   const designRun = "run-2026-11-14-001";
   await click("tab-runs");
@@ -1209,6 +1094,7 @@ try {
   }
   await evaluate("restoreResumeDesignTransport()");
   console.log("Browser resume: same-width actions across runs and status changes at 320-1280 px; migration, build and checker start at the confirmed phase");
+  beginPhase("demo deletion and empty state");
   await cdp("Emulation.setDeviceMetricsOverride", {width: 390, height: 480, deviceScaleFactor: 1, mobile: false});
 
   // All sample runs were stopped or cancelled before the settings test.
@@ -1238,6 +1124,7 @@ try {
   await wait("!!" + newRow);
   await openDemoRun(await evaluate(newRow + ".dataset.runId"));
   console.log("Browser demo: deletion does not resurrect Runs; empty state can start and open a new mock Run");
+  beginPhase("demo request isolation and return to live");
 
   assert.equal(await evaluate("harnessDemoTransport.fetch('unimplemented-operation', {method: 'POST'}).then(r => r.status)"), 404);
   assert.equal(await evaluate("harnessDemoTransport.fetch('https://example.invalid/outside').then(r => r.status)"), 404);
@@ -1255,11 +1142,14 @@ try {
   await wait("document.documentElement.dataset.liveReady === 'true'");
   await click("tab-editor");
   await wait(sourceEditor + "?.getModel()?.getLanguageId() === 'csharp'");
+  beginPhase("live editor adopted revision merge");
   await checkMergedEditorSave({evaluate, wait, click, sourceEditor, run: expectedRun,
     root: path.dirname(ruleConfigPath)});
-  await cdp("Browser.close").catch(() => {});
+  success = true;
+} catch (error) {
+  reportBrowserFailure(error);
+  process.exitCode = 1;
 } finally {
   staticServer?.close();
-  socket?.close();
-  if (chrome.exitCode === null) chrome.kill();
+  await finishBrowser(chrome, success);
 }

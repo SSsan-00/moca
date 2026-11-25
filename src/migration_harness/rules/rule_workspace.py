@@ -91,10 +91,16 @@ def _draft_state_digest(state):
     return _digest(json.dumps(state, ensure_ascii=False, sort_keys=True).encode("utf-8"))
 
 
-def _advance_edit_revision(state, addition):
+def _accepted_edit(receipt):
+    return {"id": receipt["id"], "source": receipt["source"], "version": receipt["sha256"]}
+
+
+def _advance_edit_revision(state, addition, receipt=None):
     if addition is not None:
         state["files"].append(addition)
     state["revision"] += 1
+    if receipt is not None:
+        state.setdefault("edit_receipts", {})[receipt["id"]] = receipt
     for key in ("plan", "preview", "proposal"):
         state.pop(key, None)
     state.pop("plan_sources", None)
@@ -115,7 +121,7 @@ def _read_draft_state(path):
     version = _draft_state_digest(state)
     if version == pending["state_before"]:
         if digest == pending["body_after"]:
-            _advance_edit_revision(state, pending["addition"])
+            _advance_edit_revision(state, pending["addition"], pending.get("edit_receipt"))
             if _draft_state_digest(state) != pending["state_after"]:
                 raise ValueError("下書きの版と保存記録が一致しません。")
             _json(state_path, state)
@@ -322,7 +328,7 @@ class RuleWorkspace:
                 return {"drafts": drafts[:30]}
             state = _read_draft_state(self.draft(identifier))
             accepted = self._accepted_required(state)
-            for internal in ("accepted_plan", "classified_sources", "plan_sources"):
+            for internal in ("accepted_plan", "classified_sources", "plan_sources", "edit_receipts"):
                 state.pop(internal, None)
             files = [{**item, "has_required_lines": item["source"] in accepted} for item in state["files"]]
             return {"junie_model": self.config.get("junie_model"), "junie_effort": self.config.get("junie_effort"),
@@ -333,14 +339,15 @@ class RuleWorkspace:
             path = self.draft(identifier)
             state = _read_draft_state(path)
             file = self._source(path, state, source)
-            return {"text": _decode(file.read_bytes()), "revision": state["revision"]}
+            data = file.read_bytes()
+            return {"text": _decode(data), "revision": state["revision"], "version": _digest(data)}
 
     def _source(self, path, state, source):
         if not isinstance(source, str) or not _SOURCE.fullmatch(source) or source not in {f["source"] for f in state["files"]}:
             raise ValueError("下書きのMarkdownを指定してください。")
         return safe_target(path, Path("sources") / source)
 
-    def _edit(self, path, state, action):
+    def _edit(self, path, state, action, identity=None):
         text = action.get("text")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Markdown本文を入力してください。")
@@ -365,23 +372,30 @@ class RuleWorkspace:
         else:
             file = self._source(path, state, source)
             original = file.read_bytes()
+            if "base_version" in action and action["base_version"] != _digest(original):
+                raise ValueError("下書きが更新済みです。再読み込みしてください。")
             if not encoded and original.replace(b"\r\n", b"").find(b"\n") < 0 and b"\r\n" in original:
                 data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
             if not encoded and original.startswith(b"\xef\xbb\xbf"):
                 data = b"\xef\xbb\xbf" + data
         state_before = _draft_state_digest(state) if original != data else None
-        _advance_edit_revision(state, addition)
+        body_after = _digest(data)
+        confirmation = ({**identity, "source": source, "revision": state["revision"] + 1, "sha256": body_after}
+                        if identity is not None else None)
+        _advance_edit_revision(state, addition, confirmation)
         state_path = path / "state.json"
         if state_before is None:
             _json(state_path, state)
-            return
+            return confirmation
         receipt = safe_target(path, Path("edit-pending.json"))
         _json(receipt, {"source": source, "addition": addition,
                         "state_before": state_before, "state_after": _draft_state_digest(state),
-                        "body_before": _digest(original) if original is not None else None, "body_after": _digest(data)})
+                        "body_before": _digest(original) if original is not None else None, "body_after": body_after,
+                        "edit_receipt": confirmation})
         _write(file, data)
         _json(state_path, state)
         receipt.unlink()
+        return confirmation
 
     def _disconnect(self):
         if self.chat:
@@ -766,6 +780,20 @@ class RuleWorkspace:
                         live.rename(parked)
                         raise
                 return {"archives": self._archives()}
+            identity = None
+            if kind == "edit" and "save_id" in action:
+                save_id = action["save_id"]
+                if not isinstance(save_id, str) or not re.fullmatch(r"[0-9a-f]{32}", save_id):
+                    raise ValueError("下書きの保存IDが正しくありません。")
+                intent = {key: action.get(key) for key in ("revision", "source", "name", "text", "bytes", "base_version")}
+                identity = {"id": save_id, "intent": _draft_state_digest(intent)}
+                if receipt := state.get("edit_receipts", {}).get(save_id):
+                    if receipt["intent"] != identity["intent"]:
+                        raise ValueError("同じ保存IDが別の編集に使われています。")
+                    if (state.get("applied") or receipt["revision"] != state["revision"]
+                            or sha256_file(self._source(path, state, receipt["source"])) != receipt["sha256"]):
+                        raise ValueError("下書きが更新済みです。再読み込みしてください。")
+                    return {**self.snapshot(identifier), "accepted_edit": _accepted_edit(receipt)}
             if state.get("applied") or action.get("revision") != state["revision"]:
                 raise ValueError("下書きが更新済みです。再読み込みしてください。")
             if kind == "model":
@@ -781,8 +809,11 @@ class RuleWorkspace:
                     state["revision"] += 1
                     state.pop("preview", None)
             elif kind in {"edit", "accept"}:
-                self._edit(path, state, action if kind == "edit" else state.get("proposal") or {})
-                return self.snapshot(identifier)
+                receipt = self._edit(path, state, action if kind == "edit" else state.get("proposal") or {}, identity)
+                result = self.snapshot(identifier)
+                if receipt is not None:
+                    result["accepted_edit"] = _accepted_edit(receipt)
+                return result
             elif kind == "classification":
                 source = action.get("source")
                 self._source(path, state, source)

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from hashlib import sha256
 from itertools import product
 from pathlib import Path
 from threading import Event
@@ -289,6 +290,8 @@ end_line = 1
                 fields = {"source": "new", "name": "more.md", "text": changed} if kind == "add" else (
                     {"source": registered, "text": changed} if kind == "edit" else {}
                 )
+                if write_kind == "edit":
+                    fields["save_id"] = "2" * 32
                 reopened = RuleWorkspace(self.config)
                 self.addCleanup(reopened.close)
 
@@ -314,6 +317,11 @@ end_line = 1
                 self.assertEqual(recovered["revision"], stale["revision"] + 1)
                 self.assertEqual(reopened.file_text(draft["id"], source)["text"], final_bytes.decode("utf-8"))
                 self.assertEqual(len(recovered["files"]), 2 if kind == "add" else 1)
+                if write_kind == "edit":
+                    replayed = after_restart(write_kind, **fields)
+                    self.assertEqual(replayed["revision"], recovered["revision"])
+                    self.assertEqual(replayed["accepted_edit"],
+                                     {"id": fields["save_id"], "source": source, "version": sha256(final_bytes).hexdigest()})
                 for key in ("plan", "preview", "proposal"):
                     self.assertNotIn(key, recovered)
                 self.assertTrue(self.send(recovered, "preview")["preview"]["token"])
@@ -337,7 +345,8 @@ end_line = 1
                 self.send(draft, "edit", source=name, text="未反映の本文")
         reopened = RuleWorkspace(self.config)
         self.addCleanup(reopened.close)
-        self.assertEqual(reopened.file_text(draft["id"], name), {"text": original.decode(), "revision": draft["revision"]})
+        self.assertEqual(reopened.file_text(draft["id"], name),
+                         {"text": original.decode(), "revision": draft["revision"], "version": sha256(original).hexdigest()})
         self.assertEqual(self.send(draft, "edit", source=name, text="次の正常な本文")["revision"], draft["revision"] + 1)
 
     def test_interruption_after_state_commit_does_not_increment_twice(self):
@@ -354,12 +363,26 @@ end_line = 1
 
         with patch.object(Path, "replace", interrupt_after_state):
             with self.assertRaisesRegex(PermissionError, "state already replaced"):
-                self.send(draft, "edit", source=source, text="確定済みの本文")
+                self.send(draft, "edit", source=source, text="確定済みの本文", save_id="1" * 32)
         reopened = RuleWorkspace(self.config)
         self.addCleanup(reopened.close)
-        expected = {"text": "確定済みの本文", "revision": draft["revision"] + 1}
+        version = sha256("確定済みの本文".encode()).hexdigest()
+        expected = {"text": "確定済みの本文", "revision": draft["revision"] + 1, "version": version}
         for _ in range(2):
             self.assertEqual(reopened.file_text(draft["id"], source), expected)
+        action = {"id": draft["id"], "revision": draft["revision"], "action": "edit", "source": source,
+                  "text": "確定済みの本文", "save_id": "1" * 32}
+        replayed = reopened.action(action, lambda *_: self.fail("edit must not apply settings"))
+        self.assertEqual(replayed["revision"], expected["revision"])
+        self.assertEqual(replayed["accepted_edit"], {"id": action["save_id"], "source": source, "version": version})
+        with self.assertRaisesRegex(ValueError, "同じ保存ID"):
+            reopened.action({**action, "text": "別の内容"}, lambda *_: None)
+        with self.assertRaisesRegex(ValueError, "同じ保存ID"):
+            reopened.action({**action, "source": "new"}, lambda *_: None)
+        (root / "sources" / source).write_bytes(b"foreign bytes")
+        with self.assertRaisesRegex(ValueError, "更新済み"):
+            reopened.action(action, lambda *_: None)
+        self.assertEqual((root / "sources" / source).read_bytes(), b"foreign bytes")
         self.assertFalse((root / "edit-pending.json").exists())
 
     def test_unexpected_body_during_recovery_is_not_overwritten_or_published(self):
