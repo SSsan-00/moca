@@ -3647,7 +3647,8 @@ def _roslyn_before_build(config, run_path, worktree, targets, record, *, expecte
             report.update(fingerprints=sorted(fingerprints))
             if report["truncated"] or len(summary) > 8_000:
                 report["reason"] = "diagnostics_too_large"
-            elif previous.get("status") == "blocked" and previous.get("target_versions") == hashes:
+            elif (previous.get("status") == "blocked" and previous.get("target_versions") == hashes
+                  and previous["reason"] not in {"junie_unavailable", "operator_review"}):
                 report["reason"] = previous["reason"]
             elif not allow_repair:
                 report["reason"] = "operator_review"
@@ -3666,7 +3667,12 @@ def _roslyn_before_build(config, run_path, worktree, targets, record, *, expecte
                 except (OSError, RuntimeError, ValueError) as error:
                     if junie_cli.unconfirmed_junie_stop(error) is not None:
                         raise
-                    reason = "no_edits" if isinstance(error, CheckerRepairBlocked) and error.reason == "unchanged" else "repair_error"
+                    if isinstance(error, (junie_cli.JunieConnectionError, junie_cli.JunieLaunchError, junie_cli.JunieSessionError)):
+                        reason = "junie_unavailable"
+                    elif isinstance(error, CheckerRepairBlocked) and error.reason == "unchanged":
+                        reason = "no_edits"
+                    else:
+                        reason = "repair_error"
                     report.update(status="errors", reason=reason, repair_error=format_error(error))
                 else:
                     if hashes != current_versions():
@@ -3684,6 +3690,7 @@ def _roslyn_before_build(config, run_path, worktree, targets, record, *, expecte
             "operator_review": "エラーを確認し、移行先を修正してください。",
             "diagnostics_too_large": "指摘が多いため、自動修正を行いませんでした。",
             "repair_error": "Junieによる修正を完了できませんでした。",
+            "junie_unavailable": "Junieの起動・通信・認証を確認してから、再開してください。",
             "targets_changed_during_diagnostic": "診断中に対象が変わりました。内容を確認して再開してください。",
             "analyzer_stop_unconfirmed": "解析器の終了を確認できません。プロセスが残っていないか確認してください。",
         }.get(report["reason"], "指摘と保存済みの変更を確認してください。")

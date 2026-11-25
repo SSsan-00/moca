@@ -139,6 +139,21 @@ class RoslynPreflightTests(SavedRunFixture):
         self.target.write_text(VALID, encoding="utf-8")
         self.assertEqual(self.run_verification()[0]["status"], "build_succeeded")
 
+    def test_junie_session_failure_stops_without_spending_attempt_and_explicit_resume_retries(self):
+        self.target.write_text(INVALID, encoding="utf-8")
+        failure = workflow.junie_cli.JunieSessionError(["junie"], 1, "synthetic provider unavailable")
+        result, calls, attempts = self.run_verification(repair=failure, build=False)
+        self.assertEqual((len(calls), attempts), (0, 1))
+        self.assertEqual(result["roslyn_preflight"]["reason"], "junie_unavailable")
+        self.assertEqual(self.record()["repair_history"], [])
+        self.assertEqual(self.target.read_text(encoding="utf-8"), INVALID)
+
+        result, calls, attempts = self.run_verification(
+            repair=lambda *_: self.target.write_text(VALID, encoding="utf-8"),
+        )
+        self.assertEqual((result["status"], len(calls), attempts), ("build_succeeded", 1, 1))
+        self.assertEqual(len(self.record()["repair_history"]), 1)
+
     def test_before_build_hook_output_is_diagnosed(self):
         self.target.write_text(VALID, encoding="utf-8")
         def before_build(config, phase, *args):
