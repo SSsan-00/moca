@@ -93,6 +93,10 @@ class AdvisoryTimeout(TimeoutError):
         self.stage = stage
 
 
+class AdvisoryReplyTooLarge(ValueError):
+    pass
+
+
 class AdvisoryEffortUnavailable(ValueError):
     pass
 
@@ -100,6 +104,7 @@ class AdvisoryEffortUnavailable(ValueError):
 def _exchange(
     process, project: Path, prompt: str, timeout: float, *,
     startup_timeout: float | None = None, model: str | None = None, effort: str | None = None,
+    reply_limit: int = REPLY_LIMIT,
 ) -> str:
     updates, requests = Queue(), Queue()
     reader = Thread(target=_read_frames, args=(process.stdout, updates), daemon=True)
@@ -173,8 +178,8 @@ def _exchange(
                     raise ValueError("Invalid Junie advisory content")
                 part = content["text"]
                 reply_bytes += len(part.encode("utf-8"))
-                if reply_bytes > REPLY_LIMIT:
-                    raise ValueError("Junie advisory reply exceeds the size limit")
+                if reply_bytes > reply_limit:
+                    raise AdvisoryReplyTooLarge("Junie advisory reply exceeds the size limit")
                 reply.append(part)
                 continue
             result = message.get("result")
@@ -222,6 +227,7 @@ def _exchange(
 
 def run_text_advisory(
     prompt: str, *, timeout: float | None = None, model: str | None = None, effort: str | None = None,
+    reply_limit: int = REPLY_LIMIT,
 ) -> str:
     with TemporaryDirectory(prefix="harness-junie-advisory-") as folder:
         project = Path(folder).resolve()
@@ -230,10 +236,11 @@ def run_text_advisory(
             command, owned=True, cwd=project, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
         try:
-            if timeout is not None:
-                return _exchange(process, project, prompt, timeout, model=model, effort=effort)
-            return _exchange(process, project, prompt, SESSION_TIMEOUT, startup_timeout=junie_cli.ACP_STARTUP_TIMEOUT,
-                             model=model, effort=effort)
+            return _exchange(
+                process, project, prompt, SESSION_TIMEOUT if timeout is None else timeout,
+                startup_timeout=junie_cli.ACP_STARTUP_TIMEOUT if timeout is None else None,
+                model=model, effort=effort, reply_limit=reply_limit,
+            )
         finally:
             try:
                 junie_cli._close_junie(process)

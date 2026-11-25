@@ -16,9 +16,10 @@ from ..files import safe_target
 from ..runs.editor_queue import EDITOR_TARGET_SUFFIXES, editor_prompt_selection, editor_queue, editor_text
 from ..runs.run_records import load_saved_run, run_model_options, validate_run_id
 from ..runs.worktree_targets import review_target_hash
-from ..verification.checker_advisory import run_text_advisory
+from ..verification.checker_advisory import AdvisoryReplyTooLarge, run_text_advisory
 from .junie_cli import JunieStopError
 
+SELECTION_REPLY_LIMIT = 16 * 1024
 PENDING = {"received", "clarification", "waiting", "running", "steering"}
 REBUILD = {"build", "build_repair", "checker", "checker_repair"}
 UNCONFIRMED_BUILD = "先行ビルドの終了を確認できません。ログと保存版を確認して指示を送信し直してください。"
@@ -709,7 +710,8 @@ class JunieConversations:
 
 def selection_review_prompt(entry):
     request = ("次の選択範囲について日本語で相談に応じてください。ファイルの変更を頼まれた場合も修正案だけを示し、"
-               "ツールやファイル操作は行わないでください。")
+               "ツールやファイル操作は行わないでください。"
+               f"回答は要点を優先し、UTF-8で{SELECTION_REPLY_LIMIT:,}バイト以内にまとめてください。")
     comment = entry["text"]
     return (request + (f"\n\nユーザーのコメント：\n{comment}" if comment
                        else "\n\n選択したコードの内容を説明してください。")
@@ -745,12 +747,18 @@ def run_instruction(config, run_id, identifier):
     if not review:
         return resume_with_junie(config, run_id, verification_request=instruction)
     try:
-        reply = run_text_advisory(selection_review_prompt(instruction), **run_model_options(run_path, record, config)).strip()
+        reply = run_text_advisory(
+            selection_review_prompt(instruction), reply_limit=SELECTION_REPLY_LIMIT,
+            **run_model_options(run_path, record, config),
+        ).strip()
         if not reply:
             raise ValueError("Junie から選択範囲の説明が返りませんでした。")
         status, message = "done", reply
     except KeyboardInterrupt:
         status, message = "cancelled", "選択範囲の相談を停止しました。"
+    except AdvisoryReplyTooLarge:
+        status, message = "failed", (f"回答が上限（UTF-8で{SELECTION_REPLY_LIMIT:,}バイト）を超えました。"
+                                     "短い説明を頼むか、質問を分けて送信してください。")
     except JunieStopError:
         raise
     except (OSError, ValueError) as exc:

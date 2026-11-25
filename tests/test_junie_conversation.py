@@ -22,6 +22,7 @@ from migration_harness.junie import junie_conversation
 from migration_harness.junie.junie_conversation import _intent
 from migration_harness.runs.run_manager import RunManager
 from fixtures import SavedRunFixture
+from test_checker_advisory import acp_reply
 
 
 class JunieConversationTests(SavedRunFixture):
@@ -142,12 +143,37 @@ class JunieConversationTests(SavedRunFixture):
             review.assert_called_once()
         prompt, = review.call_args.args
         self.assertIn("ファイル操作は行わない", prompt)
+        self.assertIn("16,384バイト以内", prompt)
         self.assertEqual(json.loads(prompt.splitlines()[-1]), selection)
         self.assertNotIn("class Original", prompt)
         self.assertEqual(self.target.read_bytes(), original)
         self.assertEqual(self.record_path.read_bytes(), run_before)
         with editor_queue(self.run_path) as queue:
             self.assertEqual(queue["prompts"], [])
+
+    def test_selection_persists_only_complete_utf8_replies_within_its_own_budget(self):
+        inputs = {path: path.read_bytes() for path in (self.target, self.record_path, self.build_log, self.checker_log)}
+        selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "var x = 1;"}
+        for size, reason, status in ((4095, "end_turn", "done"), (4096, "end_turn", "done"),
+                                     (4097, "end_turn", "done"), (16384, "end_turn", "done"),
+                                     (16385, "end_turn", "failed"), (4097, "cancelled", "failed")):
+            reply = "あ" * (size // 3) + "x" * (size % 3)
+            identifier = uuid.uuid4().hex
+            with self.subTest(size=size, reason=reason), acp_reply(reply, reason):
+                code, _ = self.request("editor", {"kind": "conversation", "run_id": self.run_id, "id": identifier,
+                                                  "text": "", "selection": selection})
+                self.assertEqual(code, 202)
+                self.wait_for(identifier, status)
+                entry = next(e for e in self.request("editor")[1]["conversation"] if e["id"] == identifier)
+                if status == "done":
+                    self.assertEqual(entry["message"], reply)
+                else:
+                    self.assertNotIn("あ", entry["message"])
+                    if size == 16385:
+                        self.assertIn("質問を分けて", entry["message"])
+                        self.assertIn("16,384", entry["message"])
+        for path, original in inputs.items():
+            self.assertEqual(path.read_bytes(), original, path.name)
 
     def test_selection_with_a_comment_answers_without_running_build_or_migration(self):
         selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "// 停止"}
