@@ -107,7 +107,19 @@ export async function checkEditorSemantics({evaluate, wait, sourceEditor, config
     await fs.writeFile(path.join(tree, "App.csproj"), descriptor);
   }
   await set(savedRazor);
+  const rootView = "wwwroot/Index.cshtml";
+  const savedRootView = await fs.readFile(path.join(tree, rootView), "utf8");
+  await select(rootView, savedRootView);
+  await wait(status + ".includes('型・参照: 指摘なし')");
+  await set(savedRootView.replace("Model.Number", "Model.Missing"));
+  await assertMarker("CS1061", 2, 11);
+  await evaluate(details + ".open = true");
+  await evaluate("document.querySelector('#editor-diagnostic-list button').click()");
+  assert.deepEqual(await evaluate(sourceEditor + ".getPosition()"), {lineNumber: 2, column: 11});
+  assert.equal(await fs.readFile(path.join(tree, rootView), "utf8"), savedRootView);
+  await set(savedRootView);
   await select("Example.cs", savedCSharp);
+  console.log("Browser editor: wwwroot Razor CS1061 at 2:11; excluded C# cannot satisfy its model");
   const renamedCodeBehind = savedCodeBehind.replace("Number", "Rename");
   const dependency = path.join(tree, codeBehindPath);
   const unchangedBody = savedCSharp + "\n// Unsaved text stays in the editor";

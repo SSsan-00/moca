@@ -73,7 +73,7 @@ anchor_reference = ["anchors.json"]
 [[units]]
 id = "例"
 source = "example.php"
-targets = ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs"]
+targets = ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs", "wwwroot/Index.cshtml", "wwwroot/Index.cshtml.cs"]
 [units.target_context]
 max_bytes = 9007199254740993 # preserve this value
 """, encoding="utf-8")
@@ -89,6 +89,11 @@ max_bytes = 9007199254740993 # preserve this value
             )
             (worktree / "Example.cs").write_bytes(b"public class Example { public int Number => new Sample.IndexModel().Number; }")
             (worktree / "Pages").mkdir()
+            (worktree / "wwwroot").mkdir()
+            (worktree / "wwwroot/Index.cshtml").write_bytes(b"@model Sample.IndexModel\n<p>@Model.Number</p>\n")
+            (worktree / "wwwroot/Index.cshtml.cs").write_bytes(
+                b"namespace Sample; public class IndexModel { public int Missing => 42; }\n",
+            )
             (worktree / "_ViewImports.cshtml").write_bytes(b"@using Sample\n")
             (worktree / "Pages/Index.cshtml").write_bytes(b"@page\n@model IndexModel\n<p>@Model.Number</p>\n")
             (worktree / "Pages/Index.cshtml.cs").write_bytes(
@@ -96,7 +101,7 @@ max_bytes = 9007199254740993 # preserve this value
             )
             record = {
                 "run_id": run_id, "unit_id": "例", "target": "Example.cs",
-                "targets": ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs"],
+                "targets": ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs", "wwwroot/Index.cshtml", "wwwroot/Index.cshtml.cs"],
                 "project_root": config["project_root"], "worktree_path": str(worktree.resolve()),
                 "status": "script_failed", "script_phase": "before_migration",
                 "completed_capsules": 1, "context_capsules": 3,
