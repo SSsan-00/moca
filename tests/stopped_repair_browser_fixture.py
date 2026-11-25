@@ -77,3 +77,17 @@ def stopped_repair_run(config, template, source_tree, phase):
     assert (worktree / targets[0]).read_bytes() == original
     assert workflow.plan_stopped_repair(run_config, run_id)["snapshot"] == snapshot
     return saved
+
+
+def resume_after_external_edit(config, run_id):
+    run_path, worktree, _, unit = workflow.load_saved_run(config, run_id)
+    target = worktree / target_paths(unit)[0]
+    target.write_bytes(b"class EditedAfterSelection {}\n")
+    with (patch.object(workflow, "run_process") as command,
+          patch.object(junie_cli, "run_interactive") as junie):
+        result = workflow.resume_with_junie(dict(config, checker_command=["fixture-checker"]), run_id)
+        command.assert_not_called()
+        junie.assert_not_called()
+    assert result["status"] == "build_failed" and "復元計画を取り直して" in result["error"]
+    assert target.read_bytes() == b"class EditedAfterSelection {}\n"
+    return json.loads((run_path / "run.json").read_bytes())
