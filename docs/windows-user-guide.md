@@ -1,6 +1,6 @@
 # MoCAでPHPからC#へ移行する手順（Windows）
 
-実際の移行はWindows上で `.\moca` を起動し、ブラウザーから操作します。まず小さいPHPファイル1つで **設定を検証 → 実行 → 進捗を確認** の順に試してください。インストール前に画面だけ見る場合は[公開デモ](https://sssan-00.github.io/php-to-csharp-migration-harness/progress-demo.html)を使えます。デモのデータはサンプルで、実機の設定やファイルには反映されません。
+実際の移行はWindows上で `.\moca` を起動し、ブラウザーから操作します。まず小さいPHPファイル1つで **設定を検証 → 実行 → 進捗を確認** の順に試してください。インストール前に画面だけ見る場合は[公開デモ](https://sssan-00.github.io/moca/progress-demo.html)を使えます。デモのデータはサンプルで、実機の設定やファイルには反映されません。
 
 ハーネスを置くフォルダと、移行するアプリのGitリポジトリは分けます。アプリには `dotnet build` でビルドできるC#／Razorプロジェクトが必要です。PHP原文と参照資料はアプリ外にも置けます。PHPだけのリポジトリの場合は、先に移行先プロジェクトの雛形を用意してください。Junieには指定した移行先ファイルの編集を依頼します。実行順序と保存データの詳細は [技術仕様](../SPEC.md) を参照してください。
 
@@ -44,8 +44,8 @@ Pop-Location
 初回は作業フォルダで次を実行します。
 
 ```powershell
-git clone https://github.com/SSsan-00/php-to-csharp-migration-harness.git
-Set-Location .\php-to-csharp-migration-harness
+git clone https://github.com/SSsan-00/moca.git
+Set-Location .\moca
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\moca
@@ -61,6 +61,8 @@ py -3 -m venv .venv
 | `pip install`が失敗する | `pyproject.toml` があるハーネスのフォルダで実行しているか確認します。ダウンロードに失敗した場合は社内プロキシや証明書の設定を確認します。 |
 | `moca.cmd`に未インストールと表示される | `.\.venv\Scripts\python.exe --version` と、上の `pip install` の結果を確認します。既存の `.venv` は原因を調べてから修復します。 |
 | ダッシュボードに接続できない | 起動元のPowerShellと、今回表示されたURL全体を確認します。再起動するとURLは変わります。 |
+
+リポジトリの改名後も、既存フォルダの移動や再cloneは不要です。旧公式URLからHTTPSでcloneした場合は、そのフォルダで一度だけ `git remote set-url origin https://github.com/SSsan-00/moca.git` を実行してください。公開デモのブックマークも冒頭の新しいURLに変更してください。
 
 既にセットアップ済みの場合は、実行が一区切りついてからハーネスを終了し、同じフォルダで更新します。保存済みの設定とRunを使ってダッシュボードを起動できます。
 

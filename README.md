@@ -2,9 +2,9 @@
 
 **Migration Orchestrator & Coding Assistant**
 
-Pythonで、PHPからC#やASP.NET Core Razor Pagesへの移行を支援するWindows専用のローカル実行ハーネスです。コード移行はJunieに依頼し、ハーネスが対象範囲、作業場所、実行記録を管理します。
+MoCA（モカ）は、PHPからC#やASP.NET Core Razor Pagesへの移行を支援するWindows専用のローカルツールです。コード移行はJunieに依頼し、ハーネスが対象範囲、作業場所、実行記録を管理します。
 
-[公開デモを開く](https://sssan-00.github.io/php-to-csharp-migration-harness/progress-demo.html) · [Windowsユーザーガイド](docs/windows-user-guide.md) · [処理フロー](docs/architecture.md) · [技術仕様](SPEC.md)
+[公開デモを開く](https://sssan-00.github.io/moca/progress-demo.html) · [Windowsユーザーガイド](docs/windows-user-guide.md) · [処理フロー](docs/architecture.md) · [技術仕様](SPEC.md)
 
 **画面だけ試すなら公開デモ、実際のソースを移行するならWindowsのローカル版です。** デモではサンプルデータを使います。自分のPHPや認証情報を入力する必要はありません。
 
@@ -13,8 +13,8 @@ Pythonで、PHPからC#やASP.NET Core Razor Pagesへの移行を支援するWin
 Python 3.11以上とGitを用意し、PowerShellで1行ずつ実行します。未導入ツールの入手先やエラー時の対応は、[ユーザーマニュアルの第1節](docs/windows-user-guide.md#1-ダッシュボードを起動する)を参照してください。
 
 ```powershell
-git clone https://github.com/SSsan-00/php-to-csharp-migration-harness.git
-Set-Location .\php-to-csharp-migration-harness
+git clone https://github.com/SSsan-00/moca.git
+Set-Location .\moca
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\moca
@@ -421,8 +421,8 @@ Windowsのローカルダッシュボードで **ルール整理** → **新し�
 - [アーキテクチャと実行フロー](docs/architecture.md)
 - [Junie の技術質問スキル](.junie/skills/harness-architecture/SKILL.md)。ハーネスのフォルダで `junie` を起動し、入力欄で `/harness-architecture ビルド成功から移行台帳の完了判定までを、実装を根拠に説明してください` と依頼できます。`/skills` で有効状態を確認できます。 [Junie の Agent Skills](https://junie.jetbrains.com/docs/agent-skills.html)
 - [実装フローの図解](migration-harness-spec.html)
-- [公開ダッシュボードデモ](https://sssan-00.github.io/php-to-csharp-migration-harness/progress-demo.html)（サンプルデータのみ）
-- GitHub Pages: <https://sssan-00.github.io/php-to-csharp-migration-harness/>
+- [公開ダッシュボードデモ](https://sssan-00.github.io/moca/progress-demo.html)（サンプルデータのみ）
+- GitHub Pages: <https://sssan-00.github.io/moca/>
 
 以下は設計・実装の参考資料です。いずれもこのハーネスの実行時依存として導入せず、必要な考え方を参考にします。
 

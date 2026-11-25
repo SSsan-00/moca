@@ -18,7 +18,8 @@ env:
 
 jobs:
   generate:
-    if: github.repository == 'SSsan-00/php-to-csharp-migration-harness' && github.ref == 'refs/heads/main' && github.actor == github.triggering_actor
+    # Pin both identities so renames work without allowing forks or transfers.
+    if: github.repository_owner_id == '208016001' && github.repository_id == '1457393005' && github.ref == 'refs/heads/main' && github.actor == github.triggering_actor
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
