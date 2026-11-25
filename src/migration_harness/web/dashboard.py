@@ -210,6 +210,18 @@ class _DashboardServer(ThreadingHTTPServer):
     # Chromium can queue the UI bundles and the event stream together on a Run reopen.
     request_queue_size = 32
 
+    def __init__(self, address, handler):
+        from migration_harness.verification.roslyn_editor_worker import EditorSemanticWorker
+
+        self.editor_semantic_worker = EditorSemanticWorker()
+        super().__init__(address, handler)
+
+    def server_close(self):
+        try:
+            self.editor_semantic_worker.close()
+        finally:
+            super().server_close()
+
 
 class Dashboard:
 
@@ -1347,6 +1359,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 elif mode == "semantic":
                     result = editor_semantic_diagnostics(
                         worktree, config["build_project"], target, editor_text(action.get("content")), version,
+                        worker=self.server.editor_semantic_worker,
                     )
                 elif mode == "context":
                     result = editor_context_revision(worktree, config["build_project"], target, version)

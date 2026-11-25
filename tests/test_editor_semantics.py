@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from migration_harness.verification import roslyn_context, roslyn_syntax
+from migration_harness.verification.roslyn_editor_worker import EditorSemanticWorker
 
 
 class EditorSemanticTests(unittest.TestCase):
@@ -118,3 +119,47 @@ class EditorSemanticTests(unittest.TestCase):
         self.assertEqual((report["status"], report["reason"], report["context_revision"]),
                          ("unavailable", "project_changed", original))
         self.assertFalse(report["findings"])
+
+    def test_warm_helper_does_not_reuse_foreign_drafts_or_old_project_dependencies(self):
+        first, other = self.root / "first", self.root / "other"
+        for directory, member in ((first, "int Value"), (other, "string Value")):
+            directory.mkdir()
+            (directory / "Fixture.csproj").write_text(self.descriptor, encoding="utf-8")
+            (directory / "Target.cs").write_text("class Unedited {}", encoding="utf-8")
+            (directory / "Dependency.cs").write_text(f"public class D {{ public {member}; }}", encoding="utf-8")
+        worker = EditorSemanticWorker()
+        self.addCleanup(worker.close)
+        draft = "// 日本語\r\npublic class Subject { public int Read(D dependency) => dependency.Value; }\r\n"
+
+        def report(project, version):
+            return roslyn_syntax.editor_semantic_diagnostics(
+                project, "Fixture.csproj", "Target.cs", draft, version, worker=worker,
+            )
+
+        clean = report(first, "uncommitted-a")
+        self.assertEqual(("clear", [], "uncommitted-a"), (clean["status"], clean["findings"], clean["version"]))
+        helper = worker._helper
+        wrong = report(other, "uncommitted-b")
+        self.assertIs(worker._helper, helper)
+        self.assertEqual(("errors", "uncommitted-b", [(2, "CS0029")]),
+                         (wrong["status"], wrong["version"], [(finding["line"], finding["code"])
+                                                             for finding in wrong["findings"]]))
+        self.assertNotEqual(clean["context_revision"], wrong["context_revision"])
+
+        dependency = first / "Dependency.cs"
+        run = roslyn_syntax._run_editor
+        def during_analysis(*args, **kwargs):
+            result = run(*args, **kwargs)
+            dependency.write_text("public class D { public string Value; }", encoding="utf-8")
+            return result
+
+        with patch.object(roslyn_syntax, "_run_editor", side_effect=during_analysis):
+            changed = report(first, "uncommitted-c")
+        self.assertEqual(("project_changed", [], "uncommitted-c"),
+                         (changed["reason"], changed["findings"], changed["version"]))
+        next_report = report(first, "uncommitted-d")
+        self.assertIs(worker._helper, helper)
+        self.assertNotEqual(clean["context_revision"], next_report["context_revision"])
+        self.assertEqual(["CS0029"], [finding["code"] for finding in next_report["findings"]])
+        for directory in (first, other):
+            self.assertEqual("class Unedited {}", (directory / "Target.cs").read_text(encoding="utf-8"))

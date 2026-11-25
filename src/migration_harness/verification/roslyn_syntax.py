@@ -175,7 +175,9 @@ def editor_diagnostics(target: str, content: str, version: str) -> dict:
     return {"findings": [], "razor": [], "skipped": [], "truncated": False, **report, "version": version, "target": target}
 
 
-def _run_editor(command, mode, payload, timeout):
+def _run_editor(command, mode, payload, timeout, *, worker=None):
+    if worker is not None:
+        return worker.run(command, payload, timeout, environment=_environment())
     return subprocess.run([*command, mode], input=payload, cwd=Path(command[-1]).parent, capture_output=True,
                           timeout=timeout, check=False, env=_environment(),
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -197,7 +199,9 @@ def editor_context_revision(worktree: Path, project: str | None, target: str, ve
     return {"context_revision": revision, "reason": reason, "version": version, "target": target}
 
 
-def editor_semantic_diagnostics(worktree: Path, project: str | None, target: str, content: str, version: str) -> dict:
+def editor_semantic_diagnostics(
+    worktree: Path, project: str | None, target: str, content: str, version: str, *, worker=None,
+) -> dict:
     started = monotonic()
     reason = context_revision = None
     if Path(target).suffix.lower() not in _SUPPORTED:
@@ -214,10 +218,13 @@ def editor_semantic_diagnostics(worktree: Path, project: str | None, target: str
             context["References"] = [str(path) for pack in packs for path in _framework_references(_tool_dotnet_root, pack)]
             payload = json.dumps({"Target": {"Path": target, "Text": content}, "Project": context},
                                  ensure_ascii=False).encode("utf-8")
-            completed = _run_editor(command, "--semantic", payload, 8)
+            completed = (_run_editor(command, "--semantic", payload, 8, worker=worker) if worker is not None
+                         else _run_editor(command, "--semantic", payload, 8))
             if editor_project_snapshot(worktree, project, target).revision != context_revision:
                 raise ProjectContextUnavailable("project_changed")
             report = _decode_output(completed, [target], started)
+            if worker is not None and report["reason"] == "analyzer_output":
+                worker.discard()
             if report.get("skipped"):
                 reason = report["skipped"][0]["reason"]
                 if reason == "razor_unmapped_errors" and report["findings"]:

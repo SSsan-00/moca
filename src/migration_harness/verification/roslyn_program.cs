@@ -22,7 +22,13 @@ internal static partial class Program
         if (args.Length != 1) return 2;
         Console.OutputEncoding = new UTF8Encoding(false);
         Console.InputEncoding = new UTF8Encoding(false, true);
-        if (args[0] == "--semantic") return RunSemantic();
+        if (args[0] == "--semantic") return RunSemantic(Console.In.ReadToEnd());
+        if (args[0] == "--semantic-stream")
+        {
+            while (Console.ReadLine() is { } payload)
+                if (RunSemantic(payload) != 0) return 2;
+            return 0;
+        }
         var targets = args[0] == "--stdin"
             ? JsonSerializer.Deserialize<Target[]>(Console.In.ReadToEnd()) ?? []
             : (JsonSerializer.Deserialize<string[]>(File.ReadAllText(args[0])) ?? [])

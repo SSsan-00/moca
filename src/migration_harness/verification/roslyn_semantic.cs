@@ -32,9 +32,9 @@ internal static partial class Program
         "GeneratedRegex", "JsonSerializable", "LoggerMessage", "GeneratedComInterface", "GeneratedComClass", "LibraryImport"
     };
 
-    private static int RunSemantic()
+    private static int RunSemantic(string payload)
     {
-        var request = JsonSerializer.Deserialize<SemanticRequest>(Console.In.ReadToEnd());
+        var request = JsonSerializer.Deserialize<SemanticRequest>(payload);
         if (request is null) return 2;
         var (target, context) = request;
         Console.WriteLine(JsonSerializer.Serialize(SemanticDiagnostics(target, context)));
