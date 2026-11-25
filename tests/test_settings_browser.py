@@ -14,6 +14,7 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from migration_harness import workflow
+from migration_harness.config import target_paths
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.web import dashboard
@@ -128,6 +129,19 @@ max_bytes = 9007199254740993 # preserve this value
                                    "targets": target_versions(worktree, unit)}
                     workflow._apply_verification_edits(run, worktree, unit, request)
                     view.publish({**view.state, "ready": True})
+                elif handler.path == fixture_root + "fixture-editor-merge":
+                    record_path = run / "run.json"
+                    saved = json.loads(record_path.read_bytes())
+                    unit = config["units"][0]
+                    targets = target_paths(unit)
+                    saved["target_hashes"] = target_versions(worktree, unit)
+                    with editor_queue(run, recover=(worktree, targets)) as queue:
+                        adopted = workflow._apply_editor_edits(
+                            queue, run / "agent-workspace", worktree, targets, saved, record_path,
+                        )
+                    view.publish({**view.state, "ready": True})
+                    handler.send_body(200 if adopted else 409, "application/json", b"{}")
+                    return
                 elif handler.path == fixture_root + "fixture-editor-switch":
                     if view.state["run_id"] == run_id:
                         other_run.mkdir()

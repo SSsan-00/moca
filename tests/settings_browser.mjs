@@ -1,5 +1,5 @@
 import {checkBuildReviewDrafts} from "./build_review_drafts_browser.mjs";
-import {checkAdoptedEditorSave} from "./editor_adoption_browser.mjs";
+import {checkAdoptedEditorSave, checkMergedEditorSave} from "./editor_adoption_browser.mjs";
 import {checkEditorSemantics} from "./editor_semantic_browser.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -1247,6 +1247,12 @@ try {
   });
   assert.deepEqual(unexpected.map(({method, url}) => [method, url]), []);
   console.log("Browser demo: file and Pages subpath use live tabs, progress, stop, recovery and ledger without API traffic");
+  await navigate("Page.navigate", {url: recoveryUrl.href});
+  await wait("document.documentElement.dataset.liveReady === 'true'");
+  await click("tab-editor");
+  await wait(sourceEditor + "?.getModel()?.getLanguageId() === 'csharp'");
+  await checkMergedEditorSave({evaluate, wait, click, sourceEditor, run: expectedRun,
+    root: path.dirname(ruleConfigPath)});
   await cdp("Browser.close").catch(() => {});
 } finally {
   staticServer?.close();

@@ -168,13 +168,16 @@ class DashboardEditorTests(HarnessCase):
                     self.request(route, payload | changes)
                 self.assertEqual(error.exception.code, 409)
                 error.exception.close()
-            for headers, expected in (({"Origin": "http://localhost"}, 403), ({"X-Run-ID": "stale"}, 409)):
-                request = Request(self.url + route, json.dumps(payload).encode(),
-                                  headers={"Origin": self.origin, "Content-Type": "application/json", **headers})
-                with self.assertRaises(HTTPError) as error:
-                    urlopen(request, timeout=4)
-                self.assertEqual(error.exception.code, expected)
-                error.exception.close()
+            denied = Request(self.url + route, b"", headers={"Origin": "http://localhost"})
+            stale = Request(self.url + route, json.dumps(payload).encode(), headers={
+                "Origin": self.origin, "Content-Type": "application/json", "X-Run-ID": "stale",
+            })
+            for scenario, request, expected in (("origin", denied, 403), ("run", stale, 409)):
+                with self.subTest(scenario=scenario):
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(request, timeout=4)
+                    with error.exception as response:
+                        self.assertEqual(response.code, expected)
             diagnose.assert_not_called()
             self.assertEqual(self.request(route, payload)["version"], "draft:3")
             diagnose.assert_called_once_with("Page.cs", payload["content"], "draft:3")

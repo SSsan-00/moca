@@ -644,6 +644,57 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         self.assertEqual(history.read_bytes(), saved)
         self.assertIn(b"ChangedExternally", self.target.read_bytes())
 
+    def test_recovered_merge_receipt_matches_persisted_bytes_before_accepting_next_draft(self):
+        baseline = "class File {\n    int First = 1;\n" + "    // context\n" * 7 + "    int Last = 1;\n}\n"
+        first = baseline.replace("First = 1", "First = 2")
+        merged = first.replace("Last = 1", "Last = 2")
+        self.target.write_bytes(baseline.encode("utf-8"))
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        (agent / self.target.name).write_bytes(baseline.replace("Last = 1", "Last = 2").encode("utf-8"))
+        record = {**self.record(), "target_hashes": {self.target.name: sha256_file(self.target)}}
+        self.save_record(record)
+        self.start_server(ready=False)
+        save = {**self.save_action(first), "save_id": "1" * 32}
+        queued = self.editor(save)
+
+        def git_only(command, *args, **kwargs):
+            self.assertEqual(command[:2], ["git", "merge-file"])
+            return self.popen(command, *args, **kwargs)
+
+        with (patch.object(subprocess, "Popen", side_effect=git_only),
+              patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
+              self.assertRaises(OSError)):
+            with editor_queue.editor_queue(self.run_path) as queue:
+                workflow._apply_editor_edits(queue, agent, self.worktree, (Path(self.target.name),), record, self.record_path)
+        self.assertTrue(editor_queue.editor_save_pending(self.run_path))
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), merged)
+        self.start_server()
+        adopted = self.editor()
+        self.assertEqual(adopted["accepted_save_id"], save["save_id"])
+        self.assertEqual(adopted["accepted_edit_id"], queued["edit"]["id"])
+        self.assertEqual(adopted["accepted_version"], sha256_file(self.target))
+        self.assertFalse(editor_queue.editor_save_pending(self.run_path))
+        self.assertEqual(self.editor(save)["content"], merged, "the original request can still be retried after adoption")
+
+        further = first.replace("First = 2", "First = 3")
+        action = {**self.save_action(further), "base": first, "save_id": "2" * 32,
+                  "adoption": {"save_id": save["save_id"], "edit_id": adopted["accepted_edit_id"],
+                               "version": adopted["accepted_version"]}}
+        original = self.target.read_bytes()
+        self.target.write_bytes(merged.encode("utf-8"))
+        self.assertNotIn("accepted_save_id", self.editor())
+        self.assertIn("基準版", self.http_conflict(action))
+        self.assertEqual(self.target.read_bytes(), merged.encode("utf-8"))
+        self.target.write_bytes(original)
+        self.assertIn("基準版", self.http_conflict({**action, "base": merged}))
+        saved = self.editor(action)
+        self.assertEqual(saved["edit"]["base"], first)
+        self.assertEqual(self.editor(action)["edit"], saved["edit"])
+        with patch.object(subprocess, "Popen", side_effect=git_only):
+            self.adopt_queued_edits()
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), merged.replace("First = 2", "First = 3"))
+
     def test_lost_queued_save_response_and_editor_poll_through_actual_http(self):
         node = node_executable(self)
         self.start_server(ready=False, allow_fixture_adoption=True)
