@@ -81,6 +81,7 @@
     && editor?.id === draft.id && editor.source === source;
   function syncEditor() {
     for (const id of ["text", "name", "import", "save-source"]) node(id).disabled = !canEditSource();
+    node("accept").disabled = !canEditSource() || !draft?.proposal;
     for (const id of ["sources", "drafts", "start"]) node(id).disabled = busy;
   }
   const request = async (query, action) => {
@@ -128,7 +129,7 @@
     syncSend();
     node("unresolved").textContent = data.unresolved.join("／");
     node("stop").hidden = !running;
-    for (const id of ["optimize", "save-classification", "preview", "apply", "accept"]) {
+    for (const id of ["optimize", "save-classification", "preview", "apply"]) {
       node(id).disabled = running;
     }
     const preview = data.preview;
@@ -221,11 +222,13 @@
     node("usage").value = entry?.usage || "required";
     node("description").value = entry?.description || "";
   }
-  async function loadSource() {
+  async function loadSource({retainText = false} = {}) {
     const generation = ++sourceRequest;
     editor = null;
-    uploadedBytes = undefined;
-    node("text").value = "";
+    if (!retainText) {
+      uploadedBytes = undefined;
+      node("text").value = "";
+    }
     syncEditor();
     const entry = draft.files.find(item => item.source === node("sources").value);
     selectSource(entry);
@@ -233,7 +236,8 @@
       const response = entry ? await request({id: draft.id, source}) : {text: "", revision: draft.revision};
       if (generation !== sourceRequest) return;
       node("text").value = response.text;
-      editor = {id: draft.id, source, revision: response.revision};
+      uploadedBytes = undefined;
+      editor = {id: draft.id, source, revision: response.revision, savedText: node("text").value};
       syncEditor();
     } catch (error) {
       if (generation === sourceRequest) status(error.message);
@@ -248,11 +252,13 @@
     try {
       const was = draft?.id;
       const revision = draft?.revision;
+      const acceptedSource = action === "accept" ? draft?.proposal?.source : undefined;
       const result = await request(null, {action, id: was, revision, ...extra});
       if (result.archives) return showArchives(result.archives);
       if (editor?.id === result.id && editor.revision === (extra.revision ?? revision)) editor.revision = result.revision;
       display(result);
-      if (action === "start" || was !== result.id || action === "accept") await loadSource();
+      if (action === "start" || was !== result.id) await loadSource();
+      else if (acceptedSource === source && source !== "new") await loadSource({retainText: true});
       if (["start", "apply"].includes(action)) await refresh();
       if (action === "apply") status(demo ? "デモの反映が完了しました。実際のTOMLは変わりません。" :
         "TOMLに反映しました。次のRunから適用されます。");
@@ -330,14 +336,19 @@
     if (!canEditSource()) return;
     ++sourceRequest;
     const existing = source === "new" ? new Set(draft.files.map(file => file.source)) : null;
+    const text = node("text").value;
     const result = await submit("edit", {source, revision: editor.revision, name: node("name").value,
-      text: node("text").value, bytes: uploadedBytes});
+      text, bytes: uploadedBytes});
     const created = existing && result?.files.find(file => !existing.has(file.source));
     if (created) {
       selectSource(created);
       editor.source = source;
     }
-    if (result) status("下書きに保存しました。");
+    if (result) {
+      editor.savedText = text;
+      editor.savedBytes = uploadedBytes;
+      status("下書きに保存しました。");
+    }
   });
   node("save-classification").addEventListener("click", () => {
     const previous = draft?.files.find(file => file.source === source);
@@ -352,7 +363,14 @@
     if (!send.disabled) submit("message", {text: input.value});
   });
   node("optimize").addEventListener("click", () => submit("optimize", {text: input.value}));
-  for (const action of ["accept", "stop", "preview"]) node(action).addEventListener("click", () => submit(action));
+  node("accept").addEventListener("click", () => {
+    if (node("accept").disabled) return;
+    const dirty = node("text").value !== editor.savedText || uploadedBytes !== editor.savedBytes;
+    if (source !== "new" && draft.proposal.source === source && dirty
+        && !window.confirm("このMarkdownには未保存の変更があります。変更を破棄して提案を採用しますか？")) return;
+    return submit("accept");
+  });
+  for (const action of ["stop", "preview"]) node(action).addEventListener("click", () => submit(action));
   node("apply").addEventListener("click", () => submit("apply", {preview: token, confirmed: true}));
   node("list-archive").addEventListener("click", async () => {
     try { showArchives((await request({archive: "1"})).archives); } catch (error) { status(error.message); }
