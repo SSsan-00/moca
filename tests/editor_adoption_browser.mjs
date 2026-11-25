@@ -80,6 +80,10 @@ export async function checkAdoptedEditorSave({evaluate, wait, click, sourceEdito
     assert.equal(await content(), "class KeepDraft {}\n");
     assert.equal((await get()).content, initial);
     await set(owned.body.content);
+    const select = path => evaluate(`document.querySelector('#editor-target-buttons [data-target="${path}"]').click()`);
+    await select("Pages/Index.cshtml");
+    await wait(sourceEditor + "?.getModel()?.getLanguageId() === 'razor'");
+    await select(target);
     await wait(sourceEditor + ".getValue() === " + JSON.stringify(initial));
     console.log("Browser editor: acknowledged or lost queued save adopted; next draft survives Run switching; foreign adoption still conflicts");
   } finally {
