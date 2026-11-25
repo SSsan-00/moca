@@ -55,7 +55,9 @@ Python環境にハーネスを導入し、Junie、.NET SDK 10、PHPが利用で�
 
 ```sh
 python evaluations/large-inputs/create_fixture.py
-php-to-csharp-harness run --config <表示されたフォルダ>/harness.toml --unit large-catalog --dashboard
+php-to-csharp-harness dashboard --config <表示されたフォルダ>/harness.toml
 ```
+
+開いた画面の「実行」で `large-catalog` を選び、実行する。
 
 生成・編集は新しい一時Gitリポジトリとそのworktreeに限定する。通常のAPIやデータベースに依存する実業務の2万行、200件すべてが必須の巨大ルール、Windows実機でのモデル実行は今回の検証範囲外。AIへの照合指示だけでは正しさを保証できないため、対象業務に合わせた独立したテストとチェッカーが必要。

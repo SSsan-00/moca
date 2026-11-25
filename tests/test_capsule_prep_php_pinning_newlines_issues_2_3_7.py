@@ -10,10 +10,10 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase, stub_syntax_diagnostics
+from fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
 from migration_harness.context import capsules
 from migration_harness.context.context_evidence import find_feature, read_context
-from migration_harness import cli, workflow
+from migration_harness import workflow
 from migration_harness.junie import junie_cli
 from migration_harness.web import review_anchors
 from migration_harness.config import load_config
@@ -50,7 +50,7 @@ class CapsulePreparationTests(HarnessCase):
 
     def prepare(self, *inputs):
         config = load_config(self.config_path(*inputs))
-        result = workflow.prepare_run(config, "example")
+        result = prepare_fixture(config, "example")
         run_path = Path(result["run_path"])
         return config, result, self.read_json(run_path / "capsule" / "manifest.json")
 
@@ -99,15 +99,14 @@ class CapsulePreparationTests(HarnessCase):
                 return subprocess.CompletedProcess(command, 0)
             return run_process(command, **kwargs)
 
-        args = ["php-to-csharp-harness", "run", "--config", str(path), "--unit", "メニュー"]
         with (
-            patch("sys.argv", args), redirect_stdout(io.StringIO()),
+            redirect_stdout(io.StringIO()),
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(junie_cli, "run_interactive", side_effect=junie) as agent,
             patch.object(workflow.subprocess, "run", side_effect=build_or_run_git),
             stub_syntax_diagnostics(),
         ):
-            cli.main()
+            workflow.run_with_junie(load_config(path), "メニュー")
 
         self.assertGreater(agent.call_count, 1)
         self.assertEqual(final_reviews, [False] * (agent.call_count - 1) + [True])
@@ -165,7 +164,7 @@ class CapsulePreparationTests(HarnessCase):
         large_example = self.project / shared_inputs[-1]["path"]
         large_example.write_text("first 5\n" + "x" * 1200 + "\nlast 5", encoding="utf-8")
         for unit_id in ("example", "second"):
-            result = workflow.prepare_run(config, unit_id)
+            result = prepare_fixture(config, unit_id)
             capsule = Path(result["capsule_path"])
             manifest = self.read_json(capsule / "manifest.json")
             self.assertGreater(result["capsule_count"], 1)
@@ -282,7 +281,7 @@ class CapsulePreparationTests(HarnessCase):
                   "import sys; open(sys.argv[1], 'a').write('done\\n')", str(counter)]
         config["scripts"] = {"after_prepare": [append, [sys.executable, "-c", "raise SystemExit(9)"]]}
         with self.assertRaises(workflow.RunScriptError) as failure:
-            workflow.prepare_run(config, "example")
+            prepare_fixture(config, "example")
         run_id = failure.exception.run_id
         config["scripts"]["after_prepare"][1] = [sys.executable, "-c", "pass"]
 
@@ -449,7 +448,7 @@ class CapsulePreparationTests(HarnessCase):
         config = load_config(self.config_path(PHP, {**CONSTRAINT, "path": RULES["path"]}))
         original_worktrees = self.git("worktree", "list", "--porcelain", "-z").stdout
         with self.assertRaisesRegex(ValueError, r"shared context exceeds max_context_chars \(1000\): rules.md"):
-            workflow.prepare_run(config, "example")
+            prepare_fixture(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())
         self.assertEqual(self.git("worktree", "list", "--porcelain", "-z").stdout, original_worktrees)
         record_path, = Path(config["run_root"]).glob("*/run.json")
@@ -494,7 +493,7 @@ class CapsulePreparationTests(HarnessCase):
                     return find_backticks(text)
 
                 with patch.object(capsules, "_max_backtick_run", side_effect=observe):
-                    result = workflow.prepare_run(config, "example")
+                    result = prepare_fixture(config, "example")
                 _, manifest = capsules.load_capsule_manifest(Path(result["run_path"]))
                 self.assertLess(scanned, len(body) * 17)
                 slices = [item for part in manifest["parts"] for source in part["sources"]
@@ -509,7 +508,7 @@ class CapsulePreparationTests(HarnessCase):
         reference = {**PHP, "path": "./Source.php", "role": "reference_php", "shared": True, "encoding": "euc-jp"}
         config = load_config(self.config_path(reference, {**PHP, "encoding": "utf8"}))
         with self.assertRaisesRegex(ValueError, r"Source.php: inconsistent.*reference_php.*euc-jp.*php.*utf-8"):
-            workflow.prepare_run(config, "example")
+            prepare_fixture(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())
 
     def test_shared_reference_and_migration_use_one_effective_php_encoding(self):
@@ -526,7 +525,7 @@ class CapsulePreparationTests(HarnessCase):
         (self.project / RULES["path"]).write_bytes(b"Required rule\n")
         config = load_config(self.config_path(RULES))
         with self.assertRaisesRegex(ValueError, "requires at least one input outside shared context"):
-            workflow.prepare_run(config, "example")
+            prepare_fixture(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())
 
     # 共通資料の指定に文字列を使った場合に設定を拒否することを検証する。

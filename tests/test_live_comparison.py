@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.web import diff_viewer, review_anchors
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_records
@@ -20,7 +20,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "Page.cs").write_bytes(data)
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         target = Path(result["worktree_path"]) / "Page.cs"
         original_open = Path.open
 
@@ -45,7 +45,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()
@@ -70,7 +70,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         _, payload = capture_workspace(config, result["run_id"], include_draft=True)
         self.assertIn("42", payload["workspace"]["leftText"])
         self.assertEqual(payload["workspace"]["rightText"], "")
@@ -81,7 +81,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
 
         @contextmanager
@@ -102,7 +102,7 @@ class LiveComparisonTests(HarnessCase):
         self.commit_project()
         config = self.config()
         config["diff_viewer_html"] = "viewer.html"
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
 
         for name in ("left.txt", "right.txt", "guide.json"):
             with self.subTest(name=name):
@@ -124,7 +124,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()
@@ -151,7 +151,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         run_path, _, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()
@@ -176,7 +176,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         target = Path(result["worktree_path"]) / "Page.cs"
         read_bytes = Path.read_bytes
         hashes = {"existing": "unchanged"}
@@ -201,7 +201,7 @@ class LiveComparisonTests(HarnessCase):
         (self.project / "Page.cs").write_bytes(b"class Original {}")
         self.commit_project()
         config = self.config()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         run_path, worktree, record, _ = run_records.load_saved_run(config, result["run_id"])
         agent = run_path / "agent-workspace"
         agent.mkdir()

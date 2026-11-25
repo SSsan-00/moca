@@ -24,6 +24,8 @@ from .run_records import (
     validate_run_id,
 )
 
+_QUEUED_ACTIONS = frozenset({"run", "resume", "resume-run", "anchors", "build-response", "conversation", "accept", "recover-script"})
+
 
 class RunManager:
     limit = 5
@@ -130,7 +132,7 @@ class RunManager:
             if str(uuid.UUID(job["run_id"])) != job["run_id"]:
                 raise ValueError("実行待ち一覧のRun IDが不正です。")
             find_unit(config, job["unit_id"])
-            if not job.get("running") and job["action"] not in {"run", "prepare"}:
+            if not job.get("running") and job["action"] in _QUEUED_ACTIONS - {"run"}:
                 load_saved_run(config, job["run_id"])
         return jobs, cancelled, blocked
 
@@ -140,6 +142,17 @@ class RunManager:
         for job in jobs:
             run_id, unit_id = job["run_id"], job["unit_id"]
             interrupted = job.get("running")
+            if (job["action"] not in _QUEUED_ACTIONS or job["action"] == "recover-script") and not interrupted:
+                view = self._queued_view(config, run_id, unit_id)
+                if job["action"] == "recover-script":
+                    _, record = load_dashboard_record(config, run_id)
+                    view = self._record_view(config, record, "")
+                    disk_ids.add(run_id)
+                view.publish({**view.state, "status": view.state["status"] if job["action"] == "recover-script" else "cancelled",
+                              "queued": False, "ready": True,
+                              "message": "待機操作を取り消しました。内容を確認してからやり直してください。"})
+                views[run_id] = view
+                continue
             reconfirm_brave = job.get("junie_brave_reconfirm") is True or "junie_brave" in job
             if interrupted:
                 message = blocked.setdefault(
@@ -147,7 +160,7 @@ class RunManager:
                 )
             elif run_id in blocked:
                 continue
-            if interrupted or job["action"] not in {"run", "prepare"}:
+            if interrupted or job["action"] != "run":
                 try:
                     _, record = load_dashboard_record(config, run_id)
                     view = self._record_view(config, record, blocked.get(run_id, ""))
@@ -257,7 +270,7 @@ class RunManager:
         if run_id not in self.pending:
             raise ValueError("このRunはすでに実行されています。一覧を更新して停止してください。")
         job = self.jobs[run_id]
-        new_run = job["action"] in {"run", "prepare"}
+        new_run = job["action"] == "run"
         if not new_run:
             _, _, record, _ = load_saved_run(self.config, run_id)
         jobs, pending = self.jobs.copy(), self.pending.copy()
@@ -314,12 +327,14 @@ class RunManager:
             if self.closing:
                 raise ValueError("ダッシュボードを終了しています。再度起動してください。")
             kind = action["action"]
+            if kind not in _QUEUED_ACTIONS | {"open-run", "cancel-queued", "hide-run"}:
+                raise ValueError("この操作は利用できません。")
             brave = action.get("junie_brave", False)
             if type(brave) is not bool or (brave and kind not in {"run", "resume-run"}):
                 raise ValueError("Brave モードは移行の実行、または再開方法を指定した場合にだけ選択できます。")
             if brave and kind == "resume-run" and action.get("verification_request", {}).get("start_stage") != "migration":
                 raise ValueError("移行工程の再開計画を確認してから Brave モードを選択してください。")
-            if kind in {"run", "prepare"}:
+            if kind == "run":
                 units = action.get("unit_ids", [action.get("unit_id")])
                 if not isinstance(units, list) or not units or len(units) > 100 or any(not isinstance(unit, str) for unit in units):
                     raise ValueError("移行単位を1件以上、100件以内で選択してください。")

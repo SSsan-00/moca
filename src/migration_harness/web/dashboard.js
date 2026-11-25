@@ -795,6 +795,68 @@ function showUnresolvedNotes(selector, rows) {
 
 const operatorScope = element("#operator-note-through");
 const operatorReceipt = element("#operator-note-receipt");
+const migrationReview = element("#migration-ledger-review");
+const migrationReviewState = element("#migration-review-state");
+const migrationReviewTargets = element("#migration-review-targets");
+const migrationReviewStatus = element("#migration-review-status");
+let migrationReviewSelection;
+
+function editMigrationReview(ledger, source) {
+  migrationReviewSelection = {run: ledger.run_id, source, version: ledger.review_version};
+  migrationReview.reset();
+  migrationReviewStatus.textContent = "";
+  element("#migration-review-range").textContent = `${source.path} · ${source.start_line}–${source.end_line}行`;
+  migrationReviewTargets.replaceChildren(document.createElement("legend"));
+  migrationReviewTargets.querySelector("legend").textContent = source.mapping?.valid
+    ? "確認した移行先（対応候補を使う場合は選択不要）" : "確認した移行先（1件以上選択）";
+  for (const target of ledger.targets || [ledger.target]) {
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = target;
+    label.append(checkbox, document.createTextNode(target));
+    migrationReviewTargets.append(label);
+  }
+  migrationReviewTargets.hidden = true;
+  migrationReview.hidden = false;
+  migrationReviewState.focus();
+}
+
+migrationReviewState.addEventListener("change", () => {
+  migrationReviewTargets.hidden = migrationReviewState.value !== "confirmed";
+});
+element("#migration-review-cancel").addEventListener("click", () => {
+  migrationReview.hidden = true;
+  migrationReviewSelection = undefined;
+});
+migrationLedgerDialog.addEventListener("close", () => {
+  migrationReview.hidden = true;
+  migrationReviewSelection = undefined;
+});
+migrationReview.addEventListener("submit", async event => {
+  event.preventDefault();
+  const selected = migrationReviewSelection;
+  if (!selected || selected.run !== snapshot.run_id || !snapshot.ready) return;
+  const button = migrationReview.querySelector('button[type="submit"]');
+  const targets = migrationReviewState.value === "confirmed"
+    ? [...migrationReviewTargets.querySelectorAll('input:checked')].map(input => input.value) : [];
+  button.disabled = true;
+  migrationReviewStatus.textContent = "記録しています…";
+  try {
+    const response = await runFetch("migration-ledger", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({run_id: selected.run, range_id: selected.source.id, state: migrationReviewState.value,
+        reason: element("#migration-review-reason").value.trim(), targets, version: selected.version})});
+    if (!response.ok) throw await responseError(response);
+    if (migrationReviewSelection !== selected) return;
+    migrationReview.hidden = true;
+    migrationReviewSelection = undefined;
+    await loadMigrationLedger();
+  } catch (error) {
+    if (migrationReviewSelection === selected) migrationReviewStatus.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 let operatorSelection = null;
 element("#operator-note-scope").addEventListener("submit", event => {
   event.preventDefault();
@@ -810,6 +872,7 @@ async function loadMigrationLedger({keepCompletion = false} = {}) {
     const query = new URLSearchParams();
     if (selected?.through) query.set("operator_through", selected.through);
     if (selected?.receipt) query.set("operator_receipt", selected.receipt);
+    if (migrationLedgerDialog.open && snapshot.ready && !snapshot.queued) query.set("review_version", "1");
     const path = query.size ? `migration-ledger?${query}` : "migration-ledger";
     const response = await runFetch(path, {cache: "no-store"});
     if (!response.ok) throw await responseError(response);
@@ -825,7 +888,7 @@ async function loadMigrationLedger({keepCompletion = false} = {}) {
     showMigrationLedger(ledger, snapshot, id => {
       const url = new URL(`${comparisonPath(ledger.run_id, id)}.html`, document.baseURI);
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
-    });
+    }, source => editMigrationReview(ledger, source));
   } catch (error) {
     if (request !== migrationLedgerRequest) return;
     if (!keepCompletion && !selected?.receipt) migrationCompletion = undefined;
@@ -1360,13 +1423,148 @@ function renderTokens() {
 
 let recoveryKey;
 let recoveryRequest = 0;
+const recoveryDialog = element("#recovery-dialog");
+const recoveryOptions = element("#recovery-options");
+const recoveryDialogStatus = element("#recovery-dialog-status");
+const recoverySubmit = element("#recovery-submit");
+let recoveryPlan;
+
+function recoveryPreviewColumn(label, value) {
+  const column = document.createElement("div");
+  const title = document.createElement("strong");
+  const pre = document.createElement("pre");
+  title.textContent = label + (value.truncated ? "（先頭のみ）" : "");
+  pre.textContent = value.text ?? "ファイルなし";
+  column.append(title, pre);
+  return column;
+}
+
+function renderRecoveryDraft(plan) {
+  for (const [index, target] of Object.keys(plan.draft).entries()) {
+    const item = document.createElement("section");
+    item.className = "recovery-file";
+    const title = document.createElement("strong");
+    title.textContent = target;
+    item.append(title);
+    for (const [value, text] of [["draft", "停止時の下書き"], ["worktree", "現在の作業ツリー"]]) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = `recovery-target-${index}`;
+      input.value = value;
+      input.required = true;
+      input.dataset.target = target;
+      label.append(input, document.createTextNode(text));
+      item.append(label);
+    }
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    const preview = document.createElement("div");
+    preview.className = "recovery-previews";
+    summary.textContent = "内容を比較";
+    details.append(summary, preview);
+    details.addEventListener("toggle", async () => {
+      if (!details.open || details.dataset.loaded || recoveryPlan !== plan) return;
+      details.dataset.loaded = "loading";
+      preview.textContent = "読み込み中…";
+      try {
+        const query = new URLSearchParams({run_id: plan.run_id, version: plan.version, target});
+        const response = await runFetch(`recovery-file?${query}`, {cache: "no-store"});
+        if (!response.ok) throw await responseError(response);
+        const contents = await response.json();
+        preview.replaceChildren(recoveryPreviewColumn("停止時の下書き", contents.draft),
+          recoveryPreviewColumn("現在の作業ツリー", contents.worktree));
+        details.dataset.loaded = "done";
+      } catch (error) {
+        preview.textContent = error.message;
+        delete details.dataset.loaded;
+      }
+    });
+    item.append(details);
+    recoveryOptions.append(item);
+  }
+}
+
+async function openRecoveryPlan(kind) {
+  const runId = snapshot.run_id;
+  recoveryPlan = undefined;
+  recoveryOptions.replaceChildren();
+  recoveryDialogStatus.textContent = "復旧情報を読み込んでいます…";
+  element("#recovery-dialog-title").textContent = kind === "draft" ? "復元する版を選ぶ" : "スクリプトの再試行";
+  element("#recovery-dialog-intro").textContent = "";
+  recoverySubmit.disabled = true;
+  recoveryDialog.showModal();
+  try {
+    const query = new URLSearchParams({run_id: runId, kind});
+    const response = await runFetch(`recovery-plan?${query}`, {cache: "no-store"});
+    if (!response.ok) throw await responseError(response);
+    const plan = await response.json();
+    if (!recoveryDialog.open || snapshot.run_id !== runId) return;
+    recoveryPlan = {...plan, run_id: runId, kind};
+    recoveryDialogStatus.textContent = "";
+    if (kind === "draft") {
+      element("#recovery-dialog-intro").textContent = "ファイルごとに再開時に使う版を選択してください。保存だけではファイルは変更されません。";
+      recoverySubmit.textContent = "選択を保存";
+      renderRecoveryDraft(recoveryPlan);
+      recoverySubmit.disabled = false;
+    } else {
+      element("#recovery-dialog-intro").textContent = `${scriptPhases[plan.phase] || plan.phase} #${plan.number} · ${plan.log}。${plan.warning}`;
+      const label = document.createElement("label");
+      const confirmed = document.createElement("input");
+      confirmed.type = "checkbox";
+      confirmed.name = "confirmed";
+      confirmed.required = true;
+      label.append(confirmed, document.createTextNode("ログ・実行済みの影響・残存プロセスを確認しました"));
+      recoveryOptions.append(label);
+      recoverySubmit.textContent = "再試行";
+      recoverySubmit.disabled = !plan.can_retry;
+      if (!plan.can_retry) recoveryDialogStatus.textContent = "現在の状態では再試行できません。実行結果と設定を確認してください。";
+    }
+  } catch (error) {
+    if (recoveryDialog.open && snapshot.run_id === runId) recoveryDialogStatus.textContent = error.message;
+  }
+}
+
+element("#recovery-draft").addEventListener("click", () => openRecoveryPlan("draft"));
+element("#recovery-script").addEventListener("click", () => openRecoveryPlan("script"));
+for (const selector of ["#recovery-dialog-close", "#recovery-cancel"]) {
+  element(selector).addEventListener("click", () => recoveryDialog.close());
+}
+recoveryDialog.addEventListener("close", () => { recoveryPlan = undefined; });
+element("#recovery-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const plan = recoveryPlan;
+  if (!plan || plan.run_id !== snapshot.run_id || !snapshot.ready) return;
+  const payload = {run_id: plan.run_id, kind: plan.kind, version: plan.version};
+  if (plan.kind === "draft") {
+    payload.choices = Object.fromEntries([...recoveryOptions.querySelectorAll('input[type="radio"]:checked')]
+      .map(input => [input.dataset.target, input.value]));
+  } else payload.confirmed = recoveryOptions.querySelector('input[name="confirmed"]').checked;
+  recoverySubmit.disabled = true;
+  recoveryDialogStatus.textContent = "処理しています…";
+  try {
+    const response = await runFetch("recovery-plan", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)});
+    if (!response.ok) throw await responseError(response);
+    if (recoveryPlan !== plan) return;
+    recoveryDialog.close();
+    if (plan.kind === "draft") {
+      renderRecovery(snapshot, true);
+      element("#recovery-next").textContent = "選択を保存しました。同じ実行を再開すると反映します。";
+    } else if (staticDemo) renderRecovery(snapshot, true);
+  } catch (error) {
+    if (recoveryPlan === plan) recoveryDialogStatus.textContent = error.message;
+  } finally {
+    if (recoveryPlan === plan) recoverySubmit.disabled = false;
+  }
+});
 
 function renderRecovery(data, force = false) {
   const panel = element("#recovery-summary");
   if (!panel) return;
   const eligible = data.ready && data.run_id && !data.queued && !data.generating_anchors;
   const key = eligible ? JSON.stringify([data.run_id, data.status, data.completed_capsules, data.message,
-    data.error_details]) : null;
+    data.error_details, data.recovery_revision]) : null;
   if (!force && recoveryKey === key) return;
   const changedRun = !recoveryKey || !key || JSON.parse(recoveryKey)[0] !== data.run_id;
   recoveryKey = key;
@@ -1396,11 +1594,12 @@ function renderRecovery(data, force = false) {
       let next = data.resumable ? "保存された内容を見て「同じ実行を再開」を選べます。"
         : "停止理由と実行ログを確認してください。";
       if (info.status === "preparation_failed" || info.status === "preparation_interrupted") {
-        next = "入力や設定を確認し、作業ツリーが未作成なら「準備のみ」からやり直してください。";
+        next = "入力や設定を確認し、作業ツリーが未作成なら新しいRunを実行してください。";
       } else if (checkerReviewStatuses.has(info.status)) {
         next = "チェッカー出力を確認してください。成果物の版が変わった場合はビルドから再検証します。";
       }
-      if (info.draft === "repair") next = "進捗とエディタで内容を確認してから再開してください。下書きと手修正版が競合し、ファイルごとに復元する版を選ぶ必要がある場合は repair-draft を使ってください。";
+      if (info.draft === "repair") next = info.draft_selected ? "復元する版を保存しました。同じ実行を再開すると反映します。"
+        : "下書きと手修正版が競合している場合は、復元する版を選んでから再開してください。";
       if (info.conflict) next = "エディタで差分を確認し、競合を解消して保存してください。";
       if (info.needs_process_check) next = "ログと残存プロセスを確認するまで処理を再開しないでください。";
       if (info.unconfirmed_command) {
@@ -1408,10 +1607,12 @@ function renderRecovery(data, force = false) {
       }
       if (info.unknown_script) {
         const script = info.unknown_script;
-        next = `実行結果不明: ${script.phase} #${script.number}。${script.log} と残存プロセスを確認後、端末の script-recovery で再試行する版を確認してください。自動では再実行しません。`;
+        next = `実行結果不明: ${script.phase} #${script.number}。${script.log} と残存プロセスを確認してから再試行してください。自動では再実行しません。`;
       }
       element("#recovery-next").textContent = next;
       element("#recovery-editor").hidden = !snapshot.worktree_path;
+      element("#recovery-draft").hidden = info.draft !== "repair" || info.draft_selected || info.needs_process_check;
+      element("#recovery-script").hidden = !info.unknown_script;
     })
     .catch(() => {
       if (request !== recoveryRequest || snapshot.run_id !== data.run_id || !snapshot.ready) return;

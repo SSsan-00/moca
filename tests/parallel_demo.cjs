@@ -43,10 +43,12 @@ const queued = data => data.runs.filter(run => run.queued).sort((a, b) => a.queu
     assert(active(await demo.read()).length <= 5);
   }
   assert.equal((await demo.read()).busy, false);
-  await demo.execute("prepare", {unit_id: "商品検索"});
-  const prepared = (await demo.read()).runs.at(-1);
-  assert.equal(prepared.junie_model, "opus");
-  assert.equal(prepared.junie_effort, "low");
+  await demo.execute("run", {unit_id: "商品検索"});
+  const created = (await demo.read()).runs.at(-1);
+  assert.equal(created.junie_model, "opus");
+  assert.equal(created.junie_effort, "low");
+  for (let i = 0; i < 29; i++) tick();
+  assert.equal((await demo.read()).runs.find(run => run.run_id === created.run_id).status, "checker_succeeded");
   await demo.execute("resume-run", {run_id: "demo-partners", start_stage: "build-through"});
   const states = [];
   for (let index = 0; index < 10; index++) {

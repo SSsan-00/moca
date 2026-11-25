@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 
 
 class RuleReviewTests(HarnessCase):
@@ -455,7 +455,7 @@ target = "One.cs"
         success(run("apply", candidate))
         self.assertIn(b"# keep this comment", config.read_bytes())
         settings = load_config(config)
-        prepared = workflow.prepare_run(settings, "one")
+        prepared = prepare_fixture(settings, "one")
         capsule, manifest = workflow.load_capsule_manifest(Path(prepared["run_path"]))
         rules = render_guidelines(capsule / "materials", manifest, selected=frozenset())
         self.assertIn(primary, rules)

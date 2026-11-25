@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.web import dashboard
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_manager
@@ -78,6 +78,11 @@ class ParallelDashboardTests(HarnessCase):
             time.sleep(.02)
         self.assertTrue(predicate())
 
+    def make_saved_run(self, unit):
+        run_id = prepare_fixture(self.settings, unit)["run_id"]
+        self.manager.get(run_id)
+        return run_id
+
     def open_http_dashboard(self):
         terminal = io.StringIO()
         with redirect_stdout(terminal):
@@ -104,6 +109,36 @@ class ParallelDashboardTests(HarnessCase):
 
         return post, get
 
+    def test_recovery_plan_io_does_not_hold_the_run_manager_lock(self):
+        run_id = self.make_saved_run("unit-0")
+        post, get = self.open_http_dashboard()
+        for mode in ("read", "save"):
+            with self.subTest(mode=mode):
+                started, finish = Event(), Event()
+
+                def slow(*_args):
+                    started.set()
+                    if not finish.wait(5):
+                        raise RuntimeError("recovery test timed out")
+                    return {"version": "a" * 64} if mode == "read" else None
+
+                name = "plan_stopped_repair" if mode == "read" else "resolve_stopped_repair"
+                with patch.object(dashboard, name, side_effect=slow), ThreadPoolExecutor(max_workers=1) as pool:
+                    if mode == "read":
+                        future = pool.submit(get, f"recovery-plan?run_id={run_id}&kind=draft", run_id)
+                    else:
+                        future = pool.submit(post, "recovery-plan", {"run_id": run_id, "kind": "draft",
+                            "version": "a" * 64, "choices": {"Page0.cs": "draft"}}, run_id)
+                    try:
+                        self.assertTrue(started.wait(3))
+                        acquired = self.manager.condition.acquire(timeout=1)
+                        self.assertTrue(acquired, "recovery I/O held the run manager lock")
+                        if acquired:
+                            self.manager.condition.release()
+                    finally:
+                        finish.set()
+                    future.result(timeout=5)
+
     def test_only_finished_runs_notify_and_user_stop_is_silent(self):
         notices = []
         self.manager.notifications = SimpleNamespace(settings=lambda: {}, post=lambda notice: notices.append(notice) if notice else None)
@@ -120,7 +155,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_cancelling_queued_anchors_finishes_the_original_http_request(self):
         self.settings["diff_viewer_html"] = "viewer.html"
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.make_saved_run("unit-0")
         self.wait_until(lambda: not self.manager.busy)
         self.manager.limit = 0
         post, _ = self.open_http_dashboard()
@@ -167,7 +202,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_a_started_anchor_job_keeps_its_own_reply(self):
         self.settings["diff_viewer_html"] = "viewer.html"
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.make_saved_run("unit-0")
         self.wait_until(lambda: not self.manager.busy)
         started, release = Event(), Event()
         reply = Future()
@@ -233,7 +268,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_remove_saved_run_from_list_without_deleting_its_files(self):
         removed, retained = [
-            self.manager.submit({"action": "prepare", "unit_id": unit})["run_id"]
+            self.make_saved_run(unit)
             for unit in ("unit-0", "unit-1")
         ]
         self.wait_until(lambda: not self.manager.busy)
@@ -258,14 +293,14 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_hide_preparation_failures_and_preserve_records(self):
         (self.project / "source.php").unlink()
-        missing = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        missing = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
         self.settings["scripts"] = {"before_prepare": [[sys.executable, "-c", "raise SystemExit(3)"]]}
-        hook = self.manager.submit({"action": "prepare", "unit_id": "unit-1"})["run_id"]
+        hook = self.manager.submit({"action": "run", "unit_id": "unit-1"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
         with patch.object(workflow, "_validate_inputs", side_effect=KeyboardInterrupt):
             self.settings.pop("scripts")
-            stopped = self.manager.submit({"action": "prepare", "unit_id": "unit-2"})["run_id"]
+            stopped = self.manager.submit({"action": "run", "unit_id": "unit-2"})["run_id"]
             self.wait_until(lambda: not self.manager.busy)
         self.assertEqual(self.manager.get(stopped).state["status"], "preparation_interrupted")
         for run_id in (missing, hook, stopped):
@@ -284,7 +319,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_hide_does_not_write_a_foreign_preparation_record(self):
         (self.project / "source.php").unlink()
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
         path = Path(self.settings["run_root"]) / run_id / "run.json"
         record = json.loads(path.read_bytes())
@@ -298,7 +333,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_hide_after_git_worktree_creation_fails(self):
         self.settings["base_ref"] = "missing-git-base"
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
         record_path = Path(self.settings["run_root"]) / run_id / "run.json"
         record = json.loads(record_path.read_bytes())
@@ -309,7 +344,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_hide_rejects_a_dangling_run_record_symlink(self):
         (self.project / "source.php").unlink()
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
         path = Path(self.settings["run_root"]) / run_id / "run.json"
         path.unlink()
@@ -323,12 +358,12 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_create_run_after_hiding_the_selected_cancelled_run(self):
         self.manager.limit = 0
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
         self.manager.submit({"action": "cancel-queued", "run_id": run_id})
         self.manager.default = self.manager.get(run_id)
         post, _ = self.open_http_dashboard()
         self.assertEqual(post("control", {"action": "hide-run", "revision": 0, "run_id": run_id}, run_id)[0], 202)
-        for action, unit in (("prepare", "unit-1"), ("run", "unit-2")):
+        for action, unit in (("run", "unit-1"), ("run", "unit-2")):
             status, result = post("control", {"action": action, "revision": 0, "unit_id": unit}, run_id)
             self.assertEqual(status, 202)
             self.assertNotEqual(result["run_id"], run_id)
@@ -336,7 +371,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_conversation_status_before_worktree_survives_prepare(self):
         self.manager.limit = 0
-        run_id, other = self.manager.submit({"action": "prepare", "unit_ids": ["unit-0", "unit-1"]})["run_ids"]
+        run_id, other = self.manager.submit({"action": "run", "unit_ids": ["unit-0", "unit-1"]})["run_ids"]
         post, get = self.open_http_dashboard()
 
         def send(text, identifier=None, **flags):
@@ -365,6 +400,8 @@ class ParallelDashboardTests(HarnessCase):
             return validate(root, unit)
 
         with patch.object(workflow, "_validate_inputs", side_effect=wait_for_input):
+            self.release[0].set()
+            self.release[1].set()
             self.manager.limit = 1
             self.manager.start_pending()
             try:
@@ -390,7 +427,7 @@ class ParallelDashboardTests(HarnessCase):
 
     def test_waiting_conversation_is_restored_after_dashboard_restart(self):
         self.manager.limit = 0
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]
         action = {"id": uuid.uuid4().hex, "text": "今何してる？"}
         self.manager.conversations.submit(run_id, action)
         self.manager.close()
@@ -403,14 +440,14 @@ class ParallelDashboardTests(HarnessCase):
         self.assertNotIn(run_id, restarted.workers)
 
     def test_resume_cannot_duplicate_a_unit_already_running(self):
-        old = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        old = self.make_saved_run("unit-0")
         self.wait_until(lambda: not self.manager.busy)
         self.manager.submit({"action": "run", "unit_id": "unit-0"})
         with self.assertRaisesRegex(ValueError, "別のRunで実行中"):
             self.manager.submit({"action": "resume-run", "run_id": old})
 
     def test_new_and_resumed_runs_share_fifo_and_cancel_restores_saved_state(self):
-        saved = self.manager.submit({"action": "prepare", "unit_id": "unit-6"})["run_id"]
+        saved = self.make_saved_run("unit-6")
         self.wait_until(lambda: not self.manager.busy)
         ids = self.manager.submit({"action": "run", "unit_ids": [f"unit-{i}" for i in range(6)]})["run_ids"]
         self.manager.submit({"action": "resume-run", "run_id": saved})
@@ -438,7 +475,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertEqual(len(restored.workers), 1)
 
     def test_direct_open_shares_restored_run_progress_and_stop(self):
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.make_saved_run("unit-0")
         self.wait_until(lambda: not self.manager.busy)
         self.manager.limit = 0
         self.manager.submit({"action": "resume-run", "run_id": run_id})
@@ -573,7 +610,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertFalse(self.started[0].is_set())
 
     def test_settings_switch_releases_old_owner_and_clears_old_runs(self):
-        ids = self.manager.submit({"action": "prepare", "unit_ids": ["unit-0"]})["run_ids"]
+        ids = [self.make_saved_run("unit-0")]
         self.wait_until(lambda: not self.manager.busy)
         previous = copy.deepcopy(self.settings)
         updated = {**self.settings, "run_root": str(self.root / "another-runs")}
@@ -602,7 +639,7 @@ class ParallelDashboardTests(HarnessCase):
         new_config = {**self.settings, "run_root": str(new_root)}
         queue = new_root / "dashboard-queue.json"
         queue.write_text(json.dumps({"project_root": self.settings["project_root"], "jobs": [
-            {"action": "prepare", "run_id": str(uuid.uuid4()), "unit_id": "sample"},
+            {"action": "run", "run_id": str(uuid.uuid4()), "unit_id": "sample"},
         ]}), encoding="utf-8")
         saved_queue = queue.read_bytes()
         replace = Path.replace
@@ -707,7 +744,7 @@ class ParallelDashboardTests(HarnessCase):
         self.manager.new_view(old_id, "unit-0")
         self.manager.results[old_id] = {"status": "previous"}
         run_id, operation = str(uuid.uuid4()), uuid.uuid4().hex
-        job = {"action": "prepare", "run_id": run_id, "unit_id": "sample", "operation_id": operation}
+        job = {"action": "run", "run_id": run_id, "unit_id": "sample", "operation_id": operation}
         queue.write_text(json.dumps({"project_root": self.settings["project_root"], "jobs": [job]}), encoding="utf-8")
         content = original.decode().replace('worktree_root = "trees"', 'worktree_root = "other-trees"')
         seen = []
@@ -737,7 +774,7 @@ class ParallelDashboardTests(HarnessCase):
             pass
 
     def test_workspace_preserves_operation_failure_message(self):
-        run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+        run_id = self.make_saved_run("unit-0")
         self.wait_until(lambda: not self.manager.busy)
         view = self.manager.get(run_id)
         view.failed(ValueError("Junieを起動できません"))
@@ -777,7 +814,7 @@ class ParallelDashboardTests(HarnessCase):
         toml_a = original.decode() + '\n[[project.migration_rules]]\npath = "original.md"\n'
         self.assertEqual(save(toml_a, version)[0], 200)
         live_a = self.settings["project_root"]
-        capsule = Path(workflow.prepare_run(self.settings, "sample")["capsule_path"])
+        capsule = Path(prepare_fixture(self.settings, "sample")["capsule_path"])
         manifest = json.loads((capsule / "manifest.json").read_bytes())
         pinned = capsule / "materials" / manifest["rule_files"][0]["file"]
         pinned_a = pinned.read_bytes()
@@ -865,7 +902,7 @@ class ParallelDashboardTests(HarnessCase):
         ids = []
         for number in (1, 2):
             (self.project / "source.php").write_bytes(f"<?php echo {number};\n".encode())
-            run_id = self.manager.submit({"action": "prepare", "unit_id": "unit-0"})["run_id"]
+            run_id = self.make_saved_run("unit-0")
             self.wait_until(lambda: not self.manager.busy)
             ids.append(run_id)
             (Path(self.manager.get(run_id).state["worktree_path"]) / "Page0.cs").write_text(f"class Run{number} {{}}\n")

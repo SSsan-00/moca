@@ -539,6 +539,7 @@ try {
   const liveTabs = await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)");
   const liveSteps = await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)");
   assert.equal(liveTabs.length, 6); assert.equal(liveSteps.length, 7);
+  assert.equal(await evaluate("document.querySelector('#workspace-new-run button[value=prepare]')"), null);
   beginPhase("demo navigation and chat");
   const demoUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "progress-demo.html"));
   await navigate("Page.navigate", {url: demoUrl.href});
@@ -572,6 +573,7 @@ try {
   await wait(ready);
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)"), liveTabs);
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)"), liveSteps);
+  assert.equal(await evaluate("document.querySelector('#workspace-new-run button[value=prepare]')"), null);
   await click("stop");
   await wait(field("state-label") + ".textContent === '中断'");
   await wait("!" + field("recovery-summary") + ".hidden");
@@ -579,6 +581,12 @@ try {
   await wait(field("migration-ledger-dialog") + ".open && !" + field("migration-ledger-compare") + ".hidden");
   await wait("document.querySelector('#unresolved-junie-memos li')?.textContent");
   const demoMemo = await evaluate("document.querySelector('#unresolved-junie-memos li').textContent");
+  await evaluate("document.querySelector('.migration-ledger-review-button').click()");
+  await wait("!" + field("migration-ledger-review") + ".hidden");
+  await change("migration-review-state", "excluded");
+  await change("migration-review-reason", "対象外を確認", "input");
+  await evaluate("document.querySelector('#migration-ledger-review button[type=submit]').click()");
+  await wait("document.querySelector('.migration-mapping-status')?.textContent === '対象外'");
   await evaluate(field("migration-ledger-dialog") + ".close()");
   await click("tab-editor");
   await wait("!" + field("workspace-editor") + ".hidden");

@@ -153,6 +153,18 @@ class ErrorFormattingTests(unittest.TestCase):
 
 
 class CliErrorReportingTests(unittest.TestCase):
+    def test_removed_command_is_not_available(self):
+        for command in ("prepare", "run", "resume", "view", "review", "anchors", "dry-run", "preview-context",
+                        "ledger-review", "script-recovery", "repair-draft"):
+            with (
+                self.subTest(command=command),
+                patch.object(sys, "argv", ["harness", command, "--config", "local.toml"]),
+                redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as exited,
+            ):
+                cli.main()
+            self.assertEqual(exited.exception.code, 2)
+
     def test_first_dashboard_setup_does_not_treat_missing_config_as_a_failure(self):
         with (
             TemporaryDirectory() as directory,
@@ -164,39 +176,35 @@ class CliErrorReportingTests(unittest.TestCase):
 
     def test_exit_codes_and_full_diagnostics(self):
         cause = subprocess.CalledProcessError(7, ["git", "status"], output="out-detail", stderr="err-detail")
-        for error, code in ((RuntimeError("prepare failed"), 2), (RunScriptError("script failed", "saved-run"), 1), (cause, 2)):
+        for error in (RuntimeError("review failed"), cause):
             if error is not cause:
                 error.__cause__ = cause
             with (
                 self.subTest(error=error),
-                patch.object(sys, "argv", ["harness", "prepare", "--config", "local.toml", "--unit", "example"]),
+                patch.object(sys, "argv", ["harness", "rule-review", "--config", "local.toml", "--run-id", "saved-run"]),
                 patch.object(cli, "load_config", return_value={}),
-                patch.object(cli, "prepare_run", side_effect=error),
+                patch("migration_harness.rules.rule_review.review_rules", side_effect=error),
                 redirect_stderr(io.StringIO()) as stderr,
                 self.assertRaises(SystemExit) as exited,
             ):
                 cli.main()
-            self.assertEqual(exited.exception.code, code)
+            self.assertEqual(exited.exception.code, 2)
             for expected in ("CalledProcessError", "Return code: 7", "out-detail", "err-detail", "cli.py"):
                 self.assertIn(expected, stderr.getvalue())
-            if code == 1:
-                self.assertIn("resume Run saved-run", stderr.getvalue())
 
-    def test_config_failures_open_recoverable_dashboard_for_all_dashboard_commands(self):
-        for args in (["dashboard"], ["run", "--dashboard", "--unit", "example"], ["view", "--run-id", "saved-run"]):
-            with (
-                self.subTest(args=args),
-                patch.object(sys, "argv", ["harness", *args, "--config", "local.toml"]),
-                patch.object(cli, "load_config", side_effect=ValueError("invalid config field")),
-                patch.object(dashboard, "run_dashboard") as open_dashboard,
-            ):
-                cli.main()
-            self.assertIn("invalid config field", open_dashboard.call_args.kwargs["config_error"])
-            self.assertIn("config_path", open_dashboard.call_args.args[0])
+    def test_config_failures_open_recoverable_dashboard(self):
+        with (
+            patch.object(sys, "argv", ["harness", "dashboard", "--config", "local.toml"]),
+            patch.object(cli, "load_config", side_effect=ValueError("invalid config field")),
+            patch.object(dashboard, "run_dashboard") as open_dashboard,
+        ):
+            cli.main()
+        self.assertIn("invalid config field", open_dashboard.call_args.kwargs["config_error"])
+        self.assertIn("config_path", open_dashboard.call_args.args[0])
 
     def test_keyboard_interrupt_exit_code_is_preserved(self):
         with (
-            patch.object(sys, "argv", ["harness", "prepare", "--config", "local.toml", "--unit", "example"]),
+            patch.object(sys, "argv", ["harness", "dashboard", "--config", "local.toml"]),
             patch.object(cli, "load_config", side_effect=KeyboardInterrupt),
             redirect_stderr(io.StringIO()) as stderr,
             self.assertRaises(SystemExit) as exited,
@@ -264,7 +272,7 @@ class DashboardErrorReportingTests(unittest.TestCase):
             raise KeyboardInterrupt
 
         with patch.object(dashboard, "run_with_junie") as run:
-            self.open_dashboard({}, [config_inspect], unit_id="example", config_error="ValueError: invalid project root")
+            self.open_dashboard({}, [config_inspect], config_error="ValueError: invalid project root")
         run.assert_not_called()
 
     def test_script_failure_with_unreadable_record_stays_recoverable(self):

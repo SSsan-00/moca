@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
-from fixtures import HarnessCase, SavedRunFixture
+from fixtures import HarnessCase, SavedRunFixture, prepare_fixture
 
 
 class TaskGuidelinesTests(unittest.TestCase):
@@ -166,7 +166,7 @@ class PreparationScriptHandoffTests(HarnessCase):
                               scripts={"before_prepare": [[sys.executable, "-c", "print('Check CalculateShipping')"]]})
                 with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                            return_value='{"verdict":"handoff","evidence_lines":[1],"symbol":"CalculateShipping"}'):
-                    result = workflow.prepare_run(config, "sample")
+                    result = prepare_fixture(config, "sample")
                 run_path = Path(result["run_path"])
                 record = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
                 context = workflow.script_handoff_context(

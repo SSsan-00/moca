@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 
 from migration_harness import workflow
 from migration_harness.config import load_config, target_paths
@@ -91,7 +92,9 @@ source = "Legacy.php"
 target = "Page.cs"
 ''', encoding="utf-8")
     config = load_config(cfg)
-    prepared = workflow.prepare_run(config, "sample")
+    run_id = str(uuid.uuid4())
+    with workflow.execution_lock(config, run_id), workflow.execution_lock(config, "prepare", wait=True):
+        prepared = workflow._prepare_run(config, "sample", run_id)
     run, worktree, record, unit = workflow.load_saved_run(config, prepared["run_id"])
     capsule, manifest = workflow.load_capsule_manifest(run)
     pinned = run / "agent-workspace"

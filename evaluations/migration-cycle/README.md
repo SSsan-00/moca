@@ -48,7 +48,9 @@ Junie処理時間は、今回の完了トークンに一致する各セッショ
 
 ```sh
 python evaluations/migration-cycle/create_fixture.py
-php-to-csharp-harness run --config <表示されたフォルダ>/harness.toml --unit common-rules-context --dashboard
+php-to-csharp-harness dashboard --config <表示されたフォルダ>/harness.toml
 ```
+
+開いた画面の「実行」で `common-rules-context` を選び、実行する。
 
 生成・編集は新しい一時フォルダ内に限定する。Junieが2つの不具合をまとめて直すか、別の試行で直すかは固定していない。Windows実機、大規模な原文、外部サービスに依存するチェッカーの速度は今回の計測対象外。

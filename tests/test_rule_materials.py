@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.junie import junie_cli
 from migration_harness.rules import rule_materials
 from migration_harness.context import source_context
@@ -47,7 +47,7 @@ class RuleMaterialsTests(HarnessCase):
             "path": "details.md", "role": "migration_rules", "usage": "reference", "description": "Exception",
             "encoding": "utf-8", "start_line": 1, "end_line": None, "shared": True,
         })
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         run_id = result["run_id"]
         run_path = Path(result["run_path"])
         record_path = run_path / "run.json"
@@ -101,7 +101,7 @@ class RuleMaterialsTests(HarnessCase):
             "description": "Opt-in formatting", "encoding": "utf-8",
             "start_line": 1, "end_line": None, "shared": True,
         })
-        run = workflow.prepare_run(config, "sample")
+        run = prepare_fixture(config, "sample")
         run_id = run["run_id"]
         path = Path(run["run_path"]) / "run.json"
         record = json.loads(path.read_bytes())
@@ -139,7 +139,7 @@ class RuleMaterialsTests(HarnessCase):
             "path": "required.md", "role": "migration_rules", "usage": "required", "encoding": "utf-8",
             "start_line": 1, "end_line": None, "shared": True,
         })
-        run = workflow.prepare_run(config, "sample")
+        run = prepare_fixture(config, "sample")
         run_id, capsule = run["run_id"], Path(run["capsule_path"])
         worktree = Path(run["worktree_path"])
         agent = Path(run["run_path"]) / "agent-workspace"
@@ -184,7 +184,7 @@ class RuleMaterialsTests(HarnessCase):
                 "path": name, "role": "migration_rules", "usage": "required", "encoding": "utf-8",
                 "start_line": 1, "end_line": None, "shared": True,
             })
-        run = workflow.prepare_run(config, "sample")
+        run = prepare_fixture(config, "sample")
         record = json.loads((Path(run["run_path"]) / "run.json").read_text(encoding="utf-8"))
         checker = Path(run["worktree_path"]) / "mock_checker.py"
         checker.write_text(
@@ -242,7 +242,7 @@ class RuleMaterialsTests(HarnessCase):
             })
             originals.append("".join(f"{number:>6} | {line}" for number, line in enumerate(lines, 1)))
         self.commit_project()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         capsule = Path(result["capsule_path"])
         manifest = json.loads((capsule / "manifest.json").read_bytes())
         self.assertEqual(len(manifest["rule_files"]), 200)
@@ -267,7 +267,7 @@ class RuleMaterialsTests(HarnessCase):
         })
         self.original = "FIRST RULE\r\n" + "保持する😀" * 1600 + "\r\nA RULE\r\nB RULE\r\nLAST RULE\r\n"
         (self.project / "rules.md").write_bytes(self.original.encode())
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         capsule = Path(result["capsule_path"])
         manifest = json.loads((capsule / "manifest.json").read_bytes())
         agent = Path(result["run_path"]) / "agent-workspace"
@@ -344,7 +344,7 @@ class RuleMaterialsTests(HarnessCase):
                 "description": "Razor example only" if index else "",
             })
         self.commit_project()
-        result = workflow.prepare_run(config, "sample")
+        result = prepare_fixture(config, "sample")
         capsule, manifest = workflow.load_capsule_manifest(Path(result["run_path"]))
         records = manifest["rule_files"]
         selected = frozenset({records[1]["file"]})

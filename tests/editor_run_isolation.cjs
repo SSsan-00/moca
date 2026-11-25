@@ -270,11 +270,11 @@ async function checkDashboard() {
   await flush();
   assert.equal(location.searchParams.get("run"), null);
   assert.match(dashboardElement(".run-detail").textContent, /Run ID B/, "previous snapshot is visible while reconnecting");
-  await actions.execute("prepare", {unit_ids: ["new-unit"]});
+  await actions.execute("run", {unit_ids: ["new-unit"]});
   assert.equal(requests.at(-1).headers.get("X-Run-ID"), null);
   progress(streams[2]);
   await deleting;
-  await actions.execute("prepare", {unit_ids: ["new-unit"]});
+  await actions.execute("run", {unit_ids: ["new-unit"]});
   assert.equal(requests.at(-1).headers.get("X-Run-ID"), null, "new runs must omit the deleted run's ID");
 
   const selectRun = async runId => {

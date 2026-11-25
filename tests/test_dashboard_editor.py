@@ -18,7 +18,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.web import dashboard
 from migration_harness.runs import editor_queue, run_records, worktree_targets
 from migration_harness.junie import junie_cli
@@ -581,7 +581,7 @@ class DashboardEditorTests(HarnessCase):
             with self.subTest(busy=busy):
                 name = f"Pages/New{busy}.cs"
                 self.settings.update(self.config(f'target = "{name}"'))
-                result = workflow.prepare_run(self.settings, "sample")
+                result = prepare_fixture(self.settings, "sample")
                 _, _, record, _ = run_records.load_saved_run(self.settings, result["run_id"])
                 self.view.ready(self.settings, record)
                 if busy:
@@ -799,7 +799,7 @@ class DashboardEditorTests(HarnessCase):
         self.settings.update(load_config(config_path))
         inputs = self.settings["units"][0]["inputs"]
         inputs.append({**inputs[0], "path": "other.php", "encoding": "cp932"})
-        prepared = workflow.prepare_run(self.settings, "sample")
+        prepared = prepare_fixture(self.settings, "sample")
         (self.project / "source.php").write_text("<?php echo 'updated after preparation';", encoding="utf-8")
         route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
         source = self.request(route)
@@ -880,7 +880,7 @@ shared = true
 """, encoding="utf-8",
         )
         self.settings.update(load_config(config_path))
-        prepared = workflow.prepare_run(self.settings, "sample")
+        prepared = prepare_fixture(self.settings, "sample")
         route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
         manifest_path = Path(prepared["capsule_path"]) / "manifest.json"
         manifest = json.loads(manifest_path.read_bytes())
@@ -901,7 +901,7 @@ shared = true
                         denied.exception.close()
 
     def test_php_view_rejects_missing_pin_without_reading_the_live_source(self):
-        prepared = workflow.prepare_run(self.settings, "sample")
+        prepared = prepare_fixture(self.settings, "sample")
         manifest_path = Path(prepared["capsule_path"]) / "manifest.json"
         manifest = json.loads(manifest_path.read_bytes())
         manifest["php_sources"] = []

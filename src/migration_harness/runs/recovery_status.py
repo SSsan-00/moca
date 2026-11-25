@@ -34,6 +34,7 @@ def recovery_status(config, run_id, *, blocked=False):
         needs_process_check = (blocked or bool(command_unconfirmed or record.get("migration_stop_unconfirmed"))
                                or record["status"] in ACTIVE_PHASES)
         draft = _saved_draft(record)
+        repair = record.get("repair_pending")
         phase = record.get("script_phase") or record["status"]
         approval = None if not attempt else {"phase": attempt["phase"], "number": attempt["number"],
                                              "log": attempt["phase"] + ".log"}
@@ -41,7 +42,8 @@ def recovery_status(config, run_id, *, blocked=False):
             "run_id": run_id, "stage": phase, "status": record["status"],
             "completed": completed, "total": total,
             "saved_targets": bool(record.get("target_hashes")) or bool(record.get("target_applied")),
-            "draft": draft, "conflict": conflict,
+            "draft": draft, "draft_selected": isinstance(repair, dict) and "restore_from" in repair,
+            "conflict": conflict,
             "pending_edits": len(queue["edits"]),
             "pending_prompts": sum(prompt["status"] != "sent" for prompt in queue["prompts"]),
             "needs_process_check": needs_process_check,

@@ -5,6 +5,10 @@ window.harnessDemoTransport = (() => {
   const target = "Pages/Orders/Index.cshtml.cs";
   const settings = createDemoSettings();
   const accepted = new Set();
+  const ledgerReviews = new Map();
+  const ledgerVersions = new Map();
+  const recoverySelections = new Set();
+  const sampleRecovery = new URL(location.href).searchParams.get("recovery-demo");
   const finding = "日付の表示形式が元のPHPと一致するか確認してください。";
   const exchange = {status: "available", rate: 150, date: "2026-11-14", source: "サンプル"};
   const usage = [{phase: "migration", capsule: 1, input: 18420, output: 3240,
@@ -68,7 +72,7 @@ window.harnessDemoTransport = (() => {
       invalidates: stages, repair: false, ...(stage === "build-through" ? {stages} : {})};
   }
 
-  const controls = new Set(["run", "prepare", "stop", "cancel-queued", "hide-run", "resume-run"]);
+  const controls = new Set(["run", "stop", "cancel-queued", "hide-run", "resume-run"]);
   async function control(body, run) {
     const action = body.action === "resume" ? "resume-run" : body.action;
     if (action === "accept" && run?.status === "checker_needs_review" && body.finding_id === "format-date" && body.reason?.trim()) {
@@ -88,18 +92,21 @@ window.harnessDemoTransport = (() => {
   function ledger(run) {
     const verified = ["checker_succeeded", "checker_accepted"].includes(snapshot(run).status);
     const capsules = Array.from({length: run.context_capsules}, (_, i) => ({index: i + 1,
-      sources: [{id: (i + 1) + ":1", path: "php/orders.php", start_line: i * 2 + 1, end_line: i * 2 + 2}]}));
+      sources: [{id: (i + 1) + ":1", path: "php/orders.php", start_line: i * 2 + 1, end_line: i * 2 + 2,
+        ...(ledgerReviews.get(`${run.run_id}:${i + 1}:1`) ? {review: ledgerReviews.get(`${run.run_id}:${i + 1}:1`)} : {})}]}));
     const {id: source_id, start_line, end_line} = capsules[0].sources[0];
+    const reviewed = capsules.filter(capsule => ["confirmed", "excluded"].includes(capsule.sources[0].review?.state)).length;
     return {run_id: run.run_id, target, targets: [target, "Pages/Orders/Index.cshtml"],
-      completion: {complete: false, verification_passed: verified, reviewed: 0, total: capsules.length},
+      review_version: `sample-${ledgerVersions.get(run.run_id) || 0}`,
+      completion: {complete: verified && reviewed === capsules.length, verification_passed: verified, reviewed, total: capsules.length},
       capsules,
       unresolved_junie_memos: verified ? [] : [{source_id, start_line, end_line, note: "日付の表示形式を原文と照合する。"}],
       unresolved_operator_notes: []};
   }
 
   const get = new Set(["workspace", "token-runs", "junie-models", "settings", "junie-requests", "junie-thoughts",
-    "recovery", "migration-ledger", "checker-output", "prompts", "resume-plan", "rule-review"]);
-  const post = new Set(["settings", "control", "prompts"]);
+    "recovery", "recovery-plan", "recovery-file", "migration-ledger", "checker-output", "prompts", "resume-plan", "rule-review"]);
+  const post = new Set(["settings", "control", "prompts", "migration-ledger", "recovery-plan"]);
   const json = (value, status = 200) => new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
   async function request(path, init = {}) {
     const url = new URL(path, document.baseURI);
@@ -127,11 +134,44 @@ window.harnessDemoTransport = (() => {
       }
       if (!run) return new Response("サンプルのRunが見つかりません。", {status: 404});
       switch (route) {
-        case "migration-ledger": return json(ledger(run));
+        case "migration-ledger": {
+          if (!body) return json(ledger(run));
+          const item = ledger(run).capsules.flatMap(capsule => capsule.sources).find(source => source.id === body.range_id);
+          if (!run.ready || !item || !["confirmed", "excluded", "needs_review"].includes(body.state) || !body.reason?.trim()) {
+            throw Error("処理が終わってから、範囲と判断理由を確認してください。");
+          }
+          if (body.version !== ledger(run).review_version) throw Error("台帳が更新されました。確認し直してください。");
+          if (body.state === "confirmed" && (Number(body.range_id.split(":")[0]) > run.completed_capsules || !body.targets?.length)) {
+            throw Error("処理済みの範囲と確認した移行先を選択してください。");
+          }
+          ledgerReviews.set(`${id}:${body.range_id}`, {state: body.state, reason: body.reason,
+            ...(body.state === "confirmed" ? {targets: body.targets} : {})});
+          ledgerVersions.set(id, (ledgerVersions.get(id) || 0) + 1);
+          return json({});
+        }
         case "rule-review": return json({run_id: id, version: "sample", rules: []});
         case "recovery": return json({run_id: id, available: !!run.worktree_path && run.ready, stage: run.status,
           status: run.status, completed: run.completed_capsules, total: run.context_capsules,
-          saved_targets: !!run.worktree_path, pending_edits: 0, pending_prompts: 0});
+          saved_targets: !!run.worktree_path, pending_edits: 0, pending_prompts: 0,
+          ...(sampleRecovery === "draft" ? {draft: "repair", draft_selected: recoverySelections.has(id)} : {}),
+          ...(sampleRecovery === "script" && !recoverySelections.has(id)
+            ? {unknown_script: {phase: "before_migration", number: 1, log: "before_migration.log"}} : {})});
+        case "recovery-plan": {
+          const kind = body?.kind || query.get("kind");
+          if (!run.ready || kind !== sampleRecovery) throw Error("復旧する状態を選び直してください。");
+          if (body) {
+            if (body.version !== "a".repeat(64) || (kind === "script" && !body.confirmed)
+                || (kind === "draft" && !body.choices?.[target])) throw Error("復旧内容を確認してください。");
+            recoverySelections.add(id);
+            notify(run);
+            return json({}, kind === "script" ? 202 : 200);
+          }
+          return json(kind === "draft" ? {version: "a".repeat(64), draft: {[target]: "sample"}, worktree: {[target]: "sample"}}
+            : {version: "a".repeat(64), phase: "before_migration", number: 1, log: "before_migration.log",
+              warning: "実行済みの可能性があります。ログ・対象と残存プロセスを確認してください。", can_retry: true});
+        }
+        case "recovery-file": return json({target, draft: {text: "return FormatDate(order.CreatedAt);\n", truncated: false},
+          worktree: {text: "return order.CreatedAt.ToString();\n", truncated: false}});
         case "prompts": {
           if (run.run_id !== window.harnessEditorDemo.progress.run_id) throw Error("表示中のRunが変わりました。");
           const editor = await window.harnessEditorDemo.request("editor", body && {kind: "prompt", run_id: id, text: body.text});

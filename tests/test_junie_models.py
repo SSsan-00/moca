@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import tomlkit
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
 from migration_harness.config import load_config
@@ -82,7 +82,7 @@ description = "When producing text output"
             with self.subTest(model=model, effort=effort):
                 self.settings["junie_model"] = model
                 self.settings["junie_effort"] = effort
-                prepared = workflow.prepare_run(self.settings, "sample")
+                prepared = prepare_fixture(self.settings, "sample")
                 record_path = Path(prepared["run_path"]) / "run.json"
                 self.assertEqual(json.loads(record_path.read_text())["junie_model"], model)
                 self.assertEqual(json.loads(record_path.read_text())["junie_effort"], effort)
@@ -108,7 +108,7 @@ description = "When producing text output"
 
     def test_old_run_does_not_pick_up_new_effort_setting(self):
         self.settings["junie_model"] = "sonnet"
-        prepared = workflow.prepare_run(self.settings, "sample")
+        prepared = prepare_fixture(self.settings, "sample")
         path = Path(prepared["run_path"]) / "run.json"
         record = json.loads(path.read_text())
         record.pop("junie_effort")

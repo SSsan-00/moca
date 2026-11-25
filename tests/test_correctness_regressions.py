@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase, SavedRunFixture
+from fixtures import HarnessCase, SavedRunFixture, prepare_fixture
 from migration_harness.junie import junie_cli
 from migration_harness.rules import rule_materials
 from migration_harness import workflow
@@ -131,7 +131,7 @@ class DetailReviewEvidenceTests(HarnessCase):
              "description": "Check the configured formatting helper, following the required rule."},
             {**common, "path": "Feature.cs", "role": "reference_csharp"},
         ])
-        prepared = workflow.prepare_run(config, unit["id"])
+        prepared = prepare_fixture(config, unit["id"])
         run_path, worktree = Path(prepared["run_path"]), Path(prepared["worktree_path"])
         capsule, manifest = workflow.load_capsule_manifest(run_path)
         agent_root = run_path / "agent-workspace"
@@ -179,7 +179,7 @@ class DetailReviewEvidenceTests(HarnessCase):
         (self.project / "Context/Helper.cs").write_text(expected_helper, encoding="utf-8")
         self.git("add", "Context/Helper.cs")
         self.git("commit", "-qm", "Change fixture implementation")
-        other = workflow.prepare_run(config, unit["id"])
+        other = prepare_fixture(config, unit["id"])
         other_run = Path(other["run_path"])
         other_worktree = Path(other["worktree_path"])
         expected_bytes = (other_worktree / "Context/Helper.cs").read_bytes()
