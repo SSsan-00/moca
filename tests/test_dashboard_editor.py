@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -342,6 +343,104 @@ class DashboardEditorTests(HarnessCase):
                         self.assertEqual(state["edit"]["status"], "conflict" if scenario == "conflict" else "queued")
                         self.assertEqual(state["edit"]["content"], BASE.replace("Last = 1", "Last = 42"))
                         self.assertEqual(state["prompts"][0]["status"], "queued")
+
+    def test_roslyn_repair_handoff_rediagnoses_the_verified_merged_version(self):
+        invalid = BASE.replace("    int Middle = 0;", "    int Broken = ;\n    int Middle = 0;")
+        for scenario in ("remaining", "clear", "external", "conflict", "unsafe"):
+            with self.subTest(scenario=scenario):
+                prepared = self.finished_run()
+                run_id = prepared["run_id"]
+                run_path, worktree, _, _ = run_records.load_saved_run(self.settings, run_id)
+                target = worktree / "Page.cs"
+                target.write_text(invalid, encoding="utf-8")
+                self.settings.update(checker_command=None, max_repair_attempts=1)
+                self.view.begin_operation()
+                calls, builds = [], []
+                instruction = "Keep Last = 42 when continuing."
+                merge = workflow._apply_editor_edits
+
+                def edit_handoff(*args):
+                    applied = merge(*args)
+                    if scenario == "external" and applied:
+                        target.write_text(target.read_text(encoding="utf-8-sig") + "// external edit\n", encoding="utf-8")
+                    return applied
+
+                def junie(command, completion, token, targets, **kwargs):
+                    payload = command[-1]
+                    path = re.search(r"Read `(checker-findings-[a-f0-9]+[.]txt)` and repair", payload)
+                    diagnostic = (completion.parent / path[1]).read_text(encoding="utf-8")
+                    calls.append(diagnostic)
+                    if len(calls) == 1:
+                        self.assertIn("Page.cs(4,", diagnostic)
+                        self.assertIn("CS1525", diagnostic)
+                        state = self.request()
+                        self.queue_edit(state, state["content"].replace("Last = 1", "Last = 42"))
+                        self.request("prompts", {"run_id": run_id, "text": instruction})
+                        source = "// Junie partial repair\n" + invalid.replace("First = 1", "First = 2")
+                        if scenario == "clear":
+                            source = source.replace("Broken = ;", "Broken = 7;")
+                        if scenario == "conflict":
+                            source = source.replace("Last = 1", "Last = 99")
+                        if scenario == "unsafe":
+                            (completion.parent / "unlisted.txt").write_text("outside target")
+                        targets[0].write_text(source, encoding="utf-8")
+                        raise junie_cli.JunieEditHandoff()
+                    current = targets[0].read_text(encoding="utf-8-sig")
+                    self.assertIn("First = 2", current)
+                    self.assertIn("Last = 42", current)
+                    detail = re.search(r"operator's instruction in `([^`]+)`", payload)
+                    self.assertIn(instruction, (completion.parent / detail[1]).read_text(encoding="utf-8"))
+                    self.assertEqual(self.request()["prompts"][0]["status"], "sending")
+                    self.assertEqual(run_records.load_saved_run(self.settings, run_id)[2].get("repair_history", []), [])
+                    if scenario == "remaining":
+                        self.assertIn("Page.cs(5,", diagnostic)
+                        self.assertIn("CS1525", diagnostic)
+                        targets[0].write_text(current.replace("Broken = ;", "Broken = 7;"), encoding="utf-8")
+                    else:
+                        self.assertNotIn("CS1525", diagnostic)
+                        self.assertIn("No C# syntax errors", diagnostic)
+                    completion.write_text(token, encoding="ascii")
+                    return 0
+
+                def build(command, **kwargs):
+                    self.assertEqual(command[:2], ["dotnet", "build"])
+                    builds.append(target.read_text(encoding="utf-8-sig"))
+                    kwargs["stdout"].write(b"Build succeeded")
+                    return subprocess.CompletedProcess(command, 0)
+
+                with (
+                    patch.object(junie_cli, "require_interactive_cli"),
+                    patch.object(junie_cli, "run_interactive", side_effect=junie),
+                    patch.object(workflow, "_apply_editor_edits", side_effect=edit_handoff),
+                    patch.object(workflow, "run_process", side_effect=build), redirect_stdout(io.StringIO()),
+                ):
+                    result = workflow.resume_with_junie(self.settings, run_id)
+
+                saved = run_records.load_saved_run(self.settings, run_id)[2]
+                if scenario == "external":
+                    with editor_queue.editor_queue(run_path) as queue:
+                        state = {"prompts": queue["prompts"][:]}
+                else:
+                    state = self.request()
+                if scenario in {"remaining", "clear"}:
+                    self.assertEqual(result["status"], "build_succeeded", saved.get("roslyn_preflight", {}).get("repair_error"))
+                    self.assertEqual((len(calls), len(builds)), (2, 1))
+                    self.assertEqual(len(saved["repair_history"]), 1)
+                    self.assertEqual(state["prompts"][0]["status"], "sent")
+                    self.assertEqual(state["edit"], None)
+                    self.assertIn("Broken = 7;", builds[0])
+                    self.assertIn("First = 2", builds[0])
+                    self.assertIn("Last = 42", builds[0])
+                else:
+                    self.assertEqual(result["status"], "build_failed")
+                    self.assertEqual((len(calls), len(builds)), (1, 0))
+                    self.assertEqual(state["prompts"][0]["status"], "queued")
+                    self.assertEqual(saved.get("repair_history", []), [])
+                    if scenario == "external":
+                        self.assertIn("// external edit", target.read_text(encoding="utf-8-sig"))
+                        self.assertIn("Last = 42", target.read_text(encoding="utf-8-sig"))
+                    else:
+                        self.assertEqual(state["edit"]["status"], "conflict" if scenario == "conflict" else "queued")
 
     def test_edits_submitted_as_repair_finishes_are_applied_before_rebuilding(self):
         self.settings.update(junie_model="sonnet", junie_effort="high")
