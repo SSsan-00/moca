@@ -114,6 +114,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
     if (run.phase_activity && !run.ready) return run.phase_activity.message;
     if (run.context_capsules && run.status === "junie_running") return `カプセル ${run.current_capsule || 1} / ${run.context_capsules}`;
     if (category(run) === "done") return `${run.status === "build_succeeded" ? "ビルド済み" : "ビルド・チェック済み"}（台帳は進捗で確認）`;
+    if (run.review_kind === "roslyn_preflight") return "事前診断の指摘を確認";
     if (run.status === "building") return "ビルド・テストを実行";
     if (run.status === "checker_needs_review") return "チェッカーの指摘を確認";
     if (run.status === "cancelled") return "実行待ちから取り消しました";
@@ -187,7 +188,7 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         name.append(node("span", run.unit_id, "run-unit"), node("span", run.run_id, "run-id"));
         const state = node("td");
         const tone = category(run);
-        const status = node("span", `${({active: "●", queued: "◷", review: "!", paused: "Ⅱ", done: "✓"})[tone]} ${run.queued ? "実行待ち" : run.awaiting_answer ? "回答待ち" : statuses[run.status] || "処理中"}`, "run-status");
+        const status = node("span", `${({active: "●", queued: "◷", review: "!", paused: "Ⅱ", done: "✓"})[tone]} ${run.queued ? "実行待ち" : run.awaiting_answer ? "回答待ち" : run.review_kind === "roslyn_preflight" ? "事前診断で停止" : statuses[run.status] || "処理中"}`, "run-status");
         status.dataset.tone = tone;
         state.append(status);
         const current = node("td", describe(run), "run-current");

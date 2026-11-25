@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, stub_syntax_diagnostics
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_records
 from migration_harness.runs.editor_queue import add_prompt, editor_queue
@@ -37,6 +37,7 @@ class MultipleTargetsTest(HarnessCase):
 
     def setUp(self):
         super().setUp()
+        self.enterContext(stub_syntax_diagnostics())
         (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
         for name in self.targets:
             (self.project / name).write_text(f"original {name}", encoding="utf-8")

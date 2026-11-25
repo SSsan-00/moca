@@ -311,6 +311,7 @@ function syncBuildReview(canAct) {
   buildSubmit.disabled = !canAct || !snapshot.resumable || buildLoading || tooLarge;
   buildSubmit.textContent = instructed
     ? (edited ? "保存して Junie に修正を依頼" : "Junie に修正を依頼して再開")
+    : snapshot.review_kind === "roslyn_preflight" ? (edited ? "保存して再診断" : "再診断して再開")
     : (edited ? "保存して再ビルド" : "再ビルド");
   if (buildFile) {
     buildFileStatus.textContent = tooLarge ? `${buildFile.maxBytes / (1024 * 1024)} MiB を超えています。作業ツリーで編集してください。`
@@ -372,7 +373,8 @@ async function openBuildReview() {
   element("#build-review-intro").textContent = Number.isInteger(snapshot.build_exit_code)
     ? `ビルドの終了コード ${snapshot.build_exit_code}。独自チェッカーの前で停止しました。`
     : "ビルド工程で停止しました。エラーの詳細を確認してください。";
-  errors.textContent = "ビルド出力を読み込んでいます…";
+  element("#build-review-title").textContent = snapshot.review_kind === "roslyn_preflight" ? "正式ビルド前の構文診断" : "ビルド失敗の詳細";
+  errors.textContent = "詳細を読み込んでいます…";
   logSection.hidden = editor.hidden = true;
   buildFeedback.textContent = snapshot.message || (!snapshot.resumable
     ? "再開するには、前回の実行で使用したチェッカーを設定してください。" : "");
@@ -383,9 +385,18 @@ async function openBuildReview() {
   try {
     const review = await fetchBuildReview(runId);
     if (request !== buildRequest) return;
+    const preflight = review.review_kind === "roslyn_preflight";
+    if (preflight) {
+      element("#build-review-title").textContent = "正式ビルド前の構文診断";
+      element("#build-review-intro").textContent = "事前診断で停止しました。今回の正式ビルドは実行していません。";
+    }
+    errors.setAttribute("aria-label", preflight ? "事前診断の指摘" : "ビルドエラー");
+    element("#build-review-log").setAttribute("aria-label", preflight ? "Junieの修正差分" : "ビルド出力");
     errors.textContent = review.errors.join("\n") || snapshot.error || "エラーの詳細はビルド出力を確認してください。";
     element("#build-review-log").textContent = review.log;
-    element("#build-review-log-label").textContent = review.truncated ? "ビルド出力（末尾 64 KiB）" : "ビルド出力";
+    element("#build-review-log-label").textContent = preflight
+      ? (review.truncated ? "Junieの修正差分（一部を表示）" : "Junieの修正差分")
+      : (review.truncated ? "ビルド出力（末尾 64 KiB）" : "ビルド出力");
     logSection.hidden = !review.log;
     const selected = buildFile?.target || (!newRun && buildTarget.value) || review.preferred_target;
     buildTarget.replaceChildren(new Option("ファイルを選択", ""), ...review.targets.map(path => new Option(path, path)));
@@ -687,6 +698,7 @@ function describe(state) {
   if (state.status === "queued") return "準備を開始しています";
   if (state.status === "cancelled") return "待機取消済み";
   if (state.generating_anchors) return "Junieでアンカー生成中";
+  if (state.status === "build_failed" && state.review_kind === "roslyn_preflight") return "事前診断で停止";
   const label = statusNames[state.status] || state.status;
   if (state.script_phase && scriptPhases[state.script_phase]) return `${scriptPhases[state.script_phase]}の${label}`;
   if (state.status === "checker_needs_review" && !state.ready) return "チェッカー結果を処理中";
@@ -1349,6 +1361,7 @@ function render() {
   const showReview = checkerReviewStatuses.has(data.status)
     && (data.ready || data.generating_anchors || dialog.open);
   const showBuildReview = data.ready && data.status === "build_failed";
+  const preflightReview = showBuildReview && data.review_kind === "roslyn_preflight";
   if (!showBuildReview && buildDialog.open) buildDialog.close();
   if (data.ready && buildEditSubmitted) {
     buildEditSubmitted = false;
@@ -1375,7 +1388,7 @@ function render() {
   state.classList.toggle("is-running", !data.ready);
   element("#flow").classList.toggle("is-paused", !!data.ready);
   state.dataset.state = done ? "complete" : showReview || waitingForJunie || verificationFinished ? "waiting" : stopped ? "paused" : "running";
-  reviewButton.textContent = waitingForJunie ? "Junie の確認を開く" : showBuildReview ? "ビルド失敗を確認"
+  reviewButton.textContent = waitingForJunie ? "Junie の確認を開く" : preflightReview ? "事前診断を確認" : showBuildReview ? "ビルド失敗を確認"
     : showReview ? "チェッカー出力を確認" : verificationFinished ? "ビルド・チェックを再実行" : "同じ実行を再開";
   if (showReview || showBuildReview || waitingForJunie) reviewButton.setAttribute("aria-haspopup", "dialog");
   else reviewButton.removeAttribute("aria-haspopup");

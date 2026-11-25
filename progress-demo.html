@@ -240,6 +240,12 @@
     .editor-notice { margin: 10px 10px 0; padding: 8px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: var(--amber-soft); color: var(--amber-ink); }
     .editor-source { position: relative; flex: 1; min-height: 0; border-block: 1px solid var(--line); }
     .editor-source > div { position: absolute; inset: 0; }
+    .editor-diagnostics { flex: none; border-top: 1px solid var(--line); font-size: 12px; }
+    .editor-diagnostics summary { cursor: pointer; padding: 6px 12px; font-weight: 650; }
+    .editor-diagnostics ul { list-style: none; margin: 0; padding: 0 10px; max-height: min(20vh, 10rem); overflow-y: auto; }
+    .editor-diagnostics li button { width: 100%; border: 0; padding: 5px 2px; font: inherit; text-align: left; color: var(--ink); background: none; cursor: pointer; overflow-wrap: anywhere; }
+    .editor-diagnostics button:is(:hover,:focus-visible) { color: var(--blue); }
+    .editor-diagnostics p { margin: 0; padding: 2px 12px 8px; }
     .editor-header { display: grid; gap: 6px; }
     .editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .editor-header-actions, .editor-languages { display: flex; gap: 6px; }
@@ -1087,6 +1093,12 @@
         <p class="editor-notice" id="editor-update" role="status" hidden></p>
         <p class="workspace-feedback" id="editor-error" role="alert" hidden></p>
         <div class="editor-source"><div id="editor-code"></div><div id="editor-diff" hidden></div><div id="editor-php" hidden></div></div>
+        <details class="editor-diagnostics" id="editor-diagnostics" hidden>
+          <summary>構文診断<span id="editor-diagnostic-status" role="status"></span></summary>
+          <p class="editor-muted" id="editor-diagnostic-note"></p>
+          <button class="button" id="editor-diagnostic-retry" type="button" hidden>もう一度診断</button>
+          <ul id="editor-diagnostic-list" aria-label="構文診断の指摘"></ul>
+        </details>
       </section>
       <div class="editor-splitter" role="separator" aria-label="エディタとJunieの幅を調整"
            aria-controls="editor-pane" aria-orientation="vertical" tabindex="0"></div>

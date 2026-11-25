@@ -542,7 +542,7 @@ class RunManager:
                 view.publish({**view.state, **view.available_actions(self.config, record)})
 
     def row(self, view):
-        keys = ("run_id", "unit_id", "created_at", "status", "ready", "resumable", "build_resumable", "worktree_path", "queued",
+        keys = ("run_id", "unit_id", "created_at", "status", "review_kind", "ready", "resumable", "build_resumable", "worktree_path", "queued",
                 "operation_id", "cancellable", "stop_requested", "context_capsules", "current_capsule", "completed_capsules",
                 "active_stage", "stage_timings", "timing_updated_at", "phase_activity", "error", "message")
         row = {key: copy.deepcopy(view.state[key]) for key in keys if key in view.state}

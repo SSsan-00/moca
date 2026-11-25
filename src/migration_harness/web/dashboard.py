@@ -100,13 +100,22 @@ from migration_harness.runs.worktree_targets import EDIT_BYTES, save_target_edit
 
 
 PROGRESS_FIELDS = (
-    "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule",
+    "run_id", "unit_id", "target", "worktree_path", "status", "created_at", "current_capsule", "review_kind",
     "context_capsules", "completed_capsules", "context_part_chars", "max_context_chars",
     "build_exit_code", "build_log_path", "build_attempt_seconds",
     "checker_exit_code", "checker_log_path", "checker_review_reason", "checker_advisory", "error",
     "script_phase", "script_logs", "script_advisories", "stage_timings", "active_stage", "timing_updated_at", "last_stop", "cost_exchange",
 )
 _ERRORS = (OSError, ValueError, RuntimeError, CalledProcessError, KeyError, TypeError, AttributeError, TOMLKitError)
+
+def _progress_fields(record):
+    values = {key: record[key] for key in PROGRESS_FIELDS if key in record}
+    diagnostic = record.get("roslyn_preflight")
+    if (record.get("status") == "build_failed" and record.get("build_exit_code") is None
+            and isinstance(diagnostic, dict) and diagnostic.get("status") in {"blocked", "cancelled"}):
+        values["review_kind"] = "roslyn_preflight"
+    return values
+
 
 def _editor_stamp(path: Path) -> tuple | None:
     """ポーリング時に本文を読まず、差し替えや外部編集を検知する。"""
@@ -308,15 +317,15 @@ class Dashboard:
 
     @staticmethod
     def list_record(record: dict[str, Any]) -> dict[str, Any]:
-        fields = (*PROGRESS_FIELDS, "token_usage", "hidden_from_dashboard", "repair_pending",
+        fields = ("token_usage", "hidden_from_dashboard", "repair_pending",
                   "migration_stop_unconfirmed", "checker_required", "verification", "target_apply_pending", "script_inflight")
-        result = {key: record[key] for key in fields if key in record}
+        result = _progress_fields(record) | {key: record[key] for key in fields if key in record}
         result["repair_history"] = range(len(record.get("repair_history", [])))
         return result
 
     def observe(self, record: dict[str, Any]) -> None:
         """Run記録から公開する項目を絞り、進捗に影響する変更だけを配信する。"""
-        state = {key: copy.deepcopy(record[key]) for key in PROGRESS_FIELDS if key in record}
+        state = copy.deepcopy(_progress_fields(record))
         state["repair_count"] = len(record.get("repair_history", [])) + (
             record.get("status") == "repairing" and "repair_pending" in record
         )
@@ -1130,7 +1139,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
 
         def do_POST(self) -> None:
             if self.path not in (prefix + "control", prefix + "comparison", prefix + "settings",
-                                  prefix + "build-response", prefix + "editor", prefix + "prompts",
+                                  prefix + "build-response", prefix + "editor", prefix + "roslyn-diagnostics", prefix + "prompts",
                                   prefix + "rule-workspace", prefix + "rule-review", prefix + "junie-requests"):
                 if (self.path.partition("?")[0] == prefix + "editor-php"
                         and self.headers.get("Host") == self.expected_host
@@ -1170,6 +1179,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 self.save_settings(action)
             elif route == "editor":
                 self.post_editor(action)
+            elif route == "roslyn-diagnostics":
+                self.send_roslyn_diagnostics(action)
             elif route == "prompts":
                 self.send_prompts(action)
             elif route == "comparison":
@@ -1237,6 +1248,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
             limit = 16_384
             if route in {"settings", "rule-workspace"}:
                 limit = 13 * 1024 * 1024
+            elif route == "roslyn-diagnostics":
+                limit = 6 * EDIT_BYTES + 16_384
             elif route == "build-response":
                 # JSON エスケープはソースの 1 バイトを最大 6 バイトに展開する。
                 limit = 6 * EDIT_BYTES + 256 * 1024
@@ -1275,6 +1288,28 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                     self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode())
                     return False
             return True
+
+        def send_roslyn_diagnostics(self, action: dict[str, Any]) -> None:
+            from migration_harness.verification.roslyn_syntax import editor_diagnostics
+
+            try:
+                run_id = action.get("run_id")
+                validate_run_id(run_id)
+                state = self.dashboard.state
+                if (state.get("run_id") != run_id or not state.get("worktree_path")
+                        or self.headers.get("X-Run-ID", run_id) != run_id):
+                    raise ValueError("表示中の実行が変わりました。")
+                _, _, _, unit = load_saved_run(config, run_id)
+                target, version = action.get("target"), action.get("version")
+                if target not in [p.as_posix() for p in target_paths(unit) if p.suffix.lower() in EDITOR_TARGET_SUFFIXES]:
+                    raise ValueError("設定された移行先ファイルを選んでください。")
+                if not isinstance(version, str) or not 0 < len(version) <= 128:
+                    raise ValueError("診断する下書きの版が無効です。")
+                content = editor_text(action.get("content"))
+                result = editor_diagnostics(target, content, version)
+                self.send_body(200, "application/json", json.dumps(result, ensure_ascii=False).encode("utf-8"))
+            except _ERRORS as exc:
+                self.send_body(409, "text/plain; charset=utf-8", format_error(exc).encode("utf-8"))
 
         def post_editor(self, action: dict[str, Any]) -> None:
             """編集を保存するか、会話を永続化して受付後にディスパッチへ通知する。"""

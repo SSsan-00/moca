@@ -227,8 +227,15 @@ class ExecutionIntegrationTests(HarnessCase):
         record.update(status="junie_finished", completed_capsules=1)
         run_records.write_run_record(record_path, record)
         control = ExecutionControl(lambda _event: None)
-        control.cancelled.set()
-        with control_scope(control), self.assertRaises(workflow.RunInterrupted):
+        def stop_running_build(command, **_):
+            self.assertEqual(command[0], "dotnet")
+            control.cancelled.set()
+            raise OperationCancelled()
+
+        with (
+            control_scope(control), self.assertRaises(workflow.RunInterrupted),
+            patch.object(workflow, "run_process", side_effect=stop_running_build),
+        ):
             workflow.resume_with_junie(self.settings, result["run_id"])
         stopped = json.loads(record_path.read_bytes())
         self.assertEqual(stopped["status"], "build_failed")

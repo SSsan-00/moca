@@ -77,11 +77,13 @@ function createEditor(host, options = {}) {
 }
 const pending = [];
 const timers = [];
+let debounce;
 let editorTransport;
 const context = vm.createContext({
   document, window: {monaco: {
-    KeyMod: {CtrlCmd: 1}, KeyCode: {KeyS: 1},
+    KeyMod: {CtrlCmd: 1}, KeyCode: {KeyS: 1}, MarkerSeverity: {Error: 8},
     editor: {createModel, create: createEditor, createDiffEditor: createEditor, EndOfLinePreference: {LF: 0}, setTheme() {},
+      setModelMarkers(model, _, markers) { model.markers = markers; },
       setModelLanguage(model, language) { model.setLanguage(language); }},
   }},
   crypto: {randomUUID},
@@ -90,6 +92,7 @@ const context = vm.createContext({
     if (editorTransport) return editorTransport(path, body);
     return new Promise((resolve, reject) => pending.push({path, body, resolve, reject}));
   },
+  setTimeout(callback) { debounce = callback; return callback; }, clearTimeout(timer) { if (debounce === timer) debounce = undefined; },
   ResizeObserver: class { observe() {} }, MutationObserver: class { observe() {} },
   addEventListener() {}, setInterval(callback) { timers.push(callback); },
   URL: {createObjectURL() { return "blob:worker"; }}, Blob, URLSearchParams,
@@ -731,6 +734,31 @@ async function checkQueuedEditorHttp(address, runId) {
   await flush();
   assert.equal(editors.get(find("#editor-php")).getModel().getValue(), "fresh B PHP");
   assert.equal(model().getValue(), "class B { /* edit */ }");
+  await find("#editor-target-buttons").emit("click", {target: {dataset: {target: "Page.cs"}}});
+  const b = model();
+  b.setValue("class Draft {");
+  const previousDiagnosis = debounce();
+  const older = take("roslyn-diagnostics");
+  assert.equal(older.body.content, "class Draft {");
+  b.setValue("class Draft {}");
+  const freshDiagnosis = debounce();
+  const newer = take("roslyn-diagnostics");
+  const responseFor = ({body}, findings) => ({target: body.target, version: body.version, status: findings.length ? "errors" : "clear", findings, razor: []});
+  newer.resolve(responseFor(newer, []));
+  await freshDiagnosis;
+  const fictional = [{start: 0, length: 2, line: 1, column: 1, code: "CS1513", message: "}"}];
+  older.resolve(responseFor(older, fictional));
+  await previousDiagnosis;
+  assert.deepEqual([...b.markers], [], "an obsolete result must not add markers to the corrected draft");
+  b.setValue("class NewDraft {");
+  const switchedDiagnosis = debounce();
+  const oldRun = take("roslyn-diagnostics");
+  await select("A");
+  take().resolve(response("A"));
+  await flush();
+  oldRun.resolve(responseFor(oldRun, fictional));
+  await switchedDiagnosis;
+  assert.equal(find("#editor-diagnostic-list").children.length, 0, "same target name in another Run is independent");
   await checkConversationFileSwitch();
   console.log("Dashboard: Razor target changes preserve Run chat receipts, unsent drafts, and retry IDs.");
   console.log("Dashboard: same-file run isolation, delayed responses, drafts, saves, and recovery passed.");

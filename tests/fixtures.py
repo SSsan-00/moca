@@ -12,6 +12,13 @@ from migration_harness import workflow
 from migration_harness.config import load_config
 
 
+def stub_syntax_diagnostics():
+    """Keep mocked build scenarios with placeholder source independent of the installed SDK."""
+    return patch.object(workflow, "syntax_diagnostics", side_effect=lambda *_: {
+        "status": "clear", "reason": "ok", "seconds": 0.0,
+    })
+
+
 class HarnessCase(unittest.TestCase):
 
     def setUp(self):
