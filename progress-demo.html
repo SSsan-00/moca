@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#edf1f6">
-  <title>移行ハーネス | 進捗画面デモ</title>
+  <title>MoCA | 進捗画面デモ</title>
   <style>
     :root {
       color-scheme: light;
@@ -718,8 +718,6 @@
     .review-finding h3 { margin: 10px 0 5px; font-size: 14px; }
     .review-finding > p { margin: 0; color: var(--amber-ink); font-size: 12px; }
     #checker-open-editor { margin-top: 12px; }
-  #rule-verification-form label { display: grid; gap: 4px; margin-block: 10px; }
-  #rule-verification-form input, #rule-verification-form select, #rule-verification-form textarea { width: 100%; }
     .review-location { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 14px 0 10px; }
     .review-location div { min-width: 0; padding: 9px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); }
     .review-location small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
@@ -831,22 +829,14 @@
     .migration-ledger-row ul { margin: 4px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .migration-ledger-row li { margin-top: 8px; }
     .migration-ledger-row code { color: var(--ink); }
-    .migration-ledger-review-button { margin-left: 8px; }
-    .migration-ledger-review { display: grid; gap: 10px; margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
-    .migration-ledger-review[hidden] { display: none; }
-    .migration-ledger-review label { display: grid; gap: 5px; }
-    .migration-ledger-review select, .migration-ledger-review textarea { width: 100%; }
-    .migration-ledger-review fieldset { display: grid; gap: 5px; border: 0; margin: 0; padding: 0; }
-    .migration-ledger-review fieldset label { display: flex; align-items: center; gap: 6px; }
-    .migration-ledger-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .migration-ledger-state { flex-shrink: 0; font-size: 12px; font-weight: 700; color: var(--muted); }
     .migration-ledger-state[data-state="complete"] { color: var(--green); }
     .migration-ledger-state[data-state="running"] { color: var(--blue); }
     .migration-ledger-state[data-state="paused"] { color: var(--amber); }
     .migration-mapping { margin: 5px 0 10px; }
-    .migration-ledger-row:not([data-state="complete"]) .migration-mapping:not([data-reviewed]) { display: none; }
+    .migration-ledger-row:not([data-state="complete"]) .migration-mapping { display: none; }
     .migration-mapping-status { color: var(--amber); font-weight: 700; }
-    .migration-mapping-status[data-confirmation="confirmed"] { color: var(--green); }
     .migration-mapping-status[data-confirmation="candidate"] { color: var(--blue); }
     @keyframes review-dialog-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
     @keyframes review-dialog-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
@@ -958,7 +948,7 @@
 <body>
 <main class="shell">
   <nav class="topline" aria-label="ページ">
-    <a class="brand" href="./migration-harness-spec.html">Migration Harness</a>
+    <a class="brand" href="./migration-harness-spec.html" title="Migration Orchestrator &amp; Coding Assistant">MoCA</a>
     <div class="workspace-tabs" role="tablist" aria-label="ハーネス操作">
       <button id="tab-progress" type="button" role="tab" aria-selected="true" aria-controls="workspace-progress">進捗</button>
       <button id="tab-editor" type="button" role="tab" aria-selected="false" aria-controls="workspace-editor" tabindex="-1" hidden>エディタ</button>
@@ -1673,7 +1663,7 @@
     <p id="recovery-dialog-intro"></p>
     <div class="recovery-options" id="recovery-options"></div>
     <p id="recovery-dialog-status" role="status"></p>
-    <div class="migration-ledger-review-actions"><button class="button primary" id="recovery-submit" type="submit">選択を保存</button><button class="button" id="recovery-cancel" type="button">キャンセル</button></div>
+    <div class="recovery-actions"><button class="button primary" id="recovery-submit" type="submit">選択を保存</button><button class="button" id="recovery-cancel" type="button">キャンセル</button></div>
   </form>
 </dialog>
 <dialog class="review-dialog" id="migration-ledger-dialog" aria-labelledby="migration-ledger-title">
@@ -1682,15 +1672,8 @@
       <h2 id="migration-ledger-title" tabindex="-1">移行台帳</h2>
       <form method="dialog"><button class="review-close" type="submit" aria-label="移行台帳を閉じる">×</button></form>
     </header>
-    <p><button class="review-action" id="open-rule-verification" type="button" disabled>ルールの反映を確認</button></p>
-    <form id="operator-note-scope">
-      <label>利用者メモの根拠範囲：カプセル <input id="operator-note-through" type="number" min="1" step="1" placeholder="全範囲"> まで</label>
-      <label>起動時メモの参照ID <input id="operator-note-receipt" type="text" maxlength="64" pattern="[0-9a-f]{64}" placeholder="現在版は空欄" autocomplete="off"></label>
-      <button type="submit">表示</button>
-    </form>
     <details id="unresolved-operator-notes" hidden>
       <summary>利用者の未解決メモ</summary>
-      <p id="operator-note-receipt-active" hidden>指定したJunie起動時点のメモです。現在の移行先の状態や完了判定とは別です。</p>
       <p>現在の資料・移行先と版が一致する確認事項です。Junieへの本文の引き継ぎは最新3件までです。</p>
       <ul></ul>
     </details>
@@ -1712,40 +1695,6 @@
     </div>
     <p class="review-intro" id="migration-ledger-message" role="status" hidden></p>
     <ol class="migration-ledger-list" id="migration-ledger-list" aria-label="カプセルごとの処理状況"></ol>
-    <form class="migration-ledger-review" id="migration-ledger-review" hidden>
-      <strong id="migration-review-range"></strong>
-      <label>判断<select id="migration-review-state" required>
-        <option value="">選択してください</option><option value="confirmed">確認済み</option>
-        <option value="excluded">対象外</option><option value="needs_review">要確認</option>
-      </select></label>
-      <fieldset id="migration-review-targets" hidden><legend>確認した移行先</legend></fieldset>
-      <label>判断した理由<textarea id="migration-review-reason" rows="2" maxlength="2000" required></textarea></label>
-      <div class="migration-ledger-review-actions"><button class="button primary" type="submit">判断を記録</button><button class="button" id="migration-review-cancel" type="button">閉じる</button></div>
-      <p id="migration-review-status" role="status"></p>
-    </form>
-  </div>
-</dialog>
-<dialog class="review-dialog" id="rule-verification-dialog" aria-labelledby="rule-verification-title">
-  <div class="review-dialog-inner">
-    <header class="review-heading">
-      <h2 id="rule-verification-title">ルールの反映確認</h2>
-      <form method="dialog"><button class="review-close" type="submit" aria-label="ルールの反映確認を閉じる">×</button></form>
-    </header>
-    <p>ビルドの成功とは別に、ルールの適用と反映を確認します。根拠が足りない場合は、適用判断待ちまたは要確認のままにしてください。</p>
-    <p id="rule-verification-status" role="status"></p>
-    <form id="rule-verification-form" hidden>
-      <label>ルール <select id="rule-verification-rule" required></select></label>
-      <p id="rule-verification-context"></p>
-      <label>判定
-        <select id="rule-verification-kind" name="kind" required><option value="">選択してください</option><option value="include">このルールを適用する</option><option value="exclude">このルールを適用しない</option><option value="passed">反映を確認</option><option value="failed">未反映を確認</option></select>
-      </label>
-      <label>ルール本文の開始行 <input name="start" type="number" min="1" required></label>
-      <label>終了行 <input name="end" type="number" min="1" required></label>
-      <label>判断した内容 <textarea name="reason" maxlength="2000" required></textarea></label>
-      <label>確認根拠（PHP・C#の箇所やテストの結果など） <input name="reference" maxlength="1000"></label>
-      <button class="review-action" type="submit">判断を記録</button>
-      <button class="review-action" id="rule-verification-to-editor" type="button" hidden>この判断を修正指示に使う</button>
-    </form>
   </div>
 </dialog>
 <template id="migration-mapping-template">
@@ -2132,29 +2081,20 @@ function updateMigrationLedgerStatuses(snapshot) {
   }
 }
 
-// 対応候補と人の判断を区別し、記録済みの理由を表示する。
-function migrationMapping({mapping, review}) {
+function migrationMapping({mapping}) {
   const entry = document.querySelector("#migration-mapping-template").content.firstElementChild.cloneNode(true);
   const status = entry.querySelector(".migration-mapping-status");
   const location = entry.querySelector(".migration-mapping-location");
-  const confirmation = review?.state || (mapping?.valid || mapping?.snapshot_id ? "candidate" : mapping ? "stale" : "needs_review");
+  const confirmation = mapping.valid ? "candidate" : "stale";
   status.dataset.confirmation = confirmation;
-  status.textContent = {confirmed: "人の確認済み", candidate: "候補あり", excluded: "対象外", needs_review: "要確認", stale: "要再確認"}[confirmation];
-  if (review?.targets) {
-    location.textContent = ` · ${review.targets.join(" / ")}`;
-  } else if (mapping) {
-    const lines = mapping.start_line === mapping.end_line ? `${mapping.start_line}行目` : `${mapping.start_line}–${mapping.end_line}行`;
-    location.textContent = ` · ${mapping.path} ${lines}`;
-    if (mapping.snapshot_id) location.append(`（アンカー ${mapping.anchors}件）`);
-  }
-  if (review) {
-    entry.dataset.reviewed = "";
-    location.append(` · 理由 ${review.reason}`);
-  }
+  status.textContent = mapping.valid ? "対応候補あり" : "対応候補の版が変更済み";
+  const lines = mapping.start_line === mapping.end_line ? `${mapping.start_line}行目` : `${mapping.start_line}–${mapping.end_line}行`;
+  location.textContent = ` · ${mapping.path} ${lines}`;
+  if (mapping.snapshot_id) location.append(`（アンカー ${mapping.anchors}件）`);
   return entry;
 }
 
-function migrationLedgerRow(capsule, editable, edit) {
+function migrationLedgerRow(capsule) {
   const row = document.createElement("li");
   row.className = "migration-ledger-row";
   const header = document.createElement("div");
@@ -2181,17 +2121,7 @@ function migrationLedgerRow(capsule, editable, edit) {
       text.append(`（${slice.line}行目の${slice.focus_start_column}–${slice.focus_end_column}文字目）`);
     }
     range.append(text);
-    range.append(migrationMapping(source));
-    if (source.id) {
-      const review = document.createElement("button");
-      review.type = "button";
-      review.className = "button migration-ledger-review-button";
-      review.textContent = "判断";
-      review.disabled = !editable;
-      review.setAttribute("aria-label", `${source.path} ${lines}の判断`);
-      review.addEventListener("click", () => edit(source));
-      range.append(review);
-    }
+    if (source.mapping) range.append(migrationMapping(source));
     ranges.append(range);
   }
   if (!capsule.sources.length) {
@@ -2213,16 +2143,15 @@ function openMigrationLedger(message = "") {
   document.querySelector("#migration-ledger-title").focus();
 }
 
-function showMigrationLedger(ledger, snapshot, compare, edit) {
+function showMigrationLedger(ledger, snapshot, compare) {
   document.querySelector("#migration-ledger-run-id").textContent = ledger.run_id;
   document.querySelector("#migration-ledger-target").textContent = (ledger.targets || [ledger.target]).join(" / ");
-  const {complete, verification_passed, reviewed, total} = ledger.completion;
-  const progress = `確認済み・対象外 ${reviewed} / ${total} 範囲`;
+  const {verification_passed} = ledger.completion;
+  const progress = `処理済み ${snapshot.completed_capsules ?? 0} / ${ledger.capsules.length} カプセル`;
   const verification = verification_passed ? "ビルド・チェック確認済み" : "ビルド・チェックの確認が必要";
   document.querySelector("#migration-ledger-completion").textContent =
-    `${complete ? "移行完了" : "移行未完了"} · ${progress} · ${verification}`;
-  migrationLedgerList.replaceChildren(...ledger.capsules.map(capsule => migrationLedgerRow(
-    capsule, snapshot.ready && !snapshot.queued && typeof ledger.review_version === "string", edit)));
+    `${progress} · ${verification}`;
+  migrationLedgerList.replaceChildren(...ledger.capsules.map(migrationLedgerRow));
   migrationLedgerDetails.hidden = false;
   migrationLedgerMessage.hidden = true;
   const snapshotId = ledger.capsules.flatMap(capsule => capsule.sources)
@@ -2604,9 +2533,9 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
 <script defer src="./src/migration_harness/web/dashboard_settings_demo.js"></script>
 <script defer src="./src/migration_harness/web/dashboard_editor_demo.js?polish=1"></script>
 <script defer src="./src/migration_harness/web/dashboard_rule_workspace_demo.js?polish=1"></script>
-<script defer src="./src/migration_harness/web/dashboard_demo.js?polish=3"></script>
-<script defer src="./src/migration_harness/web/dashboard.js?polish=3"></script>
-<script defer src="./src/migration_harness/web/dashboard_editor.js?polish=1"></script>
+<script defer src="./src/migration_harness/web/dashboard_demo.js?polish=4"></script>
+<script defer src="./src/migration_harness/web/dashboard.js?polish=4"></script>
+<script defer src="./src/migration_harness/web/dashboard_editor.js?polish=2"></script>
 <script defer src="./src/migration_harness/web/dashboard_rule_workspace.js?polish=1"></script>
 </body>
 </html>

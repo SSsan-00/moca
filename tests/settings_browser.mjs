@@ -571,6 +571,8 @@ try {
   const staticOrigin = "http://127.0.0.1:" + staticServer.address().port;
   await navigate("Page.navigate", {url: staticOrigin + nested + "progress-demo.html"});
   await wait(ready);
+  assert.equal(await evaluate("document.querySelector('.brand').textContent"), "MoCA");
+  assert.equal(await evaluate("document.title"), "MoCA | 進捗");
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)"), liveTabs);
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)"), liveSteps);
   assert.equal(await evaluate("document.querySelector('#workspace-new-run button[value=prepare]')"), null);
@@ -581,12 +583,10 @@ try {
   await wait(field("migration-ledger-dialog") + ".open && !" + field("migration-ledger-compare") + ".hidden");
   await wait("document.querySelector('#unresolved-junie-memos li')?.textContent");
   const demoMemo = await evaluate("document.querySelector('#unresolved-junie-memos li').textContent");
-  await evaluate("document.querySelector('.migration-ledger-review-button').click()");
-  await wait("!" + field("migration-ledger-review") + ".hidden");
-  await change("migration-review-state", "excluded");
-  await change("migration-review-reason", "対象外を確認", "input");
-  await evaluate("document.querySelector('#migration-ledger-review button[type=submit]').click()");
-  await wait("document.querySelector('.migration-mapping-status')?.textContent === '対象外'");
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('#migration-ledger-dialog button'), b => b.textContent.trim()).includes('判断')"), false);
+  assert.equal(await evaluate("document.querySelector('#operator-note-scope')"), null);
+  assert.equal(await evaluate("document.querySelector('#open-rule-verification')"), null);
+  assert.match(await evaluate(field("migration-ledger-completion") + ".textContent"), /処理済み \d+ \/ \d+ カプセル/);
   await evaluate(field("migration-ledger-dialog") + ".close()");
   await click("tab-editor");
   await wait("!" + field("workspace-editor") + ".hidden");

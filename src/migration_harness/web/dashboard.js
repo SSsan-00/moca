@@ -42,7 +42,7 @@ const activity = element("#activity");
 const ledger = element("#ledger-list");
 const steps = [...document.querySelectorAll(".step")];
 steps[4].querySelector("h3").textContent = "ビルド";
-steps[6].querySelector("h3").textContent = "人の確認";
+steps[6].querySelector("h3").textContent = "検証結果";
 const statusNames = {
   idle: "実行を選択してください", preparing: "準備中", prepared: "準備完了", junie_running: "Junieで移行中",
   junie_finished: "Junieの編集完了", editor_checkpoint: "編集・追加指示の反映", repairing: "Junieで修正中", building: "ビルド中",
@@ -85,7 +85,7 @@ let stopPendingOperation;
 const snapshotting = new Set();
 let pendingOnly = false;
 
-document.title = "移行ハーネスの進捗";
+document.title = "MoCA | 進捗";
 element("#elapsed").setAttribute("aria-label", "計測済み工程の合計経過時間");
 element("#elapsed").title = "計測済み工程の合計（停止中の待ち時間を除く）";
 element(".brand").href = "./";
@@ -210,7 +210,6 @@ function syncActions() {
   migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
   dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || !snapshot.diff_viewer_enabled || snapshotting.has(snapshot.run_id);
   element("#migration-ledger-compare").disabled = dashboardViewer.disabled;
-  element("#open-rule-verification").disabled = !connected || !snapshot.ready || !snapshot.run_id;
   for (const button of anchorButtons) {
     button.disabled = dashboardViewer.disabled || !snapshot.ready || submitting;
   }
@@ -793,109 +792,28 @@ function showUnresolvedNotes(selector, rows) {
   }
 }
 
-const operatorScope = element("#operator-note-through");
-const operatorReceipt = element("#operator-note-receipt");
-const migrationReview = element("#migration-ledger-review");
-const migrationReviewState = element("#migration-review-state");
-const migrationReviewTargets = element("#migration-review-targets");
-const migrationReviewStatus = element("#migration-review-status");
-let migrationReviewSelection;
-
-function editMigrationReview(ledger, source) {
-  migrationReviewSelection = {run: ledger.run_id, source, version: ledger.review_version};
-  migrationReview.reset();
-  migrationReviewStatus.textContent = "";
-  element("#migration-review-range").textContent = `${source.path} · ${source.start_line}–${source.end_line}行`;
-  migrationReviewTargets.replaceChildren(document.createElement("legend"));
-  migrationReviewTargets.querySelector("legend").textContent = source.mapping?.valid
-    ? "確認した移行先（対応候補を使う場合は選択不要）" : "確認した移行先（1件以上選択）";
-  for (const target of ledger.targets || [ledger.target]) {
-    const label = document.createElement("label");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = target;
-    label.append(checkbox, document.createTextNode(target));
-    migrationReviewTargets.append(label);
-  }
-  migrationReviewTargets.hidden = true;
-  migrationReview.hidden = false;
-  migrationReviewState.focus();
-}
-
-migrationReviewState.addEventListener("change", () => {
-  migrationReviewTargets.hidden = migrationReviewState.value !== "confirmed";
-});
-element("#migration-review-cancel").addEventListener("click", () => {
-  migrationReview.hidden = true;
-  migrationReviewSelection = undefined;
-});
-migrationLedgerDialog.addEventListener("close", () => {
-  migrationReview.hidden = true;
-  migrationReviewSelection = undefined;
-});
-migrationReview.addEventListener("submit", async event => {
-  event.preventDefault();
-  const selected = migrationReviewSelection;
-  if (!selected || selected.run !== snapshot.run_id || !snapshot.ready) return;
-  const button = migrationReview.querySelector('button[type="submit"]');
-  const targets = migrationReviewState.value === "confirmed"
-    ? [...migrationReviewTargets.querySelectorAll('input:checked')].map(input => input.value) : [];
-  button.disabled = true;
-  migrationReviewStatus.textContent = "記録しています…";
-  try {
-    const response = await runFetch("migration-ledger", {method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({run_id: selected.run, range_id: selected.source.id, state: migrationReviewState.value,
-        reason: element("#migration-review-reason").value.trim(), targets, version: selected.version})});
-    if (!response.ok) throw await responseError(response);
-    if (migrationReviewSelection !== selected) return;
-    migrationReview.hidden = true;
-    migrationReviewSelection = undefined;
-    await loadMigrationLedger();
-  } catch (error) {
-    if (migrationReviewSelection === selected) migrationReviewStatus.textContent = error.message;
-  } finally {
-    button.disabled = false;
-  }
-});
-let operatorSelection = null;
-element("#operator-note-scope").addEventListener("submit", event => {
-  event.preventDefault();
-  operatorSelection = {run: snapshot.run_id, through: operatorScope.value, receipt: operatorReceipt.value.trim()};
-  showUnresolvedNotes("#unresolved-operator-notes", []);
-  loadMigrationLedger();
-});
-
 async function loadMigrationLedger({keepCompletion = false} = {}) {
   const request = ++migrationLedgerRequest;
-  const selected = migrationLedgerDialog.open && operatorSelection?.run === snapshot.run_id ? operatorSelection : null;
   try {
-    const query = new URLSearchParams();
-    if (selected?.through) query.set("operator_through", selected.through);
-    if (selected?.receipt) query.set("operator_receipt", selected.receipt);
-    if (migrationLedgerDialog.open && snapshot.ready && !snapshot.queued) query.set("review_version", "1");
-    const path = query.size ? `migration-ledger?${query}` : "migration-ledger";
-    const response = await runFetch(path, {cache: "no-store"});
+    const response = await runFetch("migration-ledger", {cache: "no-store"});
     if (!response.ok) throw await responseError(response);
     const ledger = await response.json();
     if (request !== migrationLedgerRequest || ledger.run_id !== snapshot.run_id) return;
     migrationCompletion = ledger.completion;
     render();
     if (!migrationLedgerDialog.open) return;
-    operatorScope.max = ledger.capsules.length;
-    element("#operator-note-receipt-active").hidden = !selected?.receipt;
     showUnresolvedNotes("#unresolved-junie-memos", ledger.unresolved_junie_memos || []);
     showUnresolvedNotes("#unresolved-operator-notes", ledger.unresolved_operator_notes || []);
     showMigrationLedger(ledger, snapshot, id => {
       const url = new URL(`${comparisonPath(ledger.run_id, id)}.html`, document.baseURI);
       displayComparison(url.href, reserveComparisonTab("比較を読み込み中"));
-    }, source => editMigrationReview(ledger, source));
+    });
   } catch (error) {
     if (request !== migrationLedgerRequest) return;
-    if (!keepCompletion && !selected?.receipt) migrationCompletion = undefined;
+    if (!keepCompletion) migrationCompletion = undefined;
     render();
     if (!migrationLedgerDialog.open) return;
     showUnresolvedNotes("#unresolved-operator-notes", []);
-    element("#operator-note-receipt-active").hidden = true;
     migrationLedgerMessage.hidden = false;
     migrationLedgerMessage.textContent = `移行台帳を読み込めませんでした。\n${error.message}`;
   }
@@ -906,11 +824,6 @@ document.addEventListener("harnessrunselect", () => {
   if (migrationLedgerDialog.open) migrationLedgerDialog.close();
 });
 migrationLedgerButton.addEventListener("click", () => {
-  operatorSelection = null;
-  operatorScope.value = "";
-  operatorScope.removeAttribute("max");
-  operatorReceipt.value = "";
-  element("#operator-note-receipt-active").hidden = true;
   showUnresolvedNotes("#unresolved-junie-memos", []);
   showUnresolvedNotes("#unresolved-operator-notes", []);
   openMigrationLedger("移行台帳を読み込み中");
@@ -931,144 +844,6 @@ function runFetch(path, options = {}) {
   if (runId && !["workspace", "token-runs", "settings", "junie-models"].includes(path)) headers.set("X-Run-ID", runId);
   return dashboardIO.fetch(path, {...options, headers});
 }
-
-const ruleVerificationDialog = element("#rule-verification-dialog");
-const ruleVerificationForm = element("#rule-verification-form");
-const ruleVerificationSelect = element("#rule-verification-rule");
-const ruleVerificationStatus = element("#rule-verification-status");
-const ruleVerificationLabels = {
-  passed: "反映確認済み", failed: "未反映", human_review_needed: "要確認",
-  applicability_pending: "適用判断待ち", not_applicable: "適用外",
-};
-const ruleVerificationKind = element("#rule-verification-kind");
-
-function updateRuleVerificationRequirement() {
-  ruleVerificationForm.elements.namedItem("reference").required =
-    ["passed", "failed"].includes(ruleVerificationKind.value);
-}
-ruleVerificationKind.addEventListener("change", updateRuleVerificationRequirement);
-let ruleVerificationReport;
-let ruleVerificationRequest = 0;
-
-function renderRuleVerification(report, preferredRule) {
-  ruleVerificationReport = report;
-  const rules = report.rules.filter(rule => ruleVerificationLabels[rule.verification_state]);
-  ruleVerificationSelect.replaceChildren(...rules.map(rule =>
-    new Option(`${rule.path}（${ruleVerificationLabels[rule.verification_state]}）`, rule.file)));
-  if (rules.some(rule => rule.file === preferredRule)) ruleVerificationSelect.value = preferredRule;
-  ruleVerificationForm.hidden = !rules.length;
-  const pending = rules.filter(rule => rule.verification_state === "human_review_needed").length;
-  const failed = rules.filter(rule => rule.verification_state === "failed").length;
-  const passed = rules.filter(rule => rule.verification_state === "passed").length;
-  const applicabilityPending = rules.filter(rule => rule.applicability_needs_review).length;
-  ruleVerificationStatus.textContent = rules.length
-    ? `要確認: ${pending} 件 / 未反映: ${failed} 件 / 反映確認済み: ${passed} 件 / 適用判断待ち: ${applicabilityPending} 件`
-    : "確認対象のルールがありません。";
-  renderRuleVerificationContext();
-}
-
-function renderRuleVerificationContext() {
-  const rule = ruleVerificationReport?.rules.find(item => item.file === ruleVerificationSelect.value);
-  const context = element("#rule-verification-context");
-  const transfer = element("#rule-verification-to-editor");
-  transfer.hidden = rule?.verification_state !== "failed";
-  if (!rule) {
-    context.textContent = "";
-    return;
-  }
-  for (const option of ruleVerificationKind.options) {
-    if (["include", "exclude"].includes(option.value)) {
-      option.hidden = option.disabled = rule.usage !== "reference";
-    }
-  }
-  if (ruleVerificationKind.selectedOptions[0]?.disabled) ruleVerificationKind.value = "";
-  updateRuleVerificationRequirement();
-  const decision = rule.operator_decision || rule.model_decision;
-  const last = rule.independent_verification;
-  const sources = rule.applicability_evidence.map(span => `${span.path}:${span.lines.join("–")}`);
-  context.textContent = [rule.description, rule.applicability_needs_review ? "適用の根拠が不足しています。確認してください。" : "",
-    decision?.reason, sources.length ? `選別の根拠: ${sources.join("、")}` : "",
-    last?.reason, last?.reference]
-    .filter(Boolean).join(" / ");
-  for (const field of ["start", "end"]) ruleVerificationForm.elements.namedItem(field).max = rule.saved_file_lines;
-}
-
-element("#open-rule-verification").addEventListener("click", async () => {
-  const request = ++ruleVerificationRequest;
-  const runId = snapshot.run_id;
-  ruleVerificationReport = undefined;
-  ruleVerificationForm.reset();
-  ruleVerificationForm.hidden = true;
-  ruleVerificationStatus.textContent = "確認対象を読み込んでいます。";
-  ruleVerificationDialog.showModal();
-  try {
-    const response = await runFetch(`rule-review?run_id=${encodeURIComponent(runId)}`, {cache: "no-store"});
-    if (!response.ok) throw await responseError(response);
-    const report = await response.json();
-    if (ruleVerificationDialog.open && request === ruleVerificationRequest) renderRuleVerification(report);
-  } catch (error) {
-    if (request === ruleVerificationRequest) ruleVerificationStatus.textContent = String(error);
-  }
-});
-ruleVerificationSelect.addEventListener("change", renderRuleVerificationContext);
-element("#rule-verification-to-editor").addEventListener("click", async () => {
-  const report = ruleVerificationReport;
-  const ruleId = ruleVerificationSelect.value;
-  if (!report || report.run_id !== snapshot.run_id) return;
-  const button = element("#rule-verification-to-editor");
-  button.disabled = true;
-  try {
-    const response = await runFetch(`rule-review?run_id=${encodeURIComponent(report.run_id)}`, {cache: "no-store"});
-    if (!response.ok) throw await responseError(response);
-    const current = await response.json();
-    if (report !== ruleVerificationReport || report.run_id !== snapshot.run_id || !ruleVerificationDialog.open) return;
-    if (current.version !== report.version) {
-      renderRuleVerification(current, ruleId);
-      ruleVerificationStatus.textContent = "実行または資料の版が変わりました。最新の判定を確認してください。";
-      return;
-    }
-    const rule = current.rules.find(item => item.file === ruleId);
-    const evidence = rule?.independent_verification;
-    if (evidence?.kind !== "failed") return;
-    const text = `反映確認で未反映と判断: ${rule.path}:${evidence.start_line}–${evidence.end_line}\n`
-      + `判断: ${evidence.reason}\n確認根拠: ${evidence.reference}\nこの方針に沿って対象を修正し、再検証してください。`;
-    window.harnessEditorStageDraft(report.run_id, text);
-    ruleVerificationDialog.close();
-    element("#migration-ledger-dialog").close();
-    switchHarnessTab(harnessTabs.indexOf(element("#tab-editor")), true);
-    element("#editor-prompt").focus();
-  } catch (error) {
-    if (report === ruleVerificationReport) ruleVerificationStatus.textContent = String(error);
-  } finally {
-    button.disabled = false;
-  }
-});
-ruleVerificationForm.addEventListener("submit", async event => {
-  event.preventDefault();
-  const report = ruleVerificationReport;
-  if (!report || report.run_id !== snapshot.run_id) return;
-  const data = Object.fromEntries(new FormData(ruleVerificationForm));
-  const rule = ruleVerificationSelect.value;
-  const button = event.submitter;
-  button.disabled = true;
-  try {
-    const response = await runFetch("rule-review", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({...data, rule, run_id: report.run_id, version: report.version,
-        start: Number(data.start), end: Number(data.end)}),
-    });
-    if (!response.ok) throw await responseError(response);
-    const updated = await response.json();
-    if (report === ruleVerificationReport && ruleVerificationDialog.open) {
-      ruleVerificationForm.reset();
-      renderRuleVerification(updated, rule);
-    }
-  } catch (error) {
-    if (report === ruleVerificationReport) ruleVerificationStatus.textContent = String(error);
-  } finally {
-    button.disabled = false;
-  }
-});
 
 function tailJunieLog(view) {
   const url = new URL("junie-thoughts", location.href);
@@ -1641,13 +1416,13 @@ function render() {
     || ["checker_failed", "script_failed", "interrupted", "junie_failed", "preparation_interrupted", "preparation_failed"].includes(data.status));
   const done = verificationFinished && migrationCompletion?.complete;
   element(".demo-badge").textContent = staticDemo ? "模擬データ" : savedView && data.ready ? "保存済みの実行" : "実行中のデータ";
-  element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : data.status === "idle" ? "移行ハーネス" : "移行を準備中";
+  element(".run-name").textContent = data.unit_id ? `${data.unit_id} の移行` : data.status === "idle" ? "MoCA" : "移行を準備中";
   element(".run-detail").textContent = data.run_id ? `Run ID ${data.run_id} · ${data.target || ""}` : "";
   element("#workspace-progress-feedback").textContent = progressFeedback(data);
   element(".run-detail").title = data.worktree_path || "";
   let label = describe(data);
   if (verificationFinished && migrationCompletion) {
-    label = done ? "移行完了" : migrationCompletion.verification_passed ? "移行台帳の確認待ち"
+    label = done ? "検証済み"
       : migrationCompletion.verification_input_status ? "前回合格・要再検証" : "ビルド・チェックの再確認が必要";
   }
   element("#state-label").textContent = data.stop_requested ? "停止待ち" : waitingForJunie ? "Junie の確認待ち" : label;

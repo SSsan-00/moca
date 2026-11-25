@@ -22,7 +22,8 @@ def _parse_args() -> argparse.Namespace:
         command.add_argument("--config", type=Path, required=True, help="Path to a local TOML config")
         return command
 
-    configured_command("dashboard", "Open the local workspace for configuration and migration runs")
+    dashboard = configured_command("dashboard", "Open the local workspace for configuration and migration runs")
+    dashboard.add_argument("--open-browser", action="store_true", help=argparse.SUPPRESS)
     junie_input = configured_command("junie-input", "Show the last measured Junie launch input for a saved run")
     junie_input.add_argument("--run-id", required=True)
     evidence = configured_command("context-evidence", "Inspect fixed PHP evidence or read a bounded page")
@@ -71,12 +72,13 @@ def main() -> None:
             run_dashboard(
                 {"config_path": str(args.config.expanduser().resolve())},
                 config_error=None if first_setup else format_error(exc),
+                open_browser=args.open_browser,
             )
             return
         if args.command == "dashboard":
             from migration_harness.web.dashboard import run_dashboard
 
-            run_dashboard(config)
+            run_dashboard(config, open_browser=args.open_browser)
             return
         if args.command == "context-handoff":
             from migration_harness.context.context_handoff import context_handoff, record_handoff
@@ -161,7 +163,7 @@ def main() -> None:
     except KeyboardInterrupt as exc:
         run_id = getattr(exc, "run_id", None)
         if run_id:
-            print(f"Interrupted. Saved run {run_id}; open the dashboard with h.cmd and resume the saved run.", file=sys.stderr)
+            print(f"Interrupted. Saved run {run_id}; open the dashboard with moca.cmd and resume the saved run.", file=sys.stderr)
         else:
             print("Interrupted.", file=sys.stderr)
         raise SystemExit(130)

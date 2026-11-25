@@ -222,8 +222,9 @@ def editor_project_snapshot(worktree, configured_project, target):
             if item.is_file():
                 imports.append((item, _stamp(item.stat())))
     revision = hashlib.sha256(json.dumps([
-        (item.relative_to(context_root).as_posix(), metadata)
-        for item, metadata in [(project, descriptor), *sources, *imports]
+        str(context_root),
+        [(item.relative_to(context_root).as_posix(), metadata)
+         for item, metadata in [(project, descriptor), *sources, *imports]],
     ]).encode("utf-8")).hexdigest()
     return ProjectSnapshot(worktree, project, descriptor, path, web, sources, imports, revision, deadline)
 

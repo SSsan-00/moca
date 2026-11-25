@@ -59,8 +59,6 @@ class CheckerProvenanceTests(SavedRunFixture):
             self.assertEqual(self.record()["verification"]["toml_checker_command"], global_default)
             self.assertEqual([call.args[0] for call in executed.call_args_list if call.args[0][0] != "dotnet"], [override])
 
-            workflow.review_migration_ranges(self.config, self.run_id, ["1:1"], "confirmed", "Checked synthetic range",
-                                             confirmed_targets=[self.target.name])
             regular = copy.deepcopy(self.config)
             regular.pop("checker_from_cli")
             regular.pop("toml_checker_command")

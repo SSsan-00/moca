@@ -85,7 +85,7 @@ def _notify_run_observer(record: dict[str, Any]) -> None:
 
 def write_run_record(
     path: Path, record: dict[str, Any], *, timing_stage: int | None | Literal["status"] = "status",
-    invalidate_migration_reviews: bool = False,
+    invalidate_migration_mappings: bool = False,
 ) -> None:
     update_timings(record, stage=timing_stage)
     with lock_run_record(path):
@@ -94,8 +94,8 @@ def write_run_record(
             if saved.get("junie_model_revision"):
                 for field in ("junie_model", "junie_effort", "junie_model_revision"):
                     record[field] = saved[field]
-            for field in ("token_usage", "cost_exchange", "migration_reviews", "migration_mappings", "hidden_from_dashboard"):
-                if field in saved and not (invalidate_migration_reviews and field in {"migration_reviews", "migration_mappings"}):
+            for field in ("token_usage", "cost_exchange", "migration_mappings", "hidden_from_dashboard"):
+                if field in saved and not (invalidate_migration_mappings and field == "migration_mappings"):
                     record[field] = saved[field]
         replace_run_record(path, record)
     _notify_run_observer(record)

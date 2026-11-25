@@ -262,7 +262,7 @@ _RUN_MESSAGES = {
     "failed": ("処理停止", "処理が停止しました。対象の Run で工程と理由を確認できます。"),
     "migrated": ("移行処理完了", "指定の移行処理が終わりました。今回のビルド・チェッカーは未実施です。"),
     "built": ("ビルド完了", "ビルドが終わりました。チェッカーは未実施です。"),
-    "verified": ("ビルド・チェック完了", "検証処理が終わりました。移行台帳や判断結果は対象の Run で確認できます。"),
+    "verified": ("ビルド・チェック完了", "検証処理が終わりました。対象の Run で結果を確認できます。"),
     "recheck": ("再確認が必要", "検証中に入力が変わりました。対象の Run で再検証してください。"),
     "milestone": ("進捗", "移行処理が終わり、ビルド・検証に進みました。"),
 }
@@ -272,7 +272,7 @@ def toast_xml(url, kind=None):
     toast = Element("toast", activationType="protocol", launch=url)
     binding = SubElement(SubElement(toast, "visual"), "binding", template="ToastGeneric")
     heading, text = _RUN_MESSAGES.get(kind, ("確認待ち", "Junie が操作の確認を待っています。クリックして確認を開きます。"))
-    SubElement(binding, "text").text = f"移行ハーネス: {heading}"
+    SubElement(binding, "text").text = f"MoCA: {heading}"
     SubElement(binding, "text").text = text
     return tostring(toast, encoding="unicode")
 
