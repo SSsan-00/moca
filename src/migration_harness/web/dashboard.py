@@ -1660,7 +1660,10 @@ def execute_dashboard_action(view, config, action):
                 result = run_with_junie(config, action["unit_id"], run_id=run_id)
             elif kind == "conversation":
                 result = run_instruction(config, run_id, conversation_id)
-                finish_instruction(config, run_id, conversation_id, result)
+                if result.pop("selection_review", False):
+                    notices = None
+                else:
+                    finish_instruction(config, run_id, conversation_id, result)
             elif kind == "accept":
                 review_checker(config, run_id, action["finding_id"], action["reason"])
                 _, _, result, _ = load_saved_run(config, run_id)

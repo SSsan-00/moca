@@ -18,6 +18,7 @@ from migration_harness.runs import run_manager
 from migration_harness import workflow
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.execution import check_cancelled, current_operation_id
+from migration_harness.junie import junie_conversation
 from migration_harness.junie.junie_conversation import _intent
 from migration_harness.runs.run_manager import RunManager
 from fixtures import SavedRunFixture
@@ -119,6 +120,76 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(status, 202)
         self.assertEqual(result["id"], identifier)
         return identifier, result
+
+    def test_selection_only_reviews_exact_snippet_without_verification_or_source_changes(self):
+        original = self.target.read_bytes()
+        run_before = self.record_path.read_bytes()
+        selection = {"path": self.target.name, "start_line": 2, "end_line": 3,
+                     "text": "var scoped = 1;\n// selection only\n"}
+        identifier = uuid.uuid4().hex
+        payload = {"kind": "conversation", "run_id": self.run_id, "id": identifier,
+                   "text": "", "selection": selection}
+        with (patch.object(junie_conversation, "run_text_advisory", return_value="選択行だけの説明") as review,
+              patch.object(workflow, "resume_with_junie", side_effect=AssertionError("migration must not resume"))):
+            status, result = self.request("editor", payload)
+            self.assertEqual(status, 202)
+            self.assertEqual(result["selection"], selection)
+            self.assertEqual(result["text"], "")
+            self.assertEqual(self.wait_for(identifier, "done")["message"], "選択行だけの説明")
+            self.assertEqual(self.request("editor", payload)[1]["id"], identifier)
+            with self.assertRaises(HTTPError):
+                self.request("editor", {**payload, "selection": {**selection, "text": "changed\nline"}})
+            review.assert_called_once()
+        prompt, = review.call_args.args
+        self.assertIn("ファイル操作は行わない", prompt)
+        self.assertEqual(json.loads(prompt.splitlines()[-1]), selection)
+        self.assertNotIn("class Original", prompt)
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(self.record_path.read_bytes(), run_before)
+        with editor_queue(self.run_path) as queue:
+            self.assertEqual(queue["prompts"], [])
+
+    def test_selection_with_a_comment_answers_without_running_build_or_migration(self):
+        selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "// 停止"}
+        comment = "ビルドだけ"
+        identifier = uuid.uuid4().hex
+        with (patch.object(junie_conversation, "run_text_advisory", return_value="変更せずに回答") as review,
+              patch.object(workflow, "run_process") as build):
+            status, response = self.request("editor", {"kind": "conversation", "run_id": self.run_id,
+                                                       "text": comment, "id": identifier, "selection": selection})
+            self.assertEqual(status, 202)
+            self.assertEqual(response["text"], comment)
+            self.assertEqual(response["selection"], selection)
+            self.assertEqual(self.wait_for(identifier, "done")["message"], "変更せずに回答")
+            build.assert_not_called()
+        prompt, = review.call_args.args
+        self.assertIn(comment, prompt)
+        self.assertEqual(json.loads(prompt.splitlines()[-1]), selection)
+
+    def test_changed_target_fails_before_selection_review(self):
+        identifier = uuid.uuid4().hex
+        selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "var scoped = 1;"}
+        with (patch.object(self.manager.conversations, "notify"),
+              patch.object(junie_conversation, "run_text_advisory") as review):
+            self.request("editor", {"kind": "conversation", "run_id": self.run_id, "id": identifier,
+                                    "text": "", "selection": selection})
+            self.target.write_bytes(b"changed by another process")
+            self.manager.conversations.advance(self.config, self.run_id)
+            self.assertIn("保存版が更新されました", self.wait_for(identifier, "failed")["message"])
+            review.assert_not_called()
+
+    def test_invalid_selection_cannot_be_reviewed(self):
+        selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "選択"}
+        invalid = [
+            {"path": "Other.cs"}, {"start_line": True}, {"end_line": 2}, {"end_line": 21},
+            {"text": "  "}, {"text": "界" * 667}, {"text": "\x00"}, {"unselected": "must not be accepted"},
+        ]
+        for changes in invalid:
+            with self.subTest(changes=changes), self.assertRaises(HTTPError):
+                self.request("editor", {"kind": "conversation", "run_id": self.run_id, "id": uuid.uuid4().hex,
+                                        "text": "", "selection": {**selection, **changes}})
+        with editor_queue(self.run_path) as queue:
+            self.assertFalse(queue.get("conversation"))
 
     def wait_for(self, identifier, status, *, run_path=None):
         end = time.monotonic() + 6

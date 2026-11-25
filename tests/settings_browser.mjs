@@ -623,6 +623,49 @@ try {
     await evaluate(editorBubble + ".closest('.junie-chat-feed').scrollTop = 0");
   }
   await captureChat("editor-light-1280");
+  const demoSelectionEditor = "window.monaco?.editor.getEditors().find(e => " +
+    field("editor-code") + ".contains(e.getDomNode()) && e.getModel())";
+  await wait("Boolean(" + demoSelectionEditor + ")");
+  const line = await evaluate(demoSelectionEditor + ".getModel().getLineContent(4)");
+  assert(line.trim(), "synthetic demo line is not empty");
+  const selectLine = () => evaluate(demoSelectionEditor + ".setSelection({startLineNumber:4,startColumn:1," +
+    "endLineNumber:4,endColumn:" + (line.length + 1) + "})");
+  const card = field("editor-selection-card");
+  const selectionHistory = "document.querySelector('#editor-prompts .editor-selection-history')";
+  await selectLine();
+  await wait(field("editor-attach-selection") + ".matches(':enabled')");
+  await click("editor-attach-selection");
+  assert.equal(await value("editor-prompt"), "");
+  assert.equal(await evaluate(field("editor-selection-code") + ".textContent"), line);
+  assert((await evaluate(field("editor-selection-meta") + ".textContent")).endsWith(" · 4行"));
+  assert(await evaluate(field("editor-send") + ".matches(':enabled') && !" + selectionHistory));
+  if (process.env.HARNESS_CHAT_SCREENSHOTS) {
+    await change("editor-prompt", "この一覧はどの順番で表示されますか？", "input");
+    await captureChat("editor-selection-light-1280");
+    await change("editor-prompt", "", "input");
+  }
+  await click("editor-remove-selection");
+  assert(await evaluate(card + ".hidden && " + field("editor-send") + ".disabled"));
+  await selectLine();
+  await click("editor-attach-selection");
+  await evaluate(demoSelectionEditor + ".executeEdits('selection-test', [{range:{startLineNumber:1,startColumn:1," +
+    "endLineNumber:1,endColumn:1},text:'// unselected synthetic edit ' }])");
+  await wait("!" + field("editor-selection-warning") + ".hidden && " + field("editor-send") + ".disabled");
+  await evaluate(demoSelectionEditor + ".trigger('selection-test', 'undo', null)");
+  await selectLine();
+  await evaluate(demoSelectionEditor + ".getAction('harness.attachSelection').run()");
+  await wait(field("editor-send") + ".matches(':enabled')");
+  await click("editor-send");
+  await wait("Boolean(" + selectionHistory + ") && " + card + ".hidden");
+  assert.equal(await evaluate(selectionHistory + ".querySelector('pre').textContent"), line);
+  assert(!(await evaluate(selectionHistory + ".textContent")).includes("unselected synthetic edit"));
+  await selectLine();
+  await click("editor-attach-selection");
+  await sendChat("editor-prompt", "editor-send", "editor-prompts", "この範囲の表示順を教えてください。");
+  const latestSelection = "Array.from(document.querySelectorAll('#editor-prompts .editor-selection-history')).at(-1)";
+  assert.equal(await evaluate(latestSelection + ".querySelector('pre').textContent"), line);
+  assert(await evaluate(card + ".hidden"));
+  console.log("Browser editor selection: exact range and line label, remove, stale guard, and explicit send with or without comment");
   await cdp("Emulation.setDeviceMetricsOverride", {width: 390, height: 690, deviceScaleFactor: 1, mobile: false});
   await click("theme-toggle");
   await wait("document.documentElement.dataset.theme === 'dark' && !document.documentElement.dataset.wipe");

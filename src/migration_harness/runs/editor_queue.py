@@ -306,6 +306,21 @@ def record_operator_edit(queue: dict[str, Any], target: str, before: str, after:
     _append_operator_diff(queue, target, _operator_edit_diff(before, after))
 
 
+def editor_prompt_selection(value, targets):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.keys() != {"path", "start_line", "end_line", "text"}:
+        raise ValueError("添付した選択範囲の形式が無効です。")
+    path, start, end = value["path"], value["start_line"], value["end_line"]
+    if (not isinstance(path, str) or path not in targets or type(start) is not int
+            or type(end) is not int or not 1 <= start <= end <= 2_000_000 or end - start >= 20):
+        raise ValueError("現在のRunの移行先で選択し直してください（最大20行）。")
+    text = editor_text(value["text"], 2_000)
+    if not text.strip() or text.count("\n") + (not text.endswith("\n")) != end - start + 1:
+        raise ValueError("添付した選択範囲または選択行数が無効です。")
+    return {"path": path, "start_line": start, "end_line": end, "text": text}
+
+
 def add_prompt(queue: dict[str, Any], action: dict[str, Any]) -> None:
     text = editor_text(action.get("text"), 4_000).strip()
     if not text:
