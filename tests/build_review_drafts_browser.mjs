@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
+import fs from "node:fs/promises";
 import {createServer} from "node:http";
+import path from "node:path";
 
-export async function checkBuildReviewDrafts({url, evaluate, click, change, value, wait}) {
+export async function checkBuildReviewDrafts({url, evaluate, click, change, value, wait, run, tree}) {
   const targets = ["Main.cs", "Other.cs"];
+  const realTargets = ["Example.cs", "Pages/Index.cshtml"];
+  const digest = bytes => createHash("sha256").update(bytes).digest("hex");
   const primary = targets[0];
   const versions = new Map();
   const posts = [];
@@ -21,6 +26,12 @@ export async function checkBuildReviewDrafts({url, evaluate, click, change, valu
     };
     if (req.method === "GET") {
       if (id !== route.searchParams.get("run_id")) return json({}, 409);
+      if (id === run && !target) return json({targets: realTargets, preferred_target: realTargets[0], errors: [], log: ""});
+      if (id === run && realTargets.includes(target)) {
+        const bytes = await fs.readFile(path.join(tree, target));
+        return json({content: bytes.toString("utf8").replace(/^\uFEFF/, ""), version: digest(bytes),
+          crlf: bytes.includes("\r\n"), max_bytes: 4096, bom_bytes: 3});
+      }
       if (target && holdRead) { const hold = holdRead; holdRead = null; await hold(); }
       return json(target ? {content: id + ":" + target + ":" + version[0], version, max_bytes: 4096,
         bom_bytes: 0, crlf: true} : {targets, preferred_target: primary, errors: ["fixture"], log: "",
@@ -34,7 +45,8 @@ export async function checkBuildReviewDrafts({url, evaluate, click, change, valu
       const expected = versions.get(id + data.target) || "1".repeat(64);
       if (data.run_id !== id || data.base_version !== expected) return json({}, 409);
       versions.set(id + data.target, "4".repeat(64));
-      return json({run_id: id, content: data.content, accepted_save_id: data.save_id, queued: false});
+      return json({run_id: id, target: data.target, content: data.content, accepted_save_id: data.save_id,
+        accepted_version: versions.get(id + data.target), queued: false});
     }
     const expected = versions.get(id + data.edit?.target) || "1".repeat(64);
     if (holdPost) { const hold = holdPost; holdPost = null; await hold(); }
@@ -194,6 +206,69 @@ export async function checkBuildReviewDrafts({url, evaluate, click, change, valu
     assert.match(await evaluate("document.getElementById('state-label').textContent"), /要再検証/);
     assert.equal(await unloadBlocked(), false);
     console.log("Browser build review: per-Run/per-target drafts, original versions, rejected/late POST and stale reads");
+
+    const file = path.join(tree, realTargets[0]);
+    const original = await fs.readFile(file);
+    const openRealDraft = async () => {
+      await click("open-build-drafts");
+      await wait("document.getElementById('build-review-dialog').open && !document.getElementById('build-review-submit').disabled");
+      assert.equal(await value(field("target")), realTargets[0]);
+    };
+    try {
+      await evaluate(`const reviewFixtureFetch = dashboardIO.fetch;
+        window.realSaveRequests = [];
+        dashboardIO.fetch = async (route, options) => {
+          const body = route === "editor" && options?.body && JSON.parse(options.body);
+          if (!body || body.run_id !== ${JSON.stringify(run)} || !body.base_version)
+            return reviewFixtureFetch(route, options);
+          const response = await actualReviewFetch(route, options);
+          realSaveRequests.push({body, status: response.status});
+          if (response.ok && window.dropSavedResponse) {
+            window.dropSavedResponse = false;
+            await response.arrayBuffer();
+            throw new TypeError("response lost");
+          }
+          return response;
+        };`);
+      const baseline = "class Original {}\r\n";
+      for (const [revision, externalEdit] of [["class First { int N; }\n", false],
+        [baseline.replace("\r\n", "\n"), false], ["class KeepDraft {}\n", true]]) {
+        await fs.writeFile(file, baseline);
+        await select(run); await open();
+        await type("source", "class First {}\n");
+        await close(); await select(run, completed); await openRealDraft();
+        await evaluate("realSaveRequests.length = 0; window.dropSavedResponse = true");
+        await click(field("submit"));
+        await wait("document.getElementById('build-review-feedback').textContent.includes('response lost')");
+        const accepted = await fs.readFile(file);
+        assert.equal(accepted.toString("utf8"), "\uFEFFclass First {}\r\n");
+        await type("source", revision);
+        await close(); await select("B", completed);
+        assert(await evaluate("document.getElementById('open-build-drafts').hidden"));
+        await select(run, completed); await openRealDraft();
+        await expect(revision, "");
+        if (externalEdit) await fs.writeFile(file, accepted.subarray(3)); // Same text with a different raw SHA.
+        await click(field("submit"));
+        if (externalEdit) {
+          await wait("document.getElementById('build-review-feedback').textContent.includes('409')");
+          assert.deepEqual(await fs.readFile(file), accepted.subarray(3));
+          await expect(revision, "");
+          await click(field("reset"));
+        } else {
+          await wait("!document.getElementById('build-review-dialog').open");
+          assert.equal((await fs.readFile(file)).toString("utf8"), "\uFEFF" + revision.replaceAll("\n", "\r\n"));
+          const requests = await evaluate("realSaveRequests");
+          assert.deepEqual(requests.map(item => item.status), [200, 200]);
+          assert.notEqual(requests[1].body.save_id, requests[0].body.save_id);
+          assert.equal(requests[1].body.base, requests[0].body.content);
+          assert.equal(requests[1].body.base_version, digest(accepted));
+        }
+        await wait("document.getElementById('open-build-drafts').hidden");
+      }
+      console.log("Browser recovered draft: actual editor HTTP receipt lost, re-edit, reopen, retry and raw-byte conflict");
+    } finally {
+      await fs.writeFile(file, original);
+    }
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

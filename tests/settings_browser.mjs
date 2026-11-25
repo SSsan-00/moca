@@ -273,7 +273,8 @@ try {
   assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
-  await checkBuildReviewDrafts({url, evaluate, click, change, value, wait});
+  await checkBuildReviewDrafts({url, evaluate, click, change, value, wait, run: expectedRun,
+    tree: path.join(path.dirname(ruleConfigPath), "trees", expectedRun)});
   // Reopen the same Run in a new document instead of relying on Chrome's reload scheduling.
   const recoveryUrl = new URL(url);
   recoveryUrl.searchParams.set("run", expectedRun);

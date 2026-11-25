@@ -930,6 +930,8 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 if name and edit is None and read_error is None:
                     if accepted := applied_editor_save_id(queue, name, original, content):
                         payload["accepted_save_id"] = accepted
+                        if after := queue["save_requests"][accepted].get("after"):
+                            payload["accepted_version"] = after
                 if name and from_agent and (draft := record.get("stopped_migration_draft")):
                     payload["stopped_draft"] = True
                     with suppress(OSError, ValueError):
