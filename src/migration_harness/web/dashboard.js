@@ -1400,7 +1400,7 @@ function renderRecovery(data, force = false) {
       } else if (checkerReviewStatuses.has(info.status)) {
         next = "チェッカー出力を確認してください。成果物の版が変わった場合はビルドから再検証します。";
       }
-      if (info.draft === "repair") next = "下書きと手修正版が競合する場合は repair-draft で版を確認してください。";
+      if (info.draft === "repair") next = "進捗とエディタで内容を確認してから再開してください。下書きと手修正版が競合し、ファイルごとに復元する版を選ぶ必要がある場合は repair-draft を使ってください。";
       if (info.conflict) next = "エディタで差分を確認し、競合を解消して保存してください。";
       if (info.needs_process_check) next = "ログと残存プロセスを確認するまで処理を再開しないでください。";
       if (info.unconfirmed_command) {

@@ -16,8 +16,9 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
       assert.equal(recovered.draft, "repair");
       assert.equal(recovered.needs_process_check, false);
       await wait("!" + field("recovery-summary") + ".hidden && " + field("recovery-next")
-        + ".textContent.includes('repair-draft')");
+        + ".textContent.startsWith('進捗とエディタで内容を確認してから再開してください。')");
       assert.match(await evaluate(field("recovery-checkpoint") + ".textContent"), /修正下書きあり/);
+      assert.match(await evaluate(field("recovery-next") + ".textContent"), /ファイルごとに復元する版を選ぶ必要がある場合は repair-draft/);
     }
   } finally {
     await send("fixture-stopped-repair-reset");
