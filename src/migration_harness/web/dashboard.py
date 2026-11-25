@@ -868,11 +868,20 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         if type(resolve) is not bool:
                             raise ValueError("編集の競合を解消する指定が無効です。")
                         intent = editor_save_intent(name, base, draft, edit_id, resolve)
+                        base_version = None
+                        if "base_version" in action:
+                            base_version = action["base_version"]
+                            if (not isinstance(base_version, str) or not re.fullmatch(r"[0-9a-f]{64}", base_version)
+                                    or not save_id or edit_id is not None or resolve):
+                                raise ValueError("下書きの元の版を確認できません。")
+                            intent["base_version"] = base_version
                         # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
                         with worktree_source_lock(worktree), self.dashboard.condition:
                             state = self.dashboard.state
                             if state.get("run_id") != run_id:
                                 raise ValueError("表示中の実行が変わりました。")
+                            if base_version is not None and not from_agent:
+                                original, content = editor_target(worktree, Path(name))
                             replay = (save_id is not None or not edit and not from_agent) and replayed_editor_save(
                                 queue, edit, original, content, save_id, intent,
                             )
@@ -882,6 +891,10 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                                 # 保存直前に実行が始まった場合も、編集をRunへ退避する。
                                 busy_other = state.get("generating_anchors") or state.get("stop_requested")
                                 queued = bool(queued or not state.get("ready") or busy_other or content != base)
+                                if base_version is not None and (
+                                    queued or from_agent or original is None or hashlib.sha256(original).hexdigest() != base_version
+                                ):
+                                    raise ValueError("対象ファイルが更新されたか、編集中のため保存できません。下書きを残しました。")
                                 queue["edit_revision"] = secrets.token_hex(12)
                                 invalidate_queued_steering(queue)
                                 if queued:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -66,6 +67,54 @@ class DashboardEditorTests(HarnessCase):
         self.assertEqual(self.view.state["review_kind"], "roslyn_preflight")
         self.view.observe(record | {"build_exit_code": 1})
         self.assertNotIn("review_kind", self.view.state)
+
+    def test_recovered_build_draft_saves_against_original_raw_version_and_invalidates_verification(self):
+        prepared = self.finished_run()
+        run_id = prepared["run_id"]
+        run_path, worktree, _, _ = run_records.load_saved_run(self.settings, run_id)
+        target = worktree / "Page.cs"
+        before = target.read_bytes()
+        self.settings["checker_command"] = None
+
+        def build(command, **kwargs):
+            self.assertEqual(command[:2], ["dotnet", "build"])
+            kwargs["stdout"].write(b"Build succeeded")
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(workflow, "run_process", side_effect=build) as compile_, redirect_stdout(io.StringIO()):
+            self.assertEqual(workflow.resume_with_junie(self.settings, run_id)["status"], "build_succeeded")
+        compile_.assert_called_once()
+        self.assertTrue(workflow.migration_ledger(self.settings, run_id)["completion"]["verification_passed"])
+        base = before.decode("utf-8-sig").replace("\r\n", "\n")
+        request = {"kind": "save", "run_id": run_id, "target": "Page.cs", "base": base,
+                   "content": base + "// recovered\n", "base_version": hashlib.sha256(before).hexdigest(),
+                   "save_id": "a" * 32}
+        other_run = self.finished_run()["run_id"]
+        with self.assertRaises(HTTPError) as raised:
+            self.request(payload=request)
+        self.assertEqual(raised.exception.code, 409)
+        raised.exception.close()
+        self.assertNotEqual(other_run, run_id)
+
+        self.view.observe(run_records.load_saved_run(self.settings, run_id)[2])
+        self.view.ready(self.settings, self.view.state)
+        target.write_bytes(base.encode("utf-8"))
+        with self.assertRaises(HTTPError) as raised:
+            self.request(payload=request)
+        self.assertEqual(raised.exception.code, 409)
+        raised.exception.close()
+        self.assertEqual(target.read_bytes(), base.encode("utf-8"))
+
+        target.write_bytes(before)
+        saved = self.request(payload=request)
+        self.assertEqual(saved["accepted_save_id"], request["save_id"])
+        self.assertFalse(saved["queued"])
+        self.assertIn("// recovered", target.read_text(encoding="utf-8-sig"))
+        self.assertEqual(self.request(payload=request)["accepted_save_id"], request["save_id"])
+        self.assertEqual(run_records.load_saved_run(self.settings, run_id)[2]["status"], "build_succeeded")
+        self.assertFalse(workflow.migration_ledger(self.settings, run_id)["completion"]["verification_passed"])
+        with editor_queue.editor_queue(run_path) as queue:
+            self.assertFalse(queue["edits"])
 
     def test_syntax_diagnoses_only_the_requested_unsaved_target_without_recording_an_edit(self):
         result = self.finished_run()

@@ -146,6 +146,7 @@ connection.setAttribute("role", "status");
 element("#activity-title").after(connection);
 const reviewTitle = element("#review-title");
 const buildDialog = element("#build-review-dialog");
+const openBuildDrafts = element("#open-build-drafts");
 const buildTarget = element("#build-review-target");
 const buildSource = element("#build-review-source");
 const buildInstruction = element("#build-review-instruction");
@@ -157,7 +158,16 @@ let buildViewRun;
 let buildFile;
 let buildRequest = 0;
 let buildLoading = false;
+let buildRecovery = false;
 const buildDrafts = new Map();
+
+function hasBuildDraft(draft) {
+  return !!(draft?.files.size || draft?.instruction.trim());
+}
+
+addEventListener("beforeunload", event => {
+  if ([...buildDrafts.values()].some(hasBuildDraft)) event.preventDefault();
+});
 const progressPrompt = bindProgressPromptDialog({
   open: refreshProgressPrompts, submit: submitProgressPrompt,
   inputChanged() { promptInputRevision++; syncProgressPrompts(); },
@@ -325,12 +335,15 @@ function syncBuildReview(canAct) {
     || new TextEncoder().encode(buildFile.crlf ? source.replaceAll("\n", "\r\n") : source).length
       + buildFile.bomBytes > buildFile.maxBytes
   );
+  openBuildDrafts.hidden = !snapshot.ready || snapshot.status === "build_failed" || !hasBuildDraft(buildDrafts.get(snapshot.run_id));
+  openBuildDrafts.disabled = !canAct;
   buildTarget.disabled = submitting || buildLoading;
-  buildSource.readOnly = buildInstruction.readOnly = submitting || !snapshot.resumable;
+  buildSource.readOnly = buildInstruction.readOnly = submitting || !(buildRecovery ? canAct : snapshot.resumable);
   buildReset.hidden = !edited;
   buildReset.disabled = submitting;
-  buildSubmit.disabled = !canAct || !snapshot.resumable || buildLoading || tooLarge || buildViewRun !== snapshot.run_id;
-  buildSubmit.textContent = instructed
+  buildSubmit.disabled = !canAct || (buildRecovery ? !edited : !snapshot.resumable)
+    || buildLoading || tooLarge || buildViewRun !== snapshot.run_id;
+  buildSubmit.textContent = buildRecovery ? "下書きを保存" : instructed
     ? (edited ? "保存して Junie に修正を依頼" : "Junie に修正を依頼して再開")
     : snapshot.review_kind === "roslyn_preflight" ? (edited ? "保存して再診断" : "再診断して再開")
     : (edited ? "保存して再ビルド" : "再ビルド");
@@ -394,7 +407,8 @@ async function loadBuildSource(reload = false) {
   }
 }
 
-async function openBuildReview() {
+async function openBuildReview(recover = false) {
+  buildRecovery = recover;
   const request = ++buildRequest;
   const runId = snapshot.run_id;
   if (buildViewRun !== runId) element("#build-review-editor").open = false;
@@ -411,13 +425,31 @@ async function openBuildReview() {
     : "ビルド工程で停止しました。エラーの詳細を確認してください。";
   element("#build-review-title").textContent = snapshot.review_kind === "roslyn_preflight" ? "正式ビルド前の構文診断" : "ビルド失敗の詳細";
   errors.textContent = "詳細を読み込んでいます…";
+  errors.hidden = recover;
   logSection.hidden = editor.hidden = true;
+  element("#build-review-instruction-label").textContent = recover
+    ? "未送信の指示（ここからは送信しません）" : "Junie への修正指示（任意）";
+  element("#build-review-hint").textContent = recover
+    ? "ファイルだけを保存します。保存した内容を検証するにはビルド・チェックを再実行してください。"
+    : "編集内容は、この実行の作業ツリーに保存されます。指示を入力すると、Junie が修正した後に再ビルドします。";
+  buildReset.textContent = recover ? "下書きを破棄" : "最新の内容を読み込み直す";
   buildFeedback.textContent = snapshot.message || (!snapshot.resumable
     ? "再開するには、前回の実行で使用したチェッカーを設定してください。" : "");
   buildLoading = true;
-  buildDialog.showModal();
+  if (!buildDialog.open) buildDialog.showModal();
   element("#build-review-title").focus();
   syncActions();
+  if (recover) {
+    element("#build-review-title").textContent = "未保存の下書き";
+    element("#build-review-intro").textContent = "前のビルド結果はそのままです。下書きは編集中の元の版に対して保存します。";
+    buildFeedback.textContent = "";
+    const targets = [...draft.files.keys()];
+    buildTarget.replaceChildren(...targets.map(path => new Option(path, path)));
+    buildTarget.value = targets.includes(draft.target) ? draft.target : targets[0] ?? "";
+    editor.hidden = !targets.length;
+    editor.open = !!targets.length;
+    return loadBuildSource();
+  }
   try {
     const review = await fetchBuildReview(runId);
     if (request !== buildRequest) return;
@@ -770,7 +802,7 @@ element("#operator-note-scope").addEventListener("submit", event => {
   loadMigrationLedger();
 });
 
-async function loadMigrationLedger() {
+async function loadMigrationLedger({keepCompletion = false} = {}) {
   const request = ++migrationLedgerRequest;
   const selected = migrationLedgerDialog.open && operatorSelection?.run === snapshot.run_id ? operatorSelection : null;
   try {
@@ -795,7 +827,7 @@ async function loadMigrationLedger() {
     });
   } catch (error) {
     if (request !== migrationLedgerRequest) return;
-    if (!selected?.receipt) migrationCompletion = undefined;
+    if (!keepCompletion && !selected?.receipt) migrationCompletion = undefined;
     render();
     if (!migrationLedgerDialog.open) return;
     showUnresolvedNotes("#unresolved-operator-notes", []);
@@ -1400,7 +1432,7 @@ function render() {
     && (data.ready || data.generating_anchors || dialog.open);
   const showBuildReview = data.ready && data.status === "build_failed";
   const preflightReview = showBuildReview && data.review_kind === "roslyn_preflight";
-  if (!showBuildReview && buildDialog.open) buildDialog.close();
+  if (buildDialog.open && (buildViewRun !== data.run_id || (buildRecovery ? !data.ready : !showBuildReview))) buildDialog.close();
   const waitingForJunie = !!data.junie_request;
   const verificationFinished = data.ready && verifiedStatuses.has(data.status);
   const stopped = data.ready && !verificationFinished && (data.resumable || showReview || showBuildReview
@@ -1760,9 +1792,18 @@ reviewButton.addEventListener("click", () => {
   else if (checkerReviewStatuses.has(snapshot.status)) openReview();
   else send("resume");
 });
+openBuildDrafts.addEventListener("click", () => openBuildReview(true));
 element("#build-review-close").addEventListener("click", () => buildDialog.close());
 buildTarget.addEventListener("change", () => loadBuildSource());
 buildReset.addEventListener("click", () => {
+  if (buildRecovery) {
+    if (!window.confirm("選択中のファイルの下書きを破棄しますか？")) return;
+    const draft = buildDraft(buildViewRun);
+    draft.files.delete(buildTarget.value);
+    if (hasBuildDraft(draft)) openBuildReview(true);
+    else { buildDialog.close(); syncActions(); }
+    return;
+  }
   loadBuildSource(true);
   buildTarget.focus();
 });
@@ -1778,6 +1819,35 @@ buildInstruction.addEventListener("input", () => {
   buildDraft(buildViewRun).instruction = buildInstruction.value;
   syncActions();
 });
+async function saveRecoveredBuildDraft(runId, draft, file, current) {
+  if (!file || !current() || submitting) return;
+  const target = file.base.target;
+  file.saveId ??= crypto.randomUUID().replaceAll("-", "");
+  submitting = true;
+  syncActions();
+  try {
+    const saved = await workspaceRequest("editor", {kind: "save", run_id: runId, target,
+      base: file.base.content, base_version: file.base.version, content: file.value, save_id: file.saveId});
+    if (saved.run_id !== runId || saved.accepted_save_id !== file.saveId || saved.queued)
+      throw Error("下書きが保存されたことを確認できません。");
+    const visible = current();
+    if (draft.files.get(target) === file) draft.files.delete(target);
+    if (snapshot.run_id === runId && verifiedStatuses.has(snapshot.status)) {
+      migrationCompletion = {verification_passed: false, verification_input_status: true};
+      render();
+      if (snapshot.worktree_path) loadMigrationLedger({keepCompletion: true});
+    }
+    if (visible) {
+      if (hasBuildDraft(draft)) openBuildReview(true);
+      else buildDialog.close();
+    }
+  } catch (error) {
+    if (current()) buildFeedback.textContent = error.message;
+  } finally {
+    submitting = false;
+    syncActions();
+  }
+}
 element("#build-review-form").addEventListener("submit", async event => {
   event.preventDefault();
   if (buildSubmit.disabled) return;
@@ -1789,6 +1859,7 @@ element("#build-review-form").addEventListener("submit", async event => {
   const request = buildRequest;
   const current = () => runId === selectedRunId && runId === snapshot.run_id && buildDialog.open
     && request === buildRequest && file === draft.files.get(target) && instruction === draft.instruction;
+  if (buildRecovery) return saveRecoveredBuildDraft(runId, draft, file, current);
   try {
     await withSavedRunModel(runId, async model => {
       const submission = {runId, target, file, instruction, revision: dashboardRevision};
