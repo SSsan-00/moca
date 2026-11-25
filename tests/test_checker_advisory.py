@@ -19,7 +19,7 @@ import json, sys, time
 from pathlib import Path
 def receive(method, expected):
     msg = json.loads(sys.stdin.readline())
-    if len(sys.argv) > 2 and msg.get('method') == 'session/prompt':
+    if sys.argv[1] == 'effort-missing' and len(sys.argv) > 2 and msg.get('method') == 'session/prompt':
         Path(sys.argv[2]).touch()
     assert msg['method'] == method and msg['id'] == expected
     return msg['params']
@@ -68,6 +68,12 @@ elif sys.argv[1] == 'timeout':
     time.sleep(60)
 elif sys.argv[1] == 'stop':
     send(id=3, result={'stopReason': 'cancelled'})
+elif mode == 'text':
+    reply, stop_reason = sys.argv[2:]
+    half = len(reply) // 2
+    for chunk in (reply[:half], reply[half:]):
+        update('agent_message_chunk', content={'type': 'text', 'text': chunk})
+    send(id=3, result={'stopReason': stop_reason})
 else:
     update('agent_thought_chunk', content={'type':'text', 'text':'not persisted'})
     update('agent_message_chunk', content={'type':'text', 'text':'{"verdict":"informational",'})
@@ -77,7 +83,27 @@ else:
 """
 
 
+def acp_reply(text, stop_reason="end_turn"):
+    def launch(command, *, owned, cwd, **streams):
+        return junie_cli.JunieProcess([sys.executable, "-c", FAKE_ACP, "text", text, stop_reason], cwd=cwd, **streams)
+    return patch.object(junie_cli, "_launch_process", side_effect=launch)
+
+
 class CheckerAdvisoryTests(unittest.TestCase):
+    def test_structured_checker_retains_4kib_boundary(self):
+        answer = '{"verdict":"problem","evidence_lines":[1]}'
+        with TemporaryDirectory() as folder:
+            run = Path(folder)
+            (run / "checker.log").write_text("Issue on line 1.", encoding="utf-8")
+            for size in (4096, 4097):
+                with self.subTest(size=size), acp_reply(answer.ljust(size)):
+                    result = advisory.checker_advisory(run, 1)
+                    if size == 4096:
+                        self.assertEqual((result["status"], result["verdict"]), ("reported", "problem"))
+                    else:
+                        self.assertEqual(result["status"], "unavailable")
+                        self.assertNotIn("verdict", result)
+
     def test_old_run_uses_only_saved_effort_for_free_output_advisory(self):
         with TemporaryDirectory() as folder:
             run = Path(folder)

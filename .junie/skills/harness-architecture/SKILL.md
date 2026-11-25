@@ -20,17 +20,18 @@ description: PHP→C# Migration Harness のフォルダ構成、設定の意味�
 
 | 質問 | 主にたどる実装・資料 |
 | --- | --- |
-| フォルダの役割、起動、設定、CLI と画面の差 | [README.md](../../../README.md)、[pyproject.toml](../../../pyproject.toml)、[h.cmd](../../../h.cmd)、`cli.main`、`config.load_config`、`web/dashboard.run_dashboard`、`web/settings_form.py` |
+| フォルダの役割、起動、設定、CLI と画面の差 | [README.md](../../../README.md)、[pyproject.toml](../../../pyproject.toml)、[moca.cmd](../../../moca.cmd)、`cli.main`、`config.load_config`、`web/dashboard.run_dashboard`、`web/settings_form.py` |
+| 設定を検証（新規Runを作らない） | `web/dashboard.py` の `send_dry_run` → `runs/dry_run.plan_dry_run` |
 | PHP の文字コード、分割と固定、ルール、参照ファイル | `workflow._prepare_run` → `context/capsules.prepare_context`、`rules/rule_materials.py`、`workflow._review_detail_applicability`、`context/source_context.stage_target_context` |
 | Junie の資料・起動・停止、手修正、移行先の反映 | `workflow._run_prepared_with_junie`、`junie/junie_cli.run_interactive` と `_run_session`、`execution.py`、`runs/editor_queue.py`、`runs/worktree_targets.apply_agent_targets` と `finish_pending_targets` |
 | Run の失敗・再開、ビルドやチェッカー、修正回数 | `runs/run_records.load_saved_run`、`workflow._resume_with_junie` と `_run_verification`、`verification/checker_output.py`、該当 Run の `run.json` と工程ログ |
 | 画面の実行枠、会話、イベント、同時操作 | `web/dashboard.py`、`web/dashboard*.js`、`runs/run_manager.RunManager`、`junie/junie_conversation.JunieConversations`、[Run の状態とロック契約](../../../docs/run-state-contracts.md) |
-| 比較、アンカー、レビュー、移行完了の条件 | `web/diff_viewer.py`、`web/review_anchors.generate_anchors`、`workflow.migration_ledger` と `review_migration_ranges` |
+| 比較、アンカー、レビュー、移行完了の条件 | `web/diff_viewer.py`、`web/review_anchors.generate_anchors`、`workflow.record_migration_candidates`（提案の記録）と `workflow.migration_ledger`（現在の版との照合・表示） |
 
 ## 回答の組み立て
 
 結論の後に、適用条件、主な処理順、結果の保存先を必要な分だけ示す。根拠はリポジトリ相対の `パス:行番号` またはファイルへのリンクと関数名を添える。複数工程の関係を問われたときは Mermaid を使い、図に含める分岐も呼び出し元と実装で確認する。
 
-- 「完了」はカプセルの完了、ビルド・チェッカーの結果、移行台帳の `completion.complete` のどれかを明確にする。台帳の完了条件を尋ねられたら、`complete` の式、`verification_passed` の前提と後続の照合、`reviewed` の加算条件まで確認する。「全条件」を列挙するときは、反映保留、版、設定、理由なども含めて判定式の各項目と照合する。
+- 「完了」はカプセルの完了、ビルド・チェッカーの結果、移行台帳の `completion.complete` のどれかを明確にする。台帳の完了条件は `verification_passed and total > 0`。`total` は移行元PHPの範囲数で、人が確認した件数ではない。詳細は `migration_ledger` で、反映保留、カプセル完了数、ビルド・スクリプト・チェッカーの設定と結果、対象版・検証入力の照合、チェッカーからの再開時のビルド記録まで追う。
 - 「再開」は CLI の直接実行とダッシュボードでの表示・操作を区別し、例示するコマンドは引数解析と実際の分岐まで確認する。
 - 特定の Run の質問には、Run ID の保存記録で現在の工程を確認する。一般仕様はその Run の実行結果と区別し、次に確認するキー・ファイル・ログを示す。

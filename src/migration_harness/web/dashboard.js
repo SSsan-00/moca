@@ -1323,10 +1323,7 @@ element("#recovery-form").addEventListener("submit", async event => {
     if (!response.ok) throw await responseError(response);
     if (recoveryPlan !== plan) return;
     recoveryDialog.close();
-    if (plan.kind === "draft") {
-      renderRecovery(snapshot, true);
-      element("#recovery-next").textContent = "選択を保存しました。同じ実行を再開すると反映します。";
-    } else if (staticDemo) renderRecovery(snapshot, true);
+    if (plan.kind === "draft" || staticDemo) renderRecovery(snapshot, true);
   } catch (error) {
     if (recoveryPlan === plan) recoveryDialogStatus.textContent = error.message;
   } finally {
@@ -1373,7 +1370,7 @@ function renderRecovery(data, force = false) {
       } else if (checkerReviewStatuses.has(info.status)) {
         next = "チェッカー出力を確認してください。成果物の版が変わった場合はビルドから再検証します。";
       }
-      if (info.draft === "repair") next = info.draft_selected ? "復元する版を保存しました。同じ実行を再開すると反映します。"
+      if (info.draft === "repair") next = info.draft_selected ? "復元する版を保存しました。変更がなければそのまま再開できます。更新された場合は、現在の版と比較して選び直してください。"
         : "下書きと手修正版が競合している場合は、復元する版を選んでから再開してください。";
       if (info.conflict) next = "エディタで差分を確認し、競合を解消して保存してください。";
       if (info.needs_process_check) next = "ログと残存プロセスを確認するまで処理を再開しないでください。";
@@ -1386,7 +1383,9 @@ function renderRecovery(data, force = false) {
       }
       element("#recovery-next").textContent = next;
       element("#recovery-editor").hidden = !snapshot.worktree_path;
-      element("#recovery-draft").hidden = info.draft !== "repair" || info.draft_selected || info.needs_process_check;
+      const draftButton = element("#recovery-draft");
+      draftButton.hidden = info.draft !== "repair" || info.needs_process_check;
+      draftButton.textContent = info.draft_selected ? "復元する版を選び直す" : "復元する版を選ぶ";
       element("#recovery-script").hidden = !info.unknown_script;
     })
     .catch(() => {
