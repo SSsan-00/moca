@@ -56,6 +56,44 @@ class DashboardEditorTests(HarnessCase):
         with urlopen(request, timeout=4) as response:
             return json.load(response)
 
+    def test_cached_run_cards_keep_preflight_holds_distinct_from_a_failed_build_without_sending_diagnostics(self):
+        record = {"status": "build_failed", "roslyn_preflight": {"status": "blocked", "findings": ["large report"]}}
+        listed = dashboard.Dashboard.list_record(record)
+        self.assertEqual(listed["review_kind"], "roslyn_preflight")
+        self.assertNotIn("roslyn_preflight", listed)
+        self.view.observe(listed)
+        self.assertEqual(self.view.state["review_kind"], "roslyn_preflight")
+        self.view.observe(record | {"build_exit_code": 1})
+        self.assertNotIn("review_kind", self.view.state)
+
+    def test_syntax_diagnoses_only_the_requested_unsaved_target_without_recording_an_edit(self):
+        result = self.finished_run()
+        run_id = result["run_id"]
+        run_path, worktree, _, _ = run_records.load_saved_run(self.settings, run_id)
+        before = {p: p.read_bytes() if p.is_file() else None for p in
+                  (worktree / "Page.cs", run_path / "agent-workspace/Page.cs", run_path / "editor.json", run_path / "run.json")}
+        payload = {"run_id": run_id, "target": "Page.cs", "content": "class 未保存 {\n", "version": "draft:3"}
+        route = "roslyn-diagnostics"
+        with patch("migration_harness.verification.roslyn_syntax.editor_diagnostics",
+                   return_value={"target": "Page.cs", "version": "draft:3", "status": "errors"}) as diagnose:
+            for changes in ({"target": "source.php"}, {"target": "../Page.cs"}, {"target": "Other.cs"},
+                            {"content": None}, {"run_id": "stale"}, {"version": ""}):
+                with self.subTest(changes=changes), self.assertRaises(HTTPError) as error:
+                    self.request(route, payload | changes)
+                self.assertEqual(error.exception.code, 409)
+                error.exception.close()
+            for headers, expected in (({"Origin": "http://localhost"}, 403), ({"X-Run-ID": "stale"}, 409)):
+                request = Request(self.url + route, json.dumps(payload).encode(),
+                                  headers={"Origin": self.origin, "Content-Type": "application/json", **headers})
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(request, timeout=4)
+                self.assertEqual(error.exception.code, expected)
+                error.exception.close()
+            diagnose.assert_not_called()
+            self.assertEqual(self.request(route, payload)["version"], "draft:3")
+            diagnose.assert_called_once_with("Page.cs", payload["content"], "draft:3")
+        self.assertEqual(before, {p: p.read_bytes() if p.is_file() else None for p in before})
+
     def queue_edit(self, state, content, *, resolve=False, target="Page.cs"):
         return self.request(payload={
             "kind": "save", "run_id": state["run_id"], "target": target,

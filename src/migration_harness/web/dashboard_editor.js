@@ -47,6 +47,75 @@
   let saving = false;
   let sending = false;
   let revision = 0;
+  const diagnostics = find("#editor-diagnostics");
+  const diagnosticList = find("#editor-diagnostic-list");
+  const diagnosticRetry = find("#editor-diagnostic-retry");
+  diagnosticRetry.addEventListener("click", scheduleDiagnostics);
+  let diagnosticGeneration = 0, diagnosticTimer, markedModel;
+
+  function scheduleDiagnostics() {
+    const generation = ++diagnosticGeneration;
+    clearTimeout(diagnosticTimer);
+    if (markedModel) window.monaco.editor.setModelMarkers(markedModel, "syntax", []);
+    markedModel = undefined;
+    diagnosticList.replaceChildren();
+    diagnosticRetry.hidden = true;
+    const file = current, run = state?.run_id, target = state?.target;
+    const valid = () => generation === diagnosticGeneration && current === file && !switching && !state?.read_error
+      && !!file && language === "target" && run === progress().run_id && target === selectedTarget
+      && tab.getAttribute("aria-selected") === "true";
+    diagnostics.hidden = !valid();
+    if (diagnostics.hidden) return;
+    setText("#editor-diagnostic-status", " · 診断待ち");
+    setText("#editor-diagnostic-note", "入力が止まると、保存せずにこの下書きを診断します。");
+    diagnosticTimer = setTimeout(async () => {
+      if (!valid()) return;
+      const version = String(generation), content = readText(file.model);
+      setText("#editor-diagnostic-status", " · 診断中");
+      try {
+        const result = await request("roslyn-diagnostics", {run_id: run, target, version, content});
+        if (!valid() || result.version !== version || result.target !== target) return;
+        const findings = [...result.findings, ...result.razor];
+        const markers = findings.map(item => {
+          const parts = content.slice(item.start, item.start + item.length).split("\n");
+          return {severity: window.monaco.MarkerSeverity.Error, code: item.code, message: item.message,
+            startLineNumber: item.line, startColumn: item.column, endLineNumber: item.line + parts.length - 1,
+            endColumn: parts.length === 1 ? item.column + Math.max(1, parts[0].length) : parts.at(-1).length + 1};
+        });
+        window.monaco.editor.setModelMarkers(file.model, "syntax", markers);
+        markedModel = file.model;
+        diagnosticList.replaceChildren(...markers.map(marker => {
+          const li = document.createElement("li");
+          const button = Object.assign(document.createElement("button"), {type: "button",
+            textContent: `${marker.startLineNumber}行 ${marker.startColumn}列 · ${marker.code}  ${marker.message}`});
+          button.addEventListener("click", () => {
+            if (!valid()) return;
+            const view = diffOpen ? diff.getModifiedEditor() : editor;
+            const position = {lineNumber: marker.startLineNumber, column: marker.startColumn};
+            view.setPosition(position);
+            view.revealPositionInCenter(position);
+            view.focus();
+          });
+          li.append(button);
+          return li;
+        }));
+        const unavailable = result.status === "unavailable" || result.status === "blocked";
+        diagnosticRetry.hidden = !unavailable || result.reason === "demo";
+        const status = unavailable ? "診断できません" : findings.length ? `${findings.length}件${result.truncated ? "以上" : ""}` : "指摘なし";
+        setText("#editor-diagnostic-status", " · " + status);
+        const reasons = {demo: "静的デモでは診断を実行しません。", timeout: "診断が時間内に終了しませんでした。",
+          analyzer_busy: "ほかの診断を処理中です。"};
+        setText("#editor-diagnostic-note", unavailable ? reasons[result.reason] || "解析器を利用できません。正式ビルドで確認してください。"
+          : result.truncated ? "表示件数の上限に達しました。まず表示された箇所を確認してください。"
+          : "現在の下書きの構文診断です。型や参照の正しさは正式ビルドで確認してください。");
+      } catch (error) {
+        if (!valid()) return;
+        setText("#editor-diagnostic-status", " · 診断できません");
+        diagnosticRetry.hidden = false;
+        setText("#editor-diagnostic-note", error.message);
+      }
+    }, 500);
+  }
 
   // エディタと会話の領域に必要な幅から切り替え位置を制限する。
   function splitBounds() {
@@ -463,6 +532,7 @@
     state = data;
     if (!data.run_id) {
       current = undefined;
+      scheduleDiagnostics();
       layout.hidden = true;
       find("#editor-empty").hidden = false;
       find("#editor-empty").textContent = "実行タブで移行を始めるか、保存済みの実行を開いてください。";
@@ -470,6 +540,7 @@
     }
     if (data.status_only) {
       current = undefined;
+      scheduleDiagnostics();
       layout.dataset.statusOnly = "true";
       editorPane.hidden = splitter.hidden = true;
       updateChat();
@@ -497,6 +568,7 @@
     if (!data.targets.length) {
       current = undefined;
       language = "php";
+      scheduleDiagnostics();
       showEditor(false);
       updateChat();
       if (!phpSource) loadPhp();
@@ -514,7 +586,7 @@
       documents.set(key, file);
       model.onDidChangeContent(() => {
         file.pendingSave = undefined;
-        if (file === current) showSaveState();
+        if (file === current) { showSaveState(); scheduleDiagnostics(); }
       });
     } else if (!data.read_error) {
       const accepted = file.unconfirmedSaves.has(data.edit?.save_id ?? data.accepted_save_id);
@@ -535,6 +607,7 @@
     if (readText(latest) !== baseline) latest.setValue(baseline);
     const different = current !== file;
     current = file;
+    if (different || Boolean(previous?.read_error) !== Boolean(data.read_error)) scheduleDiagnostics();
     showEditor(!different && diffOpen);
     showSaveState();
     updateChat();
@@ -609,6 +682,7 @@
       revision++;
       report("#editor-error");
     }
+    scheduleDiagnostics();
     if (state.target === target) {
       showEditor(diffOpen);
       showSaveState();
@@ -618,6 +692,7 @@
   });
   phpButton.addEventListener("click", () => {
     language = "php";
+    scheduleDiagnostics();
     showEditor(diffOpen);
     if (!phpSource || phpSource.error) loadPhp(phpSource?.source);
     else showSaveState();
@@ -694,6 +769,7 @@
   };
   document.addEventListener("harnessrunselect", () => {
     switching = true;
+    scheduleDiagnostics();
     revision++;
     phpRequest++;
     phpSource = undefined;
@@ -708,7 +784,7 @@
   });
   document.addEventListener("harnessrunchange", () => { switching = false; revision++; refresh(); });
   setInterval(refresh, 750);
-  workspaceTabs.addEventListener("harnesstab", refresh);
+  workspaceTabs.addEventListener("harnesstab", () => { scheduleDiagnostics(); refresh(); });
 })();
 
 (() => {

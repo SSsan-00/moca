@@ -802,7 +802,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
     # 新しいビルドが失敗した場合に、以前の成功を再利用しないことを検証する。
     def test_failed_rebuild_stops_before_checker_and_records_current_failure(self):
-        self.target.write_text("broken C#", encoding="utf-8")
+        self.target.write_text("class Example { int Value = MissingValue; }", encoding="utf-8")
         old_checker_log = self.checker_log.read_bytes()
         result = self.resume(("dotnet", 99, b"edited target does not build\n"))
         self.assertEqual(result["status"], "build_failed")
@@ -814,15 +814,15 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(self.checker_log.read_bytes(), old_checker_log)
 
     def test_build_response_passes_saved_edit_and_instruction_to_junie_before_verification(self):
-        diagnostic = f"{self.target}(1,30): error CS1525: Invalid expression\n".encode()
-        self.target.write_bytes(b"\xef\xbb\xbfclass Example { int Value = ; }\r\n")
+        diagnostic = f"{self.target}(1,30): error CS0103: The name MissingValue is not defined\n".encode()
+        self.target.write_bytes(b"\xef\xbb\xbfclass Example { int Value = MissingValue; }\r\n")
         self.resume(("dotnet", 1, diagnostic * 2))
         (self.run_path / "agent-workspace").mkdir()
         summary = workflow.build_failure_review(self.config, self.run_id)
-        self.assertEqual(summary["errors"], ["Example.cs(1,30): CS1525: Invalid expression"])
+        self.assertEqual(summary["errors"], ["Example.cs(1,30): CS0103: The name MissingValue is not defined"])
         self.assertEqual(summary["preferred_target"], self.target.name)
         source = workflow.build_failure_review(self.config, self.run_id, self.target.name)
-        edited = b"\xef\xbb\xbf// human edit\r\nclass Example { int Value = ; }\r\n"
+        edited = b"\xef\xbb\xbf// human edit\r\nclass Example { int Value = MissingValue; }\r\n"
         instruction = "値を 42 にしてください。"
 
         def repair(command, completion, token, targets, **kwargs):
@@ -830,7 +830,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             self.assertIn(instructions.name, command[-1])
             self.assertEqual(instructions.read_text(encoding="utf-8").strip(), instruction)
             self.assertEqual(targets[0].read_bytes(), edited)
-            targets[0].write_bytes(edited.replace(b"= ;", b"= 42;"))
+            targets[0].write_bytes(edited.replace(b"= MissingValue;", b"= 42;"))
             completion.write_text(token, encoding="utf-8")
             return 0
 
@@ -843,12 +843,12 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             result = workflow.resume_with_junie(self.config, self.run_id, build_response={
                 "instruction": instruction,
                 "edit": {"target": self.target.name, "version": source["version"],
-                         "content": "// human edit\nclass Example { int Value = ; }\n"},
+                         "content": "// human edit\nclass Example { int Value = MissingValue; }\n"},
             })
         junie.assert_called_once()
         self.assertEqual(len(calls), 2)
         self.assertEqual(result["status"], "checker_succeeded")
-        self.assertEqual(self.target.read_bytes(), edited.replace(b"= ;", b"= 42;"))
+        self.assertEqual(self.target.read_bytes(), edited.replace(b"= MissingValue;", b"= 42;"))
 
     def test_build_response_rejects_a_stale_edit_before_starting_any_command(self):
         self.resume(("dotnet", 1, b"failed\n"))
@@ -907,9 +907,11 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             )
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual([item["message"] for item in updates if item["kind"] == "phase"], [
+            "Roslyn/Razor の事前診断を実行しています",
             "ビルドを実行しています", "ビルドエラーを確認しています",
             "修正に必要な資料を準備しています", "Junieがビルドエラーを修正しています",
             "Junieの修正結果を確認しています",
+            "Roslyn/Razor の事前診断を実行しています",
             "再ビルドを実行しています", "独自チェッカーで確認しています",
         ])
         self.assertEqual(len(self.record()["build_attempt_seconds"]), 2)

@@ -122,12 +122,14 @@ def _require_idle_job(job, exited_pid):
 
 
 def run_process(
-    command: list[str], *, label: str, cancellable: bool = True, synchronous: bool = False, **kwargs,
+    command: list[str], *, label: str, cancellable: bool = True, synchronous: bool = False,
+    timeout: float | None = None, **kwargs,
 ) -> subprocess.CompletedProcess:
     """待機中も停止を受け付ける。出力の内容と終了コードはsubprocess.runと同じ。"""
     if not is_controlled() and not synchronous:
-        return subprocess.run(command, **kwargs)
+        return subprocess.run(command, timeout=timeout, **kwargs)
     check_cancelled()
+    deadline = None if timeout is None else time.monotonic() + timeout
     check = kwargs.pop("check", False)
     if kwargs.pop("capture_output", False):
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -152,11 +154,16 @@ def run_process(
                 if cancellable:
                     check_cancelled()
                 try:
-                    stdout, stderr = process.communicate(timeout=0.25)
+                    wait = 0.25 if deadline is None else min(0.25, deadline - time.monotonic())
+                    if wait <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    stdout, stderr = process.communicate(timeout=wait)
                     if synchronous:
                         _require_idle_job(job, process.pid)
                     break
                 except subprocess.TimeoutExpired:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise
                     if synchronous and process.poll() is not None:
                         _require_idle_job(job, process.pid)
                     if time.monotonic() >= next_report:

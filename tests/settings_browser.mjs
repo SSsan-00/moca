@@ -10,8 +10,8 @@ import {checkRuleSourceEditor} from "./rule_source_browser.mjs";
 const [executable, profile, url, notificationUrl, expectedRun, liveLogPath, ruleConfigPath] = process.argv.slice(2);
 let socket, sequence = 0;
 const pending = new Map();
-async function eventually(read, label) {
-  for (let index = 0; index < 100; index++) {
+async function eventually(read, label, attempts = 100) {
+  for (let index = 0; index < attempts; index++) {
     const value = await read();
     if (value) return value;
     await pause(100);
@@ -136,7 +136,7 @@ try {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result.value;
   }
-  const wait = expression => eventually(async () => {
+  const wait = (expression, attempts) => eventually(async () => {
     try {
       return await evaluate(expression);
     } catch (error) {
@@ -144,7 +144,7 @@ try {
       if (!/Execution context was destroyed|Cannot find context|Inspected target navigated or closed/.test(error.message)) throw error;
       return false;
     }
-  }, expression);
+  }, expression, attempts);
   const field = id => `document.getElementById(${JSON.stringify(id)})`;
   const click = id => evaluate(`${field(id)}.click()`);
   const change = (id, value, event = "change") => evaluate(`
@@ -575,6 +575,22 @@ try {
   await evaluate("stopRuleChatFixture()");
   console.log("Browser RuleWorkspace live actions: streaming text, permission, cancellation, and unsent draft remain distinct");
   await click("tab-editor");
+  const sourceEditor = "window.monaco?.editor.getEditors().find(e => document.getElementById('editor-code').contains(e.getDomNode()))";
+  await wait(sourceEditor + "?.getModel()?.getLanguageId() === 'csharp'");
+  const savedCode = await evaluate(sourceEditor + ".getValue()");
+  await evaluate(sourceEditor + ".setValue('class Draft {\\n int n = ;\\n}')");
+  await wait("document.getElementById('editor-diagnostic-list').textContent.includes('CS1525')", 250);
+  assert.deepEqual(await evaluate("monaco.editor.getModelMarkers({owner: 'syntax'}).map(m => [m.code,m.startLineNumber,m.startColumn])"),
+    [["CS1525", 2, 10]]);
+  await evaluate("document.querySelector('#editor-diagnostics summary').click()");
+  await wait("!!document.querySelector('#editor-code .squiggly-error') && document.querySelector('#editor-diagnostic-list button').offsetWidth > 0");
+  await evaluate("document.querySelector('#editor-diagnostic-list button').click()");
+  assert.deepEqual(await evaluate(sourceEditor + ".getPosition()"), {lineNumber: 2, column: 10});
+  assert.equal(await evaluate("fetch('editor').then(r => r.json()).then(d => d.content)"), savedCode);
+  await evaluate(sourceEditor + ".setValue(" + JSON.stringify(savedCode) + ")");
+  await wait("document.getElementById('editor-diagnostic-status').textContent.includes('指摘なし')");
+  assert.equal(await evaluate("monaco.editor.getModelMarkers({owner:'syntax'}).length"), 0);
+  console.log("Browser editor: unsaved C# syntax, real compiler marker and click location, saved text unchanged");
   const runModel = "document.querySelector('#editor-prompt-form [data-run-model]')";
   const runEffort = "document.querySelector('#editor-prompt-form [data-run-effort]')";
   await wait(runModel + " && !" + runModel + ".disabled");

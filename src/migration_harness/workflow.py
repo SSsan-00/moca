@@ -28,6 +28,7 @@ from .junie import junie_cli
 from .junie.acp_permissions import PinnedReferenceReads
 from .junie.reply_text import DuplicateJsonKey, load_unique_json, unwrap_json_fence
 from .verification.build_receipt import build_artifacts, build_inputs
+from .verification.roslyn_syntax import syntax_diagnostics
 from .verification.verification_files import configured_verification_checker, verification_files, verification_scripts
 from .context import php_literals
 from .context.capsules import is_php_input, load_capsule_manifest, prepare_context
@@ -2801,6 +2802,8 @@ def _repair_target(
     stopped_draft, before, agent_targets, resume_draft, staged_versions = _sync_repair_workspace(
         run_path, worktree, agent_root, targets, repair_targets, attempt,
     )
+    if (expected := attempt["details"].get("roslyn_versions")) is not None and before != expected:
+        raise CheckerRepairBlocked("verification_inputs_changed", "Roslyn diagnostics no longer match the saved targets.")
     token = uuid.uuid4().hex
     completion_path = agent_root / f"migration-complete-{token}.txt"
     findings_path = agent_root / f"checker-findings-{token}.txt"
@@ -3038,9 +3041,37 @@ def _adopt_repair_result(run_path, worktree, agent_root, repair_targets, record,
         sha256_file(file) == before[path.as_posix()] for path, file in zip(repair_targets, agent_targets, strict=True)
     ):
         raise CheckerRepairBlocked("unchanged", "Junie left the repair targets unchanged")
-    attempt["details"]["junie_exit_code"] = exit_code
+    details = attempt["details"]
+    details["junie_exit_code"] = exit_code
+    if details.get("roslyn_preflight"):
+        details["diff"], details["diff_truncated"] = _roslyn_repair_diff(worktree, agent_root, repair_targets)
     _charge_repair(record)
     apply_agent_targets(agent_root, worktree, repair_targets, before, record, run_path / "run.json")
+
+
+def _roslyn_repair_diff(worktree, agent_root, targets):
+    diff = ""
+    truncated = False
+    for target in targets:
+        try:
+            _, old = read_target(worktree, target)
+            _, new = read_target(agent_root, target)
+            if len(old) + len(new) > 512_000:
+                truncated = True
+                continue
+        except (OSError, ValueError):
+            truncated = True
+            continue
+        for line in unified_diff(old.splitlines(), new.splitlines(), f"a/{target.as_posix()}", f"b/{target.as_posix()}", lineterm=""):
+            if len(diff) + len(line) >= 8_000:
+                return diff, True
+            diff += line + "\n"
+    return diff, truncated
+
+
+def _roslyn_diagnostic_lines(report):
+    return [f"{item['path']}({item['line']},{item['column']}): {item['code']}: {item['message']}"
+            for item in report.get("findings", [])]
 
 
 _BUILD_DIAGNOSTIC = re.compile(
@@ -3109,6 +3140,15 @@ def build_failure_review(config: dict[str, Any], run_id: str, target: str | None
             "content": content, "version": hashlib.sha256(data).hexdigest(), "max_bytes": EDIT_BYTES,
             "crlf": target_newline(data) == "\r\n", "bom_bytes": len(codecs.BOM_UTF8),
         }
+    preflight = record.get("roslyn_preflight", {})
+    if preflight.get("status") in {"blocked", "cancelled"} and record.get("build_exit_code") is None:
+        attempts = [item for item in record.get("repair_history", []) if item.get("roslyn_preflight")]
+        diffs = "\n".join(item.get("diff", "") for item in attempts if item.get("diff"))
+        names = [path.as_posix() for path in targets]
+        preferred = next((item["path"] for item in preflight.get("findings", []) if item["path"] in names), None)
+        return {"review_kind": "roslyn_preflight", "errors": _roslyn_diagnostic_lines(preflight),
+                "log": diffs, "truncated": any(item.get("diff_truncated") for item in attempts),
+                "preferred_target": preferred, "targets": names}
     log, truncated = _review_log(run_path, "build.log")
     errors = []
     preferred_target = None
@@ -3146,12 +3186,16 @@ def _respond_to_build_failure(
     instruction = response.get("instruction", "").strip()
     if not instruction:
         return
-    log, _ = _review_log(run_path, "build.log")
-    errors = _build_error_lines(log)
+    preflight = record.get("roslyn_preflight", {})
+    is_preflight = preflight.get("status") in {"blocked", "cancelled"} and record.get("build_exit_code") is None
+    log = "" if is_preflight else _review_log(run_path, "build.log")[0]
+    errors = _roslyn_diagnostic_lines(preflight) if is_preflight else _build_error_lines(log)
     diagnostic = ("\n".join(errors) or log)[-8_000:]
     findings = f"{record.get('error', '')}\n{diagnostic}".strip() or "The last build failed."
     history = record.setdefault("repair_history", [])
     details = {"kind": "build", "findings": [], "instruction": instruction}
+    if is_preflight:
+        details["roslyn_preflight"] = True
     if log:
         archive = safe_target(run_path, Path(f"build-before-repair-{len(history) + 1}.log"))
         shutil.copyfile(run_path / "build.log", archive)
@@ -3568,6 +3612,97 @@ def _verification_script(config, phase, worktree, run_path, record, targets, has
     return False
 
 
+def _roslyn_before_build(config, run_path, worktree, targets, record, *, expected_targets, allow_repair):
+    record_path = run_path / "run.json"
+
+    def current_versions():
+        return {path.as_posix(): review_target_hash(worktree, path) for path in targets}
+
+    report_activity("Roslyn/Razor の事前診断を実行しています", kind="phase")
+    previous = record.get("roslyn_preflight", {})
+    report = None
+    try:
+        with build_process_scope(), worktree_source_lock(worktree):
+            hashes = current_versions()
+            if expected_targets is not None and hashes != expected_targets:
+                raise ValueError("Build inputs changed before the Roslyn diagnostic.")
+            report = syntax_diagnostics(worktree, run_path, targets)
+            if hashes != current_versions():
+                report.update(status="blocked", reason="targets_changed_during_diagnostic")
+        report["target_versions"] = hashes
+        record["roslyn_preflight"] = report
+        record["roslyn_preflight_seconds"] = [*record.get("roslyn_preflight_seconds", [])[-4:], report["seconds"]]
+        write_run_record(record_path, record, timing_stage=4)
+        if report["status"] in {"clear", "unavailable"}:
+            return "build"
+        if report["status"] == "errors":
+            history = record.setdefault("repair_history", [])
+            findings = report["findings"]
+            counts = Counter((item["path"], item["code"], item["message"]) for item in findings)
+            fingerprints = {hashlib.sha256(json.dumps((key, i)).encode("utf-8")).hexdigest()
+                            for key, count in counts.items() for i in range(count)}
+            prior = next((attempt for attempt in reversed(history)
+                          if attempt.get("roslyn_preflight") and "instruction" not in attempt), None)
+            summary = "\n".join(_roslyn_diagnostic_lines(report))
+            report.update(fingerprints=sorted(fingerprints))
+            if report["truncated"] or len(summary) > 8_000:
+                report["reason"] = "diagnostics_too_large"
+            elif previous.get("status") == "blocked" and previous.get("target_versions") == hashes:
+                report["reason"] = previous["reason"]
+            elif not allow_repair:
+                report["reason"] = "operator_review"
+            elif sum("instruction" not in attempt for attempt in history) >= min(2, config["max_repair_attempts"]):
+                report["reason"] = "repair_budget"
+            elif (prior and not fingerprints < set(prior["findings"])) or _repair_stalled(fingerprints, history, kind="build"):
+                report["reason"] = "repair_stalled"
+            else:
+                affected = {item["path"] for item in findings}
+                repair_targets = tuple(path for path in targets if path.as_posix() in affected)
+                report["status"] = "repairing"
+                try:
+                    _attempt_repair(config, targets, repair_targets, worktree, run_path, summary, record,
+                                    {"kind": "build", "findings": sorted(fingerprints),
+                                     "roslyn_preflight": True, "roslyn_versions": hashes})
+                except (OSError, RuntimeError, ValueError) as error:
+                    if junie_cli.unconfirmed_junie_stop(error) is not None:
+                        raise
+                    reason = "no_edits" if isinstance(error, CheckerRepairBlocked) and error.reason == "unchanged" else "repair_error"
+                    report.update(status="errors", reason=reason, repair_error=format_error(error))
+                else:
+                    if hashes != current_versions():
+                        return "retry"
+                    report.update(status="errors", reason="no_edits")
+        report["status"] = "blocked"
+        _remember_diagnostic(run_path, record, "build")
+        _remember_diagnostic(run_path, record, "checker")
+        for key in ("build_log_path", "build_operation_id", "checker_build", "checker_log_path", "verification"):
+            record.pop(key, None)
+        detail = {
+            "no_edits": "Junieによる変更がありませんでした。",
+            "repair_stalled": "修正後も指摘が減らなかったため、追加の自動修正を行いませんでした。",
+            "repair_budget": "自動修正の上限に達しました。",
+            "operator_review": "エラーを確認し、移行先を修正してください。",
+            "diagnostics_too_large": "指摘が多いため、自動修正を行いませんでした。",
+            "repair_error": "Junieによる修正を完了できませんでした。",
+            "targets_changed_during_diagnostic": "診断中に対象が変わりました。内容を確認して再開してください。",
+            "analyzer_stop_unconfirmed": "解析器の終了を確認できません。プロセスが残っていないか確認してください。",
+        }.get(report["reason"], "指摘と保存済みの変更を確認してください。")
+        record.update(status="build_failed", build_exit_code=None, checker_exit_code=None,
+                      error="事前診断で停止したため、正式なビルドは実行していません。 " + detail)
+        write_run_record(record_path, record)
+        return "stop"
+    except KeyboardInterrupt:
+        record["roslyn_preflight"] = {**(report or {}), "status": "cancelled", "reason": "operator_stop"}
+        _remember_diagnostic(run_path, record, "build")
+        _remember_diagnostic(run_path, record, "checker")
+        for key in ("build_log_path", "build_operation_id", "checker_build", "checker_log_path", "verification"):
+            record.pop(key, None)
+        record.update(status="build_failed", build_exit_code=None, checker_exit_code=None,
+                      error="事前診断を中断しました。正式なビルドは実行していません。")
+        write_run_record(record_path, record)
+        raise RunInterrupted(record["run_id"]) from None
+
+
 def _run_verification(
     config: dict[str, Any], unit: dict[str, Any], result: dict[str, Any], record: dict[str, Any],
     *, request: dict[str, Any] | None = None,
@@ -3636,6 +3771,16 @@ def _run_verification(
         if _verification_script(config, "before_build", worktree, run_path, record, targets, None, manual_request):
             expected_targets = None
             continue
+        preflight = _roslyn_before_build(
+            config, run_path, worktree, targets, record, expected_targets=expected_targets,
+            allow_repair=automatic or mode == "build_repair",
+        )
+        if preflight == "retry":
+            expected_targets = None
+            continue
+        if preflight == "stop":
+            return {**result, "status": record["status"], "error": record["error"], "build_exit_code": None,
+                    "build_log_path": None, "roslyn_preflight": record["roslyn_preflight"]}
         verified, hashes, inputs = _execute_verification_build(
             config, unit, result, record, run_path, worktree, targets, expected_targets=expected_targets,
             previous_receipt=previous_receipt, configured_checker=configured_checker, command=command,

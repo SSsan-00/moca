@@ -80,6 +80,8 @@ window.harnessEditorDemo = (() => {
 
   // 本番と同じ画面操作をデモRunのメモリ上の状態で再現する。
   async function request(path, action) {
+    if (path === "roslyn-diagnostics") return {status: "unavailable", reason: "demo", findings: [], razor: [],
+      target: action.target, version: action.version};
     if (path === "run-model") return {run_id: runId, can_select: true, model: demo.junie_model, effort: demo.junie_effort, revision: demo.junie_model_revision};
     if (action?.kind === "model") {
       if (action.model_revision !== demo.junie_model_revision) throw new Error("モデル設定が別の画面で変更されました。");
