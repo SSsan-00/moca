@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import SavedRunFixture
@@ -1015,16 +1015,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             with self.assertRaisesRegex(OSError, "save failure"):
                 workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
         self.assertEqual(self.record()["repair_pending"]["draft"]["snapshot"], plan["snapshot"])
-        args = [
-            "php-to-csharp-harness", "repair-draft", "--config", "fixture.toml", "--run-id", self.run_id,
-            "--version", plan["version"], "--choose", f"{names[0]}=draft", "--choose", f"{names[1]}=worktree",
-        ]
-        with (
-            patch.object(sys, "argv", args),
-            patch.object(cli, "load_config", return_value=self.config),
-            redirect_stdout(io.StringIO()),
-        ):
-            cli.main()
+        workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
         self.assertEqual((agent / names[0]).read_bytes(), b"class AgentManual {}")
 
         def recovered(_command, _completion, _token, targets, **kwargs):
@@ -1182,7 +1173,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
             result = self.resume(self.build, ("fixture-checker", 0, b""))
             junie.assert_not_called()
         self.assertEqual(result["status"], "checker_needs_review")
-        self.assertIn("repair-draft", result["error"])
+        self.assertIn("進捗画面", result["error"])
         self.assertTrue(second.is_file())
         self.assertFalse((self.run_path / "agent-workspace" / second.name).exists())
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class FirstDraft {}\n")
@@ -1753,6 +1744,48 @@ class SavedDashboardTests(SavedRunFixture):
 
         self.open_dashboard(inspect)
 
+    def test_recovery_dashboard_compares_and_selects_current_draft_safely(self):
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        draft_file = agent / self.target.name
+        draft_file.write_bytes(b"class StoppedDraft {}\n")
+        base = {self.target.name: sha256(self.target.read_bytes()).hexdigest()}
+        draft = workflow._save_target_snapshot(self.run_path, {self.target.name: draft_file}, base, workspace_unchanged=True)
+        self.target.write_bytes(b"class Manual {}\n")
+        self.save_record({**self.record(), "status": "interrupted", "repair_pending": {"draft": draft}})
+
+        def inspect(url):
+            self.get_ready_event(url)
+            query = urlencode({"run_id": self.run_id, "kind": "draft"})
+            with urlopen(url + "recovery-plan?" + query, timeout=3) as response:
+                plan = json.load(response)
+            preview_query = urlencode({"run_id": self.run_id, "version": plan["version"], "target": self.target.name})
+            with urlopen(url + "recovery-file?" + preview_query, timeout=3) as response:
+                preview = json.load(response)
+            self.assertEqual(preview["draft"]["text"], "class StoppedDraft {}\n")
+            self.assertEqual(preview["worktree"]["text"], "class Manual {}\n")
+
+            self.target.write_bytes(b"class ChangedAgain {}\n")
+            action = {"run_id": self.run_id, "kind": "draft", "version": plan["version"],
+                      "choices": {self.target.name: "draft"}}
+            for request in (lambda: urlopen(url + "recovery-file?" + preview_query, timeout=3),
+                            lambda: self.post(url, "recovery-plan", action)):
+                with self.assertRaises(HTTPError) as rejected:
+                    request()
+                self.assertEqual(rejected.exception.code, 409)
+                rejected.exception.close()
+            with urlopen(url + "recovery-plan?" + query, timeout=3) as response:
+                action["version"] = json.load(response)["version"]
+            with self.post(url, "recovery-plan", action) as response:
+                self.assertEqual(response.status, 200)
+            with urlopen(url + "recovery?run_id=" + self.run_id, timeout=3) as response:
+                self.assertTrue(json.load(response)["draft_selected"])
+            self.assertIn("restore_from", self.record()["repair_pending"])
+            self.assertEqual(self.target.read_text(encoding="utf-8"), "class ChangedAgain {}\n")
+            self.assertEqual(draft_file.read_text(encoding="utf-8"), "class StoppedDraft {}\n")
+
+        self.open_dashboard(inspect)
+
     def test_recovery_keeps_legacy_migration_and_protection_states(self):
         original = self.record()
 
@@ -2223,17 +2256,3 @@ target = "Search.cs"
             result = self.open_dashboard(inspect, resume=True)
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual(len(calls), 2)
-
-    # 二つのCLI起動方法が同じ保存済み表示に入ることを検証する。
-    def test_cli_view_and_resume_dashboard_open_saved_run(self):
-        for args in (["view"], ["resume", "--dashboard"]):
-            with (
-                self.subTest(args=args),
-                patch.object(sys, "argv", ["harness", *args, "--config", "fixture.toml", "--run-id", self.run_id]),
-                patch.object(cli, "load_config", return_value=self.config),
-                patch.object(dashboard, "run_dashboard", return_value=self.record()) as open_view,
-                patch.object(cli, "resume_with_junie") as resume,
-            ):
-                cli.main()
-                open_view.assert_called_once_with(self.config, run_id=self.run_id)
-                resume.assert_not_called()

@@ -10,7 +10,7 @@ Python のハーネスが入力の固定、実行順序、ファイル反映、�
 flowchart TB
     subgraph S1[1 準備と入力固定]
         direction LR
-        Start[CLI またはダッシュボード
+        Start[ダッシュボード
 config を検証]
         NewRun[Run ID を採番
 Run lock → prepare lock]
@@ -48,7 +48,7 @@ agent-workspace を初期化]
         Checkpoint[editor_checkpoint
 回答・編集後に同じ Run を再開]
         Junie[Junie をカプセル単位で起動
-端末 CLI またはダッシュボード ACP]
+ACP または承認後の非対話モード]
         Outcome{完了トークン・全対象・
 プロセス終了を確認}
         Apply[対象外変更・UTF-8・旧版を照合
@@ -172,7 +172,7 @@ flowchart TD
 
     User --> CLI
     User --> UI
-    CLI -->|直接実行| Flow
+    CLI -->|補助情報の確認| Flow
     CLI -->|画面起動| HTTP
     UI <-->|POST・SSE・レビュー| HTTP
     HTTP --> Manager --> Flow
@@ -208,25 +208,18 @@ sequenceDiagram
     participant Manager as RunManager
     participant Flow as workflow
 
-    User->>CLI: h.cmd または CLI
+    User->>CLI: h.cmd
     CLI->>Config: 指定 TOML を読み込み・検証
-    alt 端末で prepare / run / resume
-        CLI->>Flow: 対象の workflow 関数を呼ぶ
-        Flow-->>CLI: Run の結果と保存先
-        CLI-->>User: 進捗・ログパス・検証結果
-    else dashboard / view / run --dashboard
-        CLI->>HTTP: ローカル画面を起動
-        HTTP->>Manager: 保存済みの待機ジョブを読み込む
-        Note over HTTP,Manager: run --dashboard は起動時に Run を登録
-        User->>HTTP: 実行または再開を依頼
-        HTTP->>Manager: 対象 Run と操作を登録
-        Manager->>Flow: 空き枠でワーカーが実行
-        Flow-->>HTTP: run.json 更新を observer に通知
-        HTTP-->>User: SSE で状態と進捗を配信
-    end
+    CLI->>HTTP: ローカル画面を起動
+    HTTP->>Manager: 保存済みの待機ジョブを読み込む
+    User->>HTTP: 実行または再開を依頼
+    HTTP->>Manager: 対象 Run と操作を登録
+    Manager->>Flow: 空き枠でワーカーが実行
+    Flow-->>HTTP: run.json 更新を observer に通知
+    HTTP-->>User: SSE で状態と進捗を配信
 ```
 
-- Windows の `h.cmd` は隣接する仮想環境の `php-to-csharp-harness.exe` と `harness.local.toml` を使います。Python のエントリーポイントは `migration_harness.cli:main` です。初回の `dashboard` は指定 TOML がなくても設定画面を開けます。保存操作で内容を検証し、読み込み時の版と照合して置き換えます。 `view` と `resume --dashboard` は保存済み Run を開き、再開の実行は画面から指示します。 [h.cmd](../h.cmd) · [cli.py](../src/migration_harness/cli.py) · [dashboard.py](../src/migration_harness/web/dashboard.py)
+- Windows の `h.cmd` は隣接する仮想環境の `php-to-csharp-harness.exe` と `harness.local.toml` を使います。Python のエントリーポイントは `migration_harness.cli:main` です。初回の `dashboard` は指定 TOML がなくても設定画面を開けます。保存操作で内容を検証し、読み込み時の版と照合して置き換えます。保存済み Run の選択と再開は画面から行います。 [h.cmd](../h.cmd) · [cli.py](../src/migration_harness/cli.py) · [dashboard.py](../src/migration_harness/web/dashboard.py)
 - サーバーは `127.0.0.1` の空きポートにバインドし、ランダムな URL 接頭辞を使います。GET は Host と接頭辞、POST は Host と Origin を照合します。`GET …/events` は Run 別の連番付き SSE を配信し、再接続時は `Last-Event-ID` より後の直近保持分（最大 100 件）を返します。 [dashboard.py](../src/migration_harness/web/dashboard.py)
 - `RunManager` が操作 ID を付けて FIFO キューに登録し、最大 5 件を別スレッドで実行します。同じ移行単位の実行中・待機中の重複を拒否します。`<run_root>/dashboard-queue.json` から未起動のジョブを復元し、起動済みの工程は繰り返さず保存状態を表示します。Junieの終了未確認が解消されるまでは同じRunの会話依頼を保留し、その理由を再起動後も復元します。ワーカーが使う設定は実行枠へ入る際にコピーします。 [run_manager.py](../src/migration_harness/runs/run_manager.py) · [junie_conversation.py](../src/migration_harness/junie/junie_conversation.py)
 
@@ -248,20 +241,16 @@ flowchart TD
     Git["git worktree add --detach で基準リビジョンを展開"]
     Prepared["worktree の位置と prepared を保存"]
     After["worktree で after_prepare"]
-    Choice{"要求された操作"}
-    Wait["準備結果を返す"]
     Migrate["移行へ進む"]
     Failed["準備失敗・停止を記録<br/>次回は新規 Run"]
 
-    Start --> Record --> Before --> Validate --> Pin --> Split --> Git --> Prepared --> After --> Choice
-    Choice -->|prepare| Wait
-    Choice -->|run| Migrate
+    Start --> Record --> Before --> Validate --> Pin --> Split --> Git --> Prepared --> After --> Migrate
     Before -.->|worktree 作成前に失敗または停止| Failed
     Split -.->|worktree 作成前に失敗または停止| Failed
     Git -.->|worktree 作成失敗| Failed
 ```
 
-1. `prepare_run` と `run_with_junie` は、Run 単位のロックを取ってから同じ `run_root` の共有準備ロックを取ります。準備が終わると共有ロックを解放し、`run_with_junie` は Run ロックを保持して移行と検証へ進みます。新規 `run` は準備前に Junie を起動できる条件も確認します。 [workflow.py](../src/migration_harness/workflow.py) · [run_records.py](../src/migration_harness/runs/run_records.py)
+1. `run_with_junie` は、Run 単位のロックを取ってから同じ `run_root` の共有準備ロックを取ります。準備が終わると共有ロックを解放し、Run ロックを保持して移行と検証へ進みます。新規 `run` は準備前に Junie を起動できる条件も確認します。 [workflow.py](../src/migration_harness/workflow.py) · [run_records.py](../src/migration_harness/runs/run_records.py)
 2. `prepare_context` は PHP のコピーを `capsule/php-sources/` に保存し、以降の分割と比較の基準にします。文字コードの `auto` は UTF-8 BOM を優先し、UTF-8 と EUC-JP で厳密に検査します。異なる解釈が成立する場合は明示指定が必要です。原文の改行を保った行番号付き Markdown を作り、見出しと共通入力も含む `max_context_chars`（既定 250,000、最小 1,000）を適用します。 [capsules.py](../src/migration_harness/context/capsules.py)
 3. 分割位置は原文の行と文字位置で決まります。1 行が上限に収まらない場合は、移行を担当する文字範囲と、その前後の参照範囲を記録します。同じ入力の隣接カプセルは各方向最大 12 行の境界抜粋を別ファイルに持ちます。 `manifest.json` にファイル・行範囲・文字範囲および保存物のハッシュを記録します。必須ルール・詳細ルール・共通の参考実装はカプセル本文と別に保存します。 [capsules.py](../src/migration_harness/context/capsules.py) · [rule_materials.py](../src/migration_harness/rules/rule_materials.py)
 4. worktree の作成に成功すると移行先、カプセル数、Junie のモデル・推論の強さ・最大ステップ数を Run に保存します。`after_prepare` の中断・失敗は worktree があるため同じ Run で再試行できます。中断した対象フックは、成功済みコマンドのうち先頭から一致する分を省略します。 [workflow.py](../src/migration_harness/workflow.py)
@@ -315,8 +304,8 @@ sequenceDiagram
 
 | 経路 | 振る舞い |
 | --- | --- |
-| 端末での移行 | 端末の対話 CLI を使います。セッションを監視し、完了ファイルとプロセスの状態を確認します。 |
 | ダッシュボードでの移行 | ACP（Agent Communication Protocol）を標準入出力で使用します。初期化・セッション作成の後、明示指定された推論の強さを確認してから `session/prompt` を送り、`session/update` を処理し、許可要求への回答を画面から受け付けます。ACP でモデルが利用できない場合は、対応 CLI と利用者の承認があれば `--task` で今回の呼び出しを再試行します。 |
+| アンカー生成 | `--task` 対応を確認して優先使用し、未対応なら対話CLIへ切り替えます。 |
 | 通信失敗と停止 | モデル通信に失敗すると、同じ作業領域と完了トークンで 1 秒、3 秒の間隔を置いて最大 2 回再試行します。停止境界ではプロセス群の終了を確認します。終了を確認できない場合は `JunieStopError` で止まり、利用者による残存プロセスの確認が必要です。 |
 
 実装は [junie_cli.py](../src/migration_harness/junie/junie_cli.py)、子プロセスや Windows の Job Object は [junie_process.py](../src/migration_harness/junie/junie_process.py) と [windows_job.py](../src/migration_harness/windows_job.py) を参照してください。
@@ -365,7 +354,7 @@ flowchart TD
     Apply -->|失敗または停止| Hold
 ```
 
-- `_run_verification` は `after_migration` の後、ループのたびに `before_build` を実行して対象版を固定し、`dotnet build` を実行します。成功時だけ `after_build` へ進みます。フック失敗は原則としてその時点で止まり、`script_phase` とログを残します。下記のオプションを有効にした通常の検証では、繰り返し検証する `before_build`・`after_build`・`before_checker`・`after_checker` の照合済み診断を修正候補にできます。チェッカーの優先順位は CLI の `--checker-command`、プロジェクト共通設定の順です。コマンドの `{worktree}`・`{build_project}`・`{target}` は該当する worktree のパスへ展開されます。 [workflow.py](../src/migration_harness/workflow.py) · [config.py](../src/migration_harness/config.py) · [command_paths.py](../src/migration_harness/command_paths.py)
+- `_run_verification` は `after_migration` の後、ループのたびに `before_build` を実行して対象版を固定し、`dotnet build` を実行します。成功時だけ `after_build` へ進みます。フック失敗は原則としてその時点で止まり、`script_phase` とログを残します。下記のオプションを有効にした通常の検証では、繰り返し検証する `before_build`・`after_build`・`before_checker`・`after_checker` の照合済み診断を修正候補にできます。チェッカーはプロジェクト共通設定を使います。コマンドの `{worktree}`・`{build_project}`・`{target}` は該当する worktree のパスへ展開されます。 [workflow.py](../src/migration_harness/workflow.py) · [config.py](../src/migration_harness/config.py) · [command_paths.py](../src/migration_harness/command_paths.py)
 - 通常の検証ループでは、保留中の手修正と待機中の追加指示が両方ある場合、ビルド前に `followup_only` で編集処理へ戻ります。画面から明示的に検証を依頼する経路では、依頼にひも付けた移行先の版を照合して実行します。 [workflow.py](../src/migration_harness/workflow.py) · [junie_conversation.py](../src/migration_harness/junie/junie_conversation.py)
 - チェッカー出力は UTF-8 を優先し、Windows の Shift-JIS（CP932）でも解析します。チェッカーの成功は、終了コード 0 かつ無出力（UTF-8 の BOM や空白のみの場合も含む）、または非負の終了コードで標準出力・標準エラーを連結した応答全体が `特に気になる点はありません。` の場合です。明示的な成功応答は UTF-8 の BOM と前後の空白を許容します。その他の出力は終了コードが 0 でも指摘の扱いを判定します。承認には指摘 ID、理由、該当ファイルのハッシュを保存し、再検証で有効な承認済み指摘だけが残ったとき `checker_accepted` になります。 [checker_output.py](../src/migration_harness/verification/checker_output.py) · [workflow.py](../src/migration_harness/workflow.py)
 - 形式未対応のチェッカーまたは工程スクリプトの Junie 判定は既定で無効です。判定だけを有効にしても合否を変えません。`[junie].apply_output_decisions = true` で反映する場合も、続行には終了コード 0、出力全体を根拠とする合格判定、機械的に照合できる明示的な成功表現と版の一致が必要です。曖昧さ、判定不能、変更を検出した場合は確認待ちです。通常の検証でチェッカーまたは繰り返し検証するフックの問題を対象内の構造化診断として照合できた場合は、修正後にビルドと後続検証をやり直します。別途 `[junie].ground_output_repairs = true` を指定した場合のみ、範囲を絞った固定PHPと現在の移行先の抜粋をモデルへ送り、自由文から照合できる引用を探します。引用の一致は根拠の所在を示すもので、意味上の正しさや合格を保証しません。明示検証では自動修正しません。 [workflow.py](../src/migration_harness/workflow.py)
@@ -402,7 +391,7 @@ flowchart TD
 ```
 
 1. Diff Viewer は固定済み PHP と取得時点の移行先を比較します。通常の比較スナップショットは worktree を使い、移行実行中のライブ比較では条件に応じて Junie の下書きを使います。固定比較は `review-snapshots/<ID>.json` に保存します。Junie のアンカー生成では対応行の座標を検証し、比較スナップショットと対象ハッシュにひも付く対応候補を記録します。固定済み PHP を持たない旧 Run は manifest の入力パスの現行ファイルを読みます。 [diff_viewer.py](../src/migration_harness/web/diff_viewer.py) · [review_anchors.py](../src/migration_harness/web/review_anchors.py)
-2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。ダッシュボードの **進捗 → 移行台帳** では PHP 範囲と記録済みの判断を閲覧でき、必要なら Diff Viewer で比較できます。PHP 範囲の判断（`confirmed`・`excluded`・`needs_review`）と理由の登録は画面では行わず、CLI の [`ledger-review`](windows-user-guide.md#php範囲の判断を登録する) を使います。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [cli.py](../src/migration_harness/cli.py) · [workflow.py](../src/migration_harness/workflow.py)
+2. 移行台帳の公開範囲 ID は `カプセル番号:カプセル内の範囲番号`（例 `1:1`）です。ダッシュボードの **進捗 → 移行台帳** で PHP 範囲と記録済みの判断を閲覧し、必要なら Diff Viewer で比較できます。範囲ごとに確認済み・対象外・要確認と理由を記録します。確認をひも付けた対象版や対応範囲が変わると `stale` として再確認を求めます。 [dashboard.py](../src/migration_harness/web/dashboard.py) · [workflow.py](../src/migration_harness/workflow.py)
 3. `verification_passed` には、反映保留がないこと、全カプセル完了、ビルド成功、必要なチェッカーの成功または有効な承認、検証フックの成功、対象ハッシュと設定の一致が必要です。照合する設定はビルド先、チェッカーコマンド、検証フックです。`completion.complete` はこれに加えて、PHP 範囲が 1 件以上あり、全件に有効な確認または理由付き除外がある場合に成立します。 [workflow.py](../src/migration_harness/workflow.py)
 
 `run.json` の `build_succeeded`、`checker_succeeded`、`checker_accepted` は検証工程の状態です。移行の完了判定は台帳を参照してください。通常の台帳判定は移行先と検証設定を照合します。チェッカー単独再開に対応した構成では、`build_receipt.py` が作業ツリー、.NET 起動ファイルと SDK 参照パック、成果物を照合し、その再開結果を台帳に表示する際にも確認します。依存ソースやコマンド実体を変更した場合は再検証が必要です。実行時の振る舞いを検証するテストは、プロジェクトのフックやチェッカーで指定できます。 [技術仕様](../SPEC.md)

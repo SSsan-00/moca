@@ -38,12 +38,14 @@ junie --version
 
 ## 実行と記録
 
+それぞれの設定でダッシュボードを起動し、「実行」で `ordered-items` を選択します。
+
 ```bash
-php-to-csharp-harness run --config "$eval_root/single.toml" --unit ordered-items
-php-to-csharp-harness run --config "$eval_root/split.toml" --unit ordered-items
+php-to-csharp-harness dashboard --config "$eval_root/single.toml"
+php-to-csharp-harness dashboard --config "$eval_root/split.toml"
 ```
 
-Junieが作業場所を確認する場合は、表示されたパスが今回のRunの `agent-workspace` であることを確認します。`JLine returned dumb` で停止した場合は、`TERM=xterm-256color` など実際の端末に合った設定で実行します。カプセル数は `run.json` の `context_capsules` で確認できます。分割位置は `capsule/manifest.json` に記録されます。中断時は同じ設定とRun IDで `php-to-csharp-harness resume --config "$eval_root/split.toml" --run-id RUN_ID` のように再開し、再開したことを結果に記録します。
+Junieが作業場所を確認する場合は、表示されたパスが今回のRunの `agent-workspace` であることを確認します。カプセル数は `run.json` の `context_capsules` で確認できます。分割位置は `capsule/manifest.json` に記録されます。中断時は同じ設定でダッシュボードを開き、実行一覧から同じRunを再開し、再開したことを結果に記録します。
 
 実行ごとに日付、ハーネスのコミット、fixtureのGitツリーID、設定ファイルのSHA-256、Junieの版・モデル表示、.NET SDKの版と、下表の項目を記録します。取得できない版やモデルは「不明」と記録します。各Runの記録は `$eval_root/runs/<Run ID>/run.json`、`build.log`、`checker.log` にあります。`checker_succeeded` かつ採点終了コード `0` を成功とし、採点まで到達した非ゼロの結果を失敗とします。採点まで進まなかった場合は「採点未実行」とし、停止した工程と理由を残します。Junieやビルドの失敗を残したまま再試行する場合は、Run IDごとに区別します。
 

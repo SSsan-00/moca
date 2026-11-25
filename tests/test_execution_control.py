@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.runs import run_records
 from migration_harness import workflow
 from migration_harness.web.dashboard import Dashboard
@@ -147,7 +147,7 @@ class ExecutionIntegrationTests(HarnessCase):
     def test_stop_during_capsule_preparation_does_not_create_worktree(self):
         control = ExecutionControl(lambda _event: control.cancelled.set())
         with control_scope(control), self.assertRaises(workflow.RunInterrupted):
-            workflow.prepare_run(self.settings, "sample")
+            prepare_fixture(self.settings, "sample")
         self.assertFalse(Path(self.settings["worktree_root"]).exists())
         path, = Path(self.settings["run_root"]).glob("*/run.json")
         record = json.loads(path.read_bytes())
@@ -219,7 +219,7 @@ class ExecutionIntegrationTests(HarnessCase):
                 kernel.CloseHandle(child_handle)
 
     def test_stopped_build_can_resume_same_run(self):
-        result = workflow.prepare_run(self.settings, "sample")
+        result = prepare_fixture(self.settings, "sample")
         run_path = Path(result["run_path"])
         record_path = run_path / "run.json"
         record = json.loads(record_path.read_bytes())

@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness import workflow
 from migration_harness.rules.rule_review import review_rules
 from migration_harness.verification.checker_rule_evidence import MAX_RECEIPT_BYTES, checker_rule_context, parse_rule_receipt
@@ -103,7 +103,7 @@ class CheckerEvidenceVerificationTests(HarnessCase):
             "path": "rules.md", "role": "migration_rules", "usage": "required",
             "encoding": "utf-8", "start_line": 1, "end_line": None, "shared": True,
         })
-        self.run = workflow.prepare_run(self.settings, "sample")
+        self.run = prepare_fixture(self.settings, "sample")
         self.worktree = Path(self.run["worktree_path"])
         self.record_path = Path(self.run["run_path"]) / "run.json"
 

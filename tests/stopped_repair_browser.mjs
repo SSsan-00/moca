@@ -16,9 +16,18 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
       assert.equal(recovered.draft, "repair");
       assert.equal(recovered.needs_process_check, false);
       await wait("!" + field("recovery-summary") + ".hidden && " + field("recovery-next")
-        + ".textContent.startsWith('進捗とエディタで内容を確認してから再開してください。')");
+        + ".textContent.includes('復元する版を選んでから再開')");
       assert.match(await evaluate(field("recovery-checkpoint") + ".textContent"), /修正下書きあり/);
-      assert.match(await evaluate(field("recovery-next") + ".textContent"), /ファイルごとに復元する版を選ぶ必要がある場合は repair-draft/);
+      assert.match(await evaluate(field("recovery-next") + ".textContent"), /復元する版を選んでから再開/);
+      assert.equal(await evaluate(field("recovery-draft") + ".hidden"), false);
+      await evaluate(field("recovery-draft") + ".click()");
+      await wait(field("recovery-dialog") + ".open && !!document.querySelector('#recovery-options details')");
+      await evaluate("document.querySelector('#recovery-options summary').click()");
+      await wait("document.querySelector('#recovery-options .recovery-previews')?.textContent.includes('class PartlyRepaired')");
+      await evaluate("document.querySelector('#recovery-options input[value=draft]').click()");
+      await evaluate(field("recovery-submit") + ".click()");
+      await wait("!" + field("recovery-dialog") + ".open && " + field("recovery-next")
+        + ".textContent.includes('復元する版を保存しました')");
     }
   } finally {
     await send("fixture-stopped-repair-reset");

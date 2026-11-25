@@ -12,6 +12,12 @@ from migration_harness import workflow
 from migration_harness.config import load_config
 
 
+def prepare_fixture(config, unit_id):
+    run_id = str(uuid.uuid4())
+    with workflow.execution_lock(config, run_id), workflow.execution_lock(config, "prepare", wait=True):
+        return workflow._prepare_run(config, unit_id, run_id)
+
+
 def stub_syntax_diagnostics():
     """Keep mocked build scenarios with placeholder source independent of the installed SDK."""
     return patch.object(workflow, "syntax_diagnostics", side_effect=lambda *_: {

@@ -54,8 +54,7 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
     for (const run of runs) if (!run.ready && !run.queued) {
       run.tick++;
       run.elapsed_seconds += 3;
-      if (run.prepareOnly && run.tick >= 2) Object.assign(run, {status: "prepared", ready: true});
-      else if (run.tick >= 29) Object.assign(run, {status: "checker_succeeded", ready: true});
+      if (run.tick >= 29) Object.assign(run, {status: "checker_succeeded", ready: true});
       else run.status = run.tick < 2 ? "preparing" : run.tick < 20 ? "junie_running" : run.tick < 25 ? "building" : "checking";
     }
     schedule();
@@ -66,12 +65,11 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
         parallel_limit: limit, busy: runs.some(run => !run.ready)};
     },
     async execute(action, data) {
-      if (action === "run" || action === "prepare") {
+      if (action === "run") {
         const selectedUnits = data.unit_ids || [data.unit_id];
         if (selectedUnits.some(unit => runs.some(run => run.unit_id === unit && !run.ready))) throw new Error("選択した移行単位は実行中または待機中です。");
         for (const unit of selectedUnits) {
           const run = make(`demo-run-${++sequence}`, unit, "queued", false);
-          run.prepareOnly = action === "prepare";
           runs.push(run);
           enqueue(run);
         }
@@ -93,7 +91,7 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
           const stage = data.start_stage;
           const tick = stage === "build-through" ? 20 : stage === "checker" ? 25 : Math.min(run.tick, 20);
           const queuedStatus = {migration: "junie_running", "build-through": "building", checker: "checking"}[stage];
-          Object.assign(run, {prepareOnly: false, tick, queuedStatus});
+          Object.assign(run, {tick, queuedStatus});
           enqueue(run);
         }
       }

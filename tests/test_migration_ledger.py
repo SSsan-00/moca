@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase, stub_syntax_diagnostics
+from fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
 from migration_harness.runs import run_records
 from migration_harness import workflow
 from migration_harness.web.diff_viewer import capture_workspace, save_workspace
@@ -22,7 +22,7 @@ class LedgerReviewTest(HarnessCase):
         self.commit_project()
         self.settings = self.config()
         self.settings["units"][0]["inputs"][0]["symbol"] = "label"
-        prepared = workflow.prepare_run(self.settings, "sample")
+        prepared = prepare_fixture(self.settings, "sample")
         self.run_id = prepared["run_id"]
         self.record_path = Path(prepared["run_path"]) / "run.json"
         self.target = Path(prepared["worktree_path"]) / "Page.cs"
@@ -115,19 +115,20 @@ class LedgerReviewTest(HarnessCase):
         workflow.review_migration_ranges(self.settings, self.run_id, ["1:1"], "needs_review", "Check call sites")
         self.assertEqual(self.source()["review"], {"state": "needs_review", "reason": "Check call sites"})
 
-    def test_anchor_usage_keeps_reviews_written_by_another_cli(self):
+    def test_anchor_usage_keeps_reviews_written_by_another_process(self):
         self.prepare_for_verification()
         self.verify()
         run_path = self.record_path.parent
         stale_record = json.loads(self.record_path.read_bytes())
-        review_command = [
-            sys.executable, "-m", "migration_harness.cli", "ledger-review",
-            "--config", self.settings["config_path"], "--run-id", self.run_id, "--range", "1:1",
-        ]
+        review_command = [sys.executable, "-c",
+            "import sys; from pathlib import Path; from migration_harness.config import load_config; "
+            "from migration_harness.workflow import review_migration_ranges; "
+            "review_migration_ranges(load_config(Path(sys.argv[1])), sys.argv[2], ['1:1'], sys.argv[3], sys.argv[4], "
+            "confirmed_targets=sys.argv[5:] or None)", self.settings["config_path"], self.run_id]
         report = run_records.junie_usage_recorder(run_path, "anchors")
         report([18, 4, 5, 3, 1])
         subprocess.run([
-            *review_command, "--state", "confirmed", "--reason", "Confirmed again", "--target", self.target.name,
+            *review_command, "confirmed", "Confirmed again", self.target.name,
         ], check=True, capture_output=True)
         report([1, 0, 0, 0, 1])
         self.assertEqual(self.source()["review"], {
@@ -135,7 +136,7 @@ class LedgerReviewTest(HarnessCase):
         })
         self.assertTrue(self.completion()["complete"])
         subprocess.run([
-            *review_command, "--state", "needs_review", "--reason", "Different result",
+            *review_command, "needs_review", "Different result",
         ], check=True, capture_output=True)
         report([2, 1, 0, 0, 1])
 

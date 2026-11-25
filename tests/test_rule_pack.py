@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness import workflow
 from migration_harness.config import load_config
 
@@ -212,7 +212,7 @@ class RulePackHarnessTests(HarnessCase):
         configuration = self.root / "test.toml"
         with configuration.open("a", encoding="utf-8") as stream:
             stream.write("\n" + (pack / "generated/rules.toml").read_text(encoding="utf-8"))
-        result = workflow.prepare_run(load_config(configuration), "sample")
+        result = prepare_fixture(load_config(configuration), "sample")
         capsule = Path(result["capsule_path"])
         manifest = json.loads((capsule / "manifest.json").read_text(encoding="utf-8"))
         agent = Path(result["run_path"]) / "agent-workspace"

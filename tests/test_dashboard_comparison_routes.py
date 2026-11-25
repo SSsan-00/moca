@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.web import dashboard
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
@@ -24,6 +24,52 @@ from migration_harness.web.diff_viewer import review_html
 
 
 class DashboardComparisonRoutesTests(HarnessCase):
+    def test_ledger_review_from_dashboard_validates_and_persists_target_version(self):
+        (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}\n", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        prepared = prepare_fixture(config, "sample")
+        run_id = prepared["run_id"]
+        record_path = Path(prepared["run_path"]) / "run.json"
+        record = json.loads(record_path.read_bytes())
+        workflow.write_run_record(record_path, {**record, "status": "build_succeeded", "completed_capsules": 1})
+        decision = {"run_id": run_id, "range_id": "1:1", "state": "confirmed", "reason": "Compared", "targets": []}
+
+        with self.live_dashboard(config, run_id) as url:
+            self.ready_event(url)
+            with urlopen(url + "migration-ledger?review_version=1", timeout=3) as response:
+                decision["version"] = json.load(response)["review_version"]
+            for invalid in (decision, {**decision, "targets": ["Other.cs"]}, {**decision, "reason": ""}):
+                with self.subTest(invalid=invalid), self.assertRaises(HTTPError) as rejected:
+                    self.post(url, "migration-ledger", invalid, 200)
+                self.assertEqual(rejected.exception.code, 409)
+                rejected.exception.close()
+            with workflow.execution_lock(config, run_id):
+                with self.assertRaises(HTTPError) as rejected:
+                    self.post(url, "migration-ledger", {**decision, "targets": ["Page.cs"]}, 200)
+                self.assertEqual(rejected.exception.code, 409)
+                rejected.exception.close()
+            target = Path(prepared["worktree_path"]) / "Page.cs"
+            target.write_text("class ChangedBeforeReview {}\n", encoding="utf-8")
+            with self.assertRaises(HTTPError) as rejected:
+                self.post(url, "migration-ledger", {**decision, "targets": ["Page.cs"]}, 200)
+            self.assertEqual(rejected.exception.code, 409)
+            rejected.exception.close()
+            with urlopen(url + "migration-ledger?review_version=1", timeout=3) as response:
+                decision["version"] = json.load(response)["review_version"]
+            self.post(url, "migration-ledger", {**decision, "targets": ["Page.cs"]}, 200)
+            with self.assertRaises(HTTPError) as rejected:
+                self.post(url, "migration-ledger", {**decision, "state": "excluded"}, 200)
+            self.assertEqual(rejected.exception.code, 409)
+            rejected.exception.close()
+            with urlopen(url + "migration-ledger", timeout=3) as response:
+                source = json.load(response)["capsules"][0]["sources"][0]
+            self.assertEqual(source["review"], {"state": "confirmed", "reason": "Compared", "targets": ["Page.cs"]})
+            target.write_text("class Changed {}\n", encoding="utf-8")
+            with urlopen(url + "migration-ledger", timeout=3) as response:
+                self.assertEqual(json.load(response)["capsules"][0]["sources"][0]["review"]["state"], "stale")
+
     def test_rewind_prompt_and_ledger_agree_on_launch_target_before_adoption(self):
         from migration_harness.context.context_handoff import record_handoff
 
@@ -111,7 +157,7 @@ class DashboardComparisonRoutesTests(HarnessCase):
         config = self.config()
         config["max_context_chars"] = 650
         config["units"][0]["inputs"][0]["end_line"] = None
-        prepared = workflow.prepare_run(config, "sample")
+        prepared = prepare_fixture(config, "sample")
         run_id = prepared["run_id"]
         run = Path(prepared["run_path"])
         args = (run, Path(prepared["worktree_path"]), (Path("Page.cs"),), {})
@@ -337,7 +383,7 @@ for (const mode of ["delayed", "ready", "slow-start", "abandoned", "unsupported"
             "path": "required.md", "role": "migration_rules", "usage": "required", "encoding": "utf-8",
             "start_line": 1, "end_line": None, "shared": True,
         })
-        run = workflow.prepare_run(config, "sample")
+        run = prepare_fixture(config, "sample")
         run_id = run["run_id"]
         with self.live_dashboard(config, run_id) as url:
             self.ready_event(url)
@@ -396,9 +442,9 @@ log_tone_instruction = "Use nautical greetings."
 """
         config_path.write_text(settings, encoding="utf-8")
         config = load_config(config_path)
-        run_a = workflow.prepare_run(config, "sample")
+        run_a = prepare_fixture(config, "sample")
         (self.project / "source.php").write_text("<?php echo 'Updated';\n", encoding="utf-8")
-        run_b = workflow.prepare_run(config, "sample")
+        run_b = prepare_fixture(config, "sample")
         run_a_id, run_b_id = run_a["run_id"], run_b["run_id"]
         record_path = Path(run_a["run_path"]) / "run.json"
         record = json.loads(record_path.read_bytes())

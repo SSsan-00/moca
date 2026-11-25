@@ -211,12 +211,6 @@ def _create_worktree(
     return worktree
 
 
-def prepare_run(config: dict[str, Any], unit_id: str, *, run_id: str | None = None) -> dict[str, Any]:
-    run_id = str(uuid.UUID(run_id)) if run_id else str(uuid.uuid4())
-    with execution_lock(config, run_id), execution_lock(config, "prepare", wait=True):
-        return _prepare_run(config, unit_id, run_id)
-
-
 def _prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str, Any]:
     run_path = Path(config["run_root"]) / run_id
     unit = find_unit(config, unit_id)
@@ -292,7 +286,7 @@ def _block_unknown_script(record):
     if attempt := record.get("script_inflight"):
         raise ValueError(
             f"自作スクリプトの実行結果不明: {attempt['phase']} #{attempt['number']}。"
-            "ログと残存プロセスを確認し、script-recovery で再試行する版を確認してください。"
+            "ログと残存プロセスを確認し、進捗画面で再試行する版を確認してください。"
         )
 
 
@@ -2611,6 +2605,29 @@ def plan_stopped_repair(config, run_id):
     return plan
 
 
+def preview_stopped_repair(config, run_id, version, target):
+    run_id = str(uuid.UUID(run_id))
+    with execution_lock(config, run_id):
+        run_path, worktree, record, unit = load_saved_run(config, run_id)
+        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
+            plan, current, _, saved = _stopped_repair_plan(run_path, worktree, unit, record, queue)
+            if plan["version"] != version or target not in saved:
+                raise ValueError("復旧対象が更新されました。復元計画を取り直してください。")
+
+            def read(file, expected):
+                if expected is None:
+                    return {"text": None, "truncated": False}
+                with file.open("rb") as stream:
+                    data = stream.read(64 * 1024 + 1)
+                if target_hash(file) != expected:
+                    raise ValueError("対象が更新されました。復元計画を取り直してください。")
+                return {"text": data[:64 * 1024].decode("utf-8-sig", errors="replace"),
+                        "truncated": len(data) > 64 * 1024}
+
+            return {"target": target, "draft": read(saved[target], plan["draft"][target]),
+                    "worktree": read(current[target], plan["worktree"][target])}
+
+
 def resolve_stopped_repair(config, run_id, version, choices):
     """対象ごとの選択を固定し、編集済みの二つの作業領域はその場で変更しない。"""
     run_id = str(uuid.UUID(run_id))
@@ -2649,7 +2666,7 @@ def _restore_snapshot_files(sources, destinations, expected, selected, *, preser
     """既に復元済みの対象を識別し、想定した版からだけ残りを反映する。"""
     hashes = {name: target_hash(file) for name, file in destinations.items()}
     if any(hashes[name] not in (expected[name], selected.get(name, expected[name])) for name in hashes):
-        raise ValueError("復元対象が更新されました。repair-draft で復元計画を取り直してください。")
+        raise ValueError("復元対象が更新されました。進捗画面で復元計画を取り直してください。")
     for name, source in sources.items():
         destination = destinations[name]
         digest = selected[name]
@@ -2718,7 +2735,7 @@ def _recover_selected_repair(run_path, worktree, targets, record):
             if not restoring:
                 if (any(target_hash(file) != selection["base"][name] for name, file in worktree_files.items())
                         or any(target_hash(file) != draft["targets"][name] for name, file in agent_files.items())):
-                    raise ValueError("現行版が更新されました。repair-draft で復元計画を取り直してください。")
+                    raise ValueError("現行版が更新されました。進捗画面で復元計画を取り直してください。")
                 return
             # 検証可能な選択版を先に反映する。欠損や未完成の文字コードは Junie の入力として保つ。
             with TemporaryDirectory(dir=run_path) as staging:
@@ -2747,7 +2764,7 @@ def _recover_selected_repair(run_path, worktree, targets, record):
                 expected = draft["base"]
                 if any(target_hash(file) not in (expected[name], adopted.get(name, expected[name]))
                        for name, file in worktree_files.items()):
-                    raise ValueError("作業ツリーが更新されました。repair-draft で復元計画を取り直してください。")
+                    raise ValueError("作業ツリーが更新されました。進捗画面で復元計画を取り直してください。")
                 _restore_snapshot_files(snapshot, agent_files, attempt["restore_from"], draft["targets"])
                 _restore_snapshot_files(sources, worktree_files, expected, adopted, preserve_mode=True)
             recovered_base = {**expected, **adopted}
@@ -2775,7 +2792,7 @@ def _check_selected_repair_targets(record, repair_targets):
             raise CheckerRepairBlocked(
                 "stopped_draft",
                 "今回の修正対象外に復元した欠損または UTF-8 にできない下書きがあります。"
-                "repair-draft で worktree を選び直すか、手修正を保存して計画し直してください。"
+                "進捗画面で作業ツリーを選び直すか、手修正を保存して計画し直してください。"
                 f" 対象: {', '.join(sorted(unresolved))}",
             )
 
@@ -2996,7 +3013,7 @@ def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targe
             for path in repair_targets
         )
         preserved = {path for path in repair_targets if resume_draft}
-        if snapshot := draft.get("snapshot"):
+        if draft.get("snapshot"):
             try:
                 _verified_target_snapshot(run_path, draft)
             except (OSError, ValueError) as exc:
@@ -3010,8 +3027,8 @@ def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targe
                     or not selection and draft_targets.keys() != {path.as_posix() for path in repair_targets}):
                 raise CheckerRepairBlocked(
                     "stopped_draft",
-                    f"停止時の下書きと現行版または修正対象が一致しません。"
-                    f"両方を保持しました。Run の {snapshot}/draft.json を確認し、repair-draft で選択してください。",
+                    "停止時の下書きと現行版または修正対象が一致しません。"
+                    "両方を保持しました。進捗画面で内容を確認して復元する版を選択してください。",
                 )
             preserved = {configured[name] for name in draft_targets}
             resume_draft = bool(preserved.intersection(repair_targets))
@@ -3997,8 +4014,15 @@ def run_with_junie(config: dict[str, Any], unit_id: str, *, run_id: str | None =
         return _run_prepared_with_junie(config, unit, Path(result["run_path"]), result, record, resuming=False)
 
 
+def _migration_review_version(record, target_hashes):
+    payload = [record.get("migration_reviews", {}), record.get("migration_mappings", {}),
+               record.get("completed_capsules"), target_hashes]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def migration_ledger(
     config: dict[str, Any], run_id: str, *, operator_through: int | None = None, operator_receipt: str | None = None,
+    include_review_version: bool = False,
 ) -> dict[str, Any]:
     """保存した対応と判断を現在の移行先で照合し、閲覧用の状態をまとめる。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
@@ -4131,6 +4155,8 @@ def migration_ledger(
         "run_id": run_id,
         "target": unit["target"],
         "targets": targets,
+        **({"review_version": _migration_review_version(record, {name: current_hash(name) for name in targets})}
+           if include_review_version else {}),
         "capsules": capsules,
         "unresolved_junie_memos": unresolved_junie_memos(
             run_path, worktree, tuple(Path(path) for path in targets), record,
@@ -4149,13 +4175,13 @@ def migration_ledger(
 
 def review_migration_ranges(
     config: dict[str, Any], run_id: str, range_ids: list[str], state: str, reason: str,
-    *, confirmed_targets: list[str] | None = None,
+    *, confirmed_targets: list[str] | None = None, expected_version: str | None = None,
 ) -> None:
     """選んだ範囲の判断と根拠を、対象ファイルの版とともに一括で記録する。"""
     if not range_ids or state not in {"confirmed", "excluded", "needs_review"} or not reason.strip():
-        raise ValueError("choose range IDs, a review state and a non-empty reason")
+        raise ValueError("対象範囲、判断、理由を指定してください。")
     if confirmed_targets and state != "confirmed":
-        raise ValueError("--target is only available with --state confirmed")
+        raise ValueError("移行先を指定できるのは確認済みの判断だけです。")
     run_path, worktree, _, unit = load_saved_run(config, run_id)
     _, manifest = load_capsule_manifest(run_path)
     entries = {
@@ -4175,6 +4201,11 @@ def review_migration_ranges(
             raise ValueError(f"review target is missing or unsafe: {name}")
         manual_hashes[path.as_posix()] = digest
     with edit_run_record(run_path / "run.json") as (record, changes):
+        if expected_version is not None:
+            current = {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}
+            if (_migration_review_version(record, current) != expected_version
+                    or any(current.get(name) != digest for name, digest in manual_hashes.items())):
+                raise ValueError("移行先または判断が更新されました。台帳を確認し直してください。")
         if record.get("target_apply_pending") or record.get("status") in {
             "junie_running", "editor_followup", "repairing", "building", "checking", "script_running",
         }:
@@ -4190,12 +4221,12 @@ def review_migration_ranges(
                 # 対応候補がなくても、利用者が確認した移行先を明示すればその版に判断をひも付ける。
                 mapping = record.get("migration_mappings", {}).get(key)
                 if capsule > record["completed_capsules"]:
-                    raise ValueError(f"range {identifier} has not been processed")
+                    raise ValueError(f"範囲 {identifier} の移行はまだ完了していません。")
                 if manual_hashes:
                     decision["target_hashes"] = manual_hashes
                 else:
                     if not mapping:
-                        raise ValueError(f"range {identifier} has no mapping candidate; specify the reviewed --target paths")
+                        raise ValueError(f"範囲 {identifier} に対応候補がありません。確認した移行先を選択してください。")
                     digest = review_target_hash(worktree, Path(mapping["path"]))
                     if digest is None or digest != mapping["sha256"]:
                         raise ValueError(f"range {identifier} changed after its comparison; generate a new candidate")
@@ -4345,7 +4376,7 @@ def _missing_required_checker(config, record):
 
 def _require_saved_checker(config, record):
     if _missing_required_checker(config, record):
-        raise ValueError("この Run に必要なチェッカーを設定するか、--checker-command で再指定してください。")
+        raise ValueError("この Run に必要なチェッカーを設定してください。")
 
 
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:

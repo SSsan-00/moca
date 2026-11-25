@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import tomlkit
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness.context import capsules
 from migration_harness.junie import junie_cli
 from migration_harness.web import review_anchors
@@ -57,7 +57,7 @@ class ConfigFilePathTests(HarnessCase):
         self.raw["diff_viewer"].update(html=str(self.viewer), anchor_reference=str(self.reference))
         absolute = self.load()
         self.assertEqual(relative, absolute)
-        prepared = workflow.prepare_run(absolute, "orders")
+        prepared = prepare_fixture(absolute, "orders")
         record = json.loads((Path(prepared["run_path"]) / "run.json").read_bytes())
         with patch.object(workflow.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as build:
             workflow._build_worktree(absolute, prepared, record)
@@ -100,7 +100,7 @@ class ConfigFilePathTests(HarnessCase):
                         {"role": "reference_csharp", "path": "../Reference.cs"}],
         )
         config = self.load()
-        prepared = workflow.prepare_run(config, "orders")
+        prepared = prepare_fixture(config, "orders")
         capsule = Path(prepared["capsule_path"])
         manifest = json.loads((capsule / "manifest.json").read_bytes())
         self.assertEqual({source["path"] for source in manifest["php_sources"]}, {external.as_posix(), reference_php.as_posix()})
@@ -124,7 +124,7 @@ class ConfigFilePathTests(HarnessCase):
         self.raw["diff_viewer"]["anchor_reference"] = [self.reference.name, str(second_reference)]
         self.raw["junie"] = {"model": "sonnet", "effort": "high"}
         config = self.load()
-        prepared = workflow.prepare_run(config, "orders")
+        prepared = prepare_fixture(config, "orders")
         config.update(junie_model="opus", junie_effort="low")
 
         def junie(command, completion, token, targets, **kwargs):
@@ -169,7 +169,7 @@ class ConfigFilePathTests(HarnessCase):
         self.raw["scripts"] = {"before_migration": [["@copy-migration-draft", "../Draft.cs", str(self.project / "Page.cs")]]}
         config = self.load()
         self.assertEqual(config["scripts"]["before_migration"], [["@copy-migration-draft", str(draft), "Page.cs"]])
-        prepared = workflow.prepare_run(config, "orders")
+        prepared = prepare_fixture(config, "orders")
         worktree = Path(prepared["worktree_path"])
         with patch.dict(os.environ, {"PYTHONIOENCODING": "cp1252"}):
             workflow._run_script_phase(config, "before_migration", worktree, Path(prepared["run_path"]))
@@ -211,7 +211,7 @@ class ConfigFilePathTests(HarnessCase):
             patch.object(junie_cli, "run_interactive", side_effect=junie),
             patch.object(workflow, "_verify_worktree"),
         ):
-            imported = workflow.prepare_run(config, "orders")
+            imported = prepare_fixture(config, "orders")
             imported_id = imported["run_id"]
             with self.assertRaises(workflow.RunScriptError):
                 workflow.resume_with_junie(config, imported_id)

@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase
+from fixtures import HarnessCase, prepare_fixture
 from migration_harness import workflow
 from migration_harness.command_paths import expand_command_paths
 from migration_harness.config import load_config
@@ -38,7 +38,7 @@ class CommandPathsTests(HarnessCase):
         self.settings = load_config(self.path)
 
     def prepare_verification(self):
-        result = workflow.prepare_run(self.settings, "sample")
+        result = prepare_fixture(self.settings, "sample")
         record_path = Path(result["run_path"]) / "run.json"
         record = json.loads(record_path.read_bytes())
         record.update(status="junie_finished", completed_capsules=result["capsule_count"])
@@ -116,7 +116,7 @@ class CommandPathsTests(HarnessCase):
     def test_before_prepare_rejects_worktree_alias_instead_of_using_original_repository(self):
         self.settings["scripts"] = {"before_prepare": [self.command]}
         with self.assertRaisesRegex(workflow.RunScriptError, "before_prepare"):
-            workflow.prepare_run(self.settings, "sample")
+            prepare_fixture(self.settings, "sample")
 
     def test_embedded_paths_preserve_argument_boundaries_and_unrelated_braces(self):
         root = self.root / "日本語 {target}"

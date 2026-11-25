@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from fixtures import HarnessCase, stub_syntax_diagnostics
+from fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_records
 from migration_harness.runs.editor_queue import add_prompt, editor_queue
@@ -43,7 +43,7 @@ class MultipleTargetsTest(HarnessCase):
             (self.project / name).write_text(f"original {name}", encoding="utf-8")
         self.commit_project()
         self.settings = self.config('targets = ["Page.cshtml.cs", "Page.cshtml"]')
-        self.prepared = workflow.prepare_run(self.settings, "sample")
+        self.prepared = prepare_fixture(self.settings, "sample")
         self.run_path = Path(self.prepared["run_path"])
         self.worktree = Path(self.prepared["worktree_path"])
         self.record_path = self.run_path / "run.json"

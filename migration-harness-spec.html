@@ -176,9 +176,7 @@ flowchart TB
     B --> C[設定・入力ファイルを検証]
     C --> D[上限以内のカプセルに分割]
     D --> E[基準リビジョンからworktreeを作成]
-    E --> F{実行タブで選んだ操作}
-    F -- 準備のみ --> G[準備完了。worktree・カプセル・manifestを出力]
-    F -- 実行 --> H[対象ファイルとカプセルをJunie用に配置]
+    E --> H[対象ファイルとカプセルをJunie用に配置]
     H --> I[Junieで担当範囲を移行]
     I --> J[worktreeへ反映し実行記録を保存]
     J --> K{未処理カプセルがある?}
@@ -193,8 +191,8 @@ flowchart TB
     classDef pending fill:#fff0ef,stroke:#c45a52,color:#702727
     class A start
     class B,C,D,E,H,I,J,M,O action
-    class F,K decision
-    class G,L pending
+    class K decision
+    class L pending
       </pre>
     </div>
     <div class="callout">
@@ -265,7 +263,7 @@ sequenceDiagram
     <h2>2. カプセルの分割と移行台帳</h2>
     <p>PHPの原文をRunに固定し、カプセルごとに移行範囲と参照範囲を記録します。同じ入力から分割したカプセルには、前後最大12行ずつを参照用に添えます。</p>
     <p>繰り返しや定数表は、Junieが元PHPから値と順序を抽出して移行先と照合します。チェッカーが差を検出した場合は、保存済みのカプセルを参照して修正します。</p>
-    <p>移行台帳ではRunごとにPHPの範囲、処理状態、移行先の候補、記録済みの判断と理由を閲覧できます。「進捗 → 移行台帳」で内容を確認します。PHP範囲の判断（確認済み・対象外・要確認）を理由とともに登録する場合は、画面ではなく <a href="https://github.com/SSsan-00/php-to-csharp-migration-harness/blob/main/docs/windows-user-guide.md#php範囲の判断を登録する"><code>ledger-review</code></a> を使います。</p>
+    <p>移行台帳ではRunごとにPHPの範囲、処理状態、移行先の候補、記録済みの判断と理由を閲覧できます。「進捗 → 移行台帳」で各範囲の「判断」を選び、確認済み・対象外・要確認と理由を登録します。</p>
     <div class="callout green">
       <h3>移行完了の判定</h3>
       <p>PHPの全範囲が確認済みか理由付きの対象外で、現在の入力でビルド、設定済みの検証スクリプトとチェッカーの条件を満たせば完了です。確認後に移行先が変わった範囲は要再確認として記録します。</p>
@@ -282,7 +280,7 @@ sequenceDiagram
     <div class="diagram-pair">
       <article class="diagram-card">
         <h3>Junieの停止と再開</h3>
-        <p>ステップ上限で止まった場合は、ダッシュボードから同じRunを再開します。端末から直接実行している場合は、同じ対話画面で続きを依頼できます。通信失敗が確定すると、同じ作業場所で1秒、3秒の待機を挟んで最大2回再起動します。復旧しない場合は、接続を確認して同じRunを再開します。</p>
+        <p>ステップ上限で止まった場合は、ダッシュボードから同じRunを再開します。通信失敗が確定すると、同じ作業場所で1秒、3秒の待機を挟んで最大2回再起動します。復旧しない場合は、接続を確認して同じRunを再開します。</p>
         <div class="diagram diagram-compact">
           <pre class="mermaid">
 flowchart TB

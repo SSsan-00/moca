@@ -1,10 +1,19 @@
+import io
+import json
 import sys
+from contextlib import redirect_stdout
+from threading import Thread
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, urlopen
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.runs.recovery_status import recovery_status
+from migration_harness.runs.run_manager import RunManager
+from migration_harness.web import dashboard
 
 
 class SimulatedCrash(BaseException):
@@ -74,6 +83,54 @@ class ScriptRecoveryTests(SavedRunFixture):
         self.run_phase()
         self.assertTrue(self.marker.exists())
         self.assertEqual(self.counter.read_text(), "2")
+
+    def test_dashboard_retries_only_the_reviewed_script_after_explicit_confirmation(self):
+        self.simulate_crash_after_exit()
+        view = dashboard.Dashboard()
+        view.observe(self.record())
+        view.ready(self.config, self.record())
+        manager = RunManager(self.config, view)
+        view.manager = manager
+        self.addCleanup(manager.close)
+        terminal = io.StringIO()
+        with redirect_stdout(terminal):
+            server = view.server(self.config, b"", b"")
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.shutdown)
+        url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
+        origin = urlsplit(url)
+        headers = {"Origin": f"{origin.scheme}://{origin.netloc}", "Content-Type": "application/json"}
+
+        def post(action):
+            return urlopen(Request(url + "recovery-plan", json.dumps(action).encode(), headers), timeout=5)
+
+        query = urlencode({"run_id": self.run_id, "kind": "script"})
+        with urlopen(url + "recovery-plan?" + query, timeout=3) as response:
+            plan = json.load(response)
+        action = {"run_id": self.run_id, "kind": "script", "version": plan["version"], "confirmed": False}
+        with self.assertRaises(HTTPError) as rejected:
+            post(action)
+        self.assertEqual(rejected.exception.code, 409)
+        rejected.exception.close()
+        self.target.write_text("class Changed {}", encoding="utf-8")
+        action["confirmed"] = True
+        with self.assertRaises(HTTPError) as rejected:
+            post(action)
+        self.assertEqual(rejected.exception.code, 409)
+        rejected.exception.close()
+        self.assertEqual(self.counter.read_text(), "1")
+        with urlopen(url + "recovery-plan?" + query, timeout=3) as response:
+            action["version"] = json.load(response)["version"]
+        with post(action) as response:
+            self.assertEqual(response.status, 202)
+        with manager.condition:
+            self.assertTrue(manager.condition.wait_for(lambda: self.run_id not in manager.jobs, timeout=10))
+        self.assertEqual(self.counter.read_text(), "2")
+        self.assertFalse(self.marker.exists())
+        self.assertNotIn("script_inflight", self.record())
 
     def test_launch_is_not_attempted_if_start_record_cannot_be_written(self):
         original = workflow.write_run_record
