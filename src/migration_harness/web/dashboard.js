@@ -165,7 +165,7 @@ function hasBuildDraft(draft) {
   return !!(draft?.files.size || draft?.instruction.trim());
 }
 
-addEventListener("beforeunload", event => {
+window.addEventListener("beforeunload", event => {
   if ([...buildDrafts.values()].some(hasBuildDraft)) event.preventDefault();
 });
 const progressPrompt = bindProgressPromptDialog({

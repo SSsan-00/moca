@@ -175,8 +175,13 @@ export async function checkBuildReviewDrafts({url, evaluate, click, change, valu
     await wait("!document.getElementById('build-review-dialog').open");
     assert.equal(posts.at(-1).data.edit.target, targets[1]);
     await select("C", completed);
+    await evaluate("migrationCompletion = {complete: true, verification_passed: true}; render();");
+    const verifiedLabel = await evaluate("document.getElementById('state-label').textContent");
+    const beforeRecovery = posts.length;
     await recover();
     await expect("C first file", "");
+    assert.equal(posts.length, beforeRecovery, "opening a draft must not write");
+    assert.equal(await evaluate("document.getElementById('state-label').textContent"), verifiedLabel);
     await click(field("submit"));
     await wait("!document.getElementById('build-review-dialog').open");
     assert.equal(posts.at(-1).id, "C");
