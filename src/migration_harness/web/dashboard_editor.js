@@ -51,11 +51,21 @@
   const diagnosticList = find("#editor-diagnostic-list");
   const diagnosticRetry = find("#editor-diagnostic-retry");
   diagnosticRetry.addEventListener("click", scheduleDiagnostics);
-  let diagnosticGeneration = 0, diagnosticTimer, markedModel;
+  const diagnosticLimit = 2;
+  const diagnosticBusyDelays = [500, 1000, 2000, 4000, 8000, 8000];
+  let diagnosticGeneration = 0, diagnosticTimer, diagnosticInFlight = 0, pendingDiagnosis, markedModel;
+
+  function startPendingDiagnosis() {
+    if (!pendingDiagnosis || diagnosticInFlight >= diagnosticLimit) return;
+    const diagnose = pendingDiagnosis;
+    pendingDiagnosis = undefined;
+    return diagnose();
+  }
 
   function scheduleDiagnostics() {
     const generation = ++diagnosticGeneration;
     clearTimeout(diagnosticTimer);
+    pendingDiagnosis = undefined;
     if (markedModel) window.monaco.editor.setModelMarkers(markedModel, "syntax", []);
     markedModel = undefined;
     diagnosticList.replaceChildren();
@@ -68,16 +78,33 @@
     if (diagnostics.hidden) return;
     setText("#editor-diagnostic-status", " · 診断待ち");
     setText("#editor-diagnostic-note", "入力が止まると、保存せずにこの下書きを診断します。");
-    diagnosticTimer = setTimeout(async () => {
+    let busyRetries = 0, payload;
+    function enqueue(delay) {
+      diagnosticTimer = setTimeout(() => {
+        if (!valid()) return;
+        pendingDiagnosis = diagnose;
+        if (diagnosticInFlight >= diagnosticLimit) setText("#editor-diagnostic-status", " · 空き待ち");
+        return startPendingDiagnosis();
+      }, delay);
+    }
+
+    async function diagnose() {
       if (!valid()) return;
-      const version = String(generation), content = readText(file.model);
-      setText("#editor-diagnostic-status", " · 診断中");
+      diagnosticInFlight++;
       try {
-        const result = await request("roslyn-diagnostics", {run_id: run, target, version, content});
-        if (!valid() || result.version !== version || result.target !== target) return;
+        payload ??= {run_id: run, target, version: String(generation), content: readText(file.model)};
+        setText("#editor-diagnostic-status", " · 診断中");
+        const result = await request("roslyn-diagnostics", payload);
+        if (!valid() || result.version !== payload.version || result.target !== target) return;
+        if (result.status === "unavailable" && result.reason === "analyzer_busy" && busyRetries < diagnosticBusyDelays.length) {
+          setText("#editor-diagnostic-status", " · 空き待ち");
+          setText("#editor-diagnostic-note", "ほかの診断が終わり次第、最新版をもう一度診断します。");
+          enqueue(diagnosticBusyDelays[busyRetries++]);
+          return;
+        }
         const findings = [...result.findings, ...result.razor];
         const markers = findings.map(item => {
-          const parts = content.slice(item.start, item.start + item.length).split("\n");
+          const parts = payload.content.slice(item.start, item.start + item.length).split("\n");
           return {severity: window.monaco.MarkerSeverity.Error, code: item.code, message: item.message,
             startLineNumber: item.line, startColumn: item.column, endLineNumber: item.line + parts.length - 1,
             endColumn: parts.length === 1 ? item.column + Math.max(1, parts[0].length) : parts.at(-1).length + 1};
@@ -113,8 +140,12 @@
         setText("#editor-diagnostic-status", " · 診断できません");
         diagnosticRetry.hidden = false;
         setText("#editor-diagnostic-note", error.message);
+      } finally {
+        diagnosticInFlight--;
+        startPendingDiagnosis();
       }
-    }, 500);
+    }
+    enqueue(500);
   }
 
   // エディタと会話の領域に必要な幅から切り替え位置を制限する。
