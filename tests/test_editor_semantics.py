@@ -1,7 +1,10 @@
+import stat
 import subprocess
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from migration_harness.verification import roslyn_context, roslyn_syntax
@@ -77,6 +80,15 @@ class EditorSemanticTests(unittest.TestCase):
             versions.append(revision())
             self.assertTrue(all(versions))
             self.assertEqual(len(set(versions)), len(versions))
+
+    def test_dotted_csharp_reparse_point_does_not_supply_a_reference_version(self):
+        name = ".Linked.cs"
+        metadata = SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        entry = SimpleNamespace(name=name, path=str(self.root / name), is_dir=lambda **kw: False,
+                                stat=lambda **kw: metadata)
+        with patch.object(roslyn_context.os, "scandir", return_value=nullcontext(iter([entry]))):
+            reply = roslyn_syntax.editor_context_revision(self.root, "Fixture.csproj", "Page.cs", "v6")
+        self.assertEqual((reply["context_revision"], reply["reason"]), (None, "project_configuration"))
 
     def test_semantic_response_rejects_an_input_changed_after_the_snapshot(self):
         dependency = self.root / "Dependency.cs"
