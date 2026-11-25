@@ -545,7 +545,7 @@ try {
   await navigate("Page.navigate", {url: demoUrl.href});
   const ready = 'document.documentElement.dataset.liveReady === "true" && document.querySelector(".run-detail").textContent.includes("run-2026-11-14-001")';
   await wait(ready);
-  const nested = "/php-to-csharp-migration-harness/";
+  const nested = "/example-project/";
   const files = path.dirname(fileURLToPath(demoUrl));
   const network = [];
   await cdp("Network.enable");
@@ -571,7 +571,7 @@ try {
   const staticOrigin = "http://127.0.0.1:" + staticServer.address().port;
   await navigate("Page.navigate", {url: staticOrigin + nested + "progress-demo.html"});
   await wait(ready);
-  assert.equal(await evaluate("document.querySelector('.brand').textContent"), "MoCA");
+  assert.equal(await evaluate("document.querySelector('.brand').textContent.trim()"), "MoCA");
   assert.equal(await evaluate("document.title"), "MoCA | 進捗");
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.workspace-tabs [role=tab]:not([hidden])'), b => b.textContent)"), liveTabs);
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.step-title'), h => h.textContent)"), liveSteps);
