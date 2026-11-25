@@ -13,6 +13,8 @@ from threading import Thread
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
+from browser_run import run_browser
+
 from migration_harness import workflow
 from migration_harness.config import target_paths
 from migration_harness.context.source_context import stage_target_context
@@ -225,15 +227,20 @@ max_bytes = 9007199254740993 # preserve this value
                     {"id": "fixture-unknown", "name": "Fixture Unknown"},
                 ]
                 with patch.object(dashboard, "list_models", return_value=catalog):
-                    result = subprocess.run(
-                        [*node_args, str(helper), chrome, str(root / "browser"), url, notification_url, run_id,
-                         str(run / JUNIE_LOG_NAME), str(path)],
-                        capture_output=True, text=True, encoding="utf-8", timeout=110,
+                    checks = (
+                        (helper.with_name("editor_semantic_browser_driver.mjs"), "editor-browser",
+                         [url, run_id, str(path)], 90),
+                        (helper, "workflow-browser",
+                         [url, notification_url, run_id, str(run / JUNIE_LOG_NAME), str(path)], 110),
                     )
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    for script, profile, arguments, deadline in checks:
+                        with self.subTest(scenario=script.stem):
+                            result = run_browser([*node_args, str(script), chrome, str(root / profile), *arguments],
+                                                 timeout=deadline)
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            print(result.stdout, end="", flush=True)
                 self.assertEqual(view.actions.qsize(), 1)
                 self.assertEqual(view.actions.get_nowait()["action"], "resume")
-                print(result.stdout, end="", flush=True)
             finally:
                 server.shutdown()
                 worker.join()
