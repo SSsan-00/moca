@@ -58,25 +58,35 @@ class EditorSemanticTests(unittest.TestCase):
             self.assertTrue(roslyn_syntax._EDITOR_SLOTS.acquire(blocking=False))
             roslyn_syntax._EDITOR_SLOTS.release()
 
-    def test_metadata_probe_tracks_actual_inputs_without_reading_project_or_source_text(self):
+    def test_metadata_probe_reuses_unchanged_sdk_description_and_does_not_read_source_text(self):
         dependency = self.root / "Dependency.cs"
         imports = self.root / "_ViewImports.cshtml"
         dependency.write_bytes(b"class Dependency {}")
         imports.write_bytes(b"@using System")
-        with patch.object(roslyn_context, "_read_file", side_effect=AssertionError("poll must not read file content")):
-            def revision():
-                return roslyn_syntax.editor_context_revision(
-                    self.root, "Fixture.csproj", "Pages/Index.cshtml", "v4",
-                )["context_revision"]
+        def revision():
+            return roslyn_syntax.editor_context_revision(
+                self.root, "Fixture.csproj", "Pages/Index.cshtml", "v4",
+            )["context_revision"]
+
+        with patch.object(roslyn_context, "_read_file", wraps=roslyn_context._read_file) as read:
             versions = [revision()]
             self.assertEqual(revision(), versions[0])
             dependency.write_bytes(b"public class Dependency {}")
             versions.append(revision())
-            self.project.write_text(self.descriptor.replace("net9.0", "net8.0"), encoding="utf-8")
-            versions.append(revision())
             imports.write_bytes(b"@using Other.Namespace")
             versions.append(revision())
+            self.assertEqual([call.args[0] for call in read.call_args_list], [self.project])
+
+            self.project.write_text(self.descriptor.replace("net9.0", "net8.0"), encoding="utf-8")
+            versions.append(revision())
             dependency.unlink()
+            versions.append(revision())
+            self.assertEqual([call.args[0] for call in read.call_args_list], [self.project, self.project])
+            self.project.write_text("<invalid>", encoding="utf-8")
+            versions.append(revision())
+            self.assertEqual(revision(), versions[-1])
+            self.assertEqual(len(read.call_args_list), 3)
+            self.project.write_text(self.descriptor, encoding="utf-8")
             versions.append(revision())
             self.assertTrue(all(versions))
             self.assertEqual(len(set(versions)), len(versions))

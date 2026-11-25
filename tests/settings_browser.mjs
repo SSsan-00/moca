@@ -1,4 +1,5 @@
 import {checkBuildReviewDrafts} from "./build_review_drafts_browser.mjs";
+import {checkStoppedRepairRecovery} from "./stopped_repair_browser.mjs";
 import {checkAdoptedEditorSave, checkMergedEditorSave} from "./editor_adoption_browser.mjs";
 import {checkEditorSemantics} from "./editor_semantic_browser.mjs";
 import assert from "node:assert/strict";
@@ -286,6 +287,7 @@ try {
   await click("tab-progress");
   await wait(`!${field("recovery-summary")}.hidden && ${field("recovery-next")}.textContent.includes("実行結果不明")`);
   console.log("Browser recovery: checkpoint, pending instruction, blocked hook and reopen");
+  await checkStoppedRepairRecovery({evaluate, wait, field, restoredRun: expectedRun});
   await navigate("Page.navigate", {url});
   await wait("document.documentElement.dataset.liveReady === 'true' && !!window.harnessRuns");
   await click("tab-runs");

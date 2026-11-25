@@ -11,6 +11,17 @@ RECOVERY_PHASES = {
 }
 
 
+def _saved_draft(record):
+    if record.get("stopped_migration_draft"):
+        return "migration"
+    repair = record.get("repair_pending")
+    if isinstance(repair, dict):
+        draft = repair.get("draft")
+        if (isinstance(draft, dict) and draft.get("snapshot")) or repair.get("snapshot"):
+            return "repair"
+    return None
+
+
 def recovery_status(config, run_id, *, blocked=False):
     run_path, _ = load_dashboard_record(config, run_id)
     with editor_queue(run_path) as queue:
@@ -22,8 +33,7 @@ def recovery_status(config, run_id, *, blocked=False):
         conflict = any(edit.get("status") == "conflict" for edit in queue["edits"].values())
         needs_process_check = (blocked or bool(command_unconfirmed or record.get("migration_stop_unconfirmed"))
                                or record["status"] in ACTIVE_PHASES)
-        draft = ("migration" if record.get("stopped_migration_draft") else
-                 "repair" if record.get("repair_pending", {}).get("snapshot") else None)
+        draft = _saved_draft(record)
         phase = record.get("script_phase") or record["status"]
         approval = None if not attempt else {"phase": attempt["phase"], "number": attempt["number"],
                                              "log": attempt["phase"] + ".log"}

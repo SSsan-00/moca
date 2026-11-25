@@ -21,6 +21,9 @@ _CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup>
 </Project>
 """
+_WEB_CSPROJ = _CSPROJ.replace('Sdk="Microsoft.NET.Sdk"', 'Sdk="Microsoft.NET.Sdk.Web"').replace(
+    "</PropertyGroup>", "<OutputType>Library</OutputType></PropertyGroup>",
+)
 _REFERENCE_USER = "public class Foo { public Bar Value = new Bar(); }\n"
 _DOT_SOURCE = "public class Bar {}\n"
 _UNSAFE_SOURCE = "public unsafe class Foo { public int* Ptr; }\n"
@@ -30,7 +33,7 @@ class EditorProjectDiagnosticHttpTests(HarnessCase):
     def setUp(self):
         super().setUp()
         (self.project / "source.php").write_text("<?php echo 1;", encoding="utf-8")
-        targets = ["Foo.cs", ".Hidden.cs", ".excluded/Ghost.cs"]
+        targets = ["Foo.cs", ".Hidden.cs", ".excluded/Ghost.cs", "wwwroot/Bar.cs", "Properties/PublishProfiles/Blob.cs"]
         self.config_values = self.config(target="targets = " + json.dumps(targets))
         self.config_values["build_project"] = "App.csproj"
         self.run_id = str(uuid.uuid4())
@@ -136,6 +139,20 @@ class EditorProjectDiagnosticHttpTests(HarnessCase):
         (oracle / ".Hidden.cs").write_text(_DOT_SOURCE, encoding="utf-8")
         (oracle / ".excluded").mkdir()
         (oracle / ".excluded/Ghost.cs").write_text("this invalid C# file must be excluded;", encoding="utf-8")
+        run, build = self.sdk_build_oracle(oracle)
+        actual = run(*build)
+        self.assertEqual(actual.returncode, 0, actual.stdout + actual.stderr)
+        self.assertEqual(self.request("semantic")["status"], "clear")
+
+        (oracle / ".Hidden.cs").unlink()
+        (self.worktree / ".Hidden.cs").unlink()
+        actual = run(*build)
+        self.assertNotEqual(actual.returncode, 0)
+        self.assertIn("CS0246", actual.stdout + actual.stderr)
+        self.assertEqual({item["code"] for item in self.request("semantic")["findings"]}, {"CS0246"})
+        print("Windows .NET 9 oracle: dotted source included, dotted directory excluded, removal gives CS0246", flush=True)
+
+    def sdk_build_oracle(self, oracle):
         feed = self.root / "empty-feed"
         feed.mkdir()
         environment = dict(os.environ, DOTNET_CLI_HOME=str(self.root / "dotnet-home"),
@@ -157,14 +174,98 @@ class EditorProjectDiagnosticHttpTests(HarnessCase):
         self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
         build = ("build", "App.csproj", "--no-restore", "--disable-build-servers", "-p:UseSharedCompilation=false",
                  "--verbosity", "quiet")
-        actual = run(*build)
-        self.assertEqual(actual.returncode, 0, actual.stdout + actual.stderr)
-        self.assertEqual(self.request("semantic")["status"], "clear")
+        return run, build
 
-        (oracle / ".Hidden.cs").unlink()
+    @staticmethod
+    def _web_fixture(directory):
+        (directory / "App.csproj").write_text(_WEB_CSPROJ, encoding="utf-8")
+        for name, text in {
+            "wwwroot/Bar.cs": "public class Bar { public int Value = 1; }",
+            "Properties/PublishProfiles/Blob.cs": "public class ProfileOnly {}",
+            "Properties/ServiceDependencies/Ghost.cs": "public class ServiceOnly {}",
+            "Features/wwwroot/Nested.cs": "public class NestedAllowed {}",
+            "Features/node_modules/Types.cs": "public class NodeOnly {}",
+            "jspm_packages/Types.cs": "public class JspmOnly {}",
+            "bower_components/Types.cs": "public class BowerOnly {}",
+        }.items():
+            destination = directory / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(text + "\n", encoding="utf-8")
+
+    def test_web_source_target_gate_and_revision_share_sdk_exclusions(self):
         (self.worktree / ".Hidden.cs").unlink()
+        self._web_fixture(self.worktree)
+        missing = self.request("semantic")
+        self.assertEqual((missing["status"], {f["code"] for f in missing["findings"]}), ("errors", {"CS0246"}))
+        self.assertEqual(self.request("semantic", target="wwwroot/Bar.cs")["reason"], "project_required")
+        self.assertIsNone(self.request("context", target="Properties/PublishProfiles/Blob.cs")["context_revision"])
+        with patch("migration_harness.verification.roslyn_context._MAX_ENTRIES", 27):
+            dependency = self.worktree / "Features/node_modules"
+            for index in range(32):
+                (dependency / f"fixture-{index}.js").touch()
+            self.assertEqual(self.request("context")["context_revision"], missing["context_revision"])
+            self.assertEqual(self.request("semantic", content="class Main { NestedAllowed value = new(); }")["status"],
+                             "clear")
+        self.assertEqual(
+            [item.relative_to(self.worktree).as_posix() for item, _ in
+             editor_project_snapshot(self.worktree, "App.csproj", "Foo.cs").sources],
+            ["Features/wwwroot/Nested.cs"],
+        )
+        (self.worktree / "wwwroot/Bar.cs").write_text("public class Bar { public decimal Value = 1; }", encoding="utf-8")
+        self.assertEqual(self.request("context")["context_revision"], missing["context_revision"])
+        models = self.worktree / "Models"
+        models.mkdir()
+        (models / "Bar.cs").write_text('public class Bar { public string Value = "ok"; }', encoding="utf-8")
+        self.assertEqual(self.request("semantic", content="class Main { string Value(Bar b) => b.Value; }")["status"],
+                         "clear")
+        (models / "Bar.cs").unlink()
+        (self.worktree / "App.csproj").write_text(_CSPROJ, encoding="utf-8")
+        ordinary = self.request("semantic")
+        self.assertEqual(ordinary["status"], "clear")
+        self.assertNotEqual(ordinary["context_revision"], missing["context_revision"])
+        self.assertIsNotNone(self.request("context", target="wwwroot/Bar.cs")["context_revision"])
+
+    @unittest.skipUnless(os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true",
+                         "SDK comparison is restricted to the hosted Windows workflow")
+    def test_installed_web_sdk_agrees_with_default_source_scope(self):
+        oracle = self.root / "sdk-web-oracle"
+        oracle.mkdir()
+        (self.worktree / ".Hidden.cs").unlink()
+        missing_source = "public class Foo { public Bar Value = new(); public ProfileOnly Profile = new(); }\n"
+        for directory in (oracle, self.worktree):
+            self._web_fixture(directory)
+            (directory / "Foo.cs").write_text(missing_source, encoding="utf-8")
+        run, build = self.sdk_build_oracle(oracle)
         actual = run(*build)
         self.assertNotEqual(actual.returncode, 0)
         self.assertIn("CS0246", actual.stdout + actual.stderr)
-        self.assertEqual({item["code"] for item in self.request("semantic")["findings"]}, {"CS0246"})
-        print("Windows .NET 9 oracle: dotted source included, dotted directory excluded, removal gives CS0246", flush=True)
+        self.assertIn("ProfileOnly", actual.stdout + actual.stderr)
+        missing = self.request("semantic", content=missing_source)
+        self.assertEqual(len(missing["findings"]), 2)
+        self.assertEqual({item["code"] for item in missing["findings"]}, {"CS0246"})
+
+        typed = "public class Main { public string Go(Bar b) => b.Value; }\n"
+        for directory in (oracle, self.worktree):
+            models = directory / "Models"
+            models.mkdir()
+            (models / "Bar.cs").write_text('public class Bar { public string Value = "ok"; }', encoding="utf-8")
+            (directory / "Foo.cs").write_text(typed, encoding="utf-8")
+            for index in range(5001):
+                (directory / "Features/node_modules" / f"fixture-{index}.js").touch()
+        actual = run(*build)
+        self.assertEqual(actual.returncode, 0, actual.stdout + actual.stderr)
+        self.assertEqual(self.request("semantic", content=typed)["status"], "clear")
+
+        for directory in (oracle, self.worktree):
+            (directory / "Models/Bar.cs").unlink()
+            (directory / "App.csproj").write_text(_CSPROJ, encoding="utf-8")
+            (directory / "Foo.cs").write_text(_REFERENCE_USER, encoding="utf-8")
+            for asset in (directory / "Features/node_modules").glob("*.js"):
+                asset.unlink()
+        restored = run("restore", "App.csproj", "--source", str(self.root / "empty-feed"), "-p:NuGetAudit=false",
+                       "--verbosity", "quiet")
+        self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+        actual = run(*build)
+        self.assertEqual(actual.returncode, 0, actual.stdout + actual.stderr)
+        self.assertEqual(self.request("semantic")["status"], "clear")
+        print("Windows .NET 9 Web oracle: excludes root assets and tooling, handles 5001 JS files, keeps plain SDK", flush=True)
