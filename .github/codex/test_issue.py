@@ -8,7 +8,7 @@ from unittest.mock import patch
 import issue
 
 
-REPO = "SSsan-00/php-to-csharp-migration-harness"
+REPO = "example-owner/example-project"
 SHA = "a" * 40
 # GitHub PR #60, comment 6982495964. Keep the review markers from the actual comment.
 REVIEW_SHA = "951a9dd08ee09c65520a0ac99567f399b38d2029"
