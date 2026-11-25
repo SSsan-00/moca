@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -11,6 +12,7 @@ from http.client import HTTPConnection
 from pathlib import Path
 from select import select
 from threading import Thread
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
@@ -23,6 +25,7 @@ from migration_harness.junie import junie_cli
 from migration_harness import workflow
 from migration_harness.config import load_config
 from migration_harness.execution import control_scope
+from migration_harness.verification import build_receipt
 
 BASE = "class Page\n{\n    int First = 1;\n    int Middle = 0;\n    int Last = 1;\n}\n"
 
@@ -66,6 +69,88 @@ class DashboardEditorTests(HarnessCase):
         self.assertEqual(self.view.state["review_kind"], "roslyn_preflight")
         self.view.observe(record | {"build_exit_code": 1})
         self.assertNotIn("review_kind", self.view.state)
+
+    def test_recovered_build_draft_saves_against_original_raw_version_and_invalidates_verification(self):
+        self.enterContext(patch.object(junie_cli, "run_interactive", side_effect=AssertionError("unexpected Junie call")))
+        (self.project / "App.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net9.0</TargetFramework>'
+            '</PropertyGroup></Project>', encoding="utf-8",
+        )
+        self.commit_project()
+        self.settings.update(checker_command=["fixture-checker"], build_project="App.csproj")
+        prepared = self.finished_run()
+        run_id = prepared["run_id"]
+        run_path, worktree, _, _ = run_records.load_saved_run(self.settings, run_id)
+        target = worktree / "Page.cs"
+        before = target.read_bytes()
+        dotnet = self.root / "fixture-sdk" / "dotnet"
+        pack = dotnet.parent / "packs/Microsoft.NETCore.App.Ref"
+        pack.mkdir(parents=True)
+        dotnet.write_bytes(b"fixture launcher")
+        (pack / "fixture.dll").write_bytes(b"fixture reference")
+        self.enterContext(patch.object(build_receipt, "shutil", SimpleNamespace(which=lambda _: str(dotnet))))
+
+        def process(command, **kwargs):
+            if command[:2] == ["dotnet", "build"]:
+                for name, content in {"bin/Debug/net9.0/App.dll": b"compiled fixture",
+                                      "obj/project.assets.json": b'{"libraries":{}}'}.items():
+                    artifact = worktree / name
+                    artifact.parent.mkdir(parents=True, exist_ok=True)
+                    artifact.write_bytes(content)
+            else:
+                self.assertEqual(command, ["fixture-checker"])
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(workflow, "run_process", side_effect=process) as execute, redirect_stdout(io.StringIO()):
+            self.assertEqual(workflow.resume_with_junie(self.settings, run_id)["status"], "checker_succeeded")
+        self.assertEqual(execute.call_count, 2)
+        self.view.ready(self.settings, run_records.load_saved_run(self.settings, run_id)[2])
+        checker_route = "resume-plan?" + urlencode({"run_id": run_id, "start_stage": "checker"})
+        try:
+            old_plan = self.request(checker_route)
+        except HTTPError as error:
+            with error:
+                self.fail(error.read().decode("utf-8"))
+        self.assertEqual(old_plan["start_stage"], "checker")
+        self.assertTrue(workflow.migration_ledger(self.settings, run_id)["completion"]["verification_passed"])
+        base = before.decode("utf-8-sig").replace("\r\n", "\n")
+        request = {"kind": "save", "run_id": run_id, "target": "Page.cs", "base": base,
+                   "content": base + "// recovered\n", "base_version": hashlib.sha256(before).hexdigest(),
+                   "save_id": "a" * 32}
+        other_run = self.finished_run()["run_id"]
+        with self.assertRaises(HTTPError) as raised:
+            self.request(payload=request)
+        self.assertEqual(raised.exception.code, 409)
+        raised.exception.close()
+        self.assertNotEqual(other_run, run_id)
+
+        self.view.observe(run_records.load_saved_run(self.settings, run_id)[2])
+        self.view.ready(self.settings, self.view.state)
+        target.write_bytes(base.encode("utf-8"))
+        with self.assertRaises(HTTPError) as raised:
+            self.request(payload=request)
+        self.assertEqual(raised.exception.code, 409)
+        raised.exception.close()
+        self.assertEqual(target.read_bytes(), base.encode("utf-8"))
+
+        target.write_bytes(before)
+        saved = self.request(payload=request)
+        self.assertEqual(saved["accepted_save_id"], request["save_id"])
+        self.assertFalse(saved["queued"])
+        self.assertIn("// recovered", target.read_text(encoding="utf-8-sig"))
+        self.assertEqual(self.request(payload=request)["accepted_save_id"], request["save_id"])
+        self.assertEqual(run_records.load_saved_run(self.settings, run_id)[2]["status"], "checker_succeeded")
+        self.assertFalse(workflow.migration_ledger(self.settings, run_id)["completion"]["verification_passed"])
+        with self.assertRaises(HTTPError) as raised:
+            self.request(checker_route)
+        self.assertEqual(raised.exception.code, 409)
+        self.assertIn("再ビルド", raised.exception.read().decode("utf-8"))
+        raised.exception.close()
+        with patch.object(workflow, "run_process") as execute, self.assertRaises(ValueError):
+            workflow.resume_with_junie(self.settings, run_id, verification_request={**old_plan, "id": "old-checker"})
+        execute.assert_not_called()
+        with editor_queue.editor_queue(run_path) as queue:
+            self.assertFalse(queue["edits"])
 
     def test_syntax_diagnoses_only_the_requested_unsaved_target_without_recording_an_edit(self):
         result = self.finished_run()

@@ -30,6 +30,12 @@ export async function checkBuildReviewDrafts({url, evaluate, click, change, valu
     for await (const part of req) body += part;
     const data = JSON.parse(body);
     posts.push({id, data});
+    if (route.pathname === "/editor") {
+      const expected = versions.get(id + data.target) || "1".repeat(64);
+      if (data.run_id !== id || data.base_version !== expected) return json({}, 409);
+      versions.set(id + data.target, "4".repeat(64));
+      return json({run_id: id, content: data.content, accepted_save_id: data.save_id, queued: false});
+    }
     const expected = versions.get(id + data.edit?.target) || "1".repeat(64);
     if (holdPost) { const hold = holdPost; holdPost = null; await hold(); }
     return json({}, data.run_id === id && (!data.edit || data.edit.version === expected) ? 202 : 409);
@@ -39,6 +45,7 @@ export async function checkBuildReviewDrafts({url, evaluate, click, change, valu
     const origin = "http://127.0.0.1:" + server.address().port + "/";
     await evaluate(`stream.close(); const actualReviewFetch = dashboardIO.fetch;
       dashboardIO.fetch = (path, options) => /^build-(review|response)\\b/.test(path)
+        || (path === "editor" && options?.body && JSON.parse(options.body).base_version)
         ? fetch(${JSON.stringify(origin)} + path, options) : actualReviewFetch(path, options);`);
     let revision = 100;
     const select = (id, extra = {}) => evaluate(`receiveProgress({lastEventId: ${++revision},
@@ -126,10 +133,66 @@ export async function checkBuildReviewDrafts({url, evaluate, click, change, valu
     await click(field("submit"));
     await wait("!document.getElementById('build-review-dialog').open");
     assert.equal(posts.at(-1).data.edit.target, targets[1]);
-    await select("A", {status: "build_succeeded"});
-    await select("A"); await open(); await change(field("target"), primary);
+    const completed = {status: "build_succeeded"};
+    const unloadBlocked = () => evaluate("!dispatchEvent(new Event('beforeunload', {cancelable: true}))");
+    const recover = async () => {
+      assert.equal(await evaluate("snapshot.status"), "build_succeeded");
+      assert(await evaluate("!document.getElementById('open-build-drafts')?.hidden && !!document.getElementById('open-build-drafts')"),
+        "the successful Run must expose its remaining draft");
+      await click("open-build-drafts");
+      await wait("document.getElementById('build-review-dialog').open && !document.getElementById('build-review-submit').disabled");
+      assert.equal(await value(field("target")), primary);
+    };
+    await select("A", completed);
+    assert(await unloadBlocked(), "the browser protects drafts outside Monaco");
+    await recover();
+    await expect("A draft", "");
+    await click(field("submit"));
+    await wait("document.getElementById('build-review-feedback').textContent.includes('409')");
+    assert.equal(posts.at(-1).id, "A");
+    assert.equal(posts.at(-1).data.base_version, "1".repeat(64));
+    assert.equal(posts.at(-1).data.content, "A draft");
+    assert.equal(await evaluate("snapshot.status"), "build_succeeded");
     await expect("A draft", "");
     await close();
+    await select("B", completed);
+    assert.equal(await evaluate("document.getElementById('open-build-drafts').hidden"), true);
+    await select("A", completed); await recover();
+    await evaluate("window.confirm = () => false");
+    await click(field("reset"));
+    await expect("A draft", "");
+    await evaluate("window.confirm = () => true");
+    await click(field("reset"));
+    await wait("!document.getElementById('build-review-dialog').open");
+    assert.equal(await unloadBlocked(), false);
+
+    await select("C"); await open();
+    await type("source", "C first file");
+    await change(field("target"), targets[1]);
+    await wait("document.getElementById('build-review-source').value === 'C:Other.cs:1'");
+    await type("source", "C second file");
+    await click(field("submit"));
+    await wait("!document.getElementById('build-review-dialog').open");
+    assert.equal(posts.at(-1).data.edit.target, targets[1]);
+    await select("C", completed);
+    await evaluate("migrationCompletion = {complete: true, verification_passed: true}; render();");
+    const verifiedLabel = await evaluate("document.getElementById('state-label').textContent");
+    const beforeRecovery = posts.length;
+    await recover();
+    await expect("C first file", "");
+    assert.equal(posts.length, beforeRecovery, "opening a draft must not write");
+    assert.equal(await evaluate("document.getElementById('state-label').textContent"), verifiedLabel);
+    await click(field("submit"));
+    await wait("!document.getElementById('build-review-dialog').open");
+    assert.equal(posts.at(-1).id, "C");
+    assert.equal(posts.at(-1).data.kind, "save");
+    assert.equal(posts.at(-1).data.target, primary);
+    assert.equal(posts.at(-1).data.base_version, "1".repeat(64));
+    assert.equal(posts.at(-1).data.content, "C first file");
+    assert.equal(await evaluate("snapshot.status"), "build_succeeded");
+    assert.equal(await evaluate("document.getElementById('open-build-drafts').hidden"), true);
+    assert.match(await evaluate("document.getElementById('state-label').textContent"), /要再検証/);
+    assert.equal(await unloadBlocked(), false);
     console.log("Browser build review: per-Run/per-target drafts, original versions, rejected/late POST and stale reads");
   } finally {
     server.closeAllConnections();

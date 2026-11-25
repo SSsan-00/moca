@@ -956,6 +956,7 @@
     <span class="state is-running" id="run-state" data-state="running" aria-live="polite"><span class="state-orb" aria-hidden="true"></span><span id="state-label">Junieが実行中</span></span>
     <div class="controls" aria-label="デモ操作">
       <button class="button" id="toggle" type="button" hidden>同じ実行を再開</button>
+      <button class="button" id="open-build-drafts" type="button" aria-haspopup="dialog" aria-controls="build-review-dialog" hidden>未保存の下書き</button>
       <button class="button" id="open-progress-prompt" type="button" aria-haspopup="dialog" hidden>Junie に指示</button>
       <button class="button" id="stop" type="button" title="編集内容を残して処理を停止します">停止</button>
 
@@ -1575,7 +1576,7 @@
             <button class="review-action" id="build-review-reset" type="button" hidden>最新の内容を読み込み直す</button>
           </div>
         </details>
-        <label class="review-note-label" for="build-review-instruction">Junie への修正指示（任意）</label>
+        <label class="review-note-label" for="build-review-instruction" id="build-review-instruction-label">Junie への修正指示（任意）</label>
         <div class="chat-composer">
           <div class="prompt-field">
             <textarea class="review-note" id="build-review-instruction" maxlength="4000" spellcheck="false" placeholder=" "
