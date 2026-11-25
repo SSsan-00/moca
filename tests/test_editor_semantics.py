@@ -1,3 +1,4 @@
+import io
 import stat
 import subprocess
 import tempfile
@@ -92,6 +93,52 @@ class EditorSemanticTests(unittest.TestCase):
             self.assertTrue(all(versions))
             self.assertEqual(len(set(versions)), len(versions))
 
+    def test_small_project_input_reads_only_expected_size_and_rejects_unstable_bytes(self):
+        path = self.root / "Dependency.cs"
+        original = b"class D {}\\r\\n"
+        path.write_bytes(original)
+        expected = roslyn_context._stamp(path.stat())
+
+        class ObservedRead(io.BytesIO):
+            def read(self, size):
+                requested.append(size)
+                return super().read(size)
+
+        for data in (original, original + b"x", original[:-1]):
+            with self.subTest(data=data):
+                requested = []
+                with patch.object(Path, "open", return_value=ObservedRead(data)):
+                    if data == original:
+                        self.assertEqual(data, roslyn_context._read_file(path, 8 * 1024 * 1024, expected))
+                    else:
+                        with self.assertRaisesRegex(roslyn_context.ProjectContextUnavailable, "project_changed"):
+                            roslyn_context._read_file(path, 8 * 1024 * 1024, expected)
+                self.assertEqual([len(original) + 1], requested)
+        with patch.object(Path, "open") as open_file:
+            with self.assertRaisesRegex(roslyn_context.ProjectContextUnavailable, "project_too_large"):
+                roslyn_context._read_file(path, len(original) - 1, expected)
+            open_file.assert_not_called()
+
+    def test_read_rejects_a_same_length_rewrite_after_fetching_bytes(self):
+        path = self.root / "Dependency.cs"
+        before, after = b"class A {}", b"class B {}"
+        path.write_bytes(before)
+        info = path.stat()
+        open_path = Path.open
+
+        class RewriteDuringRead(io.BytesIO):
+            def read(self, size):
+                result = super().read(size)
+                with open_path(path, "wb") as destination:
+                    destination.write(after)
+                return result
+
+        with patch.object(Path, "open", return_value=RewriteDuringRead(before)):
+            with self.assertRaisesRegex(roslyn_context.ProjectContextUnavailable, "project_changed"):
+                roslyn_context._read_file(path, 1024, roslyn_context._stamp(info))
+        self.assertEqual(path.read_bytes(), after)
+        self.assertEqual(path.stat().st_size, info.st_size)
+
     def test_dotted_csharp_reparse_point_does_not_supply_a_reference_version(self):
         name = ".Linked.cs"
         metadata = SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
@@ -122,7 +169,7 @@ class EditorSemanticTests(unittest.TestCase):
 
     def test_warm_helper_does_not_reuse_foreign_drafts_or_old_project_dependencies(self):
         first, other = self.root / "first", self.root / "other"
-        for directory, member in ((first, "int Value"), (other, "string Value")):
+        for directory, member in ((first, "int    Value"), (other, "string Value")):
             directory.mkdir()
             (directory / "Fixture.csproj").write_text(self.descriptor, encoding="utf-8")
             (directory / "Target.cs").write_text("class Unedited {}", encoding="utf-8")
@@ -150,7 +197,9 @@ class EditorSemanticTests(unittest.TestCase):
         run = roslyn_syntax._run_editor
         def during_analysis(*args, **kwargs):
             result = run(*args, **kwargs)
+            previous_size = dependency.stat().st_size
             dependency.write_text("public class D { public string Value; }", encoding="utf-8")
+            self.assertEqual(dependency.stat().st_size, previous_size)
             return result
 
         with patch.object(roslyn_syntax, "_run_editor", side_effect=during_analysis):

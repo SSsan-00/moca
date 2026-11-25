@@ -52,9 +52,11 @@ def _read_file(path, budget, expected):
     if before.st_size > budget:
         raise ProjectContextUnavailable("project_too_large")
     with path.open("rb") as stream:
-        data = stream.read(budget + 1)
+        data = stream.read(before.st_size + 1)
     if len(data) > budget:
         raise ProjectContextUnavailable("project_too_large")
+    if len(data) != before.st_size:
+        raise ProjectContextUnavailable("project_changed")
     after = path.stat()
     if _stamp(after) != expected or after.st_ino != before.st_ino:
         raise ProjectContextUnavailable("project_changed")
