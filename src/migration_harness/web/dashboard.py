@@ -39,6 +39,7 @@ from migration_harness.runs.editor_queue import (
     QUEUE_PHASES,
     add_prompt,
     applied_editor_save_id,
+    check_editor_adoption,
     editor_queue,
     editor_save_intent,
     editor_save_pending,
@@ -868,6 +869,7 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                         if type(resolve) is not bool:
                             raise ValueError("編集の競合を解消する指定が無効です。")
                         intent = editor_save_intent(name, base, draft, edit_id, resolve)
+                        adoption = action.get("adoption")
                         base_version = None
                         if "base_version" in action:
                             base_version = action["base_version"]
@@ -875,6 +877,14 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                                     or not save_id or edit_id is not None or resolve):
                                 raise ValueError("下書きの元の版を確認できません。")
                             intent["base_version"] = base_version
+                        if "adoption" in action:
+                            if (not isinstance(adoption, dict) or adoption.keys() != {"save_id", "edit_id", "version"}
+                                    or any(not isinstance(adoption[key], str) or not re.fullmatch(pattern, adoption[key])
+                                           for key, pattern in (("save_id", r"[0-9a-f]{32}"), ("edit_id", r"[0-9a-f]{24}"),
+                                                                ("version", r"[0-9a-f]{64}")))
+                                    or base_version is not None or edit_id is not None or resolve or not save_id):
+                                raise ValueError("編集中の下書きの採用版を確認できません。")
+                            intent["adoption"] = adoption
                         # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
                         with worktree_source_lock(worktree), self.dashboard.condition:
                             state = self.dashboard.state
@@ -882,12 +892,16 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                                 raise ValueError("表示中の実行が変わりました。")
                             if base_version is not None and not from_agent:
                                 original, content = editor_target(worktree, Path(name))
+                            if adoption is not None:
+                                original, content = editor_target(root, Path(name))
                             replay = (save_id is not None or not edit and not from_agent) and replayed_editor_save(
                                 queue, edit, original, content, save_id, intent,
                             )
                             if not replay:
                                 if edit_id != (edit["id"] if edit else None):
                                     raise ValueError("保存済みの編集が別の画面で変更されました。")
+                                if adoption is not None:
+                                    check_editor_adoption(queue, name, original, intent["base"], adoption)
                                 # 保存直前に実行が始まった場合も、編集をRunへ退避する。
                                 busy_other = state.get("generating_anchors") or state.get("stop_requested")
                                 queued = bool(queued or not state.get("ready") or busy_other or content != base)
@@ -930,8 +944,11 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 if name and edit is None and read_error is None:
                     if accepted := applied_editor_save_id(queue, name, original, content):
                         payload["accepted_save_id"] = accepted
-                        if after := queue["save_requests"][accepted].get("after"):
+                        receipt = queue["save_requests"][accepted]
+                        if after := receipt.get("after"):
                             payload["accepted_version"] = after
+                            if edit_id := receipt.get("queued_edit"):
+                                payload["accepted_edit_id"] = edit_id
                 if name and from_agent and (draft := record.get("stopped_migration_draft")):
                     payload["stopped_draft"] = True
                     with suppress(OSError, ValueError):

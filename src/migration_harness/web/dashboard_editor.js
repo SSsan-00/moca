@@ -509,6 +509,7 @@
       : state.stopped_draft ? (state.exists ? "停止時の下書き" : "停止時に対象ファイルが欠損")
       : !state.exists ? "移行先ファイルは未作成です" : "ファイルに反映済み");
     setText("#editor-save-timing", !state.can_save ? "保存先を読み込めません。接続とエラー内容を確認してください。"
+      : current.adoption ? "採用済みの変更は残し、追加の編集を次の反映時に合流します。"
       : state.save_timing === "repair_restart" ? "編集を保存して追加指示を送ると、修正へ反映し、対応後に再ビルドします。"
       : state.save_timing === "checkpoint" ? "編集は保存できます。現在の作業区間が終わるとファイルに反映します。"
       : state.save_timing === "resume" ? "編集は保存できます。同じ実行を再開するとファイルに反映します。" : "");
@@ -557,11 +558,13 @@
       kind: "save", run_id: state.run_id, target: state.target,
       base: resolving ? state.content : file.base, content, edit_id: file.editId, resolve: resolving,
     };
-    if (!file.pendingSave || Object.entries(body).some(([key, value]) => file.pendingSave[key] !== value)) {
+    if (!resolving && file.adoption) body.adoption = file.adoption;
+    if (!file.pendingSave || file.pendingSave.adoption !== body.adoption
+        || Object.entries(body).some(([key, value]) => file.pendingSave[key] !== value)) {
       file.pendingSave = {...body, save_id: crypto.randomUUID().replaceAll("-", "")};
     }
     const attempt = file.pendingSave;
-    file.unconfirmedSaves.add(attempt.save_id);
+    file.unconfirmedSaves.set(attempt.save_id, content);
     saving = true;
     const version = ++revision;
     showSaveState();
@@ -569,8 +572,9 @@
     try {
       const data = await request("editor", attempt);
       file.pendingSave = undefined;
-      file.unconfirmedSaves.clear();
+      if (!data.accepted_edit_id) file.unconfirmedSaves.clear();
       file.saved = content;
+      file.adoption = undefined;
       file.editId = data.edit?.id ?? null;
       file.queuedSaveId = data.edit?.save_id === attempt.save_id ? attempt.save_id : undefined;
       file.base = data.edit?.base ?? data.content;
@@ -745,7 +749,7 @@
     const saved = data.edit?.content ?? (data.read_error ? file?.saved : data.content) ?? "";
     if (!file) {
       const model = monaco.editor.createModel(saved, fileLanguage);
-      file = {model, saved, base: data.edit?.base ?? data.content, editId: data.edit?.id ?? null, unconfirmedSaves: new Set()};
+      file = {model, saved, base: data.edit?.base ?? data.content, editId: data.edit?.id ?? null, unconfirmedSaves: new Map()};
       documents.set(key, file);
       model.onDidChangeContent(() => {
         file.pendingSave = undefined;
@@ -753,19 +757,27 @@
       });
     } else if (!data.read_error) {
       const receipt = data.edit?.save_id ?? data.accepted_save_id;
-      const adopted = !data.edit && file.queuedSaveId && receipt === file.queuedSaveId && saved === file.saved;
-      const accepted = adopted || file.unconfirmedSaves.has(receipt);
-      if (accepted || readText(file.model) === file.saved) {
+      const queuedSave = file.queuedSaveId && receipt === file.queuedSaveId;
+      const sent = file.unconfirmedSaves.get(receipt);
+      const submitted = sent ?? file.saved;
+      const text = readText(file.model);
+      const adopted = !data.edit && data.accepted_edit_id && data.accepted_version
+        && (queuedSave ? data.accepted_edit_id === file.editId : sent !== undefined);
+      const merged = adopted && saved !== submitted && text !== submitted;
+      const accepted = adopted || !data.edit && queuedSave && saved === file.saved || sent !== undefined;
+      if (accepted || text === file.saved) {
         const sameQueuedSave = data.edit?.id === file.editId && receipt === file.queuedSaveId;
         file.queuedSaveId = data.edit && (accepted || sameQueuedSave) ? receipt : undefined;
-        file.saved = saved;
-        file.base = data.edit?.base ?? data.content;
+        file.adoption = merged ? {save_id: receipt, edit_id: data.accepted_edit_id, version: data.accepted_version} : undefined;
+        file.saved = merged ? submitted : saved;
+        file.base = merged ? submitted : data.edit?.base ?? data.content;
         file.editId = data.edit?.id ?? null;
         if (accepted) {
           file.pendingSave = undefined;
           file.unconfirmedSaves.clear();
           report("#editor-error");
-        } else if (readText(file.model) !== saved) file.model.setValue(saved);
+        }
+        if ((!accepted || adopted && text === submitted) && text !== saved) file.model.setValue(saved);
       }
     }
     selectedTarget = data.target;

@@ -106,7 +106,12 @@ def complete_editor_adoption(queue, worktree, targets, adoption):
         elif current != receipt["before"]:
             raise ValueError(_HISTORY_RECOVERY + " 対象ファイルが外部で更新されたため、履歴を確定せず停止しました。")
     for name in applied:
-        _append_operator_diff(queue, name, entries[name]["diff"])
+        adoption_entry = entries[name]
+        _append_operator_diff(queue, name, adoption_entry["diff"])
+        save_id = queue["edits"][name].get("save_id")
+        receipt = queue.get("save_requests", {}).get(save_id)
+        if receipt and receipt["target"] == name and receipt.get("queued_edit") == adoption_entry["edit_id"]:
+            receipt["after"] = adoption_entry["after"]
         del queue["edits"][name]
     if applied:
         queue["last_editor_adoption"] = adoption["id"]
@@ -140,11 +145,21 @@ def applied_editor_save_id(queue, name, original, content):
     if save_id is None:
         return None
     receipt = queue["save_requests"][save_id]
-    if "queued_edit" in receipt:
-        matches = original is not None and receipt["draft"] == _digest(content.encode("utf-8"))
-    else:
+    if "after" in receipt:
         matches = receipt["after"] == _digest(original)
+    else:
+        matches = "queued_edit" in receipt and original is not None and receipt["draft"] == _digest(content.encode("utf-8"))
     return save_id if matches else None
+
+
+def check_editor_adoption(queue, name, original, base_digest, adoption):
+    save_id = adoption["save_id"]
+    receipt = queue.get("save_requests", {}).get(save_id, {})
+    if (original is None or queue.get("latest_save_requests", {}).get(name) != save_id
+            or receipt.get("target") != name or receipt.get("queued_edit") != adoption["edit_id"]
+            or receipt.get("after") != adoption["version"] or _digest(original) != adoption["version"]
+            or receipt.get("draft") != base_digest):
+        raise ValueError("採用後に対象ファイルが更新されたか、保存の基準版が一致しません。下書きを残しました。")
 
 
 def replayed_editor_save(queue, edit, original, content, save_id, intent):
@@ -159,7 +174,7 @@ def replayed_editor_save(queue, edit, original, content, save_id, intent):
             if old is None:
                 return False
             receipt = {**old, "edit_id": None, "resolve": False}
-        if any(receipt[key] != value for key, value in intent.items()):
+        if receipt.get("adoption") != intent.get("adoption") or any(receipt.get(key) != value for key, value in intent.items()):
             raise ValueError("同じ保存IDが別の編集に使われています。エディタを開き直してください。")
     if "queued_edit" in receipt:
         if edit is not None and edit["id"] == receipt["queued_edit"]:
