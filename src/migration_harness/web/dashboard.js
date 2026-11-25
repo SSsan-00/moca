@@ -1031,7 +1031,9 @@ function bindResumeStage() {
     resumeSummary.textContent = "";
   }
   resumeStage.addEventListener("change", clearResumePlan);
-  resumeDialog.addEventListener("close", clearResumePlan);
+  resumeDialog.addEventListener("close", () => {
+    if (!resumeDialog.open) clearResumePlan();
+  });
   resumePreview.addEventListener("click", async () => {
     clearResumePlan();
     const generation = resumeGeneration;
