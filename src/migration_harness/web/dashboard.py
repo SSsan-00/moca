@@ -9,6 +9,7 @@ import secrets
 import shutil
 import time
 import uuid
+import webbrowser
 from collections import deque
 from concurrent.futures import Future
 from contextlib import nullcontext, suppress
@@ -445,6 +446,7 @@ class Dashboard:
         handler = _dashboard_handler(self, config, html, script, prefix)
         server = _DashboardServer(("127.0.0.1", 0), handler)
         host = f"127.0.0.1:{server.server_port}"
+        server.dashboard_url = f"http://{host}{prefix}"
         manager = getattr(self, "manager", None)
         notifications = JunieNotifications(
             lambda: pending_requests(self, manager),
@@ -464,7 +466,7 @@ class Dashboard:
 
         server.server_close = close_server
         notifications.start()
-        print(f"Progress dashboard: http://{host}{prefix}", flush=True)
+        print(f"Progress dashboard: {server.dashboard_url}", flush=True)
         print("Press Ctrl+C in this terminal to close the dashboard.", flush=True)
         return server
 
@@ -1834,7 +1836,7 @@ def render_dashboard_html(options: str) -> bytes:
 
 def run_dashboard(
     config: dict[str, Any], *, run_id: str | None = None,
-    config_error: str | None = None,
+    config_error: str | None = None, open_browser: bool = False,
 ) -> dict[str, Any] | None:
     package_dir = Path(__file__).resolve().parent
     view = Dashboard()
@@ -1874,6 +1876,13 @@ def run_dashboard(
             thread = Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
+                if open_browser:
+                    try:
+                        opened = webbrowser.open(server.dashboard_url, new=2)
+                    except (OSError, webbrowser.Error):
+                        opened = False
+                    if not opened:
+                        print("ブラウザーを開けませんでした。上の URL を開いてください。", flush=True)
                 manager.start_pending()
                 with manager.condition:
                     manager.conversations.start()

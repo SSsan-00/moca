@@ -14,5 +14,5 @@ if not "%~1"=="" (
   echo Usage: moca
   exit /b 2
 )
-"%HARNESS%" dashboard --config "%CONFIG%"
+"%HARNESS%" dashboard --config "%CONFIG%" --open-browser
 exit /b %errorlevel%

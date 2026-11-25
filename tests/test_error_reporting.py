@@ -168,11 +168,21 @@ class CliErrorReportingTests(unittest.TestCase):
     def test_first_dashboard_setup_does_not_treat_missing_config_as_a_failure(self):
         with (
             TemporaryDirectory() as directory,
-            patch.object(sys, "argv", ["harness", "dashboard", "--config", str(Path(directory) / "new.toml")]),
+            patch.object(sys, "argv", ["harness", "dashboard", "--config", str(Path(directory) / "new.toml"), "--open-browser"]),
             patch.object(dashboard, "run_dashboard") as open_dashboard,
         ):
             cli.main()
         self.assertIsNone(open_dashboard.call_args.kwargs["config_error"])
+        self.assertTrue(open_dashboard.call_args.kwargs["open_browser"])
+
+    def test_existing_config_opens_the_browser_when_requested(self):
+        with (
+            patch.object(sys, "argv", ["harness", "dashboard", "--config", "local.toml", "--open-browser"]),
+            patch.object(cli, "load_config", return_value={"config_path": "local.toml"}),
+            patch.object(dashboard, "run_dashboard") as open_dashboard,
+        ):
+            cli.main()
+        open_dashboard.assert_called_once_with({"config_path": "local.toml"}, open_browser=True)
 
     def test_exit_codes_and_full_diagnostics(self):
         cause = subprocess.CalledProcessError(7, ["git", "status"], output="out-detail", stderr="err-detail")
@@ -239,6 +249,29 @@ class DashboardErrorReportingTests(unittest.TestCase):
         self.assertTrue(view.state["ready"])
         self.assertIn(expected, view.state["message"])
         self.assertIn(expected, view.state["error_details"])
+
+    def test_browser_opens_ready_dashboard_and_failure_leaves_it_accessible(self):
+        for outcome in (True, False, OSError("browser unavailable")):
+            with self.subTest(outcome=outcome):
+                opened_urls = []
+
+                def open_browser(url, *, new):
+                    opened_urls.append(url)
+                    self.assertEqual(new, 2)
+                    with urlopen(url, timeout=3) as response:
+                        self.assertIn(b"data-workspace", response.read())
+                    if isinstance(outcome, OSError):
+                        raise outcome
+                    return outcome
+
+                def inspect(view, url):
+                    self.assertEqual(opened_urls, [url])
+                    with urlopen(url, timeout=3) as response:
+                        self.assertIn(b"data-workspace", response.read())
+                    raise KeyboardInterrupt
+
+                with patch.object(dashboard.webbrowser, "open", side_effect=open_browser):
+                    self.open_dashboard({}, [inspect], open_browser=True)
 
     def test_initial_failure_stays_open_and_can_start_another_run(self):
         failure = subprocess.CalledProcessError(9, ["git", "worktree", "add"], stderr="worktree detail")
