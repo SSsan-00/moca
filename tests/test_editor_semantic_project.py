@@ -27,6 +27,13 @@ _WEB_CSPROJ = _CSPROJ.replace('Sdk="Microsoft.NET.Sdk"', 'Sdk="Microsoft.NET.Sdk
 _REFERENCE_USER = "public class Foo { public Bar Value = new Bar(); }\n"
 _DOT_SOURCE = "public class Bar {}\n"
 _UNSAFE_SOURCE = "public unsafe class Foo { public int* Ptr; }\n"
+_RAZOR_SOURCE = "@model Sample.IndexModel\n<p>@Model.Value</p>\n"
+_RAZOR_ERROR = _RAZOR_SOURCE.replace("Value", "Missing")
+_RAZOR_MODEL = "namespace Sample; public class IndexModel { public int Value => 42; }\n"
+_RAZOR_EXCLUDED = (
+    "Features/node_modules/Index.cshtml", "jspm_packages/Index.cshtml", "bower_components/Index.cshtml",
+    "Properties/PublishProfiles/Index.cshtml", "Properties/ServiceDependencies/Index.cshtml",
+)
 
 
 class EditorProjectDiagnosticHttpTests(HarnessCase):
@@ -34,6 +41,8 @@ class EditorProjectDiagnosticHttpTests(HarnessCase):
         super().setUp()
         (self.project / "source.php").write_text("<?php echo 1;", encoding="utf-8")
         targets = ["Foo.cs", ".Hidden.cs", ".excluded/Ghost.cs", "wwwroot/Bar.cs", "Properties/PublishProfiles/Blob.cs"]
+        for razor in ("wwwroot/Index.cshtml", "Pages/Index.cshtml", *_RAZOR_EXCLUDED):
+            targets.extend([razor, razor + ".cs"])
         self.config_values = self.config(target="targets = " + json.dumps(targets))
         self.config_values["build_project"] = "App.csproj"
         self.run_id = str(uuid.uuid4())
@@ -128,6 +137,84 @@ class EditorProjectDiagnosticHttpTests(HarnessCase):
         self.assertEqual(self.record.read_bytes(), original)
         for folder in ("obj", "bin"):
             self.assertEqual([path.name for path in (self.worktree / folder).iterdir()], ["Ghost.cs"])
+
+    @staticmethod
+    def _razor_fixture(directory):
+        (directory / "App.csproj").write_text(_WEB_CSPROJ, encoding="utf-8")
+        (directory / "Models.cs").write_text(_RAZOR_MODEL, encoding="utf-8")
+        for name in ("wwwroot/Index.cshtml", "Pages/Index.cshtml", *_RAZOR_EXCLUDED):
+            view = directory / name
+            view.parent.mkdir(parents=True, exist_ok=True)
+            view.write_text(_RAZOR_ERROR if name in _RAZOR_EXCLUDED else _RAZOR_SOURCE, encoding="utf-8")
+
+    def assert_missing_razor_member(self, response):
+        self.assertEqual(response["status"], "errors", response)
+        self.assertEqual([(item["code"], item["line"], item["column"]) for item in response["findings"]],
+                         [("CS1061", 2, 11)])
+
+    def test_web_razor_content_target_has_distinct_scope_from_csharp_compile(self):
+        self._razor_fixture(self.worktree)
+        target = "wwwroot/Index.cshtml"
+        selected = self.worktree / target
+        selected_bytes = selected.read_bytes()
+        excluded_csharp = self.worktree / (target + ".cs")
+        excluded_csharp.write_text("namespace Sample; public class IndexModel { public int Missing => 1; }", encoding="utf-8")
+
+        result = self.request("semantic", target=target, content=_RAZOR_ERROR)
+        self.assert_missing_razor_member(result)
+        self.assertTrue(result["context_revision"])
+        self.assertEqual(self.request("context", target=target)["context_revision"], result["context_revision"])
+        self.assertEqual(self.request("semantic", target=target, content=_RAZOR_SOURCE)["status"], "clear")
+        self.assert_missing_razor_member(self.request("semantic", target="Pages/Index.cshtml", content=_RAZOR_ERROR))
+
+        unchanged = result["context_revision"]
+        excluded_csharp.write_text("not valid C# and must not affect the view or revision", encoding="utf-8")
+        self.assertEqual(self.request("context", target=target)["context_revision"], unchanged)
+        self.assertEqual(self.request("semantic", target=target + ".cs")["reason"], "project_required")
+        for excluded in _RAZOR_EXCLUDED:
+            with self.subTest(excluded=excluded):
+                self.assertEqual(self.request("semantic", target=excluded, content=_RAZOR_ERROR)["reason"],
+                                 "project_required")
+
+        (self.worktree / "wwwroot/_ViewImports.cshtml").write_text("@using Sample", encoding="utf-8")
+        view_imports = self.request("context", target=target)["context_revision"]
+        self.assertNotEqual(view_imports, unchanged)
+        short_model = _RAZOR_ERROR.replace("Sample.", "")
+        self.assert_missing_razor_member(self.request("semantic", target=target, content=short_model))
+        (self.worktree / ".Hidden.cs").unlink()
+        excluded_csharp.write_text(_DOT_SOURCE, encoding="utf-8")
+        (self.worktree / "App.csproj").write_text(_CSPROJ, encoding="utf-8")
+        self.assertEqual(self.request("semantic", target=target, content=_RAZOR_ERROR)["reason"],
+                         "project_configuration")
+        self.assertEqual(self.request("semantic")["status"], "clear")
+        self.assertEqual(selected.read_bytes(), selected_bytes)
+
+    @unittest.skipUnless(os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true",
+                         "SDK comparison is restricted to the hosted Windows workflow")
+    def test_installed_web_sdk_keeps_razor_from_wwwroot(self):
+        oracle = self.root / "sdk-razor-oracle"
+        oracle.mkdir()
+        self._razor_fixture(oracle)
+        self._razor_fixture(self.worktree)
+        target = "wwwroot/Index.cshtml"
+        (oracle / target).write_text(_RAZOR_ERROR, encoding="utf-8")
+        for tree in (oracle, self.worktree):
+            (tree / (target + ".cs")).write_text("this C# must be excluded from Compile;", encoding="utf-8")
+        run, build = self.sdk_build_oracle(oracle)
+        broken = run(*build)
+        self.assertNotEqual(broken.returncode, 0)
+        errors = [line.replace("\\", "/") for line in (broken.stdout + broken.stderr).splitlines()
+                  if "error " in line]
+        self.assertTrue(errors, broken.stdout + broken.stderr)
+        self.assertTrue(all("wwwroot/Index.cshtml(2,11): error CS1061:" in line for line in errors), errors)
+        self.assert_missing_razor_member(self.request("semantic", target=target, content=_RAZOR_ERROR))
+
+        (oracle / target).write_text(_RAZOR_SOURCE, encoding="utf-8")
+        clean = run(*build)
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertEqual(self.request("semantic", target=target, content=_RAZOR_SOURCE)["status"], "clear")
+        print("Windows .NET 9 Razor oracle: wwwroot/Index.cshtml CS1061 at 2:11; tooling views and wwwroot C# excluded",
+              flush=True)
 
     @unittest.skipUnless(os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true",
                          "SDK comparison is restricted to the hosted Windows workflow")

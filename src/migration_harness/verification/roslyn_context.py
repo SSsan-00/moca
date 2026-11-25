@@ -130,13 +130,17 @@ def _project_settings(project, stamp):
     return settings
 
 
-def _excluded_directory(parts, web):
+def _excluded_directory(parts, web, *, razor_content=False):
     parts = tuple(part.casefold() for part in parts)
-    return bool(parts) and (parts[0] in {"bin", "obj"} or web and (
-        parts[0] == "wwwroot" or parts[:2] in {("properties", "publishprofiles"),
-                                              ("properties", "servicedependencies")}
+    if not parts:
+        return False
+    if parts[0] in {"bin", "obj"}:
+        return True
+    return bool(web) and (
+        (not razor_content and parts[0] == "wwwroot")
+        or parts[:2] in {("properties", "publishprofiles"), ("properties", "servicedependencies")}
         or any(part in _WEB_DEPENDENCY_DIRECTORIES for part in parts)
-    ))
+    )
 
 
 def _project_sources(root, project, target, deadline, web):
@@ -200,11 +204,13 @@ def editor_project_snapshot(worktree, configured_project, target):
     descriptor = _stamp(project.stat())
     _, web = _project_description(project, descriptor)
     parent_parts = target_path.parts[:-1]
-    if any(part.startswith(".") for part in parent_parts) or _excluded_directory(parent_parts, web):
+    razor_content = path.suffix.lower() == ".cshtml"
+    if (any(part.startswith(".") for part in parent_parts)
+            or _excluded_directory(parent_parts, web, razor_content=razor_content)):
         raise ProjectContextUnavailable("project_required")
     sources = _project_sources(context_root, project, path, deadline, web) if web is not None else []
     imports = []
-    if web is not None and path.suffix.lower() == ".cshtml":
+    if web is not None and razor_content:
         for directory in reversed([p for p in path.parents if p.is_relative_to(context_root)]):
             relative = (directory / "_ViewImports.cshtml").relative_to(worktree)
             item = safe_target(worktree, relative)
