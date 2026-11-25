@@ -177,6 +177,10 @@ class EditorSemanticTests(unittest.TestCase):
             (directory / "Fixture.csproj").write_text(self.descriptor, encoding="utf-8")
             (directory / "Target.cs").write_text("class Unedited {}", encoding="utf-8")
             (directory / "Dependency.cs").write_text(f"public class D {{ public {member}; }}", encoding="utf-8")
+        with patch.object(roslyn_context, "_stamp", return_value=(1, 2, 3)):
+            first_revision = roslyn_context.editor_project_snapshot(first, "Fixture.csproj", "Target.cs").revision
+            other_revision = roslyn_context.editor_project_snapshot(other, "Fixture.csproj", "Target.cs").revision
+        self.assertNotEqual(first_revision, other_revision)
         worker = EditorSemanticWorker()
         self.addCleanup(worker.close)
         draft = "// 日本語\r\npublic class Subject { public int Read(D dependency) => dependency.Value; }\r\n"
