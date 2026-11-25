@@ -1,3 +1,4 @@
+import {checkBuildReviewDrafts} from "./build_review_drafts_browser.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -271,6 +272,7 @@ try {
   assert(await evaluate(`${field("recovery-next")}.textContent.includes("before_migration.log")`));
   await click("recovery-editor");
   assert(await evaluate(`${field("tab-editor")}.getAttribute("aria-selected") === "true"`));
+  await checkBuildReviewDrafts({url, evaluate, click, change, value, wait});
   // Reopen the same Run in a new document instead of relying on Chrome's reload scheduling.
   const recoveryUrl = new URL(url);
   recoveryUrl.searchParams.set("run", expectedRun);
