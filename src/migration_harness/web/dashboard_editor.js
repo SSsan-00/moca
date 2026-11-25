@@ -24,6 +24,12 @@
   const prompt = find("#editor-prompt");
   const sendButton = find("#editor-send");
   const promptList = find("#editor-prompts");
+  const attachButton = find("#editor-attach-selection");
+  const selectionCard = find("#editor-selection-card");
+  const selectionMeta = find("#editor-selection-meta");
+  const selectionCode = find("#editor-selection-code");
+  const removeSelection = find("#editor-remove-selection");
+  const selectionWarning = find("#editor-selection-warning");
   const updateFeed = bindJunieChat(find("#editor-chat-feed"), find("#editor-chat-latest"), form, prompt, sendButton);
   const documents = new Map();
   const runDrafts = new Map();
@@ -45,7 +51,7 @@
   let promptEdits = 0;
   let refreshing;
   let saving = false;
-  let sending = false;
+  let sending = false, attachment;
   let revision = 0;
   const diagnostics = find("#editor-diagnostics");
   const diagnosticList = find("#editor-diagnostic-list");
@@ -116,7 +122,7 @@
     if (diagnostics.hidden) return;
     setText("#editor-diagnostic-status", " · 診断待ち");
     setText("#editor-diagnostic-note", "入力が止まると、保存せずにこの下書きを診断します。");
-    let busyRetries = 0, semanticRetries = 0, payload;
+    let busyRetries = 0, semanticRetries = 0, projectChangeRetried = false, payload;
     function enqueue(delay) {
       diagnosticTimer = setTimeout(() => {
         if (!valid()) return;
@@ -150,9 +156,10 @@
       setText("#editor-diagnostic-note", notes[reason] || "型・参照の解析器を利用できません。正式ビルドで確認してください。");
     }
 
-    async function lookupContext() {
+    async function lookupContext(verifyRevision) {
       const result = await request("roslyn-diagnostics", {
-        run_id: run, target, version: payload.version, mode: "context"
+        run_id: run, target, version: payload.version, mode: "context",
+        ...(verifyRevision ? {verify_revision: verifyRevision} : {}),
       });
       if (!valid()) return;
       if (result.version !== payload.version || result.target !== target) throw Error("診断の依存版を確認できません。");
@@ -196,15 +203,27 @@
           enqueueSemantic(diagnosticBusyDelays[semanticRetries++]);
           return;
         }
+        if (result.reason === "project_changed" && !projectChangeRetried) {
+          projectChangeRetried = true;
+          enqueueSemantic(diagnosticBusyDelays[0]);
+          return;
+        }
         if (result.context_revision) {
-          const latest = await lookupContext();
+          const latest = await lookupContext(result.context_proof ? result.context_revision : null);
           if (!latest) return;
           if (latest.reason === "analyzer_busy") {
             showSemanticUnavailable(latest.reason, true);
             watchContext(result.context_revision, true);
             return;
           }
-          if (latest.context_revision !== result.context_revision) {
+          if (result.context_proof && latest.reason) {
+            renderDiagnostics(file, payload, {findings: [], razor: []}, valid);
+            showSemanticUnavailable(latest.reason, true);
+            watchContext(result.context_revision);
+            return;
+          }
+          if (latest.context_revision !== result.context_revision ||
+              (result.context_proof && latest.context_proof !== result.context_proof)) {
             scheduleDiagnostics();
             return;
           }
@@ -477,6 +496,7 @@
 
   // 保留・競合・送信状態に応じて保存の可否と案内をそろえる。
   function showSaveState() {
+    updateSendButton();
     const hasDiff = current && !state.read_error
       && readText(current.model) !== (state.comparison_content ?? state.content);
     diffButton.textContent = state.comparison_label ?? "差分";
@@ -587,16 +607,94 @@
     }
   }
 
-  // 現在のRunが指示を受理でき、本文がある場合に送信を許可する。
+  function activeSelectionEditor() {
+    if (!editor || language !== "target" || !state?.target || state.read_error || selectedTarget !== state.target) return;
+    const view = diffOpen ? diff.getModifiedEditor() : editor;
+    if (current && view.getModel() === current.model) return view;
+  }
+
+  function oneRange(view) {
+    const ranges = view?.getSelections?.() || [];
+    return ranges.length === 1 && !ranges[0].isEmpty() ? ranges[0] : undefined;
+  }
+
+  function selectionLabel({path, start_line, end_line}) {
+    const span = start_line === end_line ? String(start_line) : start_line + "–" + end_line;
+    return path + " · " + span + "行";
+  }
+
+  function attachmentWarning() {
+    if (!attachment) return "";
+    if (progress().junie_request || state?.operator_question) {
+      return "確認への回答は、添付を外してから送信してください。";
+    }
+    if (attachment.invalid || attachment.runId !== state?.run_id || attachment.selection.path !== selectedTarget
+        || state.read_error || current?.model !== attachment.model || attachment.version !== attachment.model.getVersionId()
+        || attachment.contentVersion !== state.content_version) {
+      return "ファイルまたは内容が変わりました。選択し直すか添付を外してください。";
+    }
+    return "";
+  }
+
+  function canCompose() {
+    return !switching && state?.run_id === progress().run_id && state?.can_prompt && !sending;
+  }
+
   function updateSendButton() {
-    sendButton.disabled = switching || state?.run_id !== progress().run_id || !state?.can_prompt || sending || !prompt.value.trim();
+    const warning = attachmentWarning();
+    sendButton.disabled = !canCompose() || Boolean(warning) || (!attachment && !prompt.value.trim());
+    attachButton.disabled = !canCompose() || !oneRange(activeSelectionEditor());
+    if (selectionWarning.textContent !== warning) selectionWarning.textContent = warning;
+    selectionWarning.hidden = !warning;
+    selectionCard.hidden = !attachment;
+    if (!attachment) selectionMeta.textContent = selectionCode.textContent = "";
+    removeSelection.disabled = sending;
+  }
+
+  function attachSelection(view) {
+    if (!canCompose() || view !== activeSelectionEditor()) return;
+    const range = oneRange(view);
+    if (!range) return;
+    const model = view.getModel();
+    const text = model.getValueInRange(range, window.monaco.editor.EndOfLinePreference.LF);
+    const start = range.startLineNumber;
+    const end = range.endLineNumber - Number(range.endColumn === 1 && range.endLineNumber > start);
+    if (!text.trim() || end - start >= 20 || new TextEncoder().encode(text).length > 2000) {
+      report("#editor-prompt-error", new Error("空白だけでない、最大20行・2,000バイトの範囲を選んでください。"));
+      return;
+    }
+    const selection = {path: state.target, start_line: start, end_line: end, text};
+    attachment = {selection, model, version: model.getVersionId(), runId: state.run_id,
+      contentVersion: state.content_version};
+    selectionMeta.textContent = selectionLabel(selection);
+    selectionCode.textContent = text;
+    report("#editor-prompt-error");
+    updateSendButton();
+    prompt.focus();
+  }
+
+  function registerSelectionAction(view, monaco) {
+    view.onDidChangeCursorSelection?.(updateSendButton);
+    view.addAction?.({
+      id: "harness.attachSelection", label: "選択範囲を Junie に添付",
+      contextMenuGroupId: "navigation", contextMenuOrder: 1.8, precondition: "editorHasSelection",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyJ],
+      run: () => attachSelection(view),
+    });
   }
 
   // 送信した指示と、その応答を表示する行を作る。
-  function chatTurn(text) {
+  function chatTurn(text, selection, sender = "ハーネス") {
     const item = document.createElement("li");
     const message = junieChatBubble("あなた", text, true);
-    const reply = junieChatBubble("ハーネス");
+    if (selection) {
+      const details = Object.assign(document.createElement("details"), {className: "editor-selection-history"});
+      const summary = Object.assign(document.createElement("summary"), {textContent: selectionLabel(selection)});
+      const code = Object.assign(document.createElement("pre"), {textContent: selection.text, tabIndex: 0});
+      details.append(summary, code);
+      message.append(details);
+    }
+    const reply = junieChatBubble(sender);
     item.append(message, reply);
     return {item, message, reply};
   }
@@ -611,13 +709,14 @@
     const ids = new Set(conversation.map(message => message.id));
     const lastVerification = conversation.findLast(entry => entry.result_status);
     const expanded = new Set([...promptList.querySelectorAll("details[open]")].map(item => item.dataset.logKey));
-    const turns = [...state.prompts.filter(message => !ids.has(message.id)).map(message => {
-      const {item, reply} = chatTurn(message.text);
+    const turns = [...(state.prompts || []).filter(message => !ids.has(message.id)).map(message => {
+      const {item, reply} = chatTurn(message.text, message.selection);
       const label = {queued: "送信待ち", steering: "Junie に送信・処理中", applying: "反映確認中", sending: "処理中", sent: "送信済み"}[message.status];
       reply.append(Object.assign(document.createElement("p"), {textContent: label}));
       return item;
     }), ...conversation.map(message => {
-      const {item, reply} = chatTurn(message.text);
+      const sender = message.selection && message.status === "done" ? "Junie" : "ハーネス";
+      const {item, reply} = chatTurn(message.text, message.selection, sender);
       reply.append(Object.assign(document.createElement("p"), {
         textContent: [...new Set([message.question, message.answer && `回答：${message.answer}`,
           message.plan, message.message || "受け付けました。"].filter(Boolean))].join("\n"),
@@ -690,6 +789,7 @@
       if (previous?.run_id) runDrafts.set(previous.run_id, {prompt: prompt.value});
       const draft = runDrafts.get(data.run_id) || {};
       selectedTarget = undefined;
+      attachment = undefined;
       phpSource = undefined;
       phpRequest++;
       phpEditor?.setValue("");
@@ -728,6 +828,8 @@
       latest = monaco.editor.createModel("", "csharp");
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveDraft);
       diff.getModifiedEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveDraft);
+      registerSelectionAction(editor, monaco);
+      registerSelectionAction(diff.getModifiedEditor(), monaco);
       new MutationObserver(theme).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
       theme();
     }
@@ -858,6 +960,8 @@
     language = "target";
     if (selectedTarget !== target) {
       selectedTarget = target;
+      if (attachment) attachment.invalid = true;
+      updateSendButton();
       revision++;
       report("#editor-error");
     }
@@ -873,11 +977,18 @@
     language = "php";
     scheduleDiagnostics();
     showEditor(diffOpen);
+    updateSendButton();
     if (!phpSource || phpSource.error) loadPhp(phpSource?.source);
     else showSaveState();
   });
   phpPicker.addEventListener("change", () => loadPhp(phpPicker.value));
   save.addEventListener("click", saveDraft);
+  attachButton.addEventListener("click", () => attachSelection(activeSelectionEditor()));
+  removeSelection.addEventListener("click", () => {
+    attachment = undefined;
+    updateSendButton();
+    prompt.focus();
+  });
   prompt.addEventListener("input", () => {
     promptEdits++;
     updateSendButton();
@@ -886,7 +997,10 @@
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const input = prompt.value, text = input.trim();
-    if (!text || switching || state?.run_id !== progress().run_id || sending || !state?.can_prompt) return;
+    if (!canCompose() || attachmentWarning() || (!text && !attachment)) return;
+    const selected = attachment;
+    const selectionFields = selected ? {selection: selected.selection} : {};
+    const submissionKey = JSON.stringify([text, selectionFields]);
     const runId = state.run_id, editCount = promptEdits;
     const showingRun = () => !switching && state?.run_id === runId && progress().run_id === runId;
     const ownsDraft = () => editCount === promptEdits && input === prompt.value;
@@ -897,27 +1011,32 @@
     try {
       if (window.harnessRunModelReady && !await window.harnessRunModelReady(runId)) return;
       if (!showingRun()) return;
+      if (selected !== attachment || attachmentWarning()) return;
       if (state.conversation) {
         let submission = submittedMessages.get(runId);
-        if (submission?.text !== text) {
-          submission = {id: crypto.randomUUID().replaceAll("-", ""), text, status_only: layout.dataset.statusOnly === "true"};
+        if (submission?.key !== submissionKey) {
+          const body = {id: crypto.randomUUID().replaceAll("-", ""), text,
+            status_only: layout.dataset.statusOnly === "true", ...selectionFields};
+          submission = {key: submissionKey, body};
           submittedMessages.set(runId, submission);
         }
-        const entry = await request("editor", {kind: "conversation", run_id: runId, ...submission});
+        const entry = await request("editor", {kind: "conversation", run_id: runId, ...submission.body});
         if (!showingRun()) return;
-        if (entry?.id !== submission.id || !Array.isArray(state.conversation)) {
+        if (entry?.id !== submission.body.id || !Array.isArray(state.conversation)) {
           throw new Error("指示の受付を確認できません。再送すると同じ指示IDを使います。");
         }
         revision++;
         state.conversation = [...state.conversation.filter(item => item.id !== entry.id), entry];
         if (ownsDraft()) prompt.value = "";
+        if (attachment === selected) attachment = undefined;
         submittedMessages.delete(runId);
         return;
       }
-      const data = await request("editor", {kind: "prompt", run_id: runId, text});
+      const data = await request("editor", {kind: "prompt", run_id: runId, text, ...selectionFields});
       if (!showingRun()) return;
       revision++;
       state.prompts = data.prompts;
+      if (attachment === selected) attachment = undefined;
       if (ownsDraft()) prompt.value = "";
     } catch (error) {
       if (showingRun()) report("#editor-prompt-error", error);
@@ -948,6 +1067,7 @@
   };
   document.addEventListener("harnessrunselect", () => {
     switching = true;
+    attachment = undefined;
     scheduleDiagnostics();
     revision++;
     phpRequest++;

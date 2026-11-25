@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase
 from migration_harness.web import dashboard
+from migration_harness.verification import roslyn_syntax
 from migration_harness.verification.roslyn_context import editor_project_snapshot
 
 
@@ -79,10 +80,12 @@ class EditorProjectDiagnosticHttpTests(HarnessCase):
         self.addCleanup(server_thread.join)
         self.addCleanup(server.shutdown)
 
-    def request(self, mode, *, target="Foo.cs", content=_REFERENCE_USER):
+    def request(self, mode, *, target="Foo.cs", content=_REFERENCE_USER, verify_revision=None):
         payload = {"run_id": self.run_id, "target": target, "version": "fixture-draft", "mode": mode}
         if mode != "context":
             payload["content"] = content
+        if verify_revision is not None:
+            payload["verify_revision"] = verify_revision
         request = Request(self.url + "roslyn-diagnostics", data=json.dumps(payload).encode(), headers={
             "Origin": self.origin, "Content-Type": "application/json", "X-Run-ID": self.run_id,
         })
@@ -137,6 +140,40 @@ class EditorProjectDiagnosticHttpTests(HarnessCase):
         self.assertEqual(self.record.read_bytes(), original)
         for folder in ("obj", "bin"):
             self.assertEqual([path.name for path in (self.worktree / folder).iterdir()], ["Ghost.cs"])
+
+    def test_same_size_and_timestamp_change_during_analysis_rejects_the_result(self):
+        source = self.worktree / ".Hidden.cs"
+        original = source.stat()
+        replacement = source.read_bytes().replace(b"Bar", b"Baz")
+        before = self.request("semantic")
+        self.assertEqual(before["status"], "clear")
+        snapshot = before["context_revision"]
+        self.assertEqual(self.request("context", verify_revision=snapshot)["context_proof"], before["context_proof"])
+        run = roslyn_syntax._run_editor
+
+        def rewrite_after_analysis(*args, **kwargs):
+            result = run(*args, **kwargs)
+            source.write_bytes(replacement)
+            os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+            self.assertEqual((source.stat().st_size, source.stat().st_mtime_ns),
+                             (original.st_size, original.st_mtime_ns))
+            return result
+
+        with patch.object(roslyn_syntax, "_run_editor", side_effect=rewrite_after_analysis):
+            stale = self.request("semantic")
+        metadata = self.request("context")
+        self.assertEqual(metadata["context_revision"], snapshot)
+        self.assertNotIn("context_proof", metadata)
+        self.assertNotIn("context_proof", self.request("context", verify_revision="0" * 64))
+        self.assertEqual((stale["status"], stale["reason"], stale["findings"]),
+                         ("unavailable", "project_changed", []))
+        self.assertNotIn("context_proof", stale)
+        fresh = self.request("semantic")
+        self.assertEqual({item["code"] for item in fresh["findings"]}, {"CS0246"})
+        checked = self.request("context", verify_revision=snapshot)
+        self.assertEqual(checked["context_revision"], snapshot)
+        self.assertNotEqual(checked["context_proof"], before["context_proof"])
+        self.assertEqual(checked["context_proof"], fresh["context_proof"])
 
     @staticmethod
     def _razor_fixture(directory):

@@ -110,7 +110,8 @@ window.harnessEditorDemo = (() => {
         if (!prompt) throw new Error("この指示はすでに送信されています。");
         prompt.text = action.text;
       } else {
-        demo.prompts.push({id: String(nextId++), text: action.text, status: "queued"});
+        demo.prompts.push({id: String(nextId++), text: action.text, status: "queued",
+          ...(action.selection ? {selection: action.selection} : {})});
       }
     }
     if (action && demo.queued && !boundary) {

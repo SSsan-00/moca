@@ -326,6 +326,17 @@
     .run-model label span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
     .run-model select { width: auto; max-width: min(155px, 100%); height: 38px; min-height: 38px; margin: 0; padding: 0 4px; color: var(--ink); background: transparent; border: 0; border-radius: 6px; font: 12px system-ui, sans-serif; }
     .run-model-status { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+    .editor-selection-card, .editor-selection-history {
+      border: 1px solid var(--line); border-radius: 9px; padding: 6px 9px; font-size: .84rem;
+    }
+    .editor-selection-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    #editor-selection-meta, .editor-selection-history summary { overflow-wrap: anywhere; }
+    .editor-selection-history summary { cursor: pointer; }
+    .editor-selection-card pre, .junie-chat .editor-selection-history pre {
+      max-height: 6rem; margin: 5px 0 0; padding: 4px; overflow: auto;
+      white-space: pre; font: .8rem/1.4 Consolas, monospace;
+    }
+    .editor-selection-note, #editor-selection-warning { margin: 4px 0 0; }
     .run-model-status:empty, #editor-prompt-timing:empty, #progress-prompt-timing:empty { display: none; }
     .button.chat-send { width: 38px; height: 38px; min-height: 38px; padding: 0; border-radius: 50%; }
     .chat-send svg { width: 19px; height: 19px; }
@@ -1084,6 +1095,7 @@
               <button class="button" id="editor-php-toggle" type="button" aria-pressed="false">PHP</button>
             </div>
             <div class="editor-header-actions">
+              <button class="button" id="editor-attach-selection" type="button" aria-keyshortcuts="Control+Alt+J" disabled>選択範囲を添付</button>
               <button class="button" id="editor-save" type="button" disabled>保存</button>
               <button class="button" id="editor-diff-toggle" type="button" aria-controls="editor-diff" aria-pressed="false" disabled>差分</button>
             </div>
@@ -1119,9 +1131,18 @@
           <ol class="junie-chat-list" id="editor-prompts" aria-label="Junie との会話" aria-live="polite"></ol>
         </div>
         <form class="junie-chat-composer" id="editor-prompt-form">
+          <div class="editor-selection-card" id="editor-selection-card" role="region" aria-label="添付した選択範囲" hidden>
+            <div class="editor-selection-head">
+              <span id="editor-selection-meta"></span>
+              <button class="button" id="editor-remove-selection" type="button" aria-label="選択範囲の添付を外す">外す</button>
+            </div>
+            <pre id="editor-selection-code" tabindex="0"></pre>
+            <p class="editor-muted editor-selection-note">選んだコードについて相談します。コメントは任意で、ファイルは変更しません。</p>
+          </div>
+          <p class="editor-muted" id="editor-selection-warning" role="status" hidden></p>
           <div class="chat-composer">
             <div class="prompt-field">
-              <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " required aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-chat-shortcut"></textarea>
+              <textarea id="editor-prompt" rows="2" maxlength="4000" placeholder=" " aria-label="Junie に指示" aria-describedby="editor-prompt-timing editor-chat-shortcut"></textarea>
               <span class="prompt-example" id="editor-prompt-example" style="--characters: 14" aria-hidden="true"><span>例：日付の表示形式を維持する</span></span>
             </div>
             <div class="chat-composer-footer">

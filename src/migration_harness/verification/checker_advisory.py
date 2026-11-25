@@ -160,6 +160,8 @@ def _exchange(
                 if not isinstance(update, dict):
                     raise ValueError("Invalid Junie advisory update")
                 kind = update.get("sessionUpdate")
+                if junie_cli.acp_confirms_brave(update):
+                    raise ValueError("Junie advisory cannot use Brave mode")
                 if kind in {"available_commands_update", "config_option_update", "session_info_update"}:
                     continue
                 if stage == 3 and kind in {"agent_thought_chunk", "usage_update"}:
@@ -179,6 +181,8 @@ def _exchange(
             if effort_request is not None:
                 if type(message.get("id")) is not int or message["id"] != effort_request:
                     raise AdvisoryEffortUnavailable("Unexpected Junie advisory effort reply")
+                if isinstance(result, dict) and junie_cli.acp_confirms_brave(result):
+                    raise ValueError("Junie advisory cannot use Brave mode")
                 option = junie_cli.acp_effort_option(result) if isinstance(result, dict) else None
                 if "error" not in message and junie_cli.acp_confirms_effort(option, effort):
                     effort_request = None
@@ -197,6 +201,8 @@ def _exchange(
                 stage = 2
                 request("session/new", cwd=str(project), mcpServers=[])
             elif stage == 2 and isinstance(result.get("sessionId"), str) and result["sessionId"]:
+                if junie_cli.acp_confirms_brave(result):
+                    raise ValueError("Junie advisory cannot use Brave mode")
                 session = result["sessionId"]
                 option = junie_cli.acp_effort_option(result)
                 if effort is None or junie_cli.acp_confirms_effort(option, effort, model):

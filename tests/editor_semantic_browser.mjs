@@ -148,8 +148,16 @@ export async function checkEditorSemantics({evaluate, wait, sourceEditor, config
         const body = route === "roslyn-diagnostics" && options?.body && JSON.parse(options.body);
         const response = await original(route, options);
         if (!receipts.release && body?.mode === "semantic" && body.content.includes("Hold old dependency result")) {
-          receipts.oldClear = (await response.clone().json()).status === "clear";
+          const previous = await response.clone().json();
+          receipts.oldClear = previous.status === "clear";
+          receipts.oldRevision = previous.context_revision;
+          receipts.oldProof = previous.context_proof;
           return new Promise(resolve => { receipts.release = () => { receipts.released = true; resolve(response); }; });
+        }
+        if (receipts.released && body?.mode === "context" && body.verify_revision === receipts.oldRevision &&
+            !receipts.verified) {
+          const latest = await response.clone().json();
+          receipts.verified = [latest.context_revision, Boolean(latest.context_proof && latest.context_proof !== receipts.oldProof)];
         }
         return response;
       };
@@ -158,12 +166,18 @@ export async function checkEditorSemantics({evaluate, wait, sourceEditor, config
       const lateDraft = unchangedBody + "\n// Hold old dependency result";
       await set(lateDraft);
       await wait("!!contextTest.release");
-      assert(await evaluate("contextTest.oldClear"));
-      await fs.writeFile(dependency, renamedCodeBehind);
-      await evaluate("contextTest.release()");
-      await assertMarker("CS1061", 1, savedCSharp.lastIndexOf("Number") + 1);
-      assert.equal(await source(), lateDraft);
-      assert.equal(await evaluate("contextTest.announcedClear"), false);
+      assert(await evaluate("contextTest.oldClear && contextTest.oldProof"));
+      const change = route => evaluate("fetch(" + JSON.stringify(route) + ", {method:'POST'}).then(r => r.status)");
+      try {
+        assert.equal(await change("fixture-preserve-dependency-stamp"), 200);
+        await evaluate("contextTest.release()");
+        await assertMarker("CS1061", 1, savedCSharp.lastIndexOf("Number") + 1);
+        assert.equal(await source(), lateDraft);
+        assert.equal(await evaluate("contextTest.announcedClear"), false);
+        assert.deepEqual(await evaluate("contextTest.verified"), [await evaluate("contextTest.oldRevision"), true]);
+      } finally {
+        assert.equal(await change("fixture-restore-dependency-stamp"), 200);
+      }
     } finally {
       await evaluate("contextTest.release?.(); contextTest.restore()");
     }

@@ -210,6 +210,18 @@ class _DashboardServer(ThreadingHTTPServer):
     # Chromium can queue the UI bundles and the event stream together on a Run reopen.
     request_queue_size = 32
 
+    def __init__(self, address, handler):
+        from migration_harness.verification.roslyn_editor_worker import EditorSemanticWorker
+
+        self.editor_semantic_worker = EditorSemanticWorker()
+        super().__init__(address, handler)
+
+    def server_close(self):
+        try:
+            self.editor_semantic_worker.close()
+        finally:
+            super().server_close()
+
 
 class Dashboard:
 
@@ -1347,9 +1359,14 @@ def _dashboard_handler(dashboard, config, html, script, prefix):
                 elif mode == "semantic":
                     result = editor_semantic_diagnostics(
                         worktree, config["build_project"], target, editor_text(action.get("content")), version,
+                        worker=self.server.editor_semantic_worker,
                     )
                 elif mode == "context":
-                    result = editor_context_revision(worktree, config["build_project"], target, version)
+                    verify = action.get("verify_revision")
+                    if verify is not None and (not isinstance(verify, str) or not re.fullmatch("[0-9a-f]{64}", verify)):
+                        raise ValueError("診断した依存版の形式が無効です。")
+                    result = editor_context_revision(worktree, config["build_project"], target, version,
+                                                     verify_revision=verify)
                 else:
                     raise ValueError("診断の種類が不正です。")
                 self.send_body(200, "application/json", json.dumps(result, ensure_ascii=False).encode("utf-8"))
@@ -1660,7 +1677,10 @@ def execute_dashboard_action(view, config, action):
                 result = run_with_junie(config, action["unit_id"], run_id=run_id)
             elif kind == "conversation":
                 result = run_instruction(config, run_id, conversation_id)
-                finish_instruction(config, run_id, conversation_id, result)
+                if result.pop("selection_review", False):
+                    notices = None
+                else:
+                    finish_instruction(config, run_id, conversation_id, result)
             elif kind == "accept":
                 review_checker(config, run_id, action["finding_id"], action["reason"])
                 _, _, result, _ = load_saved_run(config, run_id)

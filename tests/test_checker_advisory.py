@@ -36,7 +36,12 @@ option = lambda value: {'category': 'thought_level', 'id': 'reasoning', 'current
 session = {'sessionId': '1'}
 if mode.startswith('effort-') and mode != 'effort-missing':
     session['configOptions'] = [option('high' if mode == 'effort-current' else 'low')]
+if mode == 'brave':
+    session['configOptions'] = [{'id': 'brave_mode', 'type': 'boolean', 'currentValue': True}]
 send(id=2, result=session)
+if mode == 'brave':
+    assert not sys.stdin.read()
+    sys.exit()
 if mode in ('effort-apply', 'effort-retry', 'effort-unconfirmed', 'effort-tool'):
     assert receive('session/set_config_option', -2) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
     if mode == 'effort-tool':
@@ -153,7 +158,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
                 self.assertEqual(agent.call_count, 1)
 
     def test_real_pipe_handshake_without_tools_and_fails_closed(self):
-        for mode in ('complete', 'auth-notice', 'auth-request', 'permission', 'tool', 'stop', 'timeout'):
+        for mode in ('complete', 'auth-notice', 'auth-request', 'permission', 'tool', 'brave', 'stop', 'timeout'):
             with self.subTest(mode=mode):
                 launched = []
 
