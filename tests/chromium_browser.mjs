@@ -73,6 +73,8 @@ async function connectPage(debuggerUrl, deadline) {
   });
   socket.addEventListener("message", event => {
     const message = JSON.parse(event.data);
+    if (message.method === "Page.javascriptDialogOpening")
+      trace("Chromium opened a dialog: " + message.params.type);
     if (message.method === "Runtime.exceptionThrown") console.error("Browser error", message.params.exceptionDetails?.exception?.description || message.params.exceptionDetails?.text);
     pending.get(message.id)?.(message);
   });
@@ -167,23 +169,29 @@ export async function startBrowser(executable, profile) {
   throw new Error(`Chromium did not start:\n${failures.join("\n")}`);
 }
 
-function pageLoaded() {
-  return new Promise((resolve, reject) => {
+function pageLoaded(connection) {
+  let dispose;
+  const loaded = new Promise((resolve, reject) => {
     const receive = event => {
-      if (JSON.parse(event.data).method !== "Page.loadEventFired") return;
-      clearTimeout(timer);
-      socket.removeEventListener("message", receive);
-      resolve();
+      if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
     };
-    const timer = setTimeout(() => {
-      socket.removeEventListener("message", receive);
-      reject(new Error("Browser page did not finish loading"));
-    }, 15_000);
-    socket.addEventListener("message", receive);
+    const timer = setTimeout(() => reject(new Error("Browser page did not finish loading")), 15_000);
+    dispose = () => {
+      clearTimeout(timer);
+      connection.removeEventListener("message", receive);
+    };
+    connection.addEventListener("message", receive);
   });
+  return {loaded, dispose};
 }
+
 export async function navigate(method, params) {
-  await Promise.all([pageLoaded(), cdp(method, params)]);
+  const {loaded, dispose} = pageLoaded(socket);
+  try {
+    await Promise.all([loaded, cdp(method, params)]);
+  } finally {
+    dispose();
+  }
 }
 export async function evaluate(expression, userGesture = false) {
   const result = await cdp("Runtime.evaluate", {expression, returnByValue: true, awaitPromise: true, userGesture});

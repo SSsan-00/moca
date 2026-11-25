@@ -648,10 +648,12 @@ try {
   assert(await evaluate(card + ".hidden && " + field("editor-send") + ".disabled"));
   await selectLine();
   await click("editor-attach-selection");
+  const sourceBeforeSelectionTest = await evaluate(demoSelectionEditor + ".getValue()");
   await evaluate(demoSelectionEditor + ".executeEdits('selection-test', [{range:{startLineNumber:1,startColumn:1," +
     "endLineNumber:1,endColumn:1},text:'// unselected synthetic edit ' }])");
   await wait("!" + field("editor-selection-warning") + ".hidden && " + field("editor-send") + ".disabled");
-  await evaluate(demoSelectionEditor + ".trigger('selection-test', 'undo', null)");
+  await evaluate(demoSelectionEditor + ".setValue(" + JSON.stringify(sourceBeforeSelectionTest) + ")");
+  assert.equal(await evaluate(demoSelectionEditor + ".getValue()"), sourceBeforeSelectionTest);
   await selectLine();
   await evaluate(demoSelectionEditor + ".getAction('harness.attachSelection').run()");
   await wait(field("editor-send") + ".matches(':enabled')");
