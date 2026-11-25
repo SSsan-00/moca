@@ -560,17 +560,19 @@
     if (!file.pendingSave || Object.entries(body).some(([key, value]) => file.pendingSave[key] !== value)) {
       file.pendingSave = {...body, save_id: crypto.randomUUID().replaceAll("-", "")};
     }
-    file.unconfirmedSaves.add(file.pendingSave.save_id);
+    const attempt = file.pendingSave;
+    file.unconfirmedSaves.add(attempt.save_id);
     saving = true;
     const version = ++revision;
     showSaveState();
     report("#editor-error");
     try {
-      const data = await request("editor", file.pendingSave);
+      const data = await request("editor", attempt);
       file.pendingSave = undefined;
       file.unconfirmedSaves.clear();
       file.saved = content;
       file.editId = data.edit?.id ?? null;
+      file.queuedSaveId = data.edit?.save_id === attempt.save_id ? attempt.save_id : undefined;
       file.base = data.edit?.base ?? data.content;
       if (file === current) await display(data, version);
     } catch (error) {
@@ -750,8 +752,12 @@
         if (file === current) { showSaveState(); scheduleDiagnostics(); }
       });
     } else if (!data.read_error) {
-      const accepted = file.unconfirmedSaves.has(data.edit?.save_id ?? data.accepted_save_id);
+      const receipt = data.edit?.save_id ?? data.accepted_save_id;
+      const adopted = !data.edit && file.queuedSaveId && receipt === file.queuedSaveId && saved === file.saved;
+      const accepted = adopted || file.unconfirmedSaves.has(receipt);
       if (accepted || readText(file.model) === file.saved) {
+        const sameQueuedSave = data.edit?.id === file.editId && receipt === file.queuedSaveId;
+        file.queuedSaveId = data.edit && (accepted || sameQueuedSave) ? receipt : undefined;
         file.saved = saved;
         file.base = data.edit?.base ?? data.content;
         file.editId = data.edit?.id ?? null;

@@ -13,6 +13,9 @@ from threading import Thread
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
+from migration_harness import workflow
+from migration_harness.junie.junie_conversation import saved_edits, target_versions
+from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.web import dashboard
 from migration_harness.junie.junie_notifications import RunNotice
 from migration_harness.junie.junie_thoughts import FILENAME as JUNIE_LOG_NAME
@@ -109,18 +112,42 @@ max_bytes = 9007199254740993 # preserve this value
                 server = view.server(config, dashboard.render_dashboard_html(" data-live data-workspace"),
                                      (package / "dashboard.js").read_bytes())
             url = terminal.getvalue().splitlines()[0].removeprefix("Progress dashboard: ")
-            fixture_route = urlsplit(url).path + "fixture-resumable"
+            fixture_root = urlsplit(url).path
+            other_run_id = str(uuid.uuid4())
+            other_run = run.parent / other_run_id
+            other_tree = worktree.parent / other_run_id
             post = server.RequestHandlerClass.do_POST
 
             def allow_fixture_resume(handler):
-                if handler.path != fixture_route:
+                if handler.path == fixture_root + "fixture-editor-queue":
+                    view.publish({**view.state, "ready": False})
+                elif handler.path == fixture_root + "fixture-editor-adopt":
+                    unit = config["units"][0]
+                    with editor_queue(run) as queue:
+                        request = {"edits": saved_edits(queue), "edit_revision": queue["edit_revision"],
+                                   "targets": target_versions(worktree, unit)}
+                    workflow._apply_verification_edits(run, worktree, unit, request)
+                    view.publish({**view.state, "ready": True})
+                elif handler.path == fixture_root + "fixture-editor-switch":
+                    if view.state["run_id"] == run_id:
+                        other_run.mkdir()
+                        other_tree.mkdir()
+                        (other_tree / "Example.cs").write_bytes(b"class OtherRun {}\n")
+                        selected = {**record, "run_id": other_run_id, "worktree_path": str(other_tree.resolve())}
+                        (other_run / "run.json").write_text(json.dumps(selected), encoding="utf-8")
+                    else:
+                        selected = json.loads((run / "run.json").read_bytes())
+                    view.observe(selected)
+                    view.ready(config, selected)
+                elif handler.path == fixture_root + "fixture-resumable":
+                    record_path = run / "run.json"
+                    saved = json.loads(record_path.read_bytes())
+                    saved.pop("script_inflight", None)
+                    record_path.write_text(json.dumps(saved), encoding="utf-8")
+                    view.observe(saved)
+                    view.ready(config, saved)
+                else:
                     return post(handler)
-                record_path = run / "run.json"
-                saved = json.loads(record_path.read_bytes())
-                saved.pop("script_inflight", None)
-                record_path.write_text(json.dumps(saved), encoding="utf-8")
-                view.observe(saved)
-                view.ready(config, saved)
                 handler.send_body(200, "application/json", b"{}")
 
             server.RequestHandlerClass.do_POST = allow_fixture_resume

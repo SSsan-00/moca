@@ -733,13 +733,28 @@ async function checkQueuedEditorHttp(address, runId) {
   assert.equal(afterAdoption.body.base, adopted.body.content);
   assert.equal(afterAdoption.status, 200);
 
+  model().setValue("class SavedAndAcknowledged {}\n");
+  await submit();
+  const acknowledged = posted.at(-1);
+  assert.equal(acknowledged.status, 200);
+  assert.match(status.textContent, /保存済み/);
+  model().setValue("class MoreUnsavedWork {}\n");
+  await actualRequest("fixture-adopt", {});
+  await tick();
+  assert.equal(model().getValue(), "class MoreUnsavedWork {}\n");
+  await submit();
+  const afterAcknowledged = posted.at(-1);
+  assert.equal(afterAcknowledged.body.edit_id, null);
+  assert.equal(afterAcknowledged.body.base, acknowledged.body.content);
+  assert.equal(afterAcknowledged.status, 200);
+
   model().setValue("class KeptLocally {}\n");
-  const other = await actualRequest("editor", {...afterAdoption.body, content: "class AnotherTab {}\n",
-    edit_id: afterAdoption.result.edit.id, save_id: randomUUID().replaceAll("-", "")});
+  const other = await actualRequest("editor", {...afterAcknowledged.body, content: "class AnotherTab {}\n",
+    edit_id: afterAcknowledged.result.edit.id, save_id: randomUUID().replaceAll("-", "")});
   await tick();
   assert.equal(model().getValue(), "class KeptLocally {}\n");
   await submit();
-  assert.equal(posted.at(-1).body.edit_id, afterAdoption.result.edit.id, "a receipt from another editor must not rebase the draft");
+  assert.equal(posted.at(-1).body.edit_id, afterAcknowledged.result.edit.id, "a receipt from another editor must not rebase the draft");
   assert.equal(posted.at(-1).status, 409);
   assert.deepEqual((await actualRequest("editor")).edit, other.edit);
   console.log("Dashboard: live HTTP queued saves recover lost receipts without losing drafts or overwriting another tab.");
