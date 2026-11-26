@@ -5,22 +5,38 @@ window.harnessDemoTransport = (() => {
   const target = "Pages/Orders/Index.cshtml.cs";
   const settings = createDemoSettings();
   const accepted = new Set();
-  const recoverySelections = new Set();
-  const sampleRecovery = new URL(location.href).searchParams.get("recovery-demo");
+  const draftRun = "demo-repair-recovery";
+  const scriptRun = "demo-script-recovery";
+  const requestedRecovery = new URL(location.href).searchParams.get("recovery-demo");
+  const recoveryTargets = {
+    [target]: {draft: "public int @event = 1;\n", worktree: "public int EventCode = 1;\n"},
+    "Pages/Orders/Index.cshtml": {draft: "<p>@Model.EventCode</p>\n", worktree: "<p>注文履歴</p>\n"},
+  };
+  const scriptAttempt = {phase: "before_migration", number: 1, log: "before_migration.log"};
+  const recovery = {choices: null, revision: 0, keywordBlocked: false};
   const finding = "日付の表示形式が元のPHPと一致するか確認してください。";
   const exchange = {status: "available", rate: 150, date: "2026-11-14", source: "サンプル"};
   const usage = [{phase: "migration", capsule: 1, input: 18420, output: 3240,
     cache_read: 3200, cache_write: 480, responses: 1, cost_usd: 0.07, cost_known: 1}];
   let stream, revision = 0;
-  const runs = createDemoRuns(first, settings.units, notify, () => settings.read().form.junie);
+  const initialRun = requestedRecovery === "draft" ? draftRun : requestedRecovery === "script" ? scriptRun : first;
+  const runs = createDemoRuns(first, settings.units, notify, () => settings.read().form.junie, initialRun);
+
+  const stoppedRepair = run => run.run_id === draftRun && run.status === "checker_needs_review" && run.ready;
+  const interruptedScript = run => run.run_id === scriptRun && run.ready && run.status === "script_failed";
 
   function snapshot(run) {
     const review = run.status === "checker_needs_review" && !accepted.has(run.run_id);
-    const stage = {preparing: 0, prepared: 2, junie_running: 3, building: 4, checking: 5}[run.status] ?? 6;
+    const stage = {preparing: 0, prepared: 2, junie_running: 3, interrupted: 3, script_failed: 3, script_running: 3,
+      building: 4, checking: 5}[run.status] ?? 6;
     return {...run, status: run.status === "checker_needs_review" && !review ? "checker_accepted" : run.status,
       operation_id: run.run_id + "-operation", observed_at: Date.now() / 1000,
       target, token_usage: run.tick > 3 ? usage : [], cost_exchange: exchange, diff_viewer_enabled: false,
       stage_timings: {[stage]: {elapsed_seconds: run.elapsed_seconds}}, build_resumable: !!(run.ready && run.worktree_path),
+      ...(stoppedRepair(run) ? {recovery_revision: recovery.revision,
+        checker_review_reason: recovery.keywordBlocked ? "stopped_draft_keyword" : "repair_interrupted",
+        message: recovery.keywordBlocked ? "Pages/Orders/Index.cshtml.cs:1: 予約語 @event が残っています。" : "修正の途中で停止しました。"} : {}),
+      ...(interruptedScript(run) ? {script_phase: scriptAttempt.phase, message: "停止前に実行したスクリプトの結果を確認できません。"} : {}),
       ...(review ? {checker_exit_code: 0, checker_log_path: "demo/checker.log",
         review: {findings: [["format-date", finding, false]], locations: [{path: target, line: 10}]}} : {})};
   }
@@ -65,7 +81,7 @@ window.harnessDemoTransport = (() => {
     if (stage === "checker" && (!completed || run.tick < 25)) throw Error("照合できるビルド成果物がありません。ビルドから再開してください。");
     const stages = {migration: ["build", "checker"], "build-through": ["build", "checker"], checker: ["checker"]}[stage];
     if (!stages) throw Error("再開する工程を選び直してください。");
-    return {version: ["sample", run.run_id, stage, run.status, run.tick].join(":"),
+    return {version: ["sample", run.run_id, stage, run.status, run.tick, stoppedRepair(run) ? recovery.revision : 0].join(":"),
       targets: {[target]: "sample"}, capsule_range: stage === "migration" ? [run.completed_capsules + 1, run.context_capsules] : null,
       invalidates: stages, repair: false, ...(stage === "build-through" ? {stages} : {})};
   }
@@ -80,11 +96,60 @@ window.harnessDemoTransport = (() => {
       if (body.start_stage && (action !== "resume-run" || body.plan_version !== resumePlan(run, body.start_stage).version)) {
         throw Error("保存版が更新されました。再開計画を確認し直してください。");
       }
+      if (action === "resume-run" && run && stoppedRepair(run)) {
+        if (!recovery.choices || recovery.choices[target] === "draft") {
+          if (!recovery.choices) throw Error("復元する版を選んでから再開してください。");
+          recovery.keywordBlocked = true;
+          recovery.revision++;
+          notify(run);
+          throw Error("停止時の下書きに予約語が残っています。復元する版を選び直してください。");
+        }
+      }
       await runs.execute(action, body);
     } else {
       throw Error("この操作にはローカルのハーネスが必要です。デモでは実行しません。");
     }
     return {run_id: body.run_id};
+  }
+
+  function recoveryStatus(run) {
+    const draft = stoppedRepair(run);
+    const script = interruptedScript(run);
+    const available = run.ready && !!run.worktree_path && ["checker_needs_review", "interrupted", "script_failed"].includes(run.status);
+    return {run_id: run.run_id, available, stage: script ? scriptAttempt.phase : run.status,
+      status: run.status, completed: run.completed_capsules, total: run.context_capsules,
+      saved_targets: !!run.worktree_path, pending_edits: 0, pending_prompts: 0,
+      draft: draft ? "repair" : null, draft_selected: draft && !!recovery.choices,
+      draft_keyword_blocked: draft && recovery.keywordBlocked, unknown_script: script ? scriptAttempt : null};
+  }
+
+  function recoveryPlan(run, kind) {
+    if (run.ready && kind === "draft" && stoppedRepair(run)) {
+      const hashes = Object.fromEntries(Object.keys(recoveryTargets).map(path => [path, "sample"]));
+      return {version: recovery.revision.toString(16).padStart(64, "a"), draft: hashes, worktree: hashes};
+    }
+    if (run.ready && kind === "script" && interruptedScript(run)) {
+      return {version: "b".repeat(64), ...scriptAttempt, can_retry: true,
+        warning: "実行済みの可能性があります。ログ・対象と残存プロセスを確認してください。"};
+    }
+    throw Error("停止中のサンプルRunを選び直してください。");
+  }
+
+  async function saveRecovery(run, body) {
+    if (body.version !== recoveryPlan(run, body.kind).version) throw Error("復旧計画を確認し直してください。");
+    if (body.kind === "draft") {
+      if (!Object.keys(recoveryTargets).every(path => ["draft", "worktree"].includes(body.choices?.[path]))) {
+        throw Error("ファイルごとに復元する版を選択してください。");
+      }
+      recovery.choices = body.choices;
+      recovery.keywordBlocked = false;
+      recovery.revision++;
+      notify(run);
+      return json({});
+    }
+    if (body.confirmed !== true) throw Error("再試行前の確認が必要です。");
+    await runs.execute("recover-script", {run_id: run.run_id});
+    return json({}, 202);
   }
 
   function ledger(run) {
@@ -131,28 +196,16 @@ window.harnessDemoTransport = (() => {
       if (!run) return new Response("サンプルのRunが見つかりません。", {status: 404});
       switch (route) {
         case "migration-ledger": return json(ledger(run));
-        case "recovery": return json({run_id: id, available: !!run.worktree_path && run.ready, stage: run.status,
-          status: run.status, completed: run.completed_capsules, total: run.context_capsules,
-          saved_targets: !!run.worktree_path, pending_edits: 0, pending_prompts: 0,
-          ...(sampleRecovery === "draft" ? {draft: "repair", draft_selected: recoverySelections.has(id)} : {}),
-          ...(sampleRecovery === "script" && !recoverySelections.has(id)
-            ? {unknown_script: {phase: "before_migration", number: 1, log: "before_migration.log"}} : {})});
-        case "recovery-plan": {
-          const kind = body?.kind || query.get("kind");
-          if (!run.ready || kind !== sampleRecovery) throw Error("復旧する状態を選び直してください。");
-          if (body) {
-            if (body.version !== "a".repeat(64) || (kind === "script" && !body.confirmed)
-                || (kind === "draft" && !body.choices?.[target])) throw Error("復旧内容を確認してください。");
-            recoverySelections.add(id);
-            notify(run);
-            return json({}, kind === "script" ? 202 : 200);
+        case "recovery": return json(recoveryStatus(run));
+        case "recovery-plan": return body ? await saveRecovery(run, body) : json(recoveryPlan(run, query.get("kind")));
+        case "recovery-file": {
+          const path = query.get("target");
+          if (query.get("version") !== recoveryPlan(run, "draft").version || !Object.hasOwn(recoveryTargets, path)) {
+            throw Error("復旧計画または閲覧するファイルを選び直してください。");
           }
-          return json(kind === "draft" ? {version: "a".repeat(64), draft: {[target]: "sample"}, worktree: {[target]: "sample"}}
-            : {version: "a".repeat(64), phase: "before_migration", number: 1, log: "before_migration.log",
-              warning: "実行済みの可能性があります。ログ・対象と残存プロセスを確認してください。", can_retry: true});
+          const {draft, worktree} = recoveryTargets[path];
+          return json({target: path, draft: {text: draft, truncated: false}, worktree: {text: worktree, truncated: false}});
         }
-        case "recovery-file": return json({target, draft: {text: "return FormatDate(order.CreatedAt);\n", truncated: false},
-          worktree: {text: "return order.CreatedAt.ToString();\n", truncated: false}});
         case "prompts": {
           if (run.run_id !== window.harnessEditorDemo.progress.run_id) throw Error("表示中のRunが変わりました。");
           const editor = await window.harnessEditorDemo.request("editor", body && {kind: "prompt", run_id: id, text: body.text});

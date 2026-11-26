@@ -1,9 +1,9 @@
 "use strict";
 
 // サーバーを使わず、同じ一覧UIで並列数・停止・再開・待機順を試せるデモ。
-function createDemoRuns(initialId, units, show, junie = () => ({})) {
+function createDemoRuns(initialId, units, show, junie = () => ({}), initialSelection = initialId) {
   const limit = 5;
-  let selected = initialId;
+  let selected = initialSelection;
   let sequence = 8;
   const pending = [];
   const make = (id, unit, status, ready, tick = 0) => ({run_id: id, unit_id: unit, status, ready, tick,
@@ -16,7 +16,9 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
     make("demo-sales", "売上集計", "junie_running", false, 12), make("demo-stock", "在庫照会", "junie_running", false, 4),
     make("demo-invoices", "請求一覧", "checking", false, 25), make("demo-payments", "入金照合", "queued", false),
     make("demo-search", "商品検索", "checker_needs_review", true, 30),
-    make("demo-partners", "取引先一覧", "checker_succeeded", true, 30)];
+    make("demo-partners", "取引先一覧", "checker_succeeded", true, 30),
+    make("demo-repair-recovery", "注文履歴（修正停止・版の比較）", "checker_needs_review", true, 30),
+    make("demo-script-recovery", "注文履歴（スクリプトの復旧）", "script_failed", true, 10)];
   pending.push(...runs.filter(run => run.queued));
   // 実行待ちに追加し、デモの並列枠が空くまで保留する。
   function enqueue(run) {
@@ -52,8 +54,13 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
   }
   setInterval(() => {
     for (const run of runs) if (!run.ready && !run.queued) {
-      run.tick++;
       run.elapsed_seconds += 3;
+      if (run.retryingScript) {
+        run.retryingScript = false;
+        Object.assign(run, {status: "interrupted", ready: true});
+        continue;
+      }
+      run.tick++;
       if (run.tick >= 29) Object.assign(run, {status: "checker_succeeded", ready: true});
       else run.status = run.tick < 2 ? "preparing" : run.tick < 20 ? "junie_running" : run.tick < 25 ? "building" : "checking";
     }
@@ -80,11 +87,17 @@ function createDemoRuns(initialId, units, show, junie = () => ({})) {
           if (!run.ready || run.queued) throw new Error("このRunは処理中です。終了してから操作してください。");
           runs.splice(runs.indexOf(run), 1);
           if (selected === run.run_id) selected = undefined;
-        } else if (action === "stop") Object.assign(run, {ready: true, status: "interrupted"});
-        else if (action === "cancel-queued") {
+        } else if (action === "stop") {
+          Object.assign(run, {ready: true, status: run.retryingScript ? "script_failed" : "interrupted", retryingScript: false});
+        } else if (action === "cancel-queued") {
           if (!run.queued) throw new Error("このRunはすでに実行されています。一覧を更新して停止してください。");
           pending.splice(pending.indexOf(run), 1);
-          Object.assign(run, {queued: false, ready: true, status: "cancelled"});
+          Object.assign(run, {queued: false, ready: true, status: run.retryingScript ? "script_failed" : "cancelled", retryingScript: false});
+          delete run.queuedStatus;
+        } else if (action === "recover-script") {
+          if (!run.ready || run.status !== "script_failed") throw Error("再試行するサンプルを選び直してください。");
+          Object.assign(run, {queuedStatus: "script_running", retryingScript: true});
+          enqueue(run);
         } else if (action === "resume-run") {
           if (!run.ready || !run.worktree_path) throw new Error("このRunは再開できません。実行一覧を確認してください。");
           if (runs.some(item => item !== run && item.unit_id === run.unit_id && !item.ready)) throw new Error("この移行単位は別のRunで実行中または待機中です。");

@@ -6,6 +6,34 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
       + "if (!response.ok) throw Error('Repair fixture failed: ' + response.status); return response.json();})");
   }
 
+  async function checkReopenedPlan() {
+    await evaluate(`(() => {
+      const original = window.fetch;
+      window.restoreRecoveryFetch = () => { window.fetch = original; };
+      window.fetch = (path, options) => {
+        if (typeof path === 'string' && path.startsWith('recovery-plan?') && !window.releaseFirstRecovery) {
+          return new Promise(resolve => {
+            window.releaseFirstRecovery = () => resolve(Response.json({version: 'first', draft: {'古い要求.cs': 'sample'}}));
+          });
+        }
+        return original(path, options);
+      };
+    })()`);
+    try {
+      await evaluate(field("recovery-draft") + ".click()");
+      await wait("typeof window.releaseFirstRecovery === 'function'");
+      await evaluate(field("recovery-cancel") + ".click()");
+      await evaluate(field("recovery-draft") + ".click()");
+      await wait("!!document.querySelector('#recovery-options details')");
+      const selected = await evaluate(field("recovery-options") + ".textContent");
+      await evaluate("(async () => { window.releaseFirstRecovery(); await new Promise(resolve => setTimeout(resolve, 0)); })()");
+      assert.equal(await evaluate(field("recovery-options") + ".textContent"), selected);
+      assert.doesNotMatch(selected, /古い要求/);
+    } finally {
+      await evaluate("window.restoreRecoveryFetch(); delete window.releaseFirstRecovery; " + field("recovery-cancel") + ".click()");
+    }
+  }
+
   async function chooseVersion(choice, expectedWorktree, draft = "class PartlyRepaired {}\n") {
     assert.equal(await evaluate(field("recovery-draft") + ".hidden"), false);
     await evaluate(field("recovery-draft") + ".click()");
@@ -39,6 +67,7 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
       assert.match(await evaluate(field("recovery-checkpoint") + ".textContent"), /修正下書きあり/);
       assert.match(await evaluate(field("recovery-next") + ".textContent"), /復元する版を選んでから再開/);
       if (phase === "build") {
+        await checkReopenedPlan();
         await chooseVersion("draft");
         await send("fixture-stopped-repair-stale");
         await wait("snapshot.message.includes('復元計画を取り直して')");
