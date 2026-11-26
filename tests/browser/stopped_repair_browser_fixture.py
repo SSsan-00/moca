@@ -10,6 +10,8 @@ from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.runs import run_records, stopped_repair
 from migration_harness.config import target_paths
+from migration_harness.context.source_context import stage_target_context
+from migration_harness.runs.worktree_targets import target_versions
 from migration_harness.execution import OperationCancelled
 from migration_harness.junie import junie_cli
 
@@ -32,9 +34,12 @@ def stopped_repair_run(config, template, source_tree, phase):
         to.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source_tree / target, to)
 
+    stage_target_context(worktree, targets, capsule, run / "agent-workspace", policy={"roots": []})
     record = {key: template[key] for key in ("project_root", "unit_id", "target", "targets")}
     record.update(run_id=run_id, worktree_path=str(worktree), status="build_failed", completed_capsules=1,
-                  context_capsules=1, max_context_chars=1000, source_boundary_review_required=False)
+                  current_capsule=1, context_capsules=1, max_context_chars=1000, resume_attempts=0,
+                  junie_model=None, junie_effort=None, junie_max_steps=None,
+                  target_hashes=target_versions(worktree, config["units"][0]), source_boundary_review_required=False)
     record_path = run / "run.json"
     record_path.write_text(json.dumps(record), encoding="utf-8")
     run_config = dict(config, build_project=None, checker_command=["fixture-checker"], max_repair_attempts=1)

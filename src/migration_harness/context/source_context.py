@@ -196,7 +196,15 @@ def target_context_was_initialized(record):
 def require_pinned_target_context(capsule, record):
     if target_context_was_initialized(record):
         snapshot = target_context_snapshot(capsule)
-        if not snapshot.is_dir() or not _safe(snapshot, Path("manifest.json")).is_file():
+        history = record.get("reference_refresh_history") or []
+        pending = record.get("reference_refresh") or {}
+        if (not isinstance(history, list) or history and not isinstance(history[-1], dict)
+                or not isinstance(pending, dict) or not isinstance(pending.get("superseded_snapshots", []), list)):
+            raise ValueError("固定した参考資料の更新履歴が無効です。新しい Run に引き継いでください。")
+        revisions = [history[-1].get("snapshot") if history else "target-context",
+                     pending.get("previous"), pending.get("snapshot"), *pending.get("superseded_snapshots", [])]
+        if (snapshot.name not in revisions or not snapshot.is_dir()
+                or not _safe(snapshot, Path("manifest.json")).is_file()):
             raise ValueError("固定した参考資料の記録がありません。元の資料と成果物を確認し、新しい Run に引き継いでください。")
         manifest = _saved_target_context_manifest(snapshot)
         settings = target_context_policy(manifest["policy"])

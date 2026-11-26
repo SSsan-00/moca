@@ -351,7 +351,7 @@ class WindowsRecoveryFaultTests(unittest.TestCase):
                     (agent / name).write_bytes(new)
                 record_path = root / "run.json"
                 run_records.write_run_record(record_path, {"status": "interrupted", "error": STOP_REASON,
-                    "target": TARGETS[0].as_posix(),
+                    "target": TARGETS[0].as_posix(), "targets": [name.as_posix() for name in TARGETS],
                     "target_hashes": {name.as_posix(): worktree_targets.target_hash(tree / name) for name in TARGETS}})
                 with child(root, "adoption", cut) as process:
                     process.terminate_at(cut)

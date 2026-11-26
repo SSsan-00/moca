@@ -26,7 +26,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
             old.write_bytes(before_bytes)
             new.write_bytes(after_bytes)
             hashes = {name: sha256_file(old)}
-            record = {"target": name, "target_hashes": hashes.copy()}
+            record = {"target": name, "targets": [name], "target_hashes": hashes.copy()}
             args = (agent, worktree, (Path(name),), hashes, record, root / "run.json")
             if expected:
                 with self.assertRaisesRegex(ValueError, expected):

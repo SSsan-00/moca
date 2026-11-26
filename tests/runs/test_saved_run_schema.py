@@ -64,6 +64,19 @@ class SavedRunSchemaTests(SavedRunFixture):
         self.assertEqual(self.target.read_bytes(), target_bytes)
         self.assertFalse(snapshot.exists())
 
+    def test_missing_reference_revision_pointer_does_not_reuse_the_first_capture(self):
+        self.save_record({**self.record(), "reference_refresh_history": [
+            {"previous": "target-context", "snapshot": "target-context-" + "a" * 32},
+        ]})
+        record_bytes = self.record_path.read_bytes()
+        manifest = self.run_path / "capsule" / "target-context" / "manifest.json"
+        first_bytes = manifest.read_bytes()
+        with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+            with self.assertRaisesRegex(ValueError, "固定した参考資料"):
+                workflow.resume_with_junie(self.config, self.run_id)
+        self.assertEqual(self.record_path.read_bytes(), record_bytes)
+        self.assertEqual(manifest.read_bytes(), first_bytes)
+
     def test_saved_reference_capture_without_original_policy_cannot_resume(self):
         manifest_path = self.run_path / "capsule" / "target-context" / "manifest.json"
         saved = json.loads(manifest_path.read_bytes())
