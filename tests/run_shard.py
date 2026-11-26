@@ -27,6 +27,9 @@ REQUIRED_UI = {
 
 REQUIRED_RUN_MODELS = {
     "test_run_state_model_traces.RunStateModelTraceTests.test_apply_plan_survives_interruption_and_rejects_manual_edit",
+    "test_run_state_live_traces.RunQueueTraceTests.test_stopped_unconfirmed_run_stays_fenced_when_waiting_run_restarts",
+    "test_run_state_live_traces.VerificationTraceTests.test_rebuild_disqualifies_old_revision_and_requires_checker_or_approval",
+    "test_run_state_live_traces.HookTraceTests.test_unknown_hook_is_not_replayed_until_explicit_verified_retry",
     *("test_run_state_models.RunStateModelsTests." + name for name in (
         "test_run_slot_safety_and_recovery",
         "test_verification_evidence_for_required_and_optional_checker",

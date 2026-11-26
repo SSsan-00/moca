@@ -43,6 +43,16 @@
 | `APPLY-*` | `runs/worktree_targets.py` の `apply_agent_targets()` と `finish_pending_targets()`。[実ファイルと実Run JSONの対応トレース](../tests/test_run_state_model_traces.py) で2番目の置換時に中断し、再読込後に未反映分だけを採用する場合と、手修正を残して停止する場合を確かめる。 |
 | `HOOK-*` | [stage_scripts.py](../src/migration_harness/runs/stage_scripts.py) の `run_script_phase()` と `script_recovery()`。[test_script_recovery.py](../tests/test_script_recovery.py) の `test_crash_after_success_stops_all_resume_paths_and_requires_current_explicit_retry` と `test_launch_is_not_attempted_if_start_record_cannot_be_written` は、実ファイル・保存済みの試行・プロセス起動回数を照合する。 |
 
+#304の [実装トレース](../tests/test_run_state_live_traces.py) は、同じ操作列から得た基本モデルの状態と、実際の保存状態を各境界で比較する。
+
+| トレース | 実際に照合する証跡 |
+| --- | --- |
+| `RUN-*` | RunManagerで待機・開始・停止して終了未確認を保存。ダッシュボード再起動後も失敗したRunは再開を拒否され、待機していた別Runだけが成果物を採用・ビルドする。永続キュー、Run JSON、各worktreeと呼び出し順を確認する。 |
+| `VERIFY-*` | 実際の検証パイプラインで対象版、ビルド操作ID、台帳を照合する。ビルド中の対象編集で旧版成功は拒否され、チェッカー失敗は成功にならず、理由付き承認は現行版に結び付く。保存したビルドの版を意図的に差し替えると比較が失敗する。 |
+| `HOOK-*` | 工程スクリプトの副作用は実ファイルに書き、成功保存前だけ中断する。通常再開では副作用を繰り返さず、対象変更で古い再試行確認を拒否する。現行版を明示承認すると別の試行IDで1回実行・保存し、再々実行しない。 |
+
+外部Junie・Roslyn・ビルド・チェッカー・フックコマンドの応答は制御可能な代替で、本番のコード・DBには触れない。Git worktree、ファイル・保存記録の読取／更新、Run/検証/復旧の処理は実際の実装を通る。OSプロセス停止を合成代理で証明したとはみなさない。
+
 モデルが失敗した場合は操作列と条件IDを上表に照らし、同じ操作を通る製品テストで保存内容を確認する。モデルの前提誤りと、製品の動作不良は分けて扱う。
 
 ## 実行
@@ -65,4 +75,4 @@ Windowsで製品側のトレースも含めて実行する場合、通常のテ�
 python -m unittest discover -s tests -p "test_run_state_*.py" -v
 ```
 
-Windows CIのPython 3.11 / 3.13それぞれの `remaining` に基本・追加モデルと実装トレースが入り、欠落・スキップ・失敗を成功と扱わない。
+Windows CIのPython 3.11 / 3.13それぞれの `remaining` に基本・追加モデルと実装トレース計19件が入り、欠落・スキップ・失敗を成功と扱わない。
