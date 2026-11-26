@@ -3,10 +3,11 @@ import os
 import re
 import shutil
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 
 from ..files import safe_target, sha256_file
+from ..saved_state import content_hash, saved_object, versionless_record
 from .worktree_targets import target_hash
 
 
@@ -46,17 +47,65 @@ def save_capsule_checkpoint(run_path, worktree, targets, hashes):
     return checkpoint
 
 
-def verified_snapshot_files(run_path, draft):
-    snapshot = draft.get("snapshot", "")
-    if not re.fullmatch(r"stopped-repair-[0-9a-f]{32}", snapshot):
+_SNAPSHOT_ID = re.compile(r"stopped-repair-[0-9a-f]{32}")
+_MANIFEST_KEYS = frozenset({"snapshot", "base", "targets", "workspace_unchanged"})
+_LINEAGE_KEYS = frozenset({"stopped_snapshot", "base_snapshot"})
+_MEMO_KEYS = frozenset({"junie_memos", "junie_memo_warning"})
+_INVALID_METADATA = "停止時の snapshot の記録が無効です。保存済みの下書きと Run の記録を確認してください。"
+
+
+def validate_snapshot_versions(base, targets):
+    if (not isinstance(base, dict) or not isinstance(targets, dict) or not targets
+            or not targets.keys() <= base.keys()):
+        raise ValueError(_INVALID_METADATA)
+    for versions in (base, targets):
+        for name, digest in versions.items():
+            if not isinstance(name, str) or not name or "\0" in name or "\\" in name:
+                raise ValueError(_INVALID_METADATA)
+            path = PurePosixPath(name)
+            if path.is_absolute() or ".." in path.parts or not path.parts or path.as_posix() != name:
+                raise ValueError(_INVALID_METADATA)
+            if not content_hash(digest, missing=True):
+                raise ValueError(_INVALID_METADATA)
+
+
+def validate_snapshot_metadata(draft):
+    if not isinstance(draft, dict):
+        raise ValueError(_INVALID_METADATA)
+    versionless_record(draft, "snapshot")
+    if not _MANIFEST_KEYS <= draft.keys() <= _MANIFEST_KEYS | _LINEAGE_KEYS | _MEMO_KEYS:
+        raise ValueError(_INVALID_METADATA)
+    snapshot = draft["snapshot"]
+    if not isinstance(snapshot, str) or not _SNAPSHOT_ID.fullmatch(snapshot):
         raise ValueError("停止時の snapshot の名前が無効です。")
+    if type(draft["workspace_unchanged"]) is not bool:
+        raise ValueError(_INVALID_METADATA)
+    for key in _LINEAGE_KEYS.intersection(draft):
+        related = draft[key]
+        if not isinstance(related, str) or related == snapshot or not _SNAPSHOT_ID.fullmatch(related):
+            raise ValueError(_INVALID_METADATA)
+    validate_snapshot_versions(draft["base"], draft["targets"])
+    return {key: value for key, value in draft.items() if key not in _MEMO_KEYS}
+
+
+def verified_snapshot_files(run_path, draft):
+    expected = validate_snapshot_metadata(draft)
+    snapshot = expected["snapshot"]
     manifest = safe_target(run_path, Path(snapshot) / "draft.json")
-    draft_files = {key: value for key, value in draft.items() if key not in {"junie_memos", "junie_memo_warning"}}
-    if not manifest.is_file() or json.loads(manifest.read_bytes()) != draft_files:
+    if not manifest.is_file():
+        raise ValueError("停止時の snapshot の記録がありません。")
+    try:
+        text = manifest.read_text(encoding="utf-8-sig")
+    except UnicodeError as error:
+        raise ValueError(_INVALID_METADATA) from error
+    saved = saved_object(text, "snapshot")
+    versionless_record(saved, "snapshot")
+    if type(saved.get("workspace_unchanged")) is not bool or saved != expected:
         raise ValueError("停止時の snapshot の記録が一致しません。")
+    # The numbered drafts are tied to the manifest order, not the order after reserializing run.json.
     files = {name: safe_target(run_path, Path(snapshot) / f"{index}.draft")
-             for index, name in enumerate(draft["targets"])}
-    if any(target_hash(path) != draft["targets"][name] for name, path in files.items()):
+             for index, name in enumerate(saved["targets"])}
+    if any(target_hash(path) != expected["targets"][name] for name, path in files.items()):
         raise ValueError("停止時の snapshot の内容が一致しません。")
     return files
 

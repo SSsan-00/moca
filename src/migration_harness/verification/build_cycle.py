@@ -318,8 +318,7 @@ def execute_verification_build(config, unit, result, record, run_path, worktree,
         worktree, config["build_project"],
     )
     if inputs and any((worktree / Path(inputs["project"]).parent / name).exists() for name in ("bin", "obj")):
-        if (not previous_receipt or previous_receipt["inputs"] != inputs
-                or previous_receipt["artifacts"] != build_receipt.build_artifacts(worktree, inputs)):
+        if not build_receipt.same_build_artifacts(worktree, inputs, previous_receipt):
             # 既存の生成物が古い場合、MSBuild の増分判定だけから対応する版を証明できない。
             inputs = None
     verified = _build_worktree(config, result, record, continue_timing=True)

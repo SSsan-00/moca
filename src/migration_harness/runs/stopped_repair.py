@@ -14,7 +14,9 @@ from ..files import safe_target
 from ..verification.csharp_keyword_guard import reject_keyword_changes
 from .editor_queue import editor_queue
 from .run_records import execution_lock, load_saved_run, write_run_record
-from .target_snapshots import restore_snapshot_files, save_target_snapshot, verified_snapshot_files
+from .target_snapshots import (
+    restore_snapshot_files, save_target_snapshot, validate_snapshot_metadata, verified_snapshot_files,
+)
 from .worktree_targets import target_hash, worktree_source_lock
 
 
@@ -37,12 +39,17 @@ def _original_stopped_draft(run_path, record, attempt):
         return active
     verified_snapshot_files(run_path, active)
     history = record.get("stopped_repair_recovery", [])
+    if not isinstance(history, list):
+        raise ValueError("停止下書きの Run 復旧履歴を確認してください。")
     if source_id := active.get("stopped_snapshot"):
-        source = next((item for item in history if item["snapshot"] == source_id), None)
+        candidates = [item for item in history if isinstance(item, dict) and item.get("snapshot") == source_id]
+        source = candidates[0] if len(candidates) == 1 else None
     else:
         # 旧形式は選択ごとに直前の下書き・Junie版・作業版の順で3件を保存した。
         # 選択が複数あり得る履歴には停止の境界がなく、元の版を推測しない。
         source = history[-3] if 3 <= len(history) < 6 else None
+    if source:
+        validate_snapshot_metadata(source)
     if not source or source["targets"].keys() != active["targets"].keys():
         raise ValueError("元の停止下書きを特定できません。Run の復旧履歴を確認してください。")
     return source
@@ -51,7 +58,10 @@ def _original_stopped_draft(run_path, record, attempt):
 def _build_recovery_plan(run_path, worktree, unit, record, queue):
     attempt = record.get("repair_pending", {})
     draft = _original_stopped_draft(run_path, record, attempt)
-    if not draft.get("snapshot") or not draft.get("workspace_unchanged"):
+    if isinstance(draft, dict) and "snapshot" not in draft:
+        raise ValueError("復元できる停止時の下書きがありません。Run の記録を確認してください。")
+    validate_snapshot_metadata(draft)
+    if not draft["workspace_unchanged"]:
         raise ValueError("復元できる停止時の下書きがありません。Run の記録を確認してください。")
     _require_no_pending_edits(queue, pending_apply=record.get("target_apply_pending"))
     targets = target_paths(unit)
@@ -245,13 +255,15 @@ def recover_selected_repair(run_path, worktree, targets, record):
 
 
 def _restore_selected_repair(run_path, worktree, targets, record, attempt):
-    draft = attempt["draft"]
+    draft = attempt.get("draft")
+    validate_snapshot_metadata(draft)
     baseline, selected_hashes = draft["base"], draft["targets"]
     restoring = "restore_from" in attempt
     names = {path.as_posix() for path in targets}
     if (baseline.keys() != names or not selected_hashes or not selected_hashes.keys() <= names
             or not draft["workspace_unchanged"]
-            or restoring and attempt["restore_from"].keys() != selected_hashes.keys()):
+            or restoring and (not isinstance(attempt["restore_from"], dict)
+                              or attempt["restore_from"].keys() != selected_hashes.keys())):
         raise ValueError("停止時の下書きと設定の対象範囲が一致しません。")
     agent_root = _checked_agent_root(run_path)
     snapshot = verified_snapshot_files(run_path, draft)

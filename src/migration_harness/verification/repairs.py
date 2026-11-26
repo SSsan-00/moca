@@ -29,7 +29,6 @@ from ..runs.editor_queue import LivePrompts, dispatch_prompts, editor_save_pendi
 from ..runs.operator_feedback import operator_edit_context, read_operator_review
 from ..runs.run_records import run_model_options
 from ..runs.stopped_repair import require_repair_targets
-from ..runs.target_snapshots import verified_snapshot_files as _verified_target_snapshot
 from ..runs.worktree_targets import target_hash, worktree_source_lock
 from .roslyn_evidence import refresh_roslyn_repair, roslyn_repair_diff
 
@@ -344,6 +343,18 @@ def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targe
             "stopped_draft", "停止時の下書きの保存に失敗しました。Junie 作業領域の編集を確認してください。",
         )
     with editor_queue_store.editor_queue(run_path) as queue, worktree_source_lock(worktree):
+        try:
+            if not isinstance(draft, dict):
+                raise ValueError("停止時の下書きの記録が無効です。")
+            if "snapshot" in draft:
+                target_snapshots.verified_snapshot_files(run_path, draft)
+            elif draft:
+                # A pre-snapshot draft denotes files still in the agent workspace.
+                if draft.keys() != {"base", "targets"}:
+                    raise ValueError("停止時の下書きの記録が無効です。")
+                target_snapshots.validate_snapshot_versions(draft["base"], draft["targets"])
+        except (OSError, ValueError) as exc:
+            raise CheckerRepairBlocked("stopped_draft", str(exc)) from exc
         source_files = {path: safe_target(worktree, path) for path in targets}
         agent_files = {path: safe_target(agent_root, path) for path in targets}
         before = {path.as_posix(): harness_files.sha256_file(source) for path, source in source_files.items()}
@@ -353,11 +364,7 @@ def _sync_repair_workspace(run_path, worktree, agent_root, targets, repair_targe
             for path in repair_targets
         )
         preserved = {path for path in repair_targets if resume_draft}
-        if draft.get("snapshot"):
-            try:
-                _verified_target_snapshot(run_path, draft)
-            except (OSError, ValueError) as exc:
-                raise CheckerRepairBlocked("stopped_draft", str(exc)) from exc
+        if "snapshot" in draft:
             selection = attempt.get("selection")
             expected_base = selection["base"] if selection else draft["base"]
             configured = {path.as_posix(): path for path in targets}

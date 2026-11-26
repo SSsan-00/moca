@@ -19,6 +19,7 @@ from migration_harness.config import target_paths
 from migration_harness.files import sha256_file
 from migration_harness.runs.run_records import load_saved_run, validate_run_id
 from migration_harness.runs.worktree_targets import worktree_source_lock
+from migration_harness.saved_state import saved_object
 
 
 def _inside_file(root: Path, relative: str) -> Path:
@@ -191,8 +192,17 @@ def snapshot_bytes(config: dict[str, Any], run_id: str, snapshot_id: str) -> byt
         raise ValueError("スナップショットIDが無効です。")
     run_path, _, _, _ = load_saved_run(config, run_id)
     content = _inside_file(run_path, f"review-snapshots/{snapshot_id}.json").read_bytes()
-    payload = json.loads(content)
-    snapshot = payload.get("snapshot") if isinstance(payload, dict) else None
+    try:
+        payload = saved_object(content.decode("utf-8"), "比較スナップショット")
+    except UnicodeError as error:
+        raise ValueError("比較スナップショットの文字コードが不正です。元の記録は変更していません。") from error
+    if (payload.get("kind") != "diff-viewer-workspace" or type(payload.get("version")) is not int
+            or payload["version"] != 1):
+        raise ValueError("比較スナップショットの保存形式の版に対応していません。")
+    workspace = payload.get("workspace")
+    if not isinstance(workspace, dict) or not all(isinstance(workspace.get(key), str) for key in ("leftText", "rightText")):
+        raise ValueError("比較スナップショットに両側の本文がありません。")
+    snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict) or snapshot.get("runId") != run_id:
         raise ValueError("スナップショットのRun IDが指定されたRunと一致しません。")
     return content

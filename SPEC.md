@@ -155,6 +155,7 @@ src/migration_harness の直下に CLI・設定・工程制御と共通処理を
 回帰テストは `python -m pip install -e .` の後に `python -m unittest discover -s tests -v` で実行します。入力規模、ルール、再開・修正の検証シナリオは [evaluations/](evaluations/) にあります。
 
 Runの安全条件は [有限状態モデル検査](docs/run-state-models.md) でも確認します。モデルはPython 3.11の標準ライブラリだけで実行でき、製品への追加インストールは不要です。
+保存形式・旧Runの互換条件・記録破損時の復旧は [Runの保存形式と復旧](docs/persisted-run-compatibility.md) を参照。
 
 ファイル保存の境界条件は `test_worktree_targets.py`、移行・修正・反映途中の復旧は `test_multiple_targets.py`、チェッカーの解析と再検証は `test_checker_prefixes.py`・`test_checker_resume_review_dashboard.py`、画面からの編集と合流は `test_dashboard_editor.py` で確認します。Windows固有の改行変換と `cmd.exe` のテストは、Windows以外ではスキップします。
 

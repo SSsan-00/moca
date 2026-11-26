@@ -377,11 +377,12 @@ class CapsulePreparationTests(HarnessCase):
             verify.assert_not_called()
             result = workflow.resume_with_junie(config, run_id)
             saved = self.read_json(record_path)
-            saved.update(status="build_succeeded", build_exit_code=0, checker_reviews=[{"old": True}],
-                         migration_mappings={"old": True})
-            record_path.write_text(json.dumps(saved), encoding="utf-8")
             worktree_target = Path(saved["worktree_path"]) / saved["target"]
             latest = worktree_target.read_bytes()
+            saved.update(status="build_succeeded", build_exit_code=0, checker_reviews=[{"old": True}],
+                         migration_mappings={"1:0": {"path": saved["target"], "start_line": 1, "end_line": 1,
+                                                    "sha256": hashlib.sha256(latest).hexdigest()}})
+            record_path.write_text(json.dumps(saved), encoding="utf-8")
             outside = worktree_target.parent / "outside.txt"
             outside.write_bytes(b"operator's edit")
             rewind = workflow.plan_migration_resume(config, run_id, 2, rewind_to=2)

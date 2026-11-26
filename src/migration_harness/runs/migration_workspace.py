@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -118,7 +117,7 @@ def prepare_run(config: dict[str, Any], unit_id: str, run_id: str) -> dict[str, 
             run_records.write_run_record(record_path, record)
         raise
     if config.get("scripts", {}).get("after_prepare"):
-        record = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+        record = run_records.read_run_record(run_path / "run.json")
         stage_scripts.run_script_phase(config, "after_prepare", worktree, run_path, record, once=True)
     return {
         "run_id": run_id,

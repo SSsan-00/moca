@@ -21,6 +21,8 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
     """保存した対応を現在の移行先で照合し、閲覧用の状態をまとめる。"""
     run_path, worktree, record, unit = run_records.load_saved_run(config, run_id)
     _, manifest = capsule_files.load_capsule_manifest(run_path)
+    if manifest.get("unit_id", unit["id"]) != unit["id"]:
+        raise ValueError("run manifest does not match the recorded migration unit")
     mappings = record.get("migration_mappings", {})
     target_names = harness_config.target_paths(unit)
     targets = [path.as_posix() for path in target_names]

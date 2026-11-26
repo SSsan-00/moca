@@ -166,8 +166,13 @@ class ScriptRecoveryTests(SavedRunFixture):
                 self.run_phase()
         self.assertTrue(failure.exception.interrupted)
         with editor_queue(self.run_path) as queue:
-            queue["edits"][self.target.name] = {"status": "conflict", "content": "private draft"}
-            queue["prompts"] = [{"status": "queued", "text": "private instruction"}, {"status": "sent"}]
+            queue["edits"][self.target.name] = {
+                "id": "manual-edit", "base": "private original", "status": "conflict", "content": "private draft",
+            }
+            queue["prompts"] = [
+                {"id": "waiting-prompt", "status": "queued", "text": "private instruction"},
+                {"id": "sent-prompt", "status": "sent", "text": "private previous instruction"},
+            ]
         data = recovery_status(self.config, self.run_id, blocked=True)
         self.assertEqual(data["unknown_script"]["log"], self.phase + ".log")
         self.assertTrue(data["available"] and data["needs_process_check"] and data["conflict"])

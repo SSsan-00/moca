@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import uuid
 from collections import deque
 from contextlib import contextmanager
@@ -15,6 +16,7 @@ from time import monotonic
 
 from ..config import find_unit
 from ..junie.junie_conversation import JunieConversations
+from ..saved_state import nonempty_text, saved_object, versionless_record
 from .run_records import (
     edit_run_record,
     execution_lock,
@@ -25,6 +27,22 @@ from .run_records import (
 )
 
 _QUEUED_ACTIONS = frozenset({"run", "resume", "resume-run", "anchors", "build-response", "conversation", "accept", "recover-script"})
+
+
+def _saved_operation_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) is not None
+
+
+def _validate_waiting_operation(job):
+    action = job["action"]
+    if action == "conversation" and not _saved_operation_id(job.get("conversation_id")):
+        raise ValueError("保存済みの会話の指示IDが不正です。")
+    if action == "accept" and not all(nonempty_text(job.get(key)) for key in ("finding_id", "reason")):
+        raise ValueError("保存済みのチェッカー承認に指摘IDまたは理由がありません。")
+    if "checker_instruction" in job and not nonempty_text(job["checker_instruction"]):
+        raise ValueError("保存済みのチェッカー指示が不正です。")
+    if "verification_request" in job and not isinstance(job["verification_request"], dict):
+        raise ValueError("保存済みの再開計画が不正です。")
 
 
 class RunManager:
@@ -76,7 +94,7 @@ class RunManager:
                 owner = execution_lock(config, "dashboard")
                 owner.__enter__()
             try:
-                jobs, cancelled, blocked = self._read_saved_queue(config, root)
+                jobs, cancelled, blocked, existed = self._read_saved_queue(config, root)
                 views, disk_ids, waiting = self._prepare_saved_jobs(config, jobs, blocked)
                 tracked = (self.conversations.saved_runs(root, blocked)
                            if root and (updated is not None or self.conversations.thread) else None)
@@ -109,32 +127,72 @@ class RunManager:
                 if self.conversations.thread:
                     self.conversations.runs = tracked
                     self.conversations.wake.set()
-                try:
-                    self.persist()
-                except OSError:
-                    self._defer_queue_retry(tracked)
+                if not existed or updated is not None or len(waiting) != len(jobs):
+                    try:
+                        self.persist()
+                    except OSError:
+                        self._defer_queue_retry(tracked)
 
-    def _read_saved_queue(self, config, root):
+    @staticmethod
+    def _read_saved_queue(config, root):
+        if not root:
+            return [], {}, {}, False
+        path = Path(root) / "dashboard-queue.json"
         try:
-            saved = json.loads((Path(root) / "dashboard-queue.json").read_text(encoding="utf-8")) if root else {}
+            text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            saved = {}
-        jobs = saved.get("jobs", [])
+            if path.with_suffix(".tmp").exists():
+                raise ValueError("実行待ち一覧に途中保存だけが残っています。元の記録を確認してください。") from None
+            return [], {}, {}, False
+        except UnicodeError as error:
+            raise ValueError("dashboard-queue.json の文字コードが不正です。元の記録は変更していません。") from error
+
+        saved = saved_object(text, path.name)
+        versionless_record(saved, path.name)
+        jobs = saved.get("jobs")
         cancelled = saved.get("cancelled_conversations", {})
         blocked = saved.get("blocked_conversations", {})
-        for run_id, message in blocked.items():
-            validate_run_id(run_id)
-            if not isinstance(message, str) or not message:
-                raise ValueError("保存済みの停止理由が不正です。")
+        if (not isinstance(jobs, list) or not isinstance(cancelled, dict) or not isinstance(blocked, dict)
+                or ("project_root" in saved and not nonempty_text(saved["project_root"]))):
+            raise ValueError("保存済みの実行待ち一覧の必須項目または型が不正です。")
         if (jobs or cancelled or blocked) and saved.get("project_root") != config.get("project_root"):
             raise ValueError("保存済みの実行待ち一覧とプロジェクトが異なります。保存先を確認してください。")
+        for run_id, message in blocked.items():
+            validate_run_id(run_id)
+            if not nonempty_text(message):
+                raise ValueError("保存済みの停止理由が不正です。")
+        for run_id, conversation in cancelled.items():
+            validate_run_id(run_id)
+            if not _saved_operation_id(conversation):
+                raise ValueError("保存済みの取消指示IDが不正です。")
+
+        runs, units, operations = set(), set(), set()
+        allowed_units = {unit["id"] for unit in config.get("units", ())}
         for job in jobs:
-            if str(uuid.UUID(job["run_id"])) != job["run_id"]:
-                raise ValueError("実行待ち一覧のRun IDが不正です。")
-            find_unit(config, job["unit_id"])
-            if not job.get("running") and job["action"] in _QUEUED_ACTIONS - {"run"}:
-                load_saved_run(config, job["run_id"])
-        return jobs, cancelled, blocked
+            if not isinstance(job, dict) or not all(nonempty_text(job.get(key)) for key in ("run_id", "unit_id", "action")):
+                raise ValueError("保存済みの実行待ち操作にRun ID、移行単位、または操作名がありません。")
+            run_id, unit, action = job["run_id"], job["unit_id"], job["action"]
+            validate_run_id(run_id)
+            if run_id in runs or unit in units:
+                raise ValueError("保存済みの実行待ち一覧でRunまたは移行単位が重複しています。")
+            if unit not in allowed_units:
+                raise ValueError(f"unknown migration unit: {unit}")
+            runs.add(run_id)
+            units.add(unit)
+            if "operation_id" in job:
+                operation = job["operation_id"]
+                if not _saved_operation_id(operation) or operation in operations:
+                    raise ValueError("保存済みの実行待ち操作IDが不正または重複しています。")
+                operations.add(operation)
+            for flag in ("running", "junie_brave", "junie_brave_reconfirm"):
+                if flag in job and type(job[flag]) is not bool:
+                    raise ValueError(f"保存済みの実行待ち操作の {flag} が不正です。")
+            if not job.get("running") and action in _QUEUED_ACTIONS - {"run"}:
+                _validate_waiting_operation(job)
+                _, _, record, _ = load_saved_run(config, run_id)
+                if record["unit_id"] != unit:
+                    raise ValueError("保存済みの実行待ち操作とRunの移行単位が一致しません。")
+        return jobs, cancelled, blocked, True
 
     def _prepare_saved_jobs(self, config, jobs, blocked):
         views = {} if self.scope is not None else self.views.copy()
@@ -163,13 +221,16 @@ class RunManager:
             if interrupted or job["action"] != "run":
                 try:
                     _, record = load_dashboard_record(config, run_id)
-                    view = self._record_view(config, record, blocked.get(run_id, ""))
-                    disk_ids.add(run_id)
                 except (OSError, ValueError, KeyError):
                     if not interrupted:
                         raise
                     view = self._queued_view(config, run_id, unit_id)
                     view.publish({**view.state, "status": "preparation_interrupted", "ready": True})
+                else:
+                    if record["unit_id"] != unit_id:
+                        raise ValueError("保存済みの起動印とRunの移行単位が一致しません。")
+                    view = self._record_view(config, record, blocked.get(run_id, ""))
+                    disk_ids.add(run_id)
             else:
                 view = self._queued_view(config, run_id, unit_id)
             views[run_id] = view

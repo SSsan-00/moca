@@ -15,6 +15,7 @@ from typing import Any, Iterator
 from ..config import REFERENCE_ROLES, target_paths
 from ..execution import check_cancelled, report_activity
 from ..files import safe_target, sha256_file
+from ..saved_state import content_hash, nonempty_text, saved_object, versionless_record
 from .php_boundaries import PhpFunction, function_boundaries
 from ..rules.rule_materials import COMPACT_RULE_GUIDELINES, write_rule_files
 from ..rules.rule_search import prepare_rule_hint
@@ -616,6 +617,36 @@ def _syntax_manifest(
         for path, (functions, status) in syntax_by_path.items()
     }
 
+def _capsule_integer(value: Any, *, minimum: int = 0) -> bool:
+    return type(value) is int and value >= minimum
+
+
+def _validate_source_ranges(rows: Any, *, encoding_required: bool = True) -> None:
+    if not isinstance(rows, list):
+        raise ValueError("run manifest contains an invalid source range list")
+    for row in rows:
+        if (not isinstance(row, dict) or not nonempty_text(row.get("path"))
+                or (encoding_required and not nonempty_text(row.get("encoding")))
+                or not _capsule_integer(row.get("start_line"), minimum=1)
+                or not _capsule_integer(row.get("end_line"), minimum=row["start_line"])):
+            raise ValueError("run manifest contains an invalid source range")
+        for key in ("role", "symbol"):
+            if key in row and not nonempty_text(row[key]):
+                raise ValueError(f"run manifest contains an invalid source {key}")
+        slices = row.get("character_slices", [])
+        if not isinstance(slices, list):
+            raise ValueError("run manifest contains an invalid character slice list")
+        for item in slices:
+            if (not isinstance(item, dict)
+                    or any(not _capsule_integer(item.get(key), minimum=1) for key in (
+                        "line", "focus_start_column", "focus_end_column", "context_start_column", "context_end_column",
+                    ))
+                    or not row["start_line"] <= item["line"] <= row["end_line"]
+                    or not item["context_start_column"] <= item["focus_start_column"] <= item["focus_end_column"]
+                    <= item["context_end_column"]):
+                raise ValueError("run manifest contains an invalid character slice")
+
+
 def load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
     run_path = run_path.resolve()
     capsule_path = (run_path / "capsule").resolve()
@@ -624,29 +655,74 @@ def load_capsule_manifest(run_path: Path) -> tuple[Path, dict[str, Any]]:
     manifest_path = capsule_path / "manifest.json"
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("run manifest is missing or is a symlink")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict):
-        raise ValueError("run manifest must contain a JSON object")
-    parts = manifest.get("parts", [])
-    if not isinstance(parts, list) or not parts or any(not isinstance(part, dict) for part in parts):
-        raise ValueError("run manifest has no valid capsule list")
-    if [part.get("index") for part in parts] != list(range(1, len(parts) + 1)):
-        raise ValueError("run manifest has missing or invalid capsule indexes")
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+    except UnicodeError as error:
+        raise ValueError("capsule/manifest.json の文字コードが不正です。元の記録は変更していません。") from error
+    manifest = saved_object(text, "capsule/manifest.json")
+    versionless_record(manifest, "capsule/manifest.json")
+    _validate_capsule_manifest(manifest)
     return capsule_path, manifest
 
 
+def _validate_capsule_manifest(manifest: dict[str, Any]) -> None:
+    parts = manifest.get("parts")
+    if not isinstance(parts, list) or not parts or any(not isinstance(part, dict) for part in parts):
+        raise ValueError("run manifest has no valid capsule list")
+    paths = set()
+    for index, part in enumerate(parts, 1):
+        if type(part.get("index")) is not int or part["index"] != index:
+            raise ValueError("run manifest has missing or invalid capsule indexes")
+        if not nonempty_text(part.get("path")) or part["path"] in paths:
+            raise ValueError("run manifest contains an invalid or duplicate context path")
+        paths.add(part["path"])
+        if not _capsule_integer(part.get("chars")):
+            raise ValueError("run manifest contains an invalid capsule character count")
+        for digest in ("sha256", "segment_sha256"):
+            if digest in part and not content_hash(part[digest]):
+                raise ValueError(f"run manifest contains an invalid {digest}")
+        _validate_source_ranges(part.get("sources"))
+
+    if "unit_id" in manifest and not nonempty_text(manifest["unit_id"]):
+        raise ValueError("run manifest contains an invalid migration unit ID")
+    if "total_context_chars" in manifest and (
+        not _capsule_integer(manifest["total_context_chars"])
+        or manifest["total_context_chars"] != sum(part["chars"] for part in parts)
+    ):
+        raise ValueError("run manifest has an inconsistent total character count")
+    for key in ("max_context_chars", "segment_offset"):
+        if key in manifest and not _capsule_integer(manifest[key]):
+            raise ValueError(f"run manifest contains an invalid {key}")
+    if "materials" in manifest and (
+        not isinstance(manifest["materials"], dict)
+        or any(not nonempty_text(name) or not content_hash(digest) for name, digest in manifest["materials"].items())
+    ):
+        raise ValueError("run manifest contains invalid material versions")
+    for key, kind in (("rule_files", list), ("rule_chunks", list), ("rule_read_order", list),
+                      ("split_line_coverage", list), ("syntax_boundaries", dict)):
+        if key in manifest and not isinstance(manifest[key], kind):
+            raise ValueError(f"run manifest contains an invalid {key}")
+    _validate_source_ranges(manifest.get("shared_sources", []))
+    _validate_source_ranges(manifest.get("reference_sources", []), encoding_required=False)
+    pinned_php_sources(manifest)
+
+
 def pinned_php_sources(manifest: dict[str, Any]) -> list[dict[str, str]] | None:
-    """固定済みPHPの一覧を検証し、固定前のRunは区別する。"""
+    # A missing key is the supported pre-pinning format, not an empty set of current evidence.
     if "php_sources" not in manifest:
         return None
     sources = manifest["php_sources"]
-    if not isinstance(sources, list) or any(
-        not isinstance(source, dict) or not all(
-            isinstance(source.get(key), str) and source[key] for key in ("path", "snapshot", "encoding", "sha256")
-        )
-        for source in sources
-    ):
+    if not isinstance(sources, list):
         raise ValueError("保存済みPHPのmanifestが無効です。")
+    paths, files = set(), set()
+    for source in sources:
+        if (not isinstance(source, dict)
+                or not all(nonempty_text(source.get(key)) for key in ("path", "snapshot", "encoding"))
+                or not content_hash(source.get("sha256"))
+                or source["path"] in paths or source["snapshot"] in files):
+            raise ValueError("保存済みPHPのmanifestが無効です。")
+        paths.add(source["path"])
+        files.add(source["snapshot"])
     return sources
 
 

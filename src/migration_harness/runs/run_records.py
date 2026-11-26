@@ -20,6 +20,7 @@ from urllib.request import urlopen
 
 from ..junie.usage import USAGE_FIELDS
 from ..config import find_unit, target_paths
+from ..saved_state import nonempty_text, saved_object, versionless_record
 from .timings import update_timings
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
@@ -90,7 +91,7 @@ def write_run_record(
     update_timings(record, stage=timing_stage)
     with lock_run_record(path):
         if path.is_file():
-            saved = json.loads(path.read_text(encoding="utf-8"))
+            saved = read_run_record(path)
             if saved.get("junie_model_revision"):
                 for field in ("junie_model", "junie_effort", "junie_model_revision"):
                     record[field] = saved[field]
@@ -104,7 +105,7 @@ def write_run_record(
 @contextmanager
 def edit_run_record(path: Path) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
     with lock_run_record(path):
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = read_run_record(path)
         changes: dict[str, Any] = {}
         yield record, changes
         if not changes:
@@ -174,10 +175,15 @@ def validate_run_id(run_id: str) -> None:
         raise ValueError("run ID must use its canonical UUID format")
 
 
-def _read_run_record(path: Path) -> Any:
+def read_run_record(path: Path) -> dict[str, Any]:
     for attempt in range(11):
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            record = saved_object(path.read_text(encoding="utf-8"), "run.json")
+            versionless_record(record, "run.json")
+            _validate_run_fields(record)
+            return record
+        except UnicodeError as exc:
+            raise ValueError("run.json の文字コードが無効です。元の記録は変更していません。") from exc
         except PermissionError as exc:
             # Windows can refuse a reader during replacement; do not retry ordinary permissions errors.
             if getattr(exc, "winerror", None) not in {32, 33} or attempt == 10:
@@ -186,9 +192,44 @@ def _read_run_record(path: Path) -> Any:
 
 
 def run_model_options(run_path: Path, record: dict[str, Any], config: dict[str, Any]) -> dict[str, str | None]:
-    saved = _read_run_record(run_path / "run.json")
+    saved = read_run_record(run_path / "run.json")
     return {"model": saved.get("junie_model", record.get("junie_model", config.get("junie_model"))),
             "effort": saved.get("junie_effort", record.get("junie_effort"))}
+
+
+def _validate_run_fields(record: dict[str, Any]) -> None:
+    if "status" in record and not nonempty_text(record["status"]):
+        raise ValueError("run record contains an invalid status")
+    for field, minimum in (("completed_capsules", 0), ("context_capsules", 0), ("current_capsule", 1), ("resume_attempts", 0)):
+        if field in record and (type(record[field]) is not int or record[field] < minimum):
+            raise ValueError(f"run record has invalid capsule progress ({field})")
+    for field in ("verification", "target_apply_pending", "repair_pending", "migration_mappings",
+                  "target_hashes", "review_file_hashes", "checker_build"):
+        value = record.get(field)
+        if value is not None and not isinstance(value, dict):
+            raise ValueError(f"run record contains an invalid {field}")
+    for field in ("repair_history", "resume_operations"):
+        if field in record and (not isinstance(record[field], list)
+                                or any(not isinstance(item, dict) for item in record[field])):
+            raise ValueError(f"run record contains an invalid {field}")
+    mappings = record.get("migration_mappings") or {}
+    for entry in mappings.values():
+        if (not isinstance(entry, dict) or not nonempty_text(entry.get("path")) or not nonempty_text(entry.get("sha256"))
+                or type(entry.get("start_line")) is not int or type(entry.get("end_line")) is not int
+                or not 1 <= entry["start_line"] <= entry["end_line"]
+                or ("candidate_snapshot" in entry and
+                    (not nonempty_text(entry["candidate_snapshot"]) or type(entry.get("anchors")) is not int))):
+            raise ValueError("run record contains an invalid migration mapping")
+    for field in ("build_exit_code", "checker_exit_code"):
+        value = record.get(field)
+        if value is not None and type(value) is not int:
+            raise ValueError(f"run record contains an invalid {field}")
+    if record.get("junie_model_revision") is not None:
+        if not nonempty_text(record["junie_model_revision"]) or any(
+            field not in record or (record[field] is not None and not isinstance(record[field], str))
+            for field in ("junie_model", "junie_effort")
+        ):
+            raise ValueError("run record contains inconsistent Junie model options")
 
 
 def _load_run_identity(
@@ -202,19 +243,19 @@ def _load_run_identity(
     record_path = run_path / "run.json"
     if record_path.is_symlink() or not record_path.is_file():
         raise ValueError("run record is missing or is a symlink")
-    record = _read_run_record(record_path)
-    if not isinstance(record, dict):
-        raise ValueError("run record must contain a JSON object")
+    record = read_run_record(record_path)
+    if "status" not in record:
+        raise ValueError("run record is missing its status")
     if record.get("run_id") != run_id or record.get("project_root") != config["project_root"]:
         raise ValueError("run record does not match the configured project")
     unit_id = record.get("unit_id")
-    if not isinstance(unit_id, str):
+    if not nonempty_text(unit_id):
         raise ValueError("run record is missing its migration unit ID")
     unit = find_unit(config, unit_id)
     saved_targets = record.get("targets", [record.get("target")])
-    if not isinstance(saved_targets, list) or any(not isinstance(path, str) for path in saved_targets) or (
-        tuple(Path(path) for path in saved_targets) != target_paths(unit)
-    ):
+    if (not nonempty_text(record.get("target")) or Path(record["target"]) != Path(unit["target"])
+            or not isinstance(saved_targets, list) or any(not nonempty_text(path) for path in saved_targets)
+            or tuple(Path(path) for path in saved_targets) != target_paths(unit)):
         raise ValueError("configured targets differ from those recorded for this run")
     return run_path, record, unit
 

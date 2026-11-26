@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from build_receipt_fixtures import saved_build_receipt
 from migration_harness.verification import build_receipt
 from migration_harness import files
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
@@ -93,3 +94,79 @@ class BuildReceiptCancellationTests(unittest.TestCase):
             for name in ordered:
                 expected.update(json.dumps([name, hashlib.sha256(name.encode()).hexdigest()]).encode())
             self.assertEqual(build_receipt._fingerprint(root, (".git", "alpha/skip")), expected.hexdigest())
+
+
+class BuildReceiptCompatibilityTests(unittest.TestCase):
+    def test_versionless_receipt_preserves_historical_shape_and_requires_both_fingerprints(self):
+        receipt = saved_build_receipt()
+        record = {"build_exit_code": 0, "checker_build": receipt}
+        config = {"build_project": receipt["inputs"]["project"]}
+        with TemporaryDirectory() as folder:
+            project = Path(folder).resolve()
+            with patch.object(build_receipt, "build_inputs", return_value=receipt["inputs"]), patch.object(
+                build_receipt, "build_artifacts", return_value=receipt["artifacts"],
+            ):
+                self.assertEqual(build_receipt.check_build_receipt(config, project, json.loads(json.dumps(record))),
+                                 receipt)
+                self.assertTrue(build_receipt.same_build_artifacts(project, receipt["inputs"], receipt))
+            with patch.object(build_receipt, "build_inputs", return_value=receipt["inputs"]), patch.object(
+                build_receipt, "build_artifacts", return_value=None,
+            ):
+                with self.assertRaisesRegex(ValueError, "成果物が変更または削除"):
+                    build_receipt.check_build_receipt(config, project, record)
+                self.assertFalse(build_receipt.same_build_artifacts(project, receipt["inputs"], receipt))
+
+    def test_unusable_receipts_never_scan_the_build_project(self):
+        receipt = saved_build_receipt()
+        invalid = [
+            (0, None), (0, "unfinished"), (False, receipt), (0.0, receipt),
+            (0, {"inputs": receipt["inputs"]}), (0, {**receipt, "artifacts": None}),
+            (0, {**receipt, "schema_version": 99}),
+            (0, {**receipt, "inputs": {**receipt["inputs"], "source": False}}),
+            (0, {**receipt, "artifacts": {**receipt["artifacts"], "obj": "unfinished"}}),
+        ]
+        with patch.object(build_receipt, "build_inputs") as scan, patch.object(build_receipt, "build_artifacts") as artifacts:
+            for exit_code, saved in invalid:
+                with self.subTest(exit_code=exit_code, saved=saved):
+                    with self.assertRaisesRegex(ValueError, "ビルドを実行"):
+                        build_receipt.check_build_receipt({}, Path("."), {"build_exit_code": exit_code, "checker_build": saved})
+                    if exit_code is None or type(exit_code) is int:
+                        self.assertFalse(build_receipt.same_build_artifacts(Path("."), receipt["inputs"], saved))
+            scan.assert_not_called()
+            artifacts.assert_not_called()
+
+    def test_verified_receipt_is_invalid_after_artifact_bytes_change(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            worktree = root / "tree"
+            worktree.mkdir()
+            (worktree / "Example.csproj").write_text(
+                '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+                '<TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>', encoding="utf-8",
+            )
+            dotnet = root / "fixture-sdk" / "dotnet.exe"
+            packs = dotnet.parent / "packs" / "Microsoft.NETCore.App.Ref"
+            packs.mkdir(parents=True)
+            dotnet.write_bytes(b"fixture launcher; never executed")
+            (packs / "fixture-reference.dll").write_bytes(b"fixture reference")
+            assembly = worktree / "bin" / "Debug" / "net9.0" / "Example.dll"
+            assembly.parent.mkdir(parents=True)
+            assembly.write_bytes(b"fixture output")
+            assets = worktree / "obj" / "project.assets.json"
+            assets.parent.mkdir()
+            assets.write_text('{"libraries": {}}', encoding="utf-8")
+            config = {"build_project": "Example.csproj"}
+            with patch.object(build_receipt.shutil, "which", return_value=str(dotnet)), patch.dict(
+                build_receipt.os.environ, {}, clear=True,
+            ):
+                inputs = build_receipt.build_inputs(worktree, config["build_project"])
+                self.assertIsNotNone(inputs)
+                receipt = {"inputs": inputs, "artifacts": build_receipt.build_artifacts(worktree, inputs)}
+                path = root / "run.json"
+                path.write_text(json.dumps({"build_exit_code": 0, "checker_build": receipt}), encoding="utf-8")
+                persisted = path.read_bytes()
+                self.assertEqual(build_receipt.check_build_receipt(config, worktree, json.loads(persisted)), receipt)
+                assembly.write_bytes(b"edited artifact")
+                with self.assertRaisesRegex(ValueError, "成果物が変更または削除"):
+                    build_receipt.check_build_receipt(config, worktree, json.loads(persisted))
+                self.assertEqual(path.read_bytes(), persisted)
