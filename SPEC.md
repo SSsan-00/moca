@@ -158,6 +158,8 @@ Runの安全条件は [有限状態モデル検査](docs/run-state-models.md) �
 
 ファイル保存の境界条件は `test_worktree_targets.py`、移行・修正・反映途中の復旧は `test_multiple_targets.py`、チェッカーの解析と再検証は `test_checker_prefixes.py`・`test_checker_resume_review_dashboard.py`、画面からの編集と合流は `test_dashboard_editor.py` で確認します。Windows固有の改行変換と `cmd.exe` のテストは、Windows以外ではスキップします。
 
+移行台帳の [静的証跡](docs/static-migration-evidence.md) は要求時に固定原文と現行移行先を照合します。工程完了や業務コードの意味の検証とは別です。
+
 ## ダッシュボードの並列実行
 
 工程・編集・会話・検証の保存境界、ロックの順序と回帰テストは [Run の状態とロック契約](docs/run-state-contracts.md) を参照。

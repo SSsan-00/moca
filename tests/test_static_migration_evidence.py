@@ -10,7 +10,7 @@ from migration_harness.runs.migration_ledger import migration_ledger
 
 
 _SOURCES = {
-    "rename.php": "<?php\nfunction old_name() { return 'ORDER'; }\n",
+    "rename.php": "<?php\nfunction old_name() { return LegacyBilling::NormalizeOrder('ORDER'); }\n",
     "split.php": "<?php\nclass LegacySplit {\n    public function combined() { return 'audit'; }\n}\n",
     "merge-a.php": "<?php\nfunction old_a() { return 'a'; }\n",
     "merge-b.php": "<?php\nfunction old_b() { return 'b'; }\n",
@@ -55,7 +55,11 @@ id = "sample"
 targets = ["Page.cs", "View.cshtml", "View.cshtml.cs"]
 static_evidence = "evidence.json"
 '''
-        inputs = "".join(f'\n[[units.inputs]]\npath = "{path}"\nrole = "php"\nencoding = "utf-8"\n' for path in _SOURCES)
+        inputs = "".join(
+            f'\n[[units.inputs]]\npath = "{path}"\nrole = "php"\nencoding = "utf-8"\n'
+            f'start_line = 1\nend_line = {len(text.splitlines())}\n'
+            for path, text in _SOURCES.items()
+        )
         settings.write_text(prefix + inputs, encoding="utf-8")
         self.config = load_config(settings)
         run = prepare_fixture(self.config, "sample")
@@ -102,6 +106,7 @@ static_evidence = "evidence.json"
             self.claim("merge-a.php", "mapping", origin="human", targets=[shared]),
             self.claim("merge-b.php", "mapping", origin="ai", targets=[shared]),
             self.claim("missing.php", "require", targets=[{"path": "Page.cs"}], fact={"kind": "literal", "value": "CASE_REQUIRED"}),
+            self.claim("missing.php", "require", targets=[{"path": "Page.cs"}], fact={"kind": "method", "value": "AppendAuditLog"}),
             self.claim("dynamic.php", "require", targets=[{"path": "Page.cs"}], fact={"kind": "method", "value": "Dispatch"}),
             self.claim("excluded.php", "exclude"),
             self.claim("razor.php", "require", targets=[{"path": "View.cshtml"}], fact={"kind": "method", "value": "Right"}),
@@ -129,6 +134,7 @@ static_evidence = "evidence.json"
         self.assertEqual([target["origin"] for target in rows["merge-b.php"]["targets"]], ["ai"])
         self.assertEqual(rows["merge-a.php"]["targets"][0] | {"origin": "ai"}, rows["merge-b.php"]["targets"][0])
         self.assertEqual([target["origin"] for target in rows["anchor.php"]["targets"]], ["anchor"])
+        self.assertEqual(sum("指定範囲" in item for item in rows["missing.php"]["reasons"]), 2)
         self.assertTrue(any(item["kind"] == "dynamic" for item in rows["dynamic.php"]["structure"]))
         self.assertEqual(self.record_path.read_bytes(), before)
         self.assertEqual(migration_ledger(self.config, self.run_id)["completion"], complete)
@@ -150,6 +156,24 @@ static_evidence = "evidence.json"
         _, rows = self.report()
         self.assertEqual(rows["rename.php"]["status"], "unverified")
         self.assertIn("原文版・範囲", rows["rename.php"]["reasons"][0])
+
+    def test_existing_approved_mapping_coordinates_do_not_survive_a_target_byte_edit(self):
+        same_scope = self.scope("Page.cs", 3)
+        self.plan(self.claim("rename.php", "mapping", origin="human", targets=[same_scope]))
+        key, _, index = self.parts["anchor.php"]["id"].partition(":")
+        self.update_record(migration_mappings={f"{key}:{int(index) - 1}": same_scope})
+        _, rows = self.report()
+        self.assertEqual([rows[path]["status"] for path in ("rename.php", "anchor.php")], ["review_candidate"] * 2)
+        target = self.tree / "Page.cs"
+        target.write_bytes(target.read_bytes().replace(b'"ORDER"', b'"EDITED"'))
+        _, rows = self.report()
+        for path in ("rename.php", "anchor.php"):
+            self.assertEqual(rows[path]["status"], "unverified")
+            self.assertFalse(rows[path]["targets"])
+        saved = next(row for part in migration_ledger(self.config, self.run_id)["capsules"] for row in part["sources"]
+                     if row["path"] == "anchor.php")
+        self.assertFalse(saved["mapping"]["valid"])
+        self.assertEqual(saved["mapping"]["start_line"], same_scope["start_line"])
 
     def test_unconfigured_targets_invalid_plans_or_active_runs_do_not_scan_targets(self):
         self.plan(self.claim("missing.php", "require", targets=[{"path": "../forbidden.cs"}],
