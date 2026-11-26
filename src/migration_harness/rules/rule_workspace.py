@@ -30,6 +30,7 @@ _SOURCE_SUFFIXES = {".md", ".markdown", ".txt"}
 _ID = re.compile(r"[0-9a-f]{32}")
 _SOURCE = re.compile(r"rule-[0-9]{4}\.md")
 _CONFIG_EXCEPTIONS = (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, subprocess.SubprocessError, TOMLKitError)
+_STOP_UNCONFIRMED = "Junieの終了を確認できません。作業領域を保護しています。「終了を再確認」を押してください。"
 _DUPLICATE_REPLY = "Junieの応答に重複するJSONキーがあるため採用しませんでした。Junieと相談して再確認してください。"
 _INSTRUCTIONS = """
 You are organizing PHP-to-C# migration rules, not running the migration. Work only with the versioned
@@ -154,6 +155,7 @@ class RuleWorkspace:
         self.cancelled = Event()
         self.live = None
         self.active_id = None
+        self.stop_error = None
 
     def root(self):
         path = self.config.get("run_root")
@@ -175,6 +177,8 @@ class RuleWorkspace:
         return path
 
     def _check_idle(self):
+        if self.stop_error:
+            raise ValueError(self.stop_error)
         if self.worker is not None:
             raise ValueError("Junieの応答を待つか、中断してから操作してください。")
 
@@ -317,6 +321,7 @@ class RuleWorkspace:
 
     def snapshot(self, identifier=None):
         with self.lock:
+            stop = {"stop_error": self.stop_error} if self.stop_error else {}
             if identifier is None:
                 drafts = []
                 for path in sorted(self.root().iterdir(), key=lambda item: item.stat().st_mtime, reverse=True):
@@ -325,14 +330,14 @@ class RuleWorkspace:
                     state = rule_pack.read_json(path / "state.json")
                     if not state.get("applied"):
                         drafts.append({"id": path.name, "files": len(state["files"])})
-                return {"drafts": drafts[:30]}
+                return {"drafts": drafts[:30], **stop}
             state = _read_draft_state(self.draft(identifier))
             accepted = self._accepted_required(state)
             for internal in ("accepted_plan", "classified_sources", "plan_sources", "edit_receipts"):
                 state.pop(internal, None)
             files = [{**item, "has_required_lines": item["source"] in accepted} for item in state["files"]]
             return {"junie_model": self.config.get("junie_model"), "junie_effort": self.config.get("junie_effort"),
-                    **state, "files": files, "live": self.live if identifier == self.active_id else None}
+                    **state, **stop, "files": files, "live": self.live if identifier == self.active_id else None}
 
     def file_text(self, identifier, source):
         with self.lock:
@@ -398,11 +403,15 @@ class RuleWorkspace:
         return confirmation
 
     def _disconnect(self):
-        if self.chat:
+        if self.chat is not None:
             try:
                 self.chat.shutdown()
-            finally:
-                self.chat = None
+            except _CONFIG_EXCEPTIONS as exc:
+                self.stop_error = self.stop_error or f"{_STOP_UNCONFIRMED}\n{exc}"
+                self.live = {"status": "stop_unconfirmed", "text": self.stop_error}
+                raise ValueError(self.stop_error) from exc
+            self.chat = None
+        self.stop_error = None
         self.live = None
         self.active_id = None
 
@@ -495,10 +504,10 @@ class RuleWorkspace:
                 self.live = {"status": "ready", "new_session": new_session}
         except _CONFIG_EXCEPTIONS as exc:
             with self.lock:
-                with suppress(*_CONFIG_EXCEPTIONS):
+                with suppress(ValueError):
                     self._disconnect()
-                self.active_id = state["id"]
-                self.live = {"status": "error", "text": str(exc)}
+                    self.active_id = state["id"]
+                    self.live = {"status": "error", "text": str(exc)}
         finally:
             with self.lock:
                 self.worker = None
@@ -691,11 +700,11 @@ class RuleWorkspace:
             _require_same_project(normalized_root, project_root)
             self._verify_origins(state, project_root, rules)
 
+        if self.active_id == state["id"]:
+            self._disconnect()
         apply_config(candidate, state["base"], verify_origins)
         state["applied"] = True
         state.pop("preview", None)
-        if self.active_id == state["id"]:
-            self._disconnect()
 
     def _archives(self):
         project_root, _, rules = self._config()
@@ -743,12 +752,17 @@ class RuleWorkspace:
                 if not self.worker:
                     self._disconnect()
                 return {}
+            if kind == "retry-stop":
+                if self.worker is not None or not self.stop_error:
+                    raise ValueError("再確認が必要なJunieセッションはありません。")
+                self._disconnect()
+                return self.snapshot(identifier)
             if kind == "start":
                 return self.start()
             path = self.draft(identifier)
             state = _read_draft_state(path)
             if kind == "answer":
-                if self.active_id != identifier or self.chat is None or not self.worker:
+                if self.stop_error or self.active_id != identifier or self.chat is None or not self.worker:
                     raise ValueError("このJunieの確認は終了しています。")
                 self.chat.answer(action.get("request"), action.get("option"))
                 return self.snapshot(identifier)
@@ -757,7 +771,8 @@ class RuleWorkspace:
                     raise ValueError("別の下書きが作業中です。")
                 self.cancelled.set()
                 if not self.worker:
-                    self._disconnect()
+                    with suppress(ValueError):
+                        self._disconnect()
                 return self.snapshot(identifier)
             self._check_idle()
             if kind in {"archive", "restore"}:

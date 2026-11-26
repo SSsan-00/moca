@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from concurrent.futures import Future
+from contextlib import suppress
 from pathlib import Path
 from time import monotonic, sleep
 from uuid import uuid4
@@ -19,11 +20,18 @@ class RuleChat(junie_cli._AcpSession):
         self.turn_id = None
         self.next_turn = 10
         command = junie_cli.build_command(project, "", None, model=model, effort=effort)
-        process = junie_cli._launch_process(
-            junie_cli.acp_command(command), owned=True, cwd=project,
+        self.project = project
+        self.command = command
+        self.process = None
+
+    def _connect(self):
+        # ワークスペースに登録した後で起動し、初期化の書込みが失敗しても所有権を失わない。
+        self.process = junie_cli._launch_process(
+            junie_cli.acp_command(self.command), owned=True, cwd=self.project,
+            kill_on_close=True, retain_job_on_stop_error=True,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
-        super().__init__(process, command, project, self.show_permission, project / "unused", "", None)
+        super().__init__(self.process, self.command, self.project, self.show_permission, self.project / "unused", "", None)
         self.request(1, "initialize", protocolVersion=1, clientCapabilities={})
 
     def show_permission(self, request):
@@ -86,6 +94,10 @@ class RuleChat(junie_cli._AcpSession):
         return super()._receive_message(message)
 
     def wait(self, *, ready=False, cancelled, publish):
+        if cancelled.is_set():
+            raise InterruptedError("Junieとの整理を中断しました。")
+        if ready and self.process is None:
+            self._connect()
         deadline = monotonic() + 600
         waiting = None
         while not cancelled.is_set():
@@ -110,10 +122,17 @@ class RuleChat(junie_cli._AcpSession):
         raise InterruptedError("Junieとの整理を中断しました。")
 
     def shutdown(self):
-        try:
-            junie_cli._close_junie(self.process)
-        finally:
+        process = self.process
+        if process is None:
+            return
+        # 終了が未確認ならJobとACP接続を保持し、再試行では同じプロセスだけを確認する。
+        junie_cli._close_junie(process)
+        with suppress(OSError, ValueError, RuntimeError, AttributeError):
             self.close()
+        for stream in (process.stdin, process.stdout):
+            with suppress(OSError, ValueError):
+                stream.close()
+        self.process = None
 
 
 def decode_reply(text):

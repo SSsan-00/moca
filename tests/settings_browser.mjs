@@ -424,10 +424,11 @@ try {
     window.stopRuleChatFixture = () => { window.fetch = original; };
     const fixture = {id: "browser-rules-fixture", revision: 0, messages: [], unresolved: [], files: []};
     window.ruleChatActions = [];
+    window.testUnconfirmedRuleStop = false;
     window.fetch = (url, options) => {
       if (!String(url).startsWith("rule-workspace")) return original(url, options);
       if (!options?.body) return Promise.resolve(Response.json(String(url).includes("id=") ?
-        fixture : {drafts: [{id: fixture.id, files: 0}]}));
+        fixture : {drafts: [{id: fixture.id, files: 0}], stop_error: fixture.stop_error}));
       const action = JSON.parse(options.body);
       window.ruleChatActions.push(action);
       fixture.revision++;
@@ -439,7 +440,19 @@ try {
       } else if (action.action === "answer") {
         fixture.live = {status: "running", text: "確認を続けています。"};
       } else if (action.action === "stop") {
-        fixture.live = {status: "error", text: "Junieとの整理を中断しました。"};
+        if (window.testUnconfirmedRuleStop) {
+          fixture.stop_error = "Junieの終了を確認できません。";
+          fixture.live = {status: "stop_unconfirmed", text: fixture.stop_error};
+        } else {
+          fixture.live = {status: "error", text: "Junieとの整理を中断しました。"};
+        }
+      } else if (action.action === "retry-stop") {
+        if (window.testUnconfirmedRuleStop) {
+          window.testUnconfirmedRuleStop = false;
+          return Promise.resolve(new Response(fixture.stop_error, {status: 409}));
+        }
+        delete fixture.stop_error;
+        fixture.live = null;
       }
       return Promise.resolve(Response.json(fixture));
     };
@@ -460,8 +473,24 @@ try {
   assert.equal(await evaluate(field("rules-status") + ".textContent"), "Junieとの整理を中断しました。");
   assert.deepEqual(await evaluate("window.ruleChatActions.slice(1).map(({action, request, option}) => [action, request || '', option || ''])"),
     [["message", "", ""], ["answer", "browser-permission", "allow"], ["stop", "", ""]]);
+  await evaluate("window.testUnconfirmedRuleStop = true");
+  await click("rules-message");
+  await wait("!" + field("rules-stop") + ".hidden");
+  await change("rules-instruction", "再確認後に送る下書き", "input");
+  await click("rules-stop");
+  const retryStop = field("rules-retry-stop");
+  await wait("!" + retryStop + ".hidden && !" + retryStop + ".disabled");
+  assert.equal(await evaluate(field("rules-stop-error") + ".textContent"), "Junieの終了を確認できません。");
+  assert(await evaluate(["message", "model", "optimize", "start", "apply"].map(id =>
+    field("rules-" + id) + ".disabled").join(" && ")));
+  await click("rules-retry-stop");
+  await wait("!" + retryStop + ".hidden && !" + retryStop + ".disabled");
+  assert(await evaluate(field("rules-message") + ".disabled"));
+  await click("rules-retry-stop");
+  await wait(retryStop + ".hidden && !" + field("rules-message") + ".disabled");
+  assert.equal(await value("rules-instruction"), "再確認後に送る下書き");
   await evaluate("stopRuleChatFixture()");
-  console.log("Browser RuleWorkspace live actions: streaming text, permission, cancellation, and unsent draft remain distinct");
+  console.log("Browser RuleWorkspace live actions: permission, normal cancellation, blocked stop, and confirmed recovery keep unsent input");
   await click("tab-editor");
   const sourceEditor = "window.monaco?.editor.getEditors().find(e => document.getElementById('editor-code').contains(e.getDomNode()))";
   await wait(sourceEditor + "?.getModel()?.getLanguageId() === 'csharp'");

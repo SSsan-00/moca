@@ -1895,10 +1895,12 @@ def run_dashboard(
             except KeyboardInterrupt:
                 pass
             finally:
-                view.rule_workspace.close()
-                manager.close()
-                server.shutdown()
-                thread.join()
+                try:
+                    view.rule_workspace.close()
+                finally:
+                    manager.close()
+                    server.shutdown()
+                    thread.join()
     finally:
         manager.close()
     return manager.results.get(run_id, saved)
