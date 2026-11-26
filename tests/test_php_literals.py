@@ -20,20 +20,15 @@ class PhpLiteralTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 php_literals.csharp_literal(value)
 
-    def test_keyword_name_preserves_contract_or_allocates_an_unused_local(self):
+    def test_new_identifier_never_escapes_or_collides_with_an_existing_name(self):
         name = php_literals.csharp_identifier
-        self.assertEqual(name("class"), "@class")
-        self.assertEqual(name("event", internal_base="eventName", occupied=["@eventName", "eventName2"]), "eventName3")
-        self.assertEqual(name("@class", internal_base="className"), "@class")
-        for unchanged in ("record", "Class", "@await", "eventName"):
-            self.assertEqual(name(unchanged, internal_base="other"), unchanged)
-        with self.assertRaises(ValueError):
-            name("event", occupied=["@event"])
-        for invalid in ("$class", "Model.event", '"event"', "@@class", ":event"):
-            with self.assertRaises(ValueError):
+        self.assertEqual(name("eventName", occupied=["@eventName", "eventName2"]), "eventName3")
+        self.assertEqual(name("EventName", occupied=["eventName"]), "EventName")
+        for allowed in ("record", "Class", "eventName"):
+            self.assertEqual(name(allowed), allowed)
+        for invalid in ("event", "class", "switch", "__arglist", "@event", "@await", "$class", "Model.event", '"event"'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 name(invalid)
-        with self.assertRaises(ValueError):
-            name("event", internal_base="switch")
 
     cases = [
         ('"edge-15001-\\"<&>/\\\\日本"', 'edge-15001-"<&>/\\日本'),

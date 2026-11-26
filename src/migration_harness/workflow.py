@@ -798,13 +798,15 @@ def _stage_migration_materials(
 
 # 以下はJunieへ渡す共通指示。実行による検証はハーネス側の工程に任せる。
 _CSHARP_IDENTIFIERS = (
-    "When a PHP name or imported draft uses a C# keyword as an identifier, reuse any established mapping. "
-    "For a new internal name choose a meaningful unused name in its C# scope; keep declarations and bound "
-    "references consistent across capsules, .cs and .cshtml. If the exact member or parameter name is a "
-    "contract, escape it (e.g. @event; Razor: @(Model.@event)). Keep existing valid escapes and contextual "
-    "keywords that work in place. Do not globally replace text or change literal keys, form/JSON names, "
-    "routes, SQL or JavaScript contracts. If a safe change needs edits outside the allowed targets, "
-    "report it instead. "
+    "If a PHP or draft C# identifier conflicts with a C# keyword, choose a meaningful non-keyword name "
+    "unused in that scope; never introduce an @-escaped identifier to solve the conflict. Reuse the same "
+    "mapping for its declaration and all bound references, including later capsules and paired Razor files. "
+    "Do not rename unrelated valid identifiers (including existing escapes or legal contextual keywords). "
+    "Preserve external names at their existing boundary, e.g. [JsonPropertyName(\"event\")] on EventName "
+    "for System.Text.Json, or the original form/query key when binding input. Keep route, SQL, HTML and "
+    "JavaScript names and literals unchanged. Normal Razor transitions such as @Model.EventName remain valid. "
+    "Do not globally replace text, change an external C# API, or silently break uneditable callers; ask for "
+    "review if the contract cannot be preserved within the allowed targets. "
 )
 
 _TARGET_ENCODING = (
@@ -830,9 +832,8 @@ _EXACT_SOURCE_DATA = (
     "or use a tokenizer as needed. Exclude examples, shared rules, and read-only boundary rows from the data. "
     "For plain quoted PHP strings use the supplied .migration-materials/php_literals.py: "
     "in Python, import runpy; helpers = runpy.run_path('.migration-materials/php_literals.py') "
-    "(no import cache files). For individual ASCII identifiers, helpers['csharp_identifier'](name) preserves "
-    "the exact name, escaping reserved words. For a fresh internal mapping pass internal_base and the other "
-    "bound names in scope as occupied. Never pass source text or literal keys. "
+    "(no import cache files). For a new ASCII identifier, helpers['csharp_identifier'](candidate, "
+    "occupied=other_bound_names) checks a proposed non-keyword name and avoids collisions. "
     "For literal array appends call helpers['capsule_appends'](path, variable) "
     "with the actual source variable name. Use each saved .migration-materials/source-*.md in filename order "
     "when available, otherwise .migration-context.md; this reconstructs the assigned sequence through this segment. "

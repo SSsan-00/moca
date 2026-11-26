@@ -26,24 +26,17 @@ __arglist __makeref __reftype __refvalue
 """.split())
 
 
-def csharp_identifier(name: str, *, internal_base: str | None = None, occupied: Iterable[str] = ()) -> str:
-    """Spell one simple identifier, not source text. Exclude this declaration from occupied names."""
-    if not re.fullmatch(r"@?[A-Za-z_][A-Za-z_0-9]*", name):
-        raise ValueError("expected one simple C# identifier without a PHP $, not an expression or key")
-    bare = name.removeprefix("@")
-    used = {other.removeprefix("@") for other in occupied}
-    if name.startswith("@") or bare not in _CSHARP_RESERVED or internal_base is None:
-        if bare in used:
-            raise ValueError("this name is already bound; inspect the declaration and its callers")
-        return "@" + bare if bare in _CSHARP_RESERVED else name
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", internal_base) or internal_base in _CSHARP_RESERVED:
-        raise ValueError("choose an unreserved internal name that describes the declaration")
-    candidate = internal_base
+def csharp_identifier(candidate: str, *, occupied: Iterable[str] = ()) -> str:
+    """Allocate a new simple C# name; pass other bound names in the declaration scope."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", candidate) or candidate in _CSHARP_RESERVED:
+        raise ValueError("supply a meaningful, unescaped, non-keyword C# name for this declaration")
+    used = {name.removeprefix("@") for name in occupied}
+    name = candidate
     suffix = 2
-    while candidate in used:
-        candidate = f"{internal_base}{suffix}"
+    while name in used:
+        name = f"{candidate}{suffix}"
         suffix += 1
-    return candidate
+    return name
 
 
 def csharp_literal(value: str | int | bool | None) -> str:
