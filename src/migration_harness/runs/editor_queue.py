@@ -285,7 +285,10 @@ def _recover_editor_save(run_path, path, before, worktree, targets):
         name, after = record["target"], record["history_after"]
         if not isinstance(name, str) or not isinstance(after, dict):
             raise ValueError("invalid editor save recovery")
+        _validate_editor_history(after)
         previous, updated, history_before = record["before"], record["after"], record["history_before"]
+        if not content_hash(previous, missing=True) or not content_hash(updated):
+            raise ValueError("invalid editor recovery target version")
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(_HISTORY_RECOVERY + " 保存時の復旧記録を読み取れません。") from exc
     if name not in {target.as_posix() for target in targets if target.suffix.lower() in EDITOR_TARGET_SUFFIXES}:

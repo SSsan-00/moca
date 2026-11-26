@@ -296,6 +296,8 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
     if not isinstance(resume_attempts, int) or isinstance(resume_attempts, bool) or resume_attempts < 0:
         raise ValueError("run record contains an invalid resume-attempt count")
     capsule_path, manifest = capsule_files.load_capsule_manifest(run_path)
+    if manifest.get("unit_id", unit["id"]) != unit["id"]:
+        raise ValueError("run manifest does not match the recorded migration unit")
     parts = manifest["parts"]
     context_paths = []
     for part in parts:

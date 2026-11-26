@@ -6,6 +6,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .junie.junie_notifications import notification_settings
+from .saved_state import versionless_record
 
 _INPUT_ENCODINGS = {"auto", "utf-8", "utf-8-sig", "euc-jp"}
 SCRIPT_PHASES = (
@@ -133,6 +134,7 @@ def load_config(path: Path) -> dict[str, Any]:
     config_path = path.expanduser().resolve()
     with config_path.open("rb") as stream:
         raw = tomllib.load(stream)
+    versionless_record(raw, config_path.name)
 
     project = raw.get("project", {})
     project_settings = _project_settings(project, config_path)
