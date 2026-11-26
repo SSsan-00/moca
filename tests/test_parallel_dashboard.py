@@ -64,7 +64,7 @@ class ParallelDashboardTests(HarnessCase):
             return subprocess.CompletedProcess(args, 0) if args[0] == "dotnet" else command(args, **kwargs)
 
         for target, name, replacement in ((junie_cli, "require_interactive_cli", lambda: None),
-                                          (junie_cli, "run_interactive", migrate), (workflow, "run_process", process)):
+                                          (junie_cli, "run_interactive", migrate), (execution, "run_process", process)):
             mocked = patch.object(target, name, side_effect=replacement)
             mocked.start()
             self.addCleanup(mocked.stop)
