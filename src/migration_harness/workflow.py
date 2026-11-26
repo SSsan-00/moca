@@ -11,6 +11,7 @@ from typing import Any
 from . import config as harness_config
 from .config import find_unit
 from .context.migration_materials import stage_migration_capsule
+from .context.source_context import require_pinned_target_context
 from .errors import RunInterrupted, RunScriptError, format_error
 from .junie import junie_cli
 from .runs import editor_queue as editor_queue_store, reference_refresh, resume_plan, run_records
@@ -154,6 +155,11 @@ def _resume_with_junie(
                          "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
     resume_plan.require_confirmed_repair_history(record)
     require_selected_repair_lineage(record.get("repair_pending", {}))
+    run_records.require_prepared_run_settings(record)
+    if ("target_hashes" in record or "target_sha256" in record or "agent_workspace_path" in record
+            or record["completed_capsules"] or record.get("target_apply_pending")):
+        run_records.require_target_hashes(record)
+    require_pinned_target_context(run_path / "capsule", record)
     if editor_save_pending(run_path):
         with editor_queue_store.editor_queue(run_path, recover=(worktree_path, harness_config.target_paths(unit))):
             pass

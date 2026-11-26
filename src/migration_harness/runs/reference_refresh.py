@@ -94,7 +94,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     proposal = Path(mkdtemp(prefix="reference-refresh-", dir=run_path))
     pinned = target_context_snapshot(capsule)
     saved = target_context_snapshot(capsule, pending["previous"])
-    stage_target_context(worktree, targets, capsule, proposal)
+    stage_target_context(worktree, targets, capsule, proposal, require_existing=True)
     previous_root = proposal / ".migration-materials" / "previous-references"
     _, old_inventory = target_context_inventory(saved)
     for name in pending["changes"]:
@@ -110,7 +110,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     changes.parent.mkdir(parents=True, exist_ok=True)
     changes.write_text(json.dumps(pending["changes"], ensure_ascii=False, indent=2), encoding="utf-8")
     selected = detail_selection.review_detail_applicability(
-        run_path, capsule, manifest, targets, record, record.get("junie_max_steps", config["junie_max_steps"]),
+        run_path, capsule, manifest, targets, record, record["junie_max_steps"],
         config=config, pinned_context=proposal,
     )
     material = stage_migration_materials(
@@ -146,7 +146,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
         f"`{token}` to `{completion.name}`. Leave it absent if you did not finish."
     )
     args = junie_cli.build_command(
-        proposal, prompt + inline, record.get("junie_max_steps", config["junie_max_steps"]), guidelines=guidelines,
+        proposal, prompt + inline, record["junie_max_steps"], guidelines=guidelines,
         **run_model_options(run_path, record, config),
     )
     allowed = {*targets, Path(completion.name)}
@@ -587,7 +587,7 @@ def refresh_target_context_on_resume(config, unit, run_path, worktree, record, *
                 raise ValueError(f"削除された参考資料の作業コピーが変更されています: {name}")
             path.chmod(0o600)
             path.unlink()
-    stage_target_context(worktree, targets, capsule, canonical)
+    stage_target_context(worktree, targets, capsule, canonical, require_existing=True)
     record.setdefault("reference_refresh_history", []).append(record.pop("reference_refresh"))
     record.pop("error", None)
     report_activity(f"更新された参考資料 {len(pending['changes'])} 件を反映しました。")

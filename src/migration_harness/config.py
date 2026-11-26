@@ -414,14 +414,12 @@ def _normalize_unit(unit, root, project_context, common_inputs):
         raise ValueError(f"unit {unit['id']}: specify source or at least one [[units.inputs]] entry")
     normalized_inputs.extend(_normalize_input(item, f"unit {unit['id']}", root=root) for item in inputs)
 
-    normalized = {"id": unit["id"], "target": targets[0], "inputs": common_inputs + normalized_inputs}
+    normalized = {"id": unit["id"], "target": targets[0], "targets": targets,
+                  "inputs": common_inputs + normalized_inputs}
     if project_context or "target_context" in unit:
         normalized["target_context"] = {**project_context, **target_context_policy(unit.get("target_context", {}))}
     if "draft_imports" in unit:
         normalized["draft_import_commands"] = _draft_import_commands(unit, target_files, root)
-    if "targets" in unit:
-        normalized["targets"] = [target.as_posix() for target in target_files]
-        normalized["target"] = normalized["targets"][0]
     return normalized
 
 
@@ -506,5 +504,5 @@ def find_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
 
 
 def target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:
-    """単一移行先を指定した旧設定も同じ順序付き形式で扱う。"""
+    """単一移行先を指定する設定も同じ順序付き形式で扱う。"""
     return tuple(Path(name) for name in unit.get("targets", [unit["target"]]))

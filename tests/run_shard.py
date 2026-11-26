@@ -67,7 +67,7 @@ REQUIRED_WINDOWS_RECOVERY = {
 
 
 REQUIRED_SAVED_STATE = {
-    "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_legacy_single_target_reopens_and_resumes_without_rewriting",
+    "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_current_single_target_reopens_and_legacy_target_shapes_are_preserved_on_rejection",
     "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_malformed_records_fail_closed_before_resume_and_keep_original",
     "tests.runs.test_saved_run_schema.SavedEditorSchemaTests.test_broken_history_or_pending_journal_keeps_both_versions",
     "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_comparison_keeps_valid_v1_bytes_and_refuses_a_different_version_or_run",

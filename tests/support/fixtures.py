@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from migration_harness.runs import migration_workspace, run_records
 from migration_harness.verification import roslyn_syntax
 from migration_harness.config import load_config
 from migration_harness.context.capsules import is_php_input
+from migration_harness.files import sha256_file
 
 
 def prepare_fixture(config, unit_id):
@@ -148,18 +150,33 @@ class SavedRunFixture(unittest.TestCase):
             {"path": "example.php", "start_line": 1, "end_line": 1, "encoding": "utf-8"},
         ])], php={"example.php": ("utf-8", (project / "example.php").read_bytes())})
         self.record_path = self.run_path / "run.json"
+        self.set_saved_target_context([self.target.name])
         self.build_log = self.run_path / "build.log"
         self.checker_log = self.run_path / "checker.log"
         self.build_log.write_bytes(b"old successful build\n")
         self.checker_log.write_bytes(b"PREVIOUS Example.cs:1 warning: previous finding\n")
         self.save_record({
             "run_id": self.run_id, "unit_id": "example", "target": self.target.name,
+            "targets": [self.target.name], "target_hashes": {self.target.name: sha256_file(self.target)},
             "project_root": str(project), "worktree_path": str(self.worktree),
             "status": "checker_needs_review", "completed_capsules": 1, "context_capsules": 1,
+            "current_capsule": 1, "resume_attempts": 0,
+            "junie_max_steps": None, "junie_model": None, "junie_effort": None,
             "max_context_chars": 1000, "source_boundary_review_required": False,
             "build_exit_code": 0, "build_log_path": str(self.build_log),
             "checker_exit_code": 1, "checker_log_path": str(self.checker_log),
         })
+
+    def remove_fixture_target_context(self):
+        shutil.rmtree(self.run_path / "capsule" / "target-context")
+
+    def set_saved_target_context(self, targets):
+        snapshot = self.run_path / "capsule" / "target-context"
+        snapshot.mkdir(parents=True, exist_ok=True)
+        (snapshot / "manifest.json").write_text(json.dumps({
+            "targets": sorted(targets), "policy": {"roots": []}, "roots": [], "files": [],
+            "directories": [], "bytes": 0,
+        }), encoding="utf-8")
 
     def save_record(self, record):
         self.record_path.write_text(json.dumps(record), encoding="utf-8")

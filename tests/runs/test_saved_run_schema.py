@@ -8,19 +8,17 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from tests.support.fixtures import SavedRunFixture
+from tests.support.fixtures import HarnessCase, SavedRunFixture, prepare_fixture
 from migration_harness import execution, workflow
 from migration_harness.config import load_config
+from migration_harness.junie import junie_cli
 from migration_harness.runs import editor_queue, resume_plan, run_records
 from migration_harness.web.diff_viewer import save_workspace, snapshot_bytes
 
 
 class SavedRunSchemaTests(SavedRunFixture):
-    def test_legacy_single_target_reopens_and_resumes_without_rewriting(self):
+    def test_current_single_target_reopens_and_legacy_target_shapes_are_preserved_on_rejection(self):
         record = self.record()
-        for field in ("targets", "verification", "junie_model_revision"):
-            record.pop(field, None)
-        self.save_record(record)
         before = self.record_path.read_bytes()
         run_path, saved = run_records.load_dashboard_record(self.config, self.run_id)
         self.assertEqual(run_path, self.run_path)
@@ -34,6 +32,52 @@ class SavedRunSchemaTests(SavedRunFixture):
         result = workflow.migration_ledger(self.config, self.run_id)
         self.assertEqual(result["completion"], {"complete": False, "verification_passed": False, "total": 1})
         self.assertEqual(self.record_path.read_bytes(), before)
+
+        for remove, added, diagnostic in (
+            ("targets", {}, "targets"),
+            ("target_hashes", {"target_sha256": sha256(self.target.read_bytes()).hexdigest()}, "target_hashes"),
+            ("junie_max_steps", {}, "junie_max_steps"),
+            ("junie_model", {}, "junie_model"),
+            ("current_capsule", {}, "current_capsule"),
+        ):
+            with self.subTest(field=remove):
+                original = self.target.read_bytes()
+                old = {key: value for key, value in record.items() if key != remove} | added
+                self.save_record(old)
+                old_bytes = self.record_path.read_bytes()
+                with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+                    with self.assertRaisesRegex(ValueError, diagnostic):
+                        workflow.resume_with_junie(self.config, self.run_id)
+                self.assertEqual(self.record_path.read_bytes(), old_bytes)
+                self.assertEqual(self.target.read_bytes(), original)
+
+    def test_used_reference_snapshot_is_not_recreated_for_a_saved_run(self):
+        snapshot = self.run_path / "capsule" / "target-context"
+        saved_bytes = self.record_path.read_bytes()
+        target_bytes = self.target.read_bytes()
+        (snapshot / "manifest.json").unlink()
+        snapshot.rmdir()
+        with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+            with self.assertRaisesRegex(ValueError, "固定した参考資料"):
+                workflow.resume_with_junie(self.config, self.run_id)
+        self.assertEqual(self.record_path.read_bytes(), saved_bytes)
+        self.assertEqual(self.target.read_bytes(), target_bytes)
+        self.assertFalse(snapshot.exists())
+
+    def test_saved_reference_capture_without_original_policy_cannot_resume(self):
+        manifest_path = self.run_path / "capsule" / "target-context" / "manifest.json"
+        saved = json.loads(manifest_path.read_bytes())
+        record_bytes = self.record_path.read_bytes()
+        for field in ("policy", "roots"):
+            with self.subTest(field=field):
+                old = {key: value for key, value in saved.items() if key != field}
+                manifest_path.write_text(json.dumps(old), encoding="utf-8")
+                before = manifest_path.read_bytes()
+                with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+                    with self.assertRaisesRegex(ValueError, "元の設定・起点・版"):
+                        workflow.resume_with_junie(self.config, self.run_id)
+                self.assertEqual(manifest_path.read_bytes(), before)
+                self.assertEqual(self.record_path.read_bytes(), record_bytes)
 
     def test_malformed_records_fail_closed_before_resume_and_keep_original(self):
         record = self.record()
@@ -98,6 +142,46 @@ class SavedRunSchemaTests(SavedRunFixture):
                 with self.assertRaises(ValueError):
                     snapshot_bytes(self.config, self.run_id, bad)
                 self.assertEqual(broken.read_bytes(), before)
+
+
+class PreparedRunCanonicalTargetsTests(HarnessCase):
+    def test_current_prepare_then_resume_pins_first_references_and_stores_only_target_map(self):
+        (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
+        self.commit_project()
+        settings = ('target = "Page.cs"', 'targets = ["Page.cshtml.cs", "Page.cshtml"]')
+        for target in settings:
+            with self.subTest(target=target):
+                config = self.config(target)
+                names = config["units"][0]["targets"]
+                prepared = prepare_fixture(config, "sample")
+                run = Path(prepared["run_path"])
+                record_path = run / "run.json"
+                record = json.loads(record_path.read_bytes())
+                self.assertEqual(record["targets"], names)
+                self.assertNotIn("target_hashes", record)
+                self.assertIsNone(record["junie_max_steps"])
+                self.assertFalse((run / "capsule" / "target-context").exists())
+
+                def migrate(command, completion, token, targets, **kwargs):
+                    self.assertEqual([path.name for path in targets], names)
+                    for path in targets:
+                        path.write_text("<p>fixture</p>\n" if path.suffix == ".cshtml" else "class Fixture {}\n",
+                                        encoding="utf-8")
+                    completion.write_text(token, encoding="utf-8")
+                    return 0
+
+                with patch.object(junie_cli, "require_interactive_cli"), patch.object(
+                    junie_cli, "run_interactive", side_effect=migrate,
+                ) as launch, patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}):
+                    self.assertEqual(workflow.resume_with_junie(config, prepared["run_id"])["status"], "build_succeeded")
+                launch.assert_called_once()
+                record = json.loads(record_path.read_bytes())
+                self.assertTrue(record["target_context_initialized"])
+                worktree = Path(record["worktree_path"])
+                self.assertEqual(record["target_hashes"], {
+                    name: sha256((worktree / name).read_bytes()).hexdigest() for name in names
+                })
+                self.assertNotIn("target_sha256", record)
 
 
 class SavedEditorSchemaTests(unittest.TestCase):

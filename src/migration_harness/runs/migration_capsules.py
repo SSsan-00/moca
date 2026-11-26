@@ -11,7 +11,7 @@ from ..context.context_plan import navigation_plan
 from ..context.migration_materials import (
     CSHARP_IDENTIFIERS, STATIC_SOURCE_REVIEW, TARGET_ENCODING, stage_migration_materials,
 )
-from ..context.source_context import stage_target_context
+from ..context.source_context import stage_target_context, target_context_was_initialized
 from ..errors import RunInterrupted, format_error
 from ..execution import check_cancelled, report_activity
 from ..files import has_completion_record, safe_target
@@ -119,7 +119,7 @@ def _run_editor_followup(
     handoff = context_handoff.handoff_prompt(record_path.parent, agent_root, targets, record,
                              draft=record.get("stopped_migration_draft"))
     prompt = context + handoff + memo_request + prompt
-    command = junie_cli.build_command(agent_root, prompt + supplied, record.get("junie_max_steps", config["junie_max_steps"]),
+    command = junie_cli.build_command(agent_root, prompt + supplied, record["junie_max_steps"],
                                       guidelines=guidelines, **run_model_options(record_path.parent, record, config))
     allowed = {*targets, completion.relative_to(agent_root), Path(memo.name)}
     other_files = unlisted_workspace_files(agent_root, allowed)
@@ -177,12 +177,16 @@ def prepare_migration_materials(config, unit, run_path, record, worktree_root, r
     try:
         target_instructions = stage_target_context(
             worktree_root, relative_targets, capsule, agent_root, policy=unit.get("target_context"),
+            require_existing=target_context_was_initialized(record),
         )
+        if record.get("target_context_initialized") is not True:
+            record["target_context_initialized"] = True
+            run_records.write_run_record(record_path, record)
         selected = None
         if not followup_only or "detail_applicability" in record:
             selected = detail_selection.review_detail_applicability(
                 run_path, capsule, manifest, relative_targets, record,
-                record.get("junie_max_steps", config["junie_max_steps"]),
+                record["junie_max_steps"],
                 config=config, pinned_context=agent_root,
             )
     except KeyboardInterrupt as exc:
@@ -210,7 +214,7 @@ def execute_migration_capsule(config, run_path, record, worktree_root, agent_roo
     record_path = run_path / "run.json"
     agent_context = agent_root / ".migration-context.md"
     boundary = agent_root / ".migration-boundary.md"
-    max_steps = record.get("junie_max_steps", config["junie_max_steps"])
+    max_steps = record["junie_max_steps"]
     memo, memo_request = junie_memo_request(agent_root, completion_token)
     allowed = {*relative_targets, completion_path.relative_to(agent_root), Path(memo.name)}
     complete = False

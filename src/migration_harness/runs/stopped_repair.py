@@ -44,7 +44,7 @@ def require_selected_repair_lineage(attempt):
 
 def _original_stopped_draft(run_path, record, attempt):
     active = attempt.get("draft", {})
-    if "restore_from" not in attempt and "selection" not in attempt:
+    if not attempt or ("restore_from" not in attempt and "selection" not in attempt):
         return active
     require_selected_repair_lineage(attempt)
     verified_snapshot_files(run_path, active)
@@ -298,7 +298,6 @@ def _save_restored_selection(run_path, record, attempt, baseline, adopted, parti
     attempt["selection"] = {"base": restored_hashes, "partial": partial}
     if adopted:
         record["target_hashes"] = restored_hashes
-        record["target_sha256"] = restored_hashes[Path(record["target"]).as_posix()]
     # A failed commit leaves the saved plan retryable against the original hashes.
     previous = attempt.pop("restore_from")
     try:

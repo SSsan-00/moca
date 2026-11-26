@@ -319,12 +319,7 @@ def validate_resume_plan(config, run_id, record, verification_request, stage):
 
 def load_resume_context(config, run_id, run_path, worktree_path, record, unit, status):
     """保存カプセルと進捗を検証し、再開時の移行・検証の入力を復元する。"""
-    max_steps = record.get("junie_max_steps", config["junie_max_steps"])
-    if max_steps is not None and (isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1):
-        raise ValueError("run record contains an invalid Junie max-steps value")
-    resume_attempts = record.get("resume_attempts", 0)
-    if not isinstance(resume_attempts, int) or isinstance(resume_attempts, bool) or resume_attempts < 0:
-        raise ValueError("run record contains an invalid resume-attempt count")
+    run_records.require_prepared_run_settings(record)
     capsule_path, manifest = capsule_files.load_capsule_manifest(run_path)
     if manifest["unit_id"] != unit["id"]:
         raise ValueError("run manifest does not match the recorded migration unit")
@@ -342,7 +337,7 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
             raise ValueError("run manifest points to a missing or out-of-run context capsule")
         context_paths.append(str(context_path))
 
-    completed_capsules = record.get("completed_capsules", 0)
+    completed_capsules = record["completed_capsules"]
     script_retry = status in _SCRIPT_RESUME_STATUSES
     # 移行後の失敗ならカプセル処理を繰り返さない。フックの失敗は保存済みの実行段階で分ける。
     migration_complete = (
@@ -356,15 +351,11 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
             else not 0 <= completed_capsules < len(context_paths))
     ):
         raise ValueError("run record has inconsistent capsule completion")
-    if not migration_complete and not waiting_at_final_checkpoint and record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
+    if not migration_complete and not waiting_at_final_checkpoint and record["current_capsule"] != completed_capsules + 1:
         raise ValueError("run record has inconsistent capsule progress; inspect it before resuming")
 
-    if record.get("context_capsules", len(context_paths)) != len(context_paths):
+    if record["context_capsules"] != len(context_paths):
         raise ValueError("run record and manifest have inconsistent capsule counts")
-    boundary = record.get("source_boundary_review_required")
-    max_context = record.get("max_context_chars")
-    if type(boundary) is not bool or type(max_context) is not int or max_context < 1:
-        raise ValueError("run record is missing valid context preparation settings")
     result = {
         "run_id": run_id,
         "unit_id": unit["id"],
@@ -376,7 +367,7 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
         "context_part_chars": [part["chars"] for part in parts],
         "capsule_path": str(capsule_path),
         "capsule_count": len(context_paths),
-        "source_boundary_review_required": boundary,
-        "max_context_chars": max_context,
+        "source_boundary_review_required": record["source_boundary_review_required"],
+        "max_context_chars": record["max_context_chars"],
     }
     return result, migration_complete, waiting_at_final_checkpoint, script_retry

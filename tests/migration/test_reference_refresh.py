@@ -49,7 +49,9 @@ class ReferenceRefreshTests(unittest.TestCase):
             policy={"roots": [], "folders": ["refs"]},
         )
         before = {self.target.as_posix(): target_hash(self.worktree / self.target)}
-        self.record = {"target": self.target.as_posix(), "status": "interrupted", "completed_capsules": 1,
+        self.record = {"target": self.target.as_posix(), "targets": list(before),
+                       "status": "interrupted", "completed_capsules": 1, "current_capsule": 1, "context_capsules": 1,
+                       "junie_max_steps": None, "junie_model": None, "junie_effort": None, "resume_attempts": 0,
                        "target_hashes": before.copy(), "build_exit_code": 0, "checker_exit_code": 0,
                        "capsule_checkpoints": {"1": target_snapshots.save_capsule_checkpoint(
                            self.run, self.worktree, self.targets, before)}}
@@ -342,6 +344,7 @@ class RecordedEditsResumeTests(SavedRunFixture):
         reference = self.worktree / "refs" / "Library.cs"
         reference.parent.mkdir()
         reference.write_text("reference A", encoding="utf-8")
+        self.remove_fixture_target_context()
         source_context.stage_target_context(self.worktree, (target,), capsule, agent,
                                             policy={"roots": [], "folders": ["refs"]})
         with editor_queue_store.editor_queue(self.run_path) as queue:
@@ -418,6 +421,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.reference = self.worktree / "refs" / "Library.cs"
         self.reference.parent.mkdir()
         self.reference.write_text("reference A", encoding="utf-8")
+        self.remove_fixture_target_context()
         source_context.stage_target_context(self.worktree, self.targets, self.capsule, self.agent,
                                            policy={"roots": [], "folders": ["refs"]})
         self.base = "start\nreference A\n1\n2\n3\n4\nold label\nend\n"

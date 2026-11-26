@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from .. import files as harness_files
-from ..config import find_unit
 from ..context import capsules as capsule_files, context_handoff
 from ..context.context_handoff import junie_memo_request, save_junie_memo
 from ..context.context_plan import navigation_plan
@@ -180,7 +179,7 @@ def _repair_target(
     )
     record["supplied_rules"] = supplied_rules
     material_instructions += stage_target_context(
-        worktree, targets, capsule, agent_root, policy=find_unit(config, record["unit_id"]).get("target_context"),
+        worktree, targets, capsule, agent_root, require_existing=True,
     )
     stopped_draft, before, agent_targets, resume_draft, staged_versions = _sync_repair_workspace(
         run_path, worktree, agent_root, targets, repair_targets, attempt,
@@ -249,7 +248,7 @@ def _repair_target(
         f"After saving the completed repair, write exactly `{token}` as plain text to "
         f"`{completion_path.name}` as your final file action. Leave the record absent if blocked or incomplete."
     )
-    max_steps = record.get("junie_max_steps", config["junie_max_steps"])
+    max_steps = record["junie_max_steps"]
     context, report = operator_edit_context(run_path, agent_root, token, inputs, record.get("operator_question"))
     guidelines, supplied = task_guidelines(agent_root, inputs)
     memo, memo_request = junie_memo_request(agent_root, token)

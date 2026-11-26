@@ -86,7 +86,7 @@ def checker_rule_context(run_path: Path, worktree: Path, record: dict) -> dict |
             rules[name] = {"sha256": rule["sha256"], "saved_file_lines": lines, "decision": decision}
     if not rules:
         return None
-    names = record.get("targets") or [record["target"]]
+    names = record["targets"]
     targets = {name: target_hash(safe_target(worktree, Path(name))) for name in names}
     if not all(targets.values()):
         return None

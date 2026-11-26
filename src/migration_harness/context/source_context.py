@@ -15,6 +15,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from ..config import TARGET_CONTEXT_ROOTS, target_context_policy
 from ..execution import check_cancelled, report_activity
 from ..files import has_symlink_component, sha256_file
+from ..saved_state import saved_object, versionless_record
 
 
 def _reserved(path: Path) -> bool:
@@ -187,11 +188,45 @@ def activate_target_context(capsule: Path, snapshot: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def target_context_was_initialized(record):
+    return (record.get("target_context_initialized") is True or bool(record.get("completed_capsules"))
+            or any(key in record for key in ("last_context_plan", "reference_refresh", "detail_applicability")))
+
+
+def require_pinned_target_context(capsule, record):
+    if target_context_was_initialized(record):
+        snapshot = target_context_snapshot(capsule)
+        if not snapshot.is_dir() or not _safe(snapshot, Path("manifest.json")).is_file():
+            raise ValueError("固定した参考資料の記録がありません。元の資料と成果物を確認し、新しい Run に引き継いでください。")
+        manifest = _saved_target_context_manifest(snapshot)
+        settings = target_context_policy(manifest["policy"])
+        targets = {Path(name) for name in record["targets"]}
+        if (manifest["targets"] != sorted(path.as_posix() for path in targets)
+                or manifest["roots"] != sorted(path.as_posix() for path in _context_roots(targets, settings))):
+            raise ValueError("保存済み参照資料の移行先または起点が一致しません。新しい Run に引き継いでください。")
+
+
+def _saved_target_context_manifest(snapshot):
+    path = _safe(snapshot, Path("manifest.json"))
+    if not path.is_file():
+        raise ValueError(f"saved target context manifest is missing: {path}; prepare a new run")
+    manifest = saved_object(path.read_text(encoding="utf-8"), "target context manifest")
+    versionless_record(manifest, "target context manifest")
+    if ("policy" not in manifest or not isinstance(manifest.get("roots"), list)
+            or type(manifest.get("bytes")) is not int or manifest["bytes"] < 0
+            or any(not isinstance(manifest.get(key), list) for key in ("targets", "directories", "files"))):
+        raise ValueError("固定した参考資料の元の設定・起点・版を確認できません。新しい Run に引き継いでください。")
+    return manifest
+
+
 def target_context_inventory(snapshot: Path) -> tuple[dict, dict[str, str]]:
-    manifest = json.loads(_safe(snapshot, Path("manifest.json")).read_bytes())
+    manifest = _saved_target_context_manifest(snapshot)
     files = {}
     for entry in manifest["files"]:
-        name, digest = entry["path"], entry["sha256"]
+        name = entry.get("path") if isinstance(entry, dict) else None
+        digest = entry.get("sha256") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not isinstance(digest, str):
+            raise ValueError("invalid saved target context entry")
         relative = Path(name)
         if not relative.parts or relative.as_posix() != name or name in files or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("invalid saved target context entry")
@@ -204,13 +239,14 @@ def compare_target_context(worktree: Path, targets: tuple[Path, ...], snapshot: 
     manifest, previous = target_context_inventory(snapshot)
     settings = target_context_policy(manifest["policy"])
     targets = set(targets)
-    if manifest["targets"] != sorted(path.as_posix() for path in targets):
-        raise ValueError("saved target context does not match the current migration targets")
+    roots = _context_roots(targets, settings)
+    if (manifest["targets"] != sorted(path.as_posix() for path in targets)
+            or manifest["roots"] != sorted(path.as_posix() for path in roots)):
+        raise ValueError("saved target context does not match the current migration targets or reference roots")
     report_activity("参考ファイルの更新を確認しています。")
     current = {}
     total = 0
-    for relative, source, size in _context_entries(worktree, targets, settings, _context_roots(targets, settings),
-                                                   lambda _: check_cancelled()):
+    for relative, source, size in _context_entries(worktree, targets, settings, roots, lambda _: check_cancelled()):
         if size is not None:
             total += size
             _check_context_limits(settings, relative, size, total, len(current) + 1)
@@ -228,13 +264,9 @@ def _check_context_limits(settings, relative, size, total, count):
 
 def stage_target_context(
     worktree: Path, targets: tuple[Path, ...], capsule: Path, agent_root: Path, *, policy: dict | None = None,
-    snapshot_name: str | None = None,
+    snapshot_name: str | None = None, require_existing: bool = False,
 ) -> str:
-    """Call after preparation scripts, before Junie; restore only pinned non-target files.
-
-    The separate target-context/manifest.json is published with its snapshots atomically.
-    A legacy run without this snapshot initializes it on its first call.
-    """
+    """初回または新規版の固定と、確定済み資料の復元を区別する。"""
     check_cancelled()
     worktree, capsule, agent_root = (Path(path).absolute() for path in (worktree, capsule, agent_root))
     for root in (worktree, capsule, agent_root):
@@ -250,7 +282,6 @@ def stage_target_context(
             raise ValueError(f"target conflicts with a reserved or invalid context path: {target}")
     target_names = sorted(path.as_posix() for path in targets)
     snapshot = target_context_snapshot(capsule, snapshot_name)
-    manifest_path = _safe(snapshot, Path("manifest.json"))
     processed, last_report = 0, time.monotonic()
     report_activity("移行先の参照資料を検証・復元しています。")
 
@@ -267,6 +298,8 @@ def stage_target_context(
 
     check_cancelled()
     if not snapshot.exists():
+        if require_existing:
+            raise ValueError("固定した参考資料が見つかりません。新しい Run に引き継いでください。")
         settings = target_context_policy(policy if policy is not None else {})
         roots = _context_roots(targets, settings)
         capsule.mkdir(parents=True, exist_ok=True)
@@ -287,16 +320,12 @@ def stage_target_context(
                 stream.write("\n")
             check_cancelled()
             staging.rename(snapshot)
-    if not manifest_path.is_file():
-        raise ValueError(f"saved target context manifest is missing: {manifest_path}; prepare a new run")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict) or manifest.get("targets") != target_names or any(
-        not isinstance(manifest.get(key), list) for key in ("directories", "files")
-    ):
+    manifest = _saved_target_context_manifest(snapshot)
+    if manifest["targets"] != target_names:
         raise ValueError("invalid saved target context manifest or changed targets; prepare a new run")
-    settings = target_context_policy(manifest.get("policy", {}))
+    settings = target_context_policy(manifest["policy"])
     roots = _context_roots(targets, settings)
-    if "roots" in manifest and manifest["roots"] != sorted(path.as_posix() for path in roots):
+    if manifest["roots"] != sorted(path.as_posix() for path in roots):
         raise ValueError("保存済み参照資料の起点が設定と一致しません。")
     for directory, entry in chain(((True, value) for value in manifest["directories"]),
                                   ((False, value) for value in manifest["files"])):
@@ -323,9 +352,7 @@ def stage_target_context(
             if not source.is_file():
                 raise ValueError(f"saved target context file is missing: {name}; prepare a new run")
             _copy(source, destination, digest)
-    summary = f"{len(manifest['files']):,}ファイル"
-    if type(manifest.get("bytes")) is int:
-        summary += f"、{manifest['bytes']:,}バイト"
+    summary = f"{len(manifest['files']):,}ファイル、{manifest['bytes']:,}バイト"
     report_activity(f"固定した移行先の参照資料を復元しました（{summary}）。")
     check_cancelled()
     location = ("in the target parent directories, their sibling inc directories, and Libs and Extensions one level above inc"

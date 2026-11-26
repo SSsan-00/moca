@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from tests.support.fixtures import HarnessCase, SavedRunFixture, prepare_fixture, stub_syntax_diagnostics
 from migration_harness import execution, workflow
+from migration_harness.context.source_context import stage_target_context
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_records, stage_scripts
 from migration_harness.runs.run_manager import RunManager
@@ -30,7 +31,9 @@ class RunQueueTraceTests(HarnessCase):
         self.commit_project()
         config = self.config()
         unit = config["units"][0]
-        config["units"] = [{**unit, "id": f"unit-{i}", "target": f"Page{i}.cs"} for i in range(2)]
+        config["units"] = [
+            {**unit, "id": f"unit-{i}", "target": f"Page{i}.cs", "targets": [f"Page{i}.cs"]} for i in range(2)
+        ]
         started = [Event(), Event()]
         release = [Event(), Event()]
         launched = []
@@ -165,7 +168,12 @@ class VerificationTraceTests(HarnessCase):
         def read_record():
             return json.loads(record_path.read_bytes())
 
-        run_records.write_run_record(record_path, {**read_record(), "completed_capsules": 1, "status": "junie_finished"})
+        stage_target_context(worktree, (Path("Page.cs"),), record_path.parent / "capsule",
+                             record_path.parent / "agent-workspace", policy={"roots": []})
+        run_records.write_run_record(record_path, {
+            **read_record(), "completed_capsules": 1, "status": "junie_finished",
+            "target_hashes": {"Page.cs": sha256(target.read_bytes()).hexdigest()},
+        })
         commands = []
         target_versions = [sha256(target.read_bytes()).hexdigest()]
 

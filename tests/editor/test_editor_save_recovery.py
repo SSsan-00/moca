@@ -102,7 +102,10 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         if partial:
             (self.worktree / "Second.cs").write_bytes(b"class SecondOriginal {}\n")
             self.config["units"][0]["targets"] = [self.target.name, "Second.cs"]
-            self.save_record({**self.record(), "targets": list(self.config["units"][0]["targets"])})
+            names = self.config["units"][0]["targets"]
+            self.save_record({**self.record(), "targets": list(names),
+                              "target_hashes": {name: sha256_file(self.worktree / name) for name in names}})
+            self.set_saved_target_context(names)
             changes["Second.cs"] = "class SecondManual {}\n"
         self.start_server(ready=False)
         for target, draft in changes.items():
@@ -258,7 +261,8 @@ class EditorSaveRecoveryTests(SavedRunFixture):
             (agent / name).write_bytes((self.worktree / name).read_bytes())
         hashes = {name: sha256_file(self.worktree / name) for name in paths}
         self.save_record({**self.record(), "status": "editor_checkpoint", "targets": paths, "junie_exit_code": 0,
-                          "target_hashes": hashes, "target_sha256": hashes[self.target.name]})
+                          "target_hashes": hashes})
+        self.set_saved_target_context(paths)
         self.start_server(ready=False)
         first = baseline.replace("First = 0", "First = 9")
         for index, (name, content) in enumerate(zip(paths, [first, "class SecondManual {}\n"]), 1):
