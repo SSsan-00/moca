@@ -286,7 +286,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
             "exists": original is not None, "read_error": read_error,
             "can_prompt": timing is not None, "prompt_timing": timing,
             "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
-            "junie_model": record.get("junie_model", config.get("junie_model")),
+            "junie_model": record.get("junie_model"),
             "junie_effort": record.get("junie_effort"), "junie_model_revision": record.get("junie_model_revision"),
             "status": phase, "operator_question": record.get("operator_question"),
         }

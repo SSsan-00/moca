@@ -192,7 +192,10 @@ def read_run_record(path: Path) -> dict[str, Any]:
 
 
 def run_model_options(run_path: Path, record: dict[str, Any], config: dict[str, Any]) -> dict[str, str | None]:
-    saved = read_run_record(run_path / "run.json")
+    return saved_run_model_options(read_run_record(run_path / "run.json"))
+
+
+def saved_run_model_options(saved: dict[str, Any]) -> dict[str, str | None]:
     if "junie_model" not in saved or "junie_effort" not in saved:
         raise ValueError(_RUN_SETTINGS_MISSING + " (junie_model / junie_effort)")
     model, effort = validate_junie_model(saved["junie_model"], saved["junie_effort"])

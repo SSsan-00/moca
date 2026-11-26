@@ -403,7 +403,7 @@ def send_run_model(request):
             raise ValueError("実行を選択してください。")
         _, _, record, _ = load_saved_run(config, run_id)
         payload = {"run_id": run_id, "can_select": bool(request.dashboard.state.get("worktree_path")),
-                   "model": record.get("junie_model", config.get("junie_model")),
+                   "model": record.get("junie_model"),
                    "effort": record.get("junie_effort"), "revision": record.get("junie_model_revision")}
         request.send_body(200, "application/json", json.dumps(payload).encode())
     except DASHBOARD_ERRORS as exc:

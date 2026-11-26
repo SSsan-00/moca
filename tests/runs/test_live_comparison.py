@@ -120,6 +120,39 @@ class LiveComparisonTests(HarnessCase):
                         review_anchors.generate_anchors(config, result["run_id"])
                 self.assertFalse((Path(result["run_path"]) / "review-snapshots").exists())
 
+    def test_anchor_launch_uses_the_saved_model_or_refuses_missing_options(self):
+        (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config.update(diff_viewer_html="viewer.html", junie_model="sonnet", junie_effort="high")
+        result = prepare_fixture(config, "sample")
+        run_id = result["run_id"]
+        run_path, worktree, record, _ = run_records.load_saved_run(config, run_id)
+        record_path = run_path / "run.json"
+        config.update(junie_model="opus", junie_effort="low")
+
+        for model, effort in (("sonnet", "high"), ("opus", "low"), (None, None)):
+            with self.subTest(model=model, effort=effort):
+                run_records.write_run_record(record_path, {**record, "junie_model": model, "junie_effort": effort})
+                with patch.object(junie_cli, "build_command", side_effect=ValueError("synthetic launch boundary")) as launch:
+                    with self.assertRaisesRegex(ValueError, "synthetic launch boundary"):
+                        review_anchors.generate_anchors(config, run_id)
+                self.assertEqual(launch.call_args.kwargs, {"model": model, "effort": effort})
+
+        target_bytes = (worktree / "Page.cs").read_bytes()
+        for field in ("junie_model", "junie_effort"):
+            with self.subTest(missing=field):
+                run_records.write_run_record(record_path, {key: value for key, value in record.items() if key != field})
+                before = record_path.read_bytes()
+                with patch.object(junie_cli, "build_command") as launch:
+                    with self.assertRaisesRegex(ValueError, field):
+                        review_anchors.generate_anchors(config, run_id)
+                launch.assert_not_called()
+                self.assertEqual(record_path.read_bytes(), before)
+                self.assertEqual((worktree / "Page.cs").read_bytes(), target_bytes)
+                self.assertFalse((run_path / "review-snapshots").exists())
+
     def test_capture_rejects_target_appearing_during_read(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         self.commit_project()
