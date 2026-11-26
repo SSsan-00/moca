@@ -332,7 +332,7 @@ class RuleMaterialsTests(HarnessCase):
         self.assertIn(b"     1 | FIRST RULE", content)
         self.assertNotIn(content, inline)
 
-    def test_new_guidelines_keep_original_lines_and_old_runs_keep_numbered_form(self):
+    def test_current_guidelines_keep_original_lines_and_unknown_formats_are_rejected(self):
         (self.project / "source.php").write_bytes(b"<?php echo 42;\n")
         config = self.config()
         originals = [
