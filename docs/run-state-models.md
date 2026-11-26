@@ -28,8 +28,8 @@
 
 意図的な誤遷移では、例えば次の最短反例を検出する。
 
-- 容量超過: `start 0 → start 1 → start 2`（`DISPATCH-CAPACITY`）。FIFO崩れ、二重開始、別Runの停止、開始済みの再投入、同時完了時の未解放にも陰性対照がある。
-- 旧版ビルドの採用: `accept build → edit → begin → receive success → save build`（`BUILD-STALE-RESULT`）。開始前の結果と保存前の完了も拒否。
+- 容量超過: `start 0 → start 1 → start 2`（`DISPATCH-CAPACITY`）。FIFO崩れ、二重開始、別Runを巻き込む停止や完了、開始済みの再投入、同時完了時の未解放にも陰性対照がある。
+- 旧版ビルドの採用: `accept build → edit → begin → receive success → save build`（`BUILD-STALE-RESULT`）。開始前の結果、開始時の操作IDの付け替え、保存前の完了も拒否。
 - 同一ビルドでの旧チェッカー応答: `accept check → begin → receive success → save check → accept check → begin → old operation reply`（`CHECK-REJECTED-STATE-CHANGED`）。失敗を成功として保存、または未承認のまま完了する誤遷移も検出。
 - 参照の更新取りこぼし: `update rule → prepare proposal → review proposal → update reference → adopt proposal`（`REFERENCE-STALE-ADOPTION`）。
 - ロック逆順: `request 0:EDITOR → request 1:WORKTREE → request 1:EDITOR`（`LOCK-INVERTED-ORDER`）。逆順取得を許した場合に生じる相互待ちは `LOCK-WAIT-CYCLE` で検出。

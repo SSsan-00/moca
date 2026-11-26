@@ -64,17 +64,23 @@ def dispatch_contract(before, action, after):
                 return "DISPATCH-REPLAY"
         if after.queue != before.queue:
             return "DISPATCH-FIFO"
-    if action and action.startswith(("start ", "cancel ", "stop ")):
+    if action and action.startswith(("start ", "cancel ", "stop ", "finish ", "unconfirmed ")) and action != "finish both":
         operation, text = action.split()
         run = int(text)
         if operation == "start" and (not before.queue or before.queue[0] != run or after.queue != before.queue[1:]):
             return "DISPATCH-FIFO"
         if operation == "cancel" and (run not in before.queue or after.queue != tuple(i for i in before.queue if i != run)):
             return "DISPATCH-FIFO"
-        if operation == "stop" and after.queue != before.queue:
+        if operation in ("stop", "finish", "unconfirmed") and after.queue != before.queue:
             return "DISPATCH-FIFO"
         if any(old != new for i, (old, new) in enumerate(zip(before.jobs, after.jobs, strict=True)) if i != run):
             return "DISPATCH-OTHER-RUN"
+        if operation == "stop" and (before.jobs[run] != JobState.RUNNING or after.jobs[run] != JobState.STOPPING):
+            return "DISPATCH-STOP-STATE"
+        if operation == "unconfirmed" and (before.jobs[run] != JobState.STOPPING or after.jobs[run] != JobState.FENCED):
+            return "DISPATCH-FENCE-STATE"
+        if operation == "finish" and (run not in before.active or after.jobs[run] != JobState.DONE):
+            return "DISPATCH-FINISH-STATE"
     if action == "finish both" and (len(before.active) != 2 or after.active or before.queue != after.queue
             or any(after.jobs[i] != (JobState.DONE if i in before.active else old) for i, old in enumerate(before.jobs))):
         return "DISPATCH-BATCH-FINISH"
@@ -390,6 +396,10 @@ class ExtendedRunStateModelsTests(unittest.TestCase):
         self.assert_counterexample(Dispatch(), dispatch_actions, dispatch_contract,
                                    lambda s: ("finish both", s) if s.active == (0, 1) else None,
                                    "DISPATCH-BATCH-FINISH", ("start 0", "start 1", "finish both"))
+        self.assert_counterexample(Dispatch(), dispatch_actions, dispatch_contract,
+                                   lambda s: ("finish 0", replace(s, jobs=(JobState.DONE, JobState.DONE, s.jobs[2]), active=()))
+                                   if s.active == (0, 1) else None,
+                                   "DISPATCH-OTHER-RUN", ("start 0", "start 1", "finish 0"))
 
     def test_async_build_cannot_save_an_old_version_or_publish_before_save(self):
         self.check_model(BuildFlow(), build_actions, build_contract,
