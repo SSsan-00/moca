@@ -18,9 +18,9 @@ from uuid import UUID
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent.parent / "tests"))
+sys.path.insert(0, str(HERE.parent.parent))
 
-from browser_run import run_browser
+from tests.browser.browser_run import run_browser
 from migration_harness.config import load_config
 from migration_harness.verification import roslyn_syntax
 from migration_harness.web import dashboard, dashboard_settings

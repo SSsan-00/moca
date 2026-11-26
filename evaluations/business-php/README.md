@@ -69,3 +69,24 @@ python evaluations/business-php/collect.py /path/to/results/result.json > result
 Junie 26.11.2（4100.11）、OpenAI BYOKのGPT‑6 Luna（推論レベルmedium）で、PHP 2,000行・資料200件の合成入力を3カプセルに分けた。読み順ヒントなしで詳細198件を判定し、必要10件をすべて採用、不要188件を除外した。起動から採否保存までは389.5秒。PHP、生成アプリ、業務DBは実行していない。
 
 未実装C#は静的チェッカーで458件の指摘を検出して不合格になった。上記の採否試行は、移行成果物のビルドや静的検査の合否を示すものではない。
+
+## .NET 9 で静的検証だけを試す
+
+既存の2,000行・200資料を使った合成フィクスチャの .NET 9 版を開発用に生成できます。外部パッケージ・DBプロバイダーは不要です。`--sdk9` を指定しない従来の評価は変更していません。Windows PowerShell で既存の Python と .NET 9 SDK を使います。
+
+```powershell
+$env:PYTHONUTF8 = "1"
+$fixture = python evaluations/business-php/create_fixture.py --sdk9
+if ($LASTEXITCODE -ne 0) { throw "Fixture generation failed" }
+Push-Location (Join-Path $fixture app)
+try {
+    dotnet build Case.csproj
+    if ($LASTEXITCODE -ne 0) { throw ".NET 9 fixture did not build" }
+    python verification/check.py
+    if ($LASTEXITCODE -ne 1) { throw "Expected the unimplemented fixture to fail the checker" }
+} finally {
+    Pop-Location
+}
+```
+
+未実装のC#に対する終了コード1と指摘はこの負例の期待結果です。`fixture.json` で元PHP・期待値のSHA-256を確認できます。合成PHPや移行先のメソッド、業務DB、実Junieを実行せず、ビルドと検査器だけを起動します。固定ケースでの動作確認であり、実移行の精度や所要時間の比較ではありません。

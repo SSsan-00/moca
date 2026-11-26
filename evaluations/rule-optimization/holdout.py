@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 import json
 import shutil
 import subprocess
@@ -67,9 +68,13 @@ def _runtime(settings):
         directory = Path(temp)
         entries = write_rule_files(directory, items)
         manifest = {"rule_files": entries}
-        selected = frozenset(row["file"] for row, (_, body) in zip(entries, items, strict=True) if DETAIL in body)
-        return (render_guidelines(directory, manifest, selected=frozenset()),
-                render_guidelines(directory, manifest, selected=selected))
+        saved = {row["file"]: (directory / row["file"]).read_bytes().decode("utf-8").splitlines() for row in entries}
+        selected = frozenset(name for name, lines in saved.items() if DETAIL in lines)
+        return (
+            render_guidelines(directory, manifest, selected=frozenset()),
+            render_guidelines(directory, manifest, selected=selected),
+            Counter(line for lines in saved.values() for line in lines),
+        )
 
 
 def _trial_evidence(root, transcript):
@@ -128,18 +133,29 @@ def score(root, scenario, transcript=None, signals=None):
     unchanged = current == CONFIG.encode()
     observed = "hold" if unchanged else "apply"
     failures = []
-    if any((root / "app" / name).read_bytes() != body.encode() for name, body in originals(scenario).items()):
-        failures.append("original source bytes changed")
+    source = originals(scenario)
+    try:
+        unchanged_source = all((root / "app" / name).read_bytes() == body.encode() for name, body in source.items())
+    except FileNotFoundError:
+        unchanged_source = False
+    if not unchanged_source:
+        failures.append("original source bytes changed or original is missing")
     try:
         if without_rules(current) != without_rules(CONFIG.encode()) or b"# Keep this synthetic trial comment." not in current:
             failures.append("unrelated settings or the trial comment changed")
         if observed == "apply" and expected == "apply":
-            mandatory, selected = _runtime(load_config(config))
-            if REQUIRED not in mandatory:
+            mandatory, selected, saved_lines = _runtime(load_config(config))
+            original_lines = Counter(line for body in source.values() for line in body.splitlines())
+            missing = (original_lines - saved_lines).total()
+            extra = sum(max(0, saved_lines[line] - count) for line, count in original_lines.items())
+            if missing or extra:
+                failures.append(f"saved rule text has missing ({missing}) or extra ({extra}) original line occurrences")
+            mandatory_lines, selected_lines = set(mandatory.splitlines()), set(selected.splitlines())
+            if REQUIRED not in mandatory_lines:
                 failures.append("late project-wide obligation is not supplied by default")
-            if any(line in mandatory for line in (DETAIL, EXCEPTION, PRIORITY, DECOY)):
+            if any(line in mandatory_lines for line in (DETAIL, EXCEPTION, PRIORITY, DECOY)):
                 failures.append("unrelated or CSV-only instructions became mandatory")
-            if any(line not in selected for line in (DETAIL, EXCEPTION, PRIORITY)) or DECOY in selected:
+            if any(line not in selected_lines for line in (DETAIL, EXCEPTION, PRIORITY)) or DECOY in selected_lines:
                 failures.append("CSV selection split its exception/priority or included an unrelated document")
     except (OSError, ValueError, TypeError, KeyError) as error:
         failures.append(f"could not evaluate runtime configuration: {error}")

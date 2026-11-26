@@ -63,7 +63,7 @@ py -3 -m venv .venv
 
 リポジトリの改名後も、既存フォルダの移動や再cloneは不要です。旧公式URLからHTTPSでcloneした場合は、そのフォルダで一度だけ `git remote set-url origin https://github.com/SSsan-00/moca.git` を実行してください。公開デモのブックマークも冒頭の新しいURLに変更してください。
 
-既にセットアップ済みの場合は、実行が一区切りついてからハーネスを終了し、同じフォルダで更新します。保存済みの設定とRunを使ってダッシュボードを起動できます。
+既にセットアップ済みの場合は、[版確認・更新前の保全・ロールバック手順](windows-release.md)を参照してください。以下は、実行を終了し、確認済みの開発版 `main` を追う場合の手順です。承認済みの安定版やSHAへ更新する場合は、リンク先の固定版手順を使います。
 
 ```powershell
 git pull --ff-only origin main

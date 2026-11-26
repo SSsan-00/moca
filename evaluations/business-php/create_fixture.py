@@ -3,6 +3,7 @@
 Generated policy functions model copied per-contract legacy implementations.
 They are deliberately repetitive; this is not a real production repository.
 """
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -86,7 +87,7 @@ DETAILS = {
 }
 
 
-def create():
+def create(*, sdk9=False):
     started = time.monotonic()
     root = Path(tempfile.mkdtemp(prefix="harness-business-")).resolve()
     app = root / "app"
@@ -98,19 +99,57 @@ def create():
     source, policies = generate_php()
     write("legacy/business.php", source)
     write(".gitignore", "bin/\nobj/\nverification/last-check.json\n")
-    write("Case.csproj", '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Compile Remove="verification/**/*.cs" /><PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.13" /></ItemGroup></Project>\n')
+    framework = "net9.0" if sdk9 else "net10.0"
+    package = '' if sdk9 else '<PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.13" />'
+    write("Case.csproj", (
+        f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>{framework}</TargetFramework>'
+        '<ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>'
+        f'<ItemGroup><Compile Remove="verification/**/*.cs" />{package}</ItemGroup></Project>\n'
+    ))
+    if sdk9:
+        write("global.json", '{"sdk":{"version":"9.0.100","rollForward":"latestFeature","allowPrerelease":false}}\n')
+        write("NuGet.Config", '<?xml version="1.0" encoding="utf-8"?>\n'
+              '<configuration><packageSources><clear /></packageSources></configuration>\n')
+        write(".gitattributes", "* text eol=lf\n")
     for filename, destination in (("Contracts.cs", "Pages/inc/Contracts.cs"), ("check.py", "verification/check.py"),
                                   ("Inspect.csproj", "verification/inspector/Inspect.csproj"),
                                   ("Inspect.cs", "verification/inspector/Program.cs")):
         (app / destination).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(HERE / filename, app / destination)
+    if sdk9:
+        inspector = (HERE / "Inspect.csproj").read_text(encoding="utf-8")
+        write("verification/inspector/Inspect.csproj", inspector.replace("net10.0", framework))
+    connection_namespace = "System.Data.Common" if sdk9 else "Microsoft.Data.Sqlite"
+    connection_type = "DbConnection" if sdk9 else "SqliteConnection"
     with (app / "Pages/inc/Contracts.cs").open("a", encoding="utf-8") as stream:
         stream.write("\npublic sealed record PolicySpec(\n    " + ",\n    ".join(
             f"{kind} {name}" for name, _, kind in POLICY_FIELDS) + ");\n")
-    write("Pages/Business/BusinessService.cs", 'using Microsoft.Data.Sqlite;\nnamespace Migration;\npublic static class BusinessService { public static object Handle(SqliteConnection db, Request r) => new { ok = false, code = "unimplemented" }; }\n')
+    if sdk9:
+        original = (app / "Pages/inc/Contracts.cs").read_text(encoding="utf-8")
+        _, _, bindings = (HERE / "ParameterBinding.cs").read_text(encoding="utf-8").partition("namespace Migration;\n")
+        if not bindings:
+            raise ValueError("Parameter binding helper must use namespace Migration")
+        write("Pages/inc/Contracts.cs", original + bindings)
+    write("Pages/Business/BusinessService.cs", (
+        f"using {connection_namespace};\nnamespace Migration;\n"
+        "public static class BusinessService { public static object "
+        f"Handle({connection_type} db, Request r) "
+        '=> new { ok = false, code = "unimplemented" }; }\n'
+    ))
     write("Pages/Business/PolicyCatalog.cs", 'namespace Migration;\npublic static class PolicyCatalog { }\n')
     rules = [("required-api.md", "required", "", "Implement Migration.BusinessService.Handle(Microsoft.Data.Sqlite.SqliteConnection db, Migration.Request r) returning an object whose JSON has the same keys/types/values as PHP business(). The connection is open. Request is provided in Pages/inc/Contracts.cs and every request field is part of the public contract. Targets are BusinessService.cs and PolicyCatalog.cs; put any additional types in these two files. Namespace Migration; .NET 10. Microsoft.Data.Sqlite 10.0.13 is available in the real build. Return dictionaries or anonymous objects with the original lowercase keys; do not change the public API. Preserve all original contract behavior, SQL side effects, errors and transaction boundaries. The provided PolicySpec record is a fixed public data contract. Declare public static readonly PolicySpec[] Policies in PolicyCatalog, with one statically inspectable new PolicySpec(...) entry for every quote_N function. Preserve every field from the PHP; no runtime decoding of opaque data blobs. Monetary intermediates should retain PHP 64-bit integer semantics. DBNull.Value is required when binding a null SQL value, and every command inside a transaction must participate in that transaction.\n"),
              ("required-integrity.md", "required", "", "Migrate all executable PHP functions and all per-contract constants. You may consolidate repeated code into data plus shared C# functions only after extracting and checking every contract. Do not call PHP, use an interpreter, read legacy files at runtime, hard-code test outputs or omit branches. Do not implement unrelated features. Validation is static only: do not execute PHP, the migrated application, or connect to any application database. The checker inspects C# syntax, policy literals and SQL structure without invoking business code. This does not establish runtime equivalence. Intermediate capsules may have incomplete dispatch; the final capsule must preserve and verify all earlier work. Temporary files belong in the scratch directory provided by the harness.\n")]
+    if sdk9:
+        name, usage, description, body = rules[0]
+        body = body.replace("Microsoft.Data.Sqlite.SqliteConnection", "System.Data.Common.DbConnection")
+        body = body.replace(
+            ".NET 10. Microsoft.Data.Sqlite 10.0.13 is available in the real build.",
+            ".NET 9, using only its standard library. A real DB provider is not supplied. "
+            "The fixed contract source supplies DbCommand.AddWithValue(name, value) as an extension method. "
+            "Use it for SQL parameters, plus DbCommand.Transaction for an active transaction. "
+            "Never open a DB connection or load an external provider.",
+        )
+        rules[0] = name, usage, description, body
     unrelated = ["SMTP mail delivery", "PDF generation", "SFTP synchronization", "image resizing", "OAuth browser login", "WebSocket transport", "ZIP extraction", "video streaming", "DNS provisioning", "calendar reminders"]
     for number in range(1, 199):
         if number in DETAILS:
@@ -145,9 +184,19 @@ def create():
         php_sha256=hashlib.sha256(source.encode()).hexdigest(),
         policy_contract_sha256=hashlib.sha256((app / "verification/expected-policies.json").read_bytes()).hexdigest(),
         generation_seconds=round(time.monotonic()-started, 3))
+    if sdk9:
+        fixture.update(
+            variant="sdk9-framework-db-contract",
+            build_target=framework,
+            rule_bundle_sha256=hashlib.sha256(
+                json.dumps(rules, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            ).hexdigest(),
+        )
     (root / "fixture.json").write_text(json.dumps(fixture, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(root)
 
 
 if __name__ == "__main__":
-    create()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sdk9", action="store_true", help="Use .NET 9 and a package-free DbConnection contract")
+    create(sdk9=parser.parse_args().sdk9)

@@ -62,7 +62,7 @@ Junieへ渡す情報と作業フォルダはハーネスで絞りますが、別
 
 ```console
 python -m pip install -e .
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 ```
 
 テストは一時ディレクトリにGitリポジトリとRunを作ります。工程制御はJunieやビルドを模擬するテストで、診断は実際の .NET 9 SDK で確認します。ブラウザー回帰にはChromeまたはEdgeとNode.jsを使用しますが、通常の利用にはNode.jsは不要です。GitHub ActionsはpushとPRで、WindowsのPython 3.11・3.13を検証します。WindowsでJunieの起動スモークも実行します。
@@ -427,6 +427,7 @@ Junieがステップ上限に達した場合、ダッシュボードから同じ
 
 - [技術仕様](SPEC.md)
 - [アーキテクチャと実行フロー](docs/architecture.md)
+- [ローカル実行の信頼境界と通信](docs/local-trust-boundaries.md)
 - [Junie の技術質問スキル](.junie/skills/harness-architecture/SKILL.md)。ハーネスのフォルダで `junie` を起動し、入力欄で `/harness-architecture ビルド成功から移行台帳の完了判定までを、実装を根拠に説明してください` と依頼できます。`/skills` で有効状態を確認できます。 [Junie の Agent Skills](https://junie.jetbrains.com/docs/agent-skills.html)
 - [実装フローの図解](migration-harness-spec.html)
 - [公開ダッシュボードデモ](https://sssan-00.github.io/moca/progress-demo.html)（サンプルデータのみ）
