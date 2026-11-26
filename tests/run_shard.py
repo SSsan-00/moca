@@ -78,6 +78,16 @@ REQUIRED_SAVED_STATE = {
 }
 
 
+REQUIRED_ARCHITECTURE = {
+    "test_architecture.ArchitectureTests.test_product_dependencies_match_contract",
+    "test_architecture.ArchitectureTests.test_import_resolution_distinguishes_package_members_local_and_type_only",
+    "test_architecture.ArchitectureTests.test_rebound_type_guard_does_not_hide_a_runtime_cycle",
+    "test_architecture.ArchitectureTests.test_rejects_reversed_layers_test_imports_unresolved_imports_and_extra_distributions",
+    "test_architecture.ArchitectureTests.test_reports_local_cycle_through_package_reexport_but_not_type_only_back_import",
+    "test_architecture.ArchitectureTests.test_local_worker_exception_allows_only_reviewed_symbols_and_reciprocal_cycle",
+}
+
+
 class RegressionResult(unittest.TextTestResult):
 
     def __init__(self, *args, **kwargs):
@@ -171,7 +181,11 @@ def main():
     missing_saved_state = REQUIRED_SAVED_STATE - result.passed if args.shard in {"full", "remaining"} else set()
     if missing_saved_state:
         print("Required saved state checks did not pass: " + ", ".join(sorted(missing_saved_state)))
-    return 0 if result.wasSuccessful() and not (missing_ui or missing_models or missing_recovery or missing_saved_state) else 1
+    missing_architecture = REQUIRED_ARCHITECTURE - result.passed if args.shard != "conversation-editor" else set()
+    if missing_architecture:
+        print("Required architecture checks did not pass: " + ", ".join(sorted(missing_architecture)))
+    missing_required = missing_ui or missing_models or missing_recovery or missing_saved_state or missing_architecture
+    return 0 if result.wasSuccessful() and not missing_required else 1
 
 
 if __name__ == "__main__":
