@@ -587,6 +587,72 @@ class JunieConversationTests(SavedRunFixture):
         completion = workflow.migration_ledger(self.config, self.run_id)["completion"]
         self.assertTrue(completion["verification_passed"])
 
+    def test_dashboard_build_through_rebuilds_a_saved_edit_after_interrupted_script_review(self):
+        hook = ["fixture-after-build"]
+        self.config.update(scripts={"after_build": [hook]}, junie_review_script_output=True,
+                           junie_apply_output_decisions=True)
+        edited = "class SavedCorrection {}\n"
+        calls = []
+
+        def run(command, *, stdout, **_kwargs):
+            calls.append(command)
+            target = self.target.read_text(encoding="utf-8-sig")
+            if command == hook:
+                stdout.write(b"1 test passed\n" if target == edited else b"Review needed\n")
+            elif len(calls) > 2:
+                self.assertEqual(target, edited)
+            return subprocess.CompletedProcess(command, 0)
+
+        good = '{"verdict":"passed","evidence_lines":[1]}'
+        with (patch.object(workflow, "run_process", side_effect=run),
+              patch.object(checker_advisory, "run_text_advisory", side_effect=[KeyboardInterrupt, good]) as judge):
+            self.start_build()
+            self.wait_until_idle()
+            saved = self.record()["verification_script_pending"]
+            original_log = (self.run_path / saved["log"]).read_bytes()
+            before_edit = self.get_stage_plan("build-through")
+
+            _, editor = self.request("editor")
+            _, response = self.request("editor", {"kind": "save", "run_id": self.run_id, "target": self.target.name,
+                                                  "base": editor["content"], "content": edited, "edit_id": None})
+            self.assertFalse(response["queued"])
+            with self.assertRaises(HTTPError) as stale:
+                self.start_stage_plan(before_edit)
+            with stale.exception as reply:
+                self.assertEqual(reply.code, 409)
+
+            self.start_build()
+            self.wait_until_idle()
+            self.assertIn("The target changed", self.record()["error"])
+            self.assertEqual(self.record()["verification_script_pending"], saved)
+            self.assertEqual(calls, [["dotnet", "build"], hook])
+
+            log = self.run_path / saved["log"]
+            log.write_bytes(original_log.replace(b"Review needed", b"Changed text!"))
+            self.assertEqual(self.start_stage_plan(self.get_stage_plan("build-through")), 202)
+            self.wait_until_idle()
+            self.assertIn("missing or changed", self.record()["error"])
+            self.assertEqual(self.record()["verification_script_pending"], saved)
+            self.assertEqual(calls, [["dotnet", "build"], hook])
+            log.write_bytes(original_log)
+
+            plan = self.get_stage_plan("build-through")
+            self.assertEqual(self.start_stage_plan(plan), 202)
+            self.wait_until_idle()
+            self.assertEqual(judge.call_count, 2)
+            self.assertIn("1 test passed", judge.call_args.args[0])
+
+        record = self.record()
+        self.assertEqual(record["status"], "checker_succeeded")
+        self.assertEqual(calls, [["dotnet", "build"], hook, ["dotnet", "build"], hook, ["fixture-checker"]])
+        self.assertEqual(record["resume_operations"][-1]["version"], plan["version"])
+        self.assertEqual(record["verification"]["target_hashes"][self.target.name], workflow.sha256_file(self.target))
+        self.assertNotIn("verification_script_pending", record)
+        superseded, = [item for item in record["script_advisories"] if item["status"] == "superseded"]
+        self.assertEqual(superseded["applied"], "rebuild_edited_target")
+        self.assertEqual(superseded["log_sha256"], saved["log_sha256"])
+        self.assertTrue((self.run_path / saved["log"]).read_bytes().startswith(original_log))
+
     def test_dashboard_build_through_uses_the_configured_automatic_repair_policy(self):
         self.config["max_repair_attempts"] = 1
         def repair(config, targets, worktree, run_path, record, *, operator_instruction=None):
