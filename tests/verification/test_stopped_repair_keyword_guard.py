@@ -37,6 +37,7 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
             (self.worktree / name).write_bytes(content)
         self.hashes = {name: sha256_file(self.worktree / name) for name in _BEFORE}
         self.save_record({**self.record(), "targets": list(_BEFORE), "target_hashes": self.hashes})
+        self.set_saved_target_context(list(_BEFORE))
 
     def choose_draft(self, proposed):
         for name, content in proposed.items():
