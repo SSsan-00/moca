@@ -27,6 +27,9 @@ REQUIRED_UI = {
 
 REQUIRED_RUN_MODELS = {
     "test_run_state_model_traces.RunStateModelTraceTests.test_apply_plan_survives_interruption_and_rejects_manual_edit",
+    "test_run_state_live_traces.RunQueueTraceTests.test_stopped_unconfirmed_run_stays_fenced_when_waiting_run_restarts",
+    "test_run_state_live_traces.VerificationTraceTests.test_rebuild_disqualifies_old_revision_and_requires_checker_or_approval",
+    "test_run_state_live_traces.HookTraceTests.test_unknown_hook_is_not_replayed_until_explicit_verified_retry",
     *("test_run_state_models.RunStateModelsTests." + name for name in (
         "test_run_slot_safety_and_recovery",
         "test_verification_evidence_for_required_and_optional_checker",
@@ -37,6 +40,14 @@ REQUIRED_RUN_MODELS = {
         "test_shortest_counterexample_for_stale_success",
         "test_restart_cannot_discard_an_unfinalized_hook_attempt",
         "test_incomplete_search_is_a_failure",
+    )),
+    *("test_run_state_extended_models.ExtendedRunStateModelsTests." + name for name in (
+        "test_two_slots_are_fifo_and_other_runs_are_isolated",
+        "test_async_build_cannot_save_an_old_version_or_publish_before_save",
+        "test_second_check_on_same_build_rejects_late_results_and_needs_valid_approval",
+        "test_reference_adoption_does_not_replace_a_newer_version",
+        "test_lock_order_allows_progress_but_rejects_a_reverse_acquire",
+        "test_circular_wait_with_two_workers_is_detected",
     )),
 }
 
