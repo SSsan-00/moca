@@ -16,7 +16,7 @@ from ..files import safe_target
 from ..runs.editor_queue import EDITOR_TARGET_SUFFIXES, editor_prompt_selection, editor_queue, editor_text
 from ..runs.run_records import load_saved_run, run_model_options, validate_run_id
 from ..runs.worktree_targets import review_target_hash
-from ..verification.checker_advisory import AdvisoryReplyTooLarge, run_text_advisory
+from ..verification.checker_advisory import AdvisoryReplyTooLarge, AdvisoryTransportLimit, run_text_advisory
 from .junie_cli import JunieStopError
 
 SELECTION_REPLY_LIMIT = 16 * 1024
@@ -759,6 +759,8 @@ def run_instruction(config, run_id, identifier):
     except AdvisoryReplyTooLarge:
         status, message = "failed", (f"回答が上限（UTF-8で{SELECTION_REPLY_LIMIT:,}バイト）を超えました。"
                                      "短い説明を頼むか、質問を分けて送信してください。")
+    except AdvisoryTransportLimit as exc:
+        status, message = "failed", f"{exc} 選択範囲を絞るか、質問を分けて送信してください。"
     except JunieStopError:
         raise
     except (OSError, ValueError) as exc:

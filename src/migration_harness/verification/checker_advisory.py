@@ -7,9 +7,9 @@ import re
 import subprocess
 from hashlib import sha256
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic
 from typing import Any
 
@@ -21,6 +21,7 @@ from .checker_output import decode_checker_output
 LOG_LIMIT = 32_768
 REPLY_LIMIT = 4096
 FRAME_LIMIT = 65_536
+STREAM_LIMIT = 16 * 1024 * 1024
 SESSION_TIMEOUT = 75
 COUNTED_PASS = (
     r"[1-9][0-9]*件(?:全件(?:合格|正常)|の確認が完了しました[。．]\s*すべて正常です)|"
@@ -67,15 +68,31 @@ def parse_advisory(reply: str, line_count: int, *, allow_handoff: bool = False) 
     return value
 
 
-def _read_frames(pipe, output: Queue) -> None:
-    try:
-        for _ in range(256):
-            line = pipe.readline(FRAME_LIMIT + 1)
-            if not line or len(line) > FRAME_LIMIT:
+class AdvisoryTransportLimit(ValueError):
+    pass
+
+
+def _read_frames(pipe, output: Queue, stopped: Event) -> None:
+    remaining = STREAM_LIMIT
+    while not stopped.is_set():
+        try:
+            line = pipe.readline(min(FRAME_LIMIT, remaining) + 1)
+            if len(line) > FRAME_LIMIT:
+                raise AdvisoryTransportLimit(f"Junie の1フレームが通信上限（{FRAME_LIMIT:,}バイト）を超えました。")
+            if len(line) > remaining:
+                raise AdvisoryTransportLimit(f"Junie の累積通信量が上限（{STREAM_LIMIT:,}バイト）を超えました。")
+            remaining -= len(line)
+            item = line or None
+        except (OSError, ValueError) as exc:
+            item = exc
+        while not stopped.is_set():
+            try:
+                output.put(item, timeout=0.2)
                 break
-            output.put(line)
-    finally:
-        output.put(None)
+            except Full:
+                continue
+        if not isinstance(item, bytes):
+            return
 
 
 def _write_requests(pipe, requests: Queue) -> None:
@@ -106,8 +123,9 @@ def _exchange(
     startup_timeout: float | None = None, model: str | None = None, effort: str | None = None,
     reply_limit: int = REPLY_LIMIT,
 ) -> str:
-    updates, requests = Queue(), Queue()
-    reader = Thread(target=_read_frames, args=(process.stdout, updates), daemon=True)
+    updates, requests = Queue(maxsize=16), Queue()
+    stopped = Event()
+    reader = Thread(target=_read_frames, args=(process.stdout, updates, stopped), daemon=True)
     writer = Thread(target=_write_requests, args=(process.stdin, requests), daemon=True)
     reader.start()
     writer.start()
@@ -150,6 +168,8 @@ def _exchange(
                 continue
             if raw is None:
                 raise ValueError("Junie advisory session ended before a complete reply")
+            if isinstance(raw, Exception):
+                raise raw
             message = json.loads(raw, object_pairs_hook=_json_object)
             if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
                 raise ValueError("Invalid Junie advisory ACP frame")
@@ -180,7 +200,8 @@ def _exchange(
                 reply_bytes += len(part.encode("utf-8"))
                 if reply_bytes > reply_limit:
                     raise AdvisoryReplyTooLarge("Junie advisory reply exceeds the size limit")
-                reply.append(part)
+                if part:
+                    reply.append(part)
                 continue
             result = message.get("result")
             if effort_request is not None:
@@ -222,6 +243,7 @@ def _exchange(
             else:
                 raise ValueError("Junie advisory did not complete normally")
     finally:
+        stopped.set()
         requests.put(None)
 
 

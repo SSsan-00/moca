@@ -69,11 +69,17 @@ elif sys.argv[1] == 'timeout':
 elif sys.argv[1] == 'stop':
     send(id=3, result={'stopReason': 'cancelled'})
 elif mode == 'text':
-    reply, stop_reason = sys.argv[2:]
-    half = len(reply) // 2
-    for chunk in (reply[:half], reply[half:]):
+    reply, stop_reason, count, metadata = sys.argv[2:]
+    count = int(count)
+    for index in range(count):
+        chunk = reply[len(reply) * index // count:len(reply) * (index + 1) // count]
+        if metadata == 'mixed' and index % 32 == 0:
+            update('agent_thought_chunk', content={'type': 'text', 'text': 'checking'})
+            update('usage_update', used=index)
+            update('config_option_update', configOptions=[])
         update('agent_message_chunk', content={'type': 'text', 'text': chunk})
-    send(id=3, result={'stopReason': stop_reason})
+    if stop_reason != 'eof':
+        send(id=3, result={'stopReason': stop_reason})
 else:
     update('agent_thought_chunk', content={'type':'text', 'text':'not persisted'})
     update('agent_message_chunk', content={'type':'text', 'text':'{"verdict":"informational",'})
@@ -83,9 +89,11 @@ else:
 """
 
 
-def acp_reply(text, stop_reason="end_turn"):
+def acp_reply(text, stop_reason="end_turn", *, chunks=2, metadata=False):
     def launch(command, *, owned, cwd, **streams):
-        return junie_cli.JunieProcess([sys.executable, "-c", FAKE_ACP, "text", text, stop_reason], cwd=cwd, **streams)
+        command = [sys.executable, "-c", FAKE_ACP, "text", text, stop_reason, str(chunks),
+                   "mixed" if metadata else "plain"]
+        return junie_cli.JunieProcess(command, cwd=cwd, **streams)
     return patch.object(junie_cli, "_launch_process", side_effect=launch)
 
 
@@ -96,7 +104,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
             run = Path(folder)
             (run / "checker.log").write_text("Issue on line 1.", encoding="utf-8")
             for size in (4096, 4097):
-                with self.subTest(size=size), acp_reply(answer.ljust(size)):
+                with self.subTest(size=size), acp_reply(answer.ljust(size), chunks=254, metadata=True):
                     result = advisory.checker_advisory(run, 1)
                     if size == 4096:
                         self.assertEqual((result["status"], result["verdict"]), ("reported", "problem"))
