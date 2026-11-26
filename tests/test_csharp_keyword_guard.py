@@ -239,7 +239,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         no_findings = {"declarations": [], "uncheckedLine": None}
         occurrence = {
             "line": 1, "column": 8, "text": "@event", "value": "event",
-            "bindings": ['["VariableDeclarator","type:Page:0","variable:event"]'], "named": True,
+            "bindings": ['["VariableDeclarator","type:Page:0","variable:event"]'], "retainers": [""],
         }
         reports = [
             (no_findings, {**no_findings, "declarations": [{**occurrence, "line": 9}]}),
@@ -355,3 +355,20 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         before = "class A { (int @event, int Count) First; (int Normal, int Count) Second; }"
         after = "class A { (int Normal, int Count) First; (int @event, int Count) Second; }"
         self.apply_pair("Page.cs", before, after, r"Page.cs:1:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_unnamed_block_reordering_does_not_confuse_old_and_new_locals(self):
+        before = "class Page { void Use() { { int @event = 1; } { int anchor = 2; } } }"
+        wrong = "class Page { void Use() { { int anchor = 2; int @event = 1; } } }"
+        self.apply_pair("Page.cs", before, wrong, r"Page.cs:1:.*@event")
+        self.apply_pair("Page.cs", before, before.replace("{ int anchor = 2; }", "{ int anchor = 2; } { int unrelated; }"))
+        reordered = before.replace("{ int @event = 1; } { int anchor = 2; }",
+                                   "{ int anchor = 2; } { int @event = 1; }")
+        self.apply_pair("Page.cs", before, reordered, r"Page.cs:1:.*@event")
+        self.apply_pair("Page.cs", before, before.replace("@event = 1", "@event = 2"))
+        before = "class Page { void Use() {\n{\n int @event = 1;\n int value = 2;\n} } }"
+        self.apply_pair("Page.cs", before, before.replace("value = 2", "value = 3"))
+        before = ("class Page { void Use(bool flag) { if (flag) { int @event = 1; } "
+                  "if (flag) { int anchor = 2; } } }")
+        wrong = "class Page { void Use(bool flag) { if (flag) { int anchor = 2; int @event = 1; } } }"
+        self.apply_pair("Page.cs", before, wrong, r"Page.cs:1:.*@event")

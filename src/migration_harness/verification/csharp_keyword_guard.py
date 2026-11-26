@@ -52,16 +52,19 @@ def _scan_version(name, source, report):
     for item in declarations:
         if not isinstance(item, dict):
             raise error
-        row, column, spelling, value, bindings, named = (
-            item.get(key) for key in ("line", "column", "text", "value", "bindings", "named")
+        row, column, spelling, value, bindings, retainers = (
+            item.get(key) for key in ("line", "column", "text", "value", "bindings", "retainers")
         )
         if (type(row) is not int or not 0 <= row < len(lines) or type(column) is not int or column < 0
                 or not isinstance(spelling, str) or not spelling or not isinstance(value, str)
                 or value not in _CSHARP_RESERVED or not isinstance(bindings, list) or not bindings
-                or any(not isinstance(binding, str) or not binding for binding in bindings) or type(named) is not bool
+                or any(not isinstance(binding, str) or not binding for binding in bindings)
+                or not isinstance(retainers, list) or not retainers or any(not isinstance(key, str) for key in retainers)
                 or not lines[row].startswith(spelling, column)):
             raise error
-        rows.setdefault(row, []).append((column, spelling, value, tuple(sorted(set(bindings))), named))
+        identity = tuple(sorted(set(bindings)))
+        stable = tuple(sorted(set(retainers))) if all(retainers) else ()
+        rows.setdefault(row, []).append((column, spelling, value, identity, stable))
     for items in rows.values():
         items.sort()
         if any(left[0] + len(left[1]) > right[0] for left, right in zip(items, items[1:])):
@@ -83,24 +86,24 @@ def _diff_tokens(lines, start, end, positions):
     return tokens, declarations
 
 
-def _unique_named_members(positions):
-    counts = Counter((value, bindings) for row in positions.values() for _, _, value, bindings, named in row if named)
+def _unique_retainers(positions):
+    counts = Counter((value, retainers) for row in positions.values() for _, _, value, _, retainers in row if retainers)
     return {key for key, count in counts.items() if count == 1}
 
 
-def _without_retained_members(positions, retained):
+def _without_retained_declarations(positions, retained):
     return {
         row: remaining for row, declarations in positions.items()
-        if (remaining := [item for item in declarations if not item[4] or (item[2], item[3]) not in retained])
+        if (remaining := [item for item in declarations if (item[2], item[4]) not in retained])
     }
 
 
 def _new_escapes(old_lines, new_lines, existing, proposed):
     if not proposed:
         return
-    if existing and (retained := _unique_named_members(existing) & _unique_named_members(proposed)):
-        existing = _without_retained_members(existing, retained)
-        proposed = _without_retained_members(proposed, retained)
+    if existing and (retained := _unique_retainers(existing) & _unique_retainers(proposed)):
+        existing = _without_retained_declarations(existing, retained)
+        proposed = _without_retained_declarations(proposed, retained)
         if not proposed:
             return
     if not existing:
@@ -115,8 +118,9 @@ def _new_escapes(old_lines, new_lines, existing, proposed):
         if tag == "equal":
             for row in new_rows:
                 old_row = old_start + row - new_start
+                old_positions = {position[:4] for position in existing.get(old_row, ())}
                 for position in proposed.get(row, ()):
-                    if position not in existing.get(old_row, ()):
+                    if position[:4] not in old_positions:
                         yield row, position[1]
             continue
         if not any(row in existing for row in range(old_start, old_end)):

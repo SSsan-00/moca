@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -8,9 +10,11 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 internal static partial class Program
 {
-    private static string KeywordBinding(SyntaxToken token, SyntaxKind kind, Dictionary<SyntaxNode, string?> cache)
+    private static (string Binding, string? Retainer) KeywordBinding(SyntaxToken token, SyntaxKind kind,
+        Dictionary<SyntaxNode, (string? Binding, string? Retainer)> cache)
     {
         var path = new List<string> { kind.ToString() };
+        var blockRetainers = new List<(int Index, string Part)>();
         foreach (var node in token.Parent!.AncestorsAndSelf().Reverse())
         {
             if (node is BaseNamespaceDeclarationSyntax space)
@@ -21,20 +25,29 @@ internal static partial class Program
             }
             if (node is VariableDeclarationSyntax variable && variable.Type.Span.Contains(token.Span))
                 path.Add("declared-type:" + JsonSerializer.Serialize(variable.Variables.Select(v => v.Identifier.ValueText)));
-            if (!cache.TryGetValue(node, out var part))
-            {
-                part = KeywordNamedScope(node);
-                if (part is null && KeywordUnnamedScope(node) is { } shape)
-                {
-                    var ordinal = node.Parent?.ChildNodes().TakeWhile(sibling => sibling.SpanStart < node.SpanStart)
-                        .Count(sibling => sibling.RawKind == node.RawKind && KeywordUnnamedScope(sibling) == shape) ?? 0;
-                    part = ordinal + ":" + shape;
-                }
-                cache.Add(node, part);
-            }
-            if (part is not null) path.Add(part);
+            if (!cache.TryGetValue(node, out var part)) cache[node] = part = KeywordScopePart(node);
+            if (part.Binding is null) continue;
+            if (part.Retainer is not null) blockRetainers.Add((path.Count, part.Retainer));
+            path.Add(part.Binding);
         }
-        return JsonSerializer.Serialize(path);
+        var binding = JsonSerializer.Serialize(path);
+        if (blockRetainers.Count == 0) return (binding, IsNamedKeywordMember(token) ? binding : null);
+        foreach (var (index, part) in blockRetainers) path[index] = part;
+        return (binding, JsonSerializer.Serialize(path));
+    }
+
+    private static (string? Binding, string? Retainer) KeywordScopePart(SyntaxNode node)
+    {
+        if (KeywordNamedScope(node) is { } named) return (named, null);
+        if (KeywordUnnamedScope(node) is not { } shape) return (null, null);
+        var siblings = node.Parent?.ChildNodes().Where(sibling =>
+            sibling.RawKind == node.RawKind && KeywordUnnamedScope(sibling) == shape);
+        var ordinal = siblings?.TakeWhile(sibling => sibling.SpanStart < node.SpanStart).Count() ?? 0;
+        if (node.Parent is not (BlockSyntax or SwitchSectionSyntax or SwitchStatementSyntax or SwitchExpressionSyntax
+            or TryStatementSyntax)) return (ordinal + ":" + shape, null);
+        // An inserted or deleted sibling makes an anonymous scope's ordinal insufficient on its own.
+        var content = SHA256.HashData(Encoding.UTF8.GetBytes(KeywordHeader(node)));
+        return ($"{ordinal}/{siblings?.Count() ?? 1}:{shape}", $"{ordinal}:scope-content:" + Convert.ToHexString(content));
     }
 
     private static bool IsNamedKeywordMember(SyntaxToken token) => token.Parent switch

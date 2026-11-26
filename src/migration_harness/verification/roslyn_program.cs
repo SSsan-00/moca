@@ -96,10 +96,8 @@ internal static partial class Program
         return 0;
     }
 
-    private sealed record EscapedDeclaration(string text, string value, int line, int column, SortedSet<string> bindings)
-    {
-        public bool named { get; set; } = true;
-    }
+    private sealed record EscapedDeclaration(string text, string value, int line, int column,
+        SortedSet<string> bindings, SortedSet<string> retainers);
 
     private static object EscapedKeywords(Target target)
     {
@@ -109,7 +107,7 @@ internal static partial class Program
         var generated = razor is null ? original : GetRazorGeneratedText(razor);
         var (roots, unparsed) = KeywordConditionRoots(generated);
         var declarations = new Dictionary<int, EscapedDeclaration>();
-        var scopeParts = new Dictionary<SyntaxNode, string?>();
+        var scopeParts = new Dictionary<SyntaxNode, (string? Binding, string? Retainer)>();
         foreach (var token in roots.SelectMany(root => root.DescendantTokens()))
         {
             if (!IsEscapedReservedKeyword(token) || !IsDeclaration(token)) continue;
@@ -124,11 +122,12 @@ internal static partial class Program
                 var position = original.Lines.GetLinePosition(span.Start);
                 var prefix = original.ToString(TextSpan.FromBounds(original.Lines[position.Line].Start, span.Start));
                 declaration = new(original.ToString(span), token.ValueText, position.Line, prefix.EnumerateRunes().Count(),
-                    new SortedSet<string>(StringComparer.Ordinal));
+                    new SortedSet<string>(StringComparer.Ordinal), new SortedSet<string>(StringComparer.Ordinal));
                 declarations.Add(span.Start, declaration);
             }
-            declaration.bindings.Add(KeywordBinding(token, kind, scopeParts));
-            declaration.named &= IsNamedKeywordMember(token);
+            var (binding, retainer) = KeywordBinding(token, kind, scopeParts);
+            declaration.bindings.Add(binding);
+            declaration.retainers.Add(retainer ?? "");
         }
         int? uncheckedLine = null;
         if (unparsed is int start)
