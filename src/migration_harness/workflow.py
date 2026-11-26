@@ -798,10 +798,12 @@ def _stage_migration_materials(
 
 # 以下はJunieへ渡す共通指示。実行による検証はハーネス側の工程に任せる。
 _CSHARP_IDENTIFIERS = (
-    "If a PHP or draft C# identifier conflicts with a C# keyword, choose a meaningful non-keyword name "
-    "unused in that scope; never introduce an @-escaped identifier to solve the conflict. Reuse the same "
-    "mapping for its declaration and all bound references, including later capsules and paired Razor files. "
-    "Do not rename unrelated valid identifiers (including existing escapes or legal contextual keywords). "
+    "Rename only a declaration from PHP or draft C# whose identifier would be an illegal C# keyword in its "
+    "actual usage. Choose a meaningful non-keyword name unused in its scope; never introduce an @-escaped "
+    "identifier to solve the conflict. Change only references bound to that declaration, including later "
+    "capsules and the paired Razor file. Keep ordinary names, independently declared same-spelled symbols, "
+    "existing valid escapes and legal contextual names exactly as they are; do not rename for style or to "
+    "free a preferred name. For example, if eventName is occupied, keep it and pick a different name for event. "
     "Preserve external names at their existing boundary, e.g. [JsonPropertyName(\"event\")] on EventName "
     "for System.Text.Json, or the original form/query key when binding input. Keep route, SQL, HTML and "
     "JavaScript names and literals unchanged. Normal Razor transitions such as @Model.EventName remain valid. "
