@@ -27,14 +27,15 @@ class TaskGuidelinesTests(unittest.TestCase):
                 root = Path(directory).resolve()
                 agent = root / "agent"
                 agent.mkdir()
-                (root / "run.json").write_text(json.dumps({"completed_capsules": 1}), encoding="utf-8")
+                record = {"completed_capsules": 1, "junie_max_steps": None, "junie_model": None, "junie_effort": None}
+                (root / "run.json").write_text(json.dumps(record), encoding="utf-8")
                 with (
                     patch.object(context_handoff, "handoff_prompt", return_value=""),
                     patch.object(run_records, "junie_usage_recorder", return_value=None),
                     patch.object(migration_capsules, "_run_migration_junie") as launch,
                 ):
                     migration_capsules._run_editor_followup(
-                        agent, root, (Path("Page.cs"),), {"completed_capsules": 1},
+                        agent, root, (Path("Page.cs"),), record,
                         root / "run.json", {"junie_max_steps": None}, instruction,
                     )
                 args = launch.call_args.args

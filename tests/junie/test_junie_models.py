@@ -106,7 +106,7 @@ description = "When producing text output"
                         else:
                             self.assertNotIn(flag, command)
 
-    def test_old_run_does_not_pick_up_new_effort_setting(self):
+    def test_missing_effort_refuses_resume_without_using_current_setting(self):
         self.settings["junie_model"] = "sonnet"
         prepared = prepare_fixture(self.settings, "sample")
         path = Path(prepared["run_path"]) / "run.json"
@@ -114,9 +114,11 @@ description = "When producing text output"
         record.pop("junie_effort")
         path.write_text(json.dumps(record))
         self.settings["junie_effort"] = "high"
-        with patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "run_interactive", return_value=1) as run:
+        saved = path.read_bytes()
+        with patch.object(junie_cli, "run_interactive") as run, self.assertRaisesRegex(ValueError, "junie_effort"):
             workflow.resume_with_junie(self.settings, prepared["run_id"])
-        self.assertNotIn("--effort", run.call_args.args[0])
+        run.assert_not_called()
+        self.assertEqual(saved, path.read_bytes())
 
 
 class ModelCliTests(unittest.TestCase):

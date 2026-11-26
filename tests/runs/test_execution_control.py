@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 
-from tests.support.fixtures import HarnessCase, prepare_fixture
+from tests.support.fixtures import HarnessCase, prepare_fixture, complete_fixture_migration
 from migration_harness.runs import run_records
 from migration_harness import workflow
 from migration_harness import execution
@@ -227,8 +227,7 @@ class ExecutionIntegrationTests(HarnessCase):
         record_path = run_path / "run.json"
         record = json.loads(record_path.read_bytes())
         (Path(result["worktree_path"]) / "Page.cs").write_text("class Page {}", encoding="utf-8")
-        record.update(status="junie_finished", completed_capsules=1)
-        run_records.write_run_record(record_path, record)
+        complete_fixture_migration(record_path, record, self.settings["units"][0])
         control = ExecutionControl(lambda _event: None)
         def stop_running_build(command, **_):
             self.assertEqual(command[0], "dotnet")

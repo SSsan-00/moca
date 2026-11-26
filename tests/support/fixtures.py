@@ -25,6 +25,21 @@ def prepare_fixture(config, unit_id):
         return migration_workspace.prepare_run(config, unit_id, run_id)
 
 
+def complete_fixture_migration(record_path, record, unit):
+    """検証から始める試験でも、実移行の終了時と同じ採用版と固定資料を作る。"""
+    from migration_harness.config import target_paths
+    from migration_harness.context.source_context import stage_target_context
+    from migration_harness.runs.worktree_targets import target_versions
+
+    worktree = Path(record["worktree_path"])
+    run = record_path.parent
+    stage_target_context(worktree, target_paths(unit), run / "capsule", run / "agent-workspace",
+                         policy=unit.get("target_context"))
+    record.update(status="junie_finished", completed_capsules=record["context_capsules"],
+                  target_context_initialized=True, target_hashes=target_versions(worktree, unit))
+    run_records.write_run_record(record_path, record)
+
+
 def save_capsule_fixture(capsule, unit_id, parts, *, php=None, materials=None):
     sources = []
     for index, (name, (encoding, content)) in enumerate((php or {}).items(), 1):

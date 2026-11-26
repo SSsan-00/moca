@@ -199,7 +199,10 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
                     secondary.write_text("class SecondaryOriginal {}", encoding="utf-8")
                     targets = [self.target.name, secondary.name]
                     self.config["units"][0]["targets"] = targets
-                    self.save_record({**self.record(), "targets": targets})
+                    self.set_saved_target_context(targets)
+                    self.save_record({**self.record(), "targets": targets,
+                                      "target_hashes": {name: hashlib.sha256((self.worktree / name).read_bytes()).hexdigest()
+                                                        for name in targets}})
                 changed = secondary if multi_target else self.target
                 original_hash = hashlib.sha256(changed.read_bytes()).hexdigest()
                 self.config["scripts"]["after_build"][0][2] = (

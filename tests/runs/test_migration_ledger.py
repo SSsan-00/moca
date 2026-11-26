@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
+from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture, complete_fixture_migration
 from migration_harness.runs import migration_ledger, run_records
 from migration_harness import workflow
 from migration_harness.web.diff_viewer import capture_workspace, save_workspace
@@ -47,8 +47,7 @@ class LedgerReviewTest(HarnessCase):
 
     def prepare_for_verification(self):
         record = json.loads(self.record_path.read_bytes())
-        record.update(status="junie_finished", completed_capsules=1)
-        run_records.write_run_record(self.record_path, record)
+        complete_fixture_migration(self.record_path, record, self.settings["units"][0])
 
     def verify(self, exit_code=0):
         run_process = subprocess.run

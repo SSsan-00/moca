@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.support.fixtures import HarnessCase, prepare_fixture
+from tests.support.fixtures import HarnessCase, prepare_fixture, complete_fixture_migration
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.verification import checker_cycle
@@ -43,8 +43,7 @@ class CommandPathsTests(HarnessCase):
         result = prepare_fixture(self.settings, "sample")
         record_path = Path(result["run_path"]) / "run.json"
         record = json.loads(record_path.read_bytes())
-        record.update(status="junie_finished", completed_capsules=result["capsule_count"])
-        record_path.write_text(json.dumps(record), encoding="utf-8")
+        complete_fixture_migration(record_path, record, self.settings["units"][0])
         return result
 
     def verify(self, result):

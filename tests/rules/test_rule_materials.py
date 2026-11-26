@@ -574,7 +574,8 @@ class RuleMaterialsTests(HarnessCase):
         budget = None
         for should_complete, limited in ((True, False), (False, False), (True, True)):
             with self.subTest(should_complete=should_complete, limited=limited):
-                record = {"status": "junie_running"}
+                record = {"status": "junie_running", "junie_model": None, "junie_effort": None}
+                (self.root / "run.json").write_text(json.dumps(record), encoding="utf-8")
                 attempts = []
                 sizes = []
 
