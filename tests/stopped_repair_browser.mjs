@@ -6,18 +6,23 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
       + "if (!response.ok) throw Error('Repair fixture failed: ' + response.status); return response.json();})");
   }
 
-  async function chooseVersion(choice, ...previews) {
+  async function chooseVersion(choice, expectedWorktree) {
     assert.equal(await evaluate(field("recovery-draft") + ".hidden"), false);
     await evaluate(field("recovery-draft") + ".click()");
     await wait(field("recovery-dialog") + ".open && !!document.querySelector('#recovery-options details')");
     await evaluate("document.querySelector('#recovery-options summary').click()");
-    for (const text of previews) {
-      await wait("document.querySelector('#recovery-options .recovery-previews')?.textContent.includes(" + JSON.stringify(text) + ")");
-    }
+    await wait("document.querySelector('#recovery-options details')?.dataset.loaded === 'done'");
+    const columns = await evaluate("Array.from(document.querySelectorAll('#recovery-options .recovery-previews > div'), "
+      + "el => [el.querySelector('strong').textContent, el.querySelector('pre').textContent])");
+    assert.deepEqual(columns[0], ["停止時の下書き", "class PartlyRepaired {}\n"]);
+    assert.equal(columns[1][0], "現在の作業ツリー");
+    if (expectedWorktree !== undefined) assert.equal(columns[1][1], expectedWorktree);
+    else assert.notEqual(columns[1][1], columns[0][1]);
     await evaluate(`document.querySelector('#recovery-options input[value=${choice}]').click()`);
     await evaluate(field("recovery-submit") + ".click()");
     await wait("!" + field("recovery-dialog") + ".open && " + field("recovery-next")
       + ".textContent.includes('復元する版を保存しました')");
+    return columns[1][1];
   }
 
   try {
@@ -33,21 +38,22 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
         + ".textContent.includes('復元する版を選んでから再開')");
       assert.match(await evaluate(field("recovery-checkpoint") + ".textContent"), /修正下書きあり/);
       assert.match(await evaluate(field("recovery-next") + ".textContent"), /復元する版を選んでから再開/);
-      await chooseVersion("draft", "class PartlyRepaired");
       if (phase === "build") {
+        await chooseVersion("draft");
         await send("fixture-stopped-repair-stale");
         await wait("snapshot.message.includes('復元計画を取り直して')");
         assert.match(await evaluate(field("recovery-next") + ".textContent"), /比較して選び直して/);
         assert.equal(await evaluate(field("recovery-draft") + ".textContent"), "復元する版を選び直す");
-        await chooseVersion("worktree", "class PartlyRepaired", "class EditedAfterSelection");
-        const plan = await evaluate("fetch('recovery-plan?kind=draft&run_id=' + snapshot.run_id).then(r => r.json())");
-        const [target] = Object.keys(plan.draft);
-        assert.equal(plan.draft[target], plan.worktree[target], "the second choice saved the external edit");
+        await chooseVersion("worktree", "class EditedAfterSelection {}\n");
+        await chooseVersion("draft", "class EditedAfterSelection {}\n");
+      } else {
+        const original = await chooseVersion("worktree");
+        await chooseVersion("draft", original);
       }
     }
   } finally {
     await send("fixture-stopped-repair-reset");
     await wait("snapshot.run_id === " + JSON.stringify(restoredRun) + " && snapshot.ready");
   }
-  console.log("Browser recovery: normal resume saved both stopped repair drafts; HTTP and Progress show the version-check guidance");
+  console.log("Browser recovery: reselecting either version preserves the stopped draft and previews current external edits");
 }
