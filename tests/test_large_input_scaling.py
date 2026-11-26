@@ -78,6 +78,53 @@ class LargeInputScalingTests(unittest.TestCase):
         self.assertEqual(records, ["old\r\n", "new with ````` fence\r\n"])
         self.assertEqual(capsules._group_size(groups[0]), len(capsules._render_groups(groups)))
 
+    def test_migration_stages_verified_current_bytes_once_but_streams_larger_capsules(self):
+        for size, expected_reads in ((40, 1), (128, 1), (129, 2)):
+            with self.subTest(size=size), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                capsule = root / "capsule"
+                capsule.mkdir()
+                agent = root / "agent"
+                agent.mkdir()
+                prefix = "共通ルール\r\n"
+                body = b"# Original PHP\r\n" + b"x" * (size - len(prefix.encode("utf-8")) - 16)
+                data = prefix.encode("utf-8") + body
+                self.assertEqual(len(data), size)
+                parts = []
+                for index in (1, 2):
+                    source = capsule / f"context-{index}.md"
+                    source.write_bytes(data)
+                    parts.append({"path": str(source), "index": index, "sha256": hashlib.sha256(data).hexdigest(),
+                                  "segment_sha256": hashlib.sha256(body).hexdigest()})
+                manifest = {"parts": parts, "segment_offset": len(prefix)}
+                verified = migration_materials.stage_source_excerpts(capsule, manifest, agent)
+                source_open = Path.open
+                calls = []
+
+                def track_open(path, mode="r", *args, **kwargs):
+                    if path == source and mode == "rb":
+                        calls.append(mode)
+                    return source_open(path, mode, *args, **kwargs)
+
+                def stage(pin):
+                    return migration_materials.stage_migration_capsule(
+                        {"id": "scale"}, capsule, manifest, agent, (Path("T.cs"),), 2, str(source), 2, "",
+                        resume_first_capsule=True, expected_capsule_hashes=pin,
+                    )
+
+                with patch.object(migration_materials, "_MAX_BUFFERED_CONTEXT_BYTES", 128), \
+                        patch.object(Path, "open", track_open):
+                    check = stage([part["sha256"] for part in parts])
+                    self.assertIn("This capsule was interrupted", check[0])
+                    self.assertEqual(check[-1], verified)
+                    self.assertEqual((agent / ".migration-context.md").read_bytes(), data)
+                    self.assertEqual((agent / ".migration-materials/source-0002.md").read_bytes(), body)
+                    self.assertEqual(len(calls), expected_reads)
+                    source.write_bytes(data[:-1] + b"!")
+                    with self.assertRaisesRegex(ValueError, "saved context changed or is missing"):
+                        stage([part["sha256"] for part in parts])
+                    self.assertEqual((agent / ".migration-context.md").read_bytes(), data)
+
     def test_preflight_reuses_only_verified_excerpt_hash_postflight_still_rehashes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
