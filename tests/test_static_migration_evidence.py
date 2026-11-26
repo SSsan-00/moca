@@ -183,6 +183,8 @@ static_evidence = "evidence.json"
             self.assertEqual(report["status"], "unverified")
             self.assertEqual(rows["missing.php"]["status"], "unverified")
             self.plan()
+            report, rows = self.report()
+            self.assertEqual(report["summary"]["unverified"], len(_SOURCES))
             self.update_record(status="building")
             _, rows = self.report()
             self.assertEqual(set(row["status"] for row in rows.values()), {"unverified"})

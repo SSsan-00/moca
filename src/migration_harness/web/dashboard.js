@@ -866,6 +866,12 @@ function bindMigrationEvidence({load, currentRun}) {
     title.textContent = `[${source.id}] ${locationOf(source)} · ${label}`;
     detail.append(title);
     hashLine(detail, source.source_sha256);
+    if (source.structure?.length) {
+      const hints = document.createElement("p");
+      hints.textContent = "原文の字句情報（意味は未確認）: " + source.structure
+        .map(item => `${item.kind}: ${item.value}（${item.start_line}行）`).join(" / ");
+      detail.append(hints);
+    }
     if (source.reasons?.length) {
       const reasons = document.createElement("p");
       reasons.textContent = source.reasons.join(" / ");

@@ -8,6 +8,7 @@ import re
 import shutil
 import uuid
 from pathlib import Path
+from threading import BoundedSemaphore
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -424,6 +425,8 @@ def send_ledger(request):
         request.send_error(404)
 
 
+_MIGRATION_EVIDENCE_SLOT = BoundedSemaphore(1)
+
 
 def send_migration_evidence(request):
     query = parse_qs(urlsplit(request.path).query, keep_blank_values=True)
@@ -439,9 +442,14 @@ def send_migration_evidence(request):
         return
     from ..runs.static_migration_evidence import migration_evidence
 
+    if not _MIGRATION_EVIDENCE_SLOT.acquire(blocking=False):
+        request.send_conflict(ValueError("他の静的証跡を確認中です。終了してから再度お試しください。"))
+        return
     try:
         report = migration_evidence(config, run_id)
     except DASHBOARD_ERRORS as exc:
         request.send_conflict(exc)
     else:
         request.send_body(200, "application/json", json.dumps(report, ensure_ascii=False).encode("utf-8"))
+    finally:
+        _MIGRATION_EVIDENCE_SLOT.release()

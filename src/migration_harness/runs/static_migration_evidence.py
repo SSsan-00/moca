@@ -63,11 +63,17 @@ def migration_evidence(config: dict, run_id: str) -> dict:
     completed = completed if type(completed) is int else 0
     mappings = record.get("migration_mappings")
     mappings = mappings if isinstance(mappings, dict) else {}
-    preference = {target["path"] for claims in plan.values() for claim in claims for target in claim.get("targets", ())}
+    plan_targets = {target["path"] for claims in plan.values() for claim in claims for target in claim.get("targets", ())}
+    required_targets = {target["path"] for claims in plan.values() for claim in claims if claim["kind"] == "require"
+                        for target in claim["targets"]}
+    anchor_targets = {mapping.get("path") for mapping in mappings.values() if isinstance(mapping, dict)
+                      and isinstance(mapping.get("path"), str)}
+    requested = [path for path in allowed if path in plan_targets or path in anchor_targets]
+    requested.sort(key=lambda path: path not in required_targets)
     can_scan = not pending and plan_error is None and any(
         row["part"] <= completed and not row["reference"] and row["path"] in sources for row in rows
     )
-    targets = _analyze_targets(worktree, sorted(allowed, key=lambda path: path not in preference)) if can_scan else {}
+    targets = _analyze_targets(worktree, requested, required_targets) if can_scan and requested else {}
     for row in rows:
         unknown_source = False
         data = sources.get(row["path"])
@@ -236,7 +242,7 @@ def _load_plan(config, unit, allowed):
     return result
 
 
-def _analyze_targets(worktree, allowed):
+def _analyze_targets(worktree, allowed, required):
     metadata, requests = {}, []
     budget = _TOTAL_BYTES
     with worktree_source_lock(worktree):
@@ -253,18 +259,22 @@ def _analyze_targets(worktree, allowed):
             if not text.strip() or "\0" in text:
                 continue
             metadata[name] = (sha256(raw).hexdigest(), len(_LINES.split(text)))
-            requests.append({"Path": name, "Text": text})
-    if not requests:
-        return {}
-    try:
-        reports = roslyn_syntax.collect_static_evidence(requests)
-    except (OSError, ValueError):
-        reports = []
-    if len(reports) != len(requests):
-        reports = [{} for _ in requests]
-    return {name: Target(*meta, report.get("reason", "analyzer_unavailable"), report.get("complete") is True,
-                         tuple(report.get("facts", ())))
-            for (name, meta), report in zip(metadata.items(), reports, strict=True)}
+            if name in required:
+                requests.append({"Path": name, "Text": text})
+    reports = {}
+    if requests:
+        try:
+            results = roslyn_syntax.collect_static_evidence(requests)
+            if len(results) == len(requests):
+                reports = {request["Path"]: report for request, report in zip(requests, results, strict=True)}
+        except (OSError, ValueError):
+            pass
+    return {name: _parsed_target(meta, reports.get(name, {})) for name, meta in metadata.items()}
+
+
+def _parsed_target(metadata, report):
+    return Target(*metadata, report.get("reason", "analyzer_unavailable"), report.get("complete") is True,
+                  tuple(report.get("facts", ())))
 
 
 def _scope(spec, targets, origin):
