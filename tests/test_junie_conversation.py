@@ -23,7 +23,7 @@ from migration_harness.junie.junie_conversation import _intent
 from migration_harness.runs.run_manager import RunManager
 from migration_harness.verification import checker_advisory
 from fixtures import SavedRunFixture
-from test_checker_advisory import acp_reply
+from test_checker_advisory import LITE_EMPTY_MODELS, LITE_SELECTED, acp_reply
 
 
 class JunieConversationTests(SavedRunFixture):
@@ -151,6 +151,21 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(self.record_path.read_bytes(), run_before)
         with editor_queue(self.run_path) as queue:
             self.assertEqual(queue["prompts"], [])
+
+    def test_selection_uses_saved_lite_model_when_acp_catalog_is_empty(self):
+        original = self.target.read_bytes()
+        selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "var x = 1;"}
+        for effort in (None, "none"):
+            self.save_record({**self.record(), "junie_model": "junie-lite", "junie_effort": effort})
+            identifier = uuid.uuid4().hex
+            with self.subTest(effort=effort), acp_reply(
+                "選択範囲だけを説明しました。", model_setup=(LITE_EMPTY_MODELS, LITE_SELECTED),
+            ):
+                code, _ = self.request("editor", {"kind": "conversation", "run_id": self.run_id, "id": identifier,
+                                                  "text": "", "selection": selection})
+                self.assertEqual(code, 202)
+                self.assertEqual(self.wait_for(identifier, "done")["message"], "選択範囲だけを説明しました。")
+        self.assertEqual(self.target.read_bytes(), original)
 
     def test_selection_persists_only_complete_utf8_replies_within_its_own_budget(self):
         inputs = {path: path.read_bytes() for path in (self.target, self.record_path, self.build_log, self.checker_log)}

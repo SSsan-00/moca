@@ -72,7 +72,7 @@ internal static partial class Program
             razor = engine.Process(source, FileKinds.Legacy, imports, []).GetCSharpDocument();
             if (razor.Diagnostics.Any(d => d.Severity == RazorDiagnosticSeverity.Error))
                 return Result("razor_context");
-            subject = CSharpSyntaxTree.ParseText(razor.Text, options, context.ProjectPath + ".g.cs");
+            subject = CSharpSyntaxTree.ParseText(GetRazorGeneratedText(razor), options, context.ProjectPath + ".g.cs");
         }
         else
         {

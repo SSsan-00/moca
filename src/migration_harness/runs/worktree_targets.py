@@ -13,6 +13,7 @@ from weakref import WeakValueDictionary
 from typing import Any
 
 from ..files import has_symlink_component, safe_target, sha256_file
+from ..verification.csharp_keyword_guard import reject_new_keyword_escapes
 from .run_records import write_run_record
 
 EDIT_BYTES = 8 * 1024 * 1024
@@ -221,6 +222,7 @@ def apply_agent_targets(
             if after is not None and after != before[name]:
                 pending[name] = {"before": before[name], "after": after}
         if pending:
+            reject_new_keyword_escapes(agent_root, worktree, pending)
             record["target_apply_pending"] = pending
             write_run_record(record_path, record)
             finish_pending_targets(agent_root, worktree, targets, record, record_path)

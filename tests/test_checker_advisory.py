@@ -34,11 +34,19 @@ assert receive('session/new', 2) == {'cwd': str(Path.cwd()), 'mcpServers': []}
 mode = sys.argv[1]
 option = lambda value: {'category': 'thought_level', 'id': 'reasoning', 'currentValue': value}
 session = {'sessionId': '1'}
+selection_frames = None
+if mode == 'text' and len(sys.argv) > 6:
+    metadata, selection_frames = json.loads(sys.argv[6])
+    session.update(metadata)
 if mode.startswith('effort-') and mode != 'effort-missing':
     session['configOptions'] = [option('high' if mode == 'effort-current' else 'low')]
 if mode == 'brave':
     session['configOptions'] = [{'id': 'brave_mode', 'type': 'boolean', 'currentValue': True}]
 send(id=2, result=session)
+if selection_frames is not None:
+    assert receive('session/set_model', -1) == {'sessionId': '1', 'modelId': 'junie-lite'}
+    for frame in selection_frames:
+        send(**frame)
 if mode == 'brave':
     assert not sys.stdin.read()
     sys.exit()
@@ -69,7 +77,7 @@ elif sys.argv[1] == 'timeout':
 elif sys.argv[1] == 'stop':
     send(id=3, result={'stopReason': 'cancelled'})
 elif mode == 'text':
-    reply, stop_reason, count, metadata = sys.argv[2:]
+    reply, stop_reason, count, metadata = sys.argv[2:6]
     count = int(count)
     for index in range(count):
         chunk = reply[len(reply) * index // count:len(reply) * (index + 1) // count]
@@ -89,15 +97,81 @@ else:
 """
 
 
-def acp_reply(text, stop_reason="end_turn", *, chunks=2, metadata=False):
+LITE_EMPTY_MODELS = {"models": {"availableModels": []}}
+LITE_SELECTED = [{"id": -1, "result": {}}]
+
+
+def acp_reply(text, stop_reason="end_turn", *, chunks=2, metadata=False, model_setup=None):
     def launch(command, *, owned, cwd, **streams):
         command = [sys.executable, "-c", FAKE_ACP, "text", text, stop_reason, str(chunks),
                    "mixed" if metadata else "plain"]
+        if model_setup is not None:
+            command.append(json.dumps(model_setup))
         return junie_cli.JunieProcess(command, cwd=cwd, **streams)
     return patch.object(junie_cli, "_launch_process", side_effect=launch)
 
 
 class CheckerAdvisoryTests(unittest.TestCase):
+    def test_checker_and_script_advisories_select_lite_before_sending_output(self):
+        with TemporaryDirectory() as folder:
+            run = Path(folder)
+            for log, phase, effort in (
+                ("checker.log", "checker", None),
+                ("checker.log", "checker", "none"),
+                ("before_migration.log", "before_migration", "none"),
+            ):
+                (run / log).write_text("The checker could not inspect the fixture.", encoding="utf-8")
+                with self.subTest(log=log, effort=effort), acp_reply(
+                    '{"verdict":"informational","evidence_lines":[1]}', model_setup=(LITE_EMPTY_MODELS, LITE_SELECTED),
+                ):
+                    result = advisory.output_advisory(
+                        run, log, 1, phase=phase, model_options={"model": "junie-lite", "effort": effort},
+                    )
+                    self.assertEqual((result["status"], result["verdict"], result["evidence_lines"]),
+                                     ("reported", "informational", [1]))
+
+    def test_lite_fallback_does_not_override_models_or_a_different_effort(self):
+        for model, effort, session in (
+            (None, None, LITE_EMPTY_MODELS),
+            ("other", None, LITE_EMPTY_MODELS),
+            ("junie-lite", "high", {**LITE_EMPTY_MODELS, "configOptions": [
+                {"id": "thought_level", "currentValue": "high"},
+            ]}),
+            ("junie-lite", "none", {"models": {"availableModels": [{"modelId": "other"}]}}),
+            ("junie-lite", "none", {"models": {"availableModels": [], "currentModelId": "other"}}),
+            ("junie-lite", None, {"configOptions": [{"id": "model"}]}),
+            ("junie-lite", "none", {"configOptions": [{"id": "selection", "category": "model"}]}),
+        ):
+            with self.subTest(model=model, effort=effort, session=session), acp_reply(
+                "answer", model_setup=(session, None),
+            ):
+                self.assertEqual(advisory.run_text_advisory("sample", model=model, effort=effort, timeout=5), "answer")
+
+    def test_model_selection_rejects_invalid_replies_tools_or_brave_and_allows_legacy_server(self):
+        brave = [{"id": "brave_mode", "type": "boolean", "currentValue": True}]
+        for frame, expected in (
+            ({"id": -1, "result": None}, None),
+            ({"id": -1, "error": {"code": -32601}}, None),
+            ({"id": -1, "error": {"code": -32602}}, "could not select"),
+            ({"id": -1, "result": {}, "error": "broken"}, "could not select"),
+            ({"id": -2, "result": {}}, "Unexpected Junie advisory model selection reply"),
+            ({"id": -1, "result": {"configOptions": brave}}, "cannot use Brave mode"),
+            ({"id": 8, "method": "session/request_permission", "params": {"sessionId": "1"}},
+             "unsupported operation"),
+            ({"method": "session/update", "params": {"sessionId": "1", "update": {
+                "sessionUpdate": "config_option_update", "configOptions": brave,
+            }}}, "cannot use Brave mode"),
+            ({"method": "session/update", "params": {"sessionId": "1", "update": {
+                "sessionUpdate": "tool_call", "kind": "execute",
+            }}}, "attempted a non-text operation"),
+        ):
+            with self.subTest(frame=frame), acp_reply("answer", model_setup=(LITE_EMPTY_MODELS, [frame])):
+                if expected is None:
+                    self.assertEqual(advisory.run_text_advisory("sample", model="junie-lite", timeout=5), "answer")
+                else:
+                    with self.assertRaisesRegex(ValueError, expected):
+                        advisory.run_text_advisory("sample", model="junie-lite", timeout=5)
+
     def test_structured_checker_retains_4kib_boundary(self):
         answer = '{"verdict":"problem","evidence_lines":[1]}'
         with TemporaryDirectory() as folder:
@@ -242,10 +316,11 @@ class CheckerAdvisoryTests(unittest.TestCase):
     def test_timeout_names_the_waiting_stage_and_still_requires_a_complete_reply(self):
         init = {"id": 1, "result": {"protocolVersion": 1}}
         session = {"id": 2, "result": {"sessionId": "opaque"}}
-        for stage, frames, times in (
-            ("initialization", [], [0, 75]),
-            ("session_setup", [init], [0, 30, 75]),
-            ("model_response", [init, session], [0, 30, 46, 46, 91]),
+        for stage, frames, times, model in (
+            ("initialization", [], [0, 75], None),
+            ("session_setup", [init], [0, 30, 75], None),
+            ("model_selection", [init, session], [0, 30, 46, 75], "junie-lite"),
+            ("model_response", [init, session], [0, 30, 46, 46, 91], None),
         ):
             with self.subTest(stage=stage):
                 updates = Mock()
@@ -256,7 +331,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
                     patch.object(advisory, "monotonic", side_effect=times),
                     self.assertRaises(advisory.AdvisoryTimeout) as raised,
                 ):
-                    advisory._exchange(Mock(), Path("fixture"), "sample", 45, startup_timeout=75)
+                    advisory._exchange(Mock(), Path("fixture"), "sample", 45, startup_timeout=75, model=model)
                 self.assertEqual(raised.exception.stage, stage)
 
     def test_timeout_cannot_turn_a_checker_exit_zero_into_success(self):

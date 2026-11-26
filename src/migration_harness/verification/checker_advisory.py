@@ -134,6 +134,7 @@ def _exchange(
     reply_bytes = 0
     session = None
     stage = 1
+    selecting_lite = False
     effort_request = None
     config_id = None
 
@@ -154,12 +155,25 @@ def _exchange(
         request("session/set_config_option", message_id=message_id,
                 sessionId=session, configId=config_id, value=effort)
 
+    def configure_session(info: dict) -> None:
+        nonlocal config_id
+        option = junie_cli.acp_effort_option(info)
+        if effort is None or junie_cli.acp_confirms_effort(option, effort, model):
+            begin_prompt()
+        else:
+            config_id = option.get("id") if option is not None else None
+            if not isinstance(config_id, str) or not config_id:
+                raise AdvisoryEffortUnavailable("Junie advisory does not expose the requested effort")
+            configure_effort(junie_cli._ACP_SET_EFFORT_REQUEST)
+
     request("initialize", protocolVersion=1, clientCapabilities={})
     try:
         while True:
             check_cancelled()
             remaining = deadline - monotonic()
             if remaining <= 0:
+                if selecting_lite:
+                    raise AdvisoryTimeout("model_selection")
                 raise AdvisoryTimeout("effort_confirmation" if effort_request is not None else
                                       ("initialization", "session_setup", "model_response")[stage - 1])
             try:
@@ -204,6 +218,16 @@ def _exchange(
                     reply.append(part)
                 continue
             result = message.get("result")
+            if selecting_lite:
+                if type(message.get("id")) is not int or message["id"] != junie_cli._ACP_SELECT_LITE_REQUEST:
+                    raise ValueError("Unexpected Junie advisory model selection reply")
+                if isinstance(result, dict) and junie_cli.acp_confirms_brave(result):
+                    raise ValueError("Junie advisory cannot use Brave mode")
+                if not junie_cli.acp_lite_selection_can_continue(message):
+                    raise ValueError("Junie advisory could not select the requested Junie Lite model")
+                selecting_lite = False
+                configure_session(result or {})
+                continue
             if effort_request is not None:
                 if type(message.get("id")) is not int or message["id"] != effort_request:
                     raise AdvisoryEffortUnavailable("Unexpected Junie advisory effort reply")
@@ -230,14 +254,12 @@ def _exchange(
                 if junie_cli.acp_confirms_brave(result):
                     raise ValueError("Junie advisory cannot use Brave mode")
                 session = result["sessionId"]
-                option = junie_cli.acp_effort_option(result)
-                if effort is None or junie_cli.acp_confirms_effort(option, effort, model):
-                    begin_prompt()
+                if junie_cli.acp_needs_lite_selection(result, model, effort):
+                    selecting_lite = True
+                    request("session/set_model", message_id=junie_cli._ACP_SELECT_LITE_REQUEST,
+                            sessionId=session, modelId=model)
                 else:
-                    config_id = option.get("id") if option is not None else None
-                    if not isinstance(config_id, str) or not config_id:
-                        raise AdvisoryEffortUnavailable("Junie advisory does not expose the requested effort")
-                    configure_effort(junie_cli._ACP_SET_EFFORT_REQUEST)
+                    configure_session(result)
             elif stage == 3 and result.get("stopReason") == "end_turn":
                 return "".join(reply)
             else:

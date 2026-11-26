@@ -1,4 +1,4 @@
-"""Read-only helpers for Junie's extraction of plain PHP literal statements.
+"""Read-only helpers for migrating PHP literals and simple C# identifiers.
 
 This is not a PHP parser: identify executable statements and control flow first.
 Dynamic strings and encoding-dependent byte escapes require source inspection.
@@ -14,6 +14,29 @@ import re
 
 # An escaped quote belongs to the token; a lazy quote-to-quote regex loses data.
 STRING_LITERAL = r"""(?:'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*")"""
+
+
+_CSHARP_RESERVED = frozenset("""
+abstract as base bool break byte case catch char checked class const continue decimal default delegate
+do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int
+interface internal is lock long namespace new null object operator out override params private protected
+public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw
+true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while
+__arglist __makeref __reftype __refvalue
+""".split())
+
+
+def csharp_identifier(candidate: str, *, occupied: Iterable[str] = ()) -> str:
+    """Allocate a new simple C# name; pass other bound names in the declaration scope."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", candidate) or candidate in _CSHARP_RESERVED:
+        raise ValueError("supply a meaningful, unescaped, non-keyword C# name for this declaration")
+    used = {name.removeprefix("@") for name in occupied}
+    name = candidate
+    suffix = 2
+    while name in used:
+        name = f"{candidate}{suffix}"
+        suffix += 1
+    return name
 
 
 def csharp_literal(value: str | int | bool | None) -> str:

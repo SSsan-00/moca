@@ -20,6 +20,16 @@ class PhpLiteralTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 php_literals.csharp_literal(value)
 
+    def test_new_identifier_never_escapes_or_collides_with_an_existing_name(self):
+        name = php_literals.csharp_identifier
+        self.assertEqual(name("eventName", occupied=["@eventName", "eventName2"]), "eventName3")
+        self.assertEqual(name("EventName", occupied=["eventName"]), "EventName")
+        for allowed in ("record", "Class", "eventName"):
+            self.assertEqual(name(allowed), allowed)
+        for invalid in ("event", "class", "switch", "__arglist", "@event", "@await", "$class", "Model.event", '"event"'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                name(invalid)
+
     cases = [
         ('"edge-15001-\\"<&>/\\\\日本"', 'edge-15001-"<&>/\\日本'),
         (r"'don\'t \\ \n \" $value'", "don't \\ \\n \\\" $value"),
