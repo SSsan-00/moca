@@ -65,9 +65,12 @@ class SavedRunSchemaTests(SavedRunFixture):
         self.assertFalse(snapshot.exists())
 
     def test_missing_reference_revision_pointer_does_not_reuse_the_first_capture(self):
-        self.save_record({**self.record(), "reference_refresh_history": [
-            {"previous": "target-context", "snapshot": "target-context-" + "a" * 32},
-        ]})
+        self.save_record({
+            **self.record(), "completed_capsules": 0, "status": "interrupted",
+            "reference_refresh_history": [
+                {"previous": "target-context", "snapshot": "target-context-" + "a" * 32},
+            ],
+        })
         record_bytes = self.record_path.read_bytes()
         manifest = self.run_path / "capsule" / "target-context" / "manifest.json"
         first_bytes = manifest.read_bytes()

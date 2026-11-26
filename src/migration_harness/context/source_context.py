@@ -190,7 +190,8 @@ def activate_target_context(capsule: Path, snapshot: Path) -> None:
 
 def target_context_was_initialized(record):
     return (record.get("target_context_initialized") is True or bool(record.get("completed_capsules"))
-            or any(key in record for key in ("last_context_plan", "reference_refresh", "detail_applicability")))
+            or any(key in record for key in ("last_context_plan", "reference_refresh", "reference_refresh_history",
+                                             "detail_applicability")))
 
 
 def require_pinned_target_context(capsule, record):
