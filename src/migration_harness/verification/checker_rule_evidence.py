@@ -16,7 +16,7 @@ from ..context.capsules import load_capsule_manifest
 from ..files import safe_target
 from ..context.source_context import target_context_snapshot
 from ..runs.worktree_targets import target_hash
-from .verification_files import configured_verification_checker, verification_files, verification_scripts
+from .verification_files import configured_verification_checker, has_verification_evidence, verification_files, verification_scripts
 
 
 MAX_RECEIPT_BYTES = 256 * 1024
@@ -41,7 +41,7 @@ def current_checker_rule_results(config, run_path, worktree, record, target):
     evidence = record.get("checker_rule_evidence")
     verification = record.get("verification")
     if not (
-        config.get("checker_rule_evidence") and isinstance(evidence, dict) and isinstance(verification, dict)
+        config.get("checker_rule_evidence") and isinstance(evidence, dict) and has_verification_evidence(verification)
         and record.get("checker_exit_code") == 0 and verification.get("scripts_passed") is True
         and verification.get("inputs_changed_during_verification") is False
     ):

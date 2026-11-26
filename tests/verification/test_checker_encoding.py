@@ -97,7 +97,7 @@ class CheckerEncodingTests(SavedRunFixture):
         text = "検査結果に差分あり。"
         raw = text.encode("cp932")
         self.checker_log.write_bytes(raw)
-        log, _, decoded, _, _ = checker_cycle.checker_repair_inputs(
+        log, _, decoded, _ = checker_cycle.checker_repair_inputs(
             self.run_path, [], (Path("Example.cs"),), use_raw_output=True,
         )
         self.assertEqual(decoded, text)

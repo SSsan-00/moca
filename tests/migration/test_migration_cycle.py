@@ -464,6 +464,23 @@ class CycleRecoveryTests(SavedRunFixture):
         self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
         repair.assert_not_called()
 
+    def test_unconfirmed_old_repair_history_keeps_original_run_and_log(self):
+        original_log = self.checker_log.read_bytes()
+        self.save_record({
+            **self.record(),
+            "error": "repair interrupted; inspect Junie's workspace",
+            "repair_history": [{"findings": [hashlib.sha256(b"old identity").hexdigest()]}],
+        })
+        before = self.record_path.read_bytes()
+        self.assertFalse(workflow.can_resume_run(self.config, self.record()))
+        with patch.object(execution, "run_process") as command, patch.object(junie_cli, "run_interactive") as junie:
+            with self.assertRaisesRegex(ValueError, "元のRunを保持"):
+                workflow.resume_with_junie(self.config, self.run_id)
+            command.assert_not_called()
+            junie.assert_not_called()
+        self.assertEqual(self.record_path.read_bytes(), before)
+        self.assertEqual(self.checker_log.read_bytes(), original_log)
+
     def test_large_repeated_build_errors_repair_once_and_keep_complete_log(self):
         self.config["max_repair_attempts"] = 2
         log = "".join(f"{self.target}({line},3): error CS1003: ',' expected\n" for line in range(1, 20001)).encode()
@@ -529,7 +546,7 @@ class CycleRecoveryTests(SavedRunFixture):
 
     def test_raw_output_and_legacy_fingerprints_do_not_use_subset_shortcut(self):
         self.assertTrue(repairs.repair_stalled({"b"}, [{"findings": ["a", "b"]}], kind="checker", raw=True))
-        self.assertTrue(repairs.repair_stalled({"b"}, [{"findings": ["old"]}], kind="checker", legacy={"old"}))
+        self.assertFalse(repairs.repair_stalled({"b"}, [{"findings": ["old"]}], kind="checker"))
         self.assertTrue(repairs.repair_stalled({"b"}, [
             {"findings": ["a", "b"], "raw_checker_output": True},
         ], kind="checker"))

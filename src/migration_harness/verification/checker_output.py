@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from ..saved_state import content_hash
+
 
 _CHECKER_FINDING = re.compile(
     r"(?P<rule>[\w.-]+)\s+(?P<path>.+?):(?P<line>\d+)(?::\d+)?\s+(?P<severity>warning|error):\s*(?P<message>.+)",
@@ -120,7 +122,6 @@ def _prefixed_checker_fields(diagnostic: str) -> dict[str, str] | None:
 class CheckerFinding:
     """指摘の表示内容と、修正履歴・承認に使う識別情報を保持する。"""
     finding_id: str
-    repair_fingerprint: str
     path: str
     diagnostic: str
     line: str
@@ -170,18 +171,23 @@ def parse_checker_diagnostics(diagnostics: Iterable[str], worktree: Path) -> tup
             unrecognized = True
             continue
         relative = resolved.relative_to(worktree).as_posix()
-        # 行・列のずれは同じ指摘と扱う。旧形式の識別子は互換性を保つ。
-        repair_fingerprint = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()
-        # 承認用のIDには対象パスと重大度も含め、別ファイルの指摘へ承認を流用しない。
+        # 行・列のずれでは変えず、対象や重大度の異なる指摘とは区別する。
         review_key = (*key, relative, severity)
         finding_id = hashlib.sha256(json.dumps(review_key).encode("utf-8")).hexdigest()
-        findings.append(CheckerFinding(finding_id, repair_fingerprint, relative, diagnostic, line))
+        findings.append(CheckerFinding(finding_id, relative, diagnostic, line))
     return findings, unrecognized or not findings
 
 
 def accepted_findings(record: dict[str, Any], findings: list[CheckerFinding], hashes: dict[str, str | None]) -> set[str]:
     """指摘IDと対象ファイルの版がともに一致する承認だけを返す。"""
-    accepted = {(entry["finding_id"], entry["target_sha256"]) for entry in record.get("checker_reviews", [])}
+    reviews = record.get("checker_reviews")
+    if not isinstance(reviews, list):
+        return set()
+    accepted = {
+        (entry["finding_id"], entry["target_sha256"]) for entry in reviews
+        if isinstance(entry, dict) and content_hash(entry.get("finding_id"))
+        and content_hash(entry.get("target_sha256")) and isinstance(entry.get("reason"), str) and entry["reason"].strip()
+    }
     counts = Counter(finding.finding_id for finding in findings)
     # 同じIDが複数ある場合は承認対象を一意に特定できないため、承認済みとみなさない。
     return {

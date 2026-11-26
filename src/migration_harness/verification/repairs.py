@@ -49,11 +49,11 @@ def finish_repair_attempt(record):
 
 def repair_stalled(
     fingerprints: set[str], history: list[dict[str, Any]], *, kind: str,
-    legacy: set[str] | frozenset[str] = frozenset(), raw: bool = False,
+    raw: bool = False,
 ) -> bool:
     """指摘が厳密に減っている間だけ続行し、停滞・再発・置き換わった指摘は止める。"""
     attempts = [entry for entry in history if entry.get("kind", "checker") == kind]
-    repeated = any((fingerprints | legacy).intersection(entry["findings"]) for entry in attempts)
+    repeated = any(fingerprints.intersection(entry["findings"]) for entry in attempts)
     progressing = (bool(fingerprints) and bool(attempts) and not raw
                    and not attempts[-1].get("raw_checker_output")
                    and fingerprints < set(attempts[-1]["findings"]))

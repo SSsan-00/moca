@@ -706,9 +706,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.checker_log.write_bytes(
             b"A Example.cs:1 warning: first finding\nB Example.cs:2 warning: second finding\n",
         )
-        record = self.record()
-        record["review_file_hashes"] = {"Example.cs": target_files.review_target_hash(self.worktree, Path("Example.cs"))}
-        self.save_record(record)
+        log = self.checker_log.read_bytes()
+        self.resume(("dotnet", 0, b"ok"), ("fixture-checker", 1, log))
         parse = checker_output.checker_findings
         findings, _ = parse(self.checker_log, self.worktree)
         parsed, release = Event(), Event()
@@ -1668,6 +1667,43 @@ class CheckerResumeApprovalTests(SavedRunFixture):
                       self.diagnostic.replace(b":1", b":2")):
             self.assert_both_statuses(self.diagnostic + extra, "checker_needs_review")
         self.assert_both_statuses(b"", "checker_needs_review")
+
+    def test_legacy_review_hashes_and_incomplete_verification_are_not_approvable(self):
+        current = self.record()
+        finding_id = self.review()["findings"][0][0]
+        for missing in ("review_file_hashes", "input_files", "configured_checker_command", "checker_command"):
+            with self.subTest(missing=missing):
+                record = json.loads(json.dumps(current))
+                if missing == "review_file_hashes":
+                    version = record.pop(missing)[self.target.name]
+                    record.update(review_target_sha256=version, target_sha256=version)
+                else:
+                    del record["verification"][missing]
+                self.save_record(record)
+                before = self.record_path.read_bytes()
+                self.assertFalse(self.review()["findings"][0][2])
+                with self.assertRaisesRegex(ValueError, "再検証してください"):
+                    self.review(finding_id, "not enough evidence")
+                self.assertEqual(self.record_path.read_bytes(), before)
+                if missing != "review_file_hashes":
+                    with self.assertRaisesRegex(ValueError, "ビルドから再実行"):
+                        workflow.plan_checker_resume(self.config, self.run_id)
+                    self.assertEqual(self.record_path.read_bytes(), before)
+        self.save_record(current)
+        self.assertEqual(self.verify(self.diagnostic, only=True)["status"], "checker_accepted")
+
+    def test_accepted_status_needs_a_current_finding_id_and_reason(self):
+        self.assertEqual(self.verify(self.diagnostic)["status"], "checker_accepted")
+        complete = self.record()
+        self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["complete"])
+        for field, value in (("finding_id", sha256(b"obsolete identity").hexdigest()), ("reason", "")):
+            with self.subTest(field=field):
+                record = json.loads(json.dumps(complete))
+                record["checker_reviews"][0][field] = value
+                self.save_record(record)
+                before = self.record_path.read_bytes()
+                self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["complete"])
+                self.assertEqual(self.record_path.read_bytes(), before)
 
     def test_changed_target_invalidates_the_receipt_and_existing_approval(self):
         plan = {**workflow.plan_checker_resume(self.config, self.run_id), "id": "old-target"}

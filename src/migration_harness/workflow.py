@@ -151,6 +151,7 @@ def _resume_with_junie(
     if record.get("migration_stop_unconfirmed"):
         raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
                          "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
+    resume_plan.require_confirmed_repair_history(record)
     require_selected_repair_lineage(record.get("repair_pending", {}))
     if editor_save_pending(run_path):
         with editor_queue_store.editor_queue(run_path, recover=(worktree_path, harness_config.target_paths(unit))):
@@ -170,18 +171,6 @@ def _resume_with_junie(
         if status in CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
         raise ValueError(f"run is not resumable from status {status!r}")
-    history = record.get("repair_history", [])
-    if (
-        record.get("error") == "repair interrupted; inspect Junie's workspace"
-        and "repair_pending" not in record and history
-        and "junie_exit_code" not in history[-1]
-        and not record.get("target_apply_pending")
-    ):
-        # 旧版はJunieを起動した時点で試行を履歴に追加していた。
-        history.pop()
-        record.pop("error", None)
-        run_records.write_run_record(run_path / "run.json", record)
-
     result, migration_complete, waiting_at_final_checkpoint, script_retry = resume_plan.load_resume_context(
         config, run_id, run_path, worktree_path, record, unit, status,
     )

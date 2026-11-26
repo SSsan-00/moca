@@ -11,7 +11,7 @@ from ..config import find_unit
 from ..context import capsules as capsule_files
 from ..files import safe_target
 from ..verification import build_receipt
-from ..verification.verification_files import verification_files, verification_scripts
+from ..verification.verification_files import has_verification_evidence, verification_files, verification_scripts
 from .editor_queue import saved_edits
 from .worktree_targets import target_versions
 from .stage_scripts import block_unknown_script, require_completed_command
@@ -40,12 +40,12 @@ _SCRIPT_RESUME_STATUSES = {"script_running", "script_failed"}
 def previously_required_checker(record: dict[str, Any]) -> bool:
     """再開に必要なチェッカー設定が不足しているか判定する。"""
     verification = record.get("verification") or {}
-    # 旧形式でCLI由来のnullはコマンドを復元できないが、CLI指定があったことは分かる。
     return (
         record.get("checker_required")
         or record.get("status") in CHECKER_RESUME_STATUSES | {"checker_succeeded", "checker_accepted"}
         or verification.get("checker_from_cli")
-        or verification.get("configured_checker_command", verification.get("checker_command")) is not None
+        or verification.get("configured_checker_command") is not None
+        or (record.get("verification") is not None and "configured_checker_command" not in verification)
     )
 
 
@@ -58,12 +58,27 @@ def require_saved_checker(config, record):
         raise ValueError("この Run に必要なチェッカーを設定してください。")
 
 
+def has_unconfirmed_repair_history(record):
+    history = record.get("repair_history")
+    return (
+        record.get("error") == "repair interrupted; inspect Junie's workspace"
+        and not record.get("repair_pending") and history
+        and "junie_exit_code" not in history[-1] and not record.get("target_apply_pending")
+    )
+
+
+def require_confirmed_repair_history(record):
+    if has_unconfirmed_repair_history(record):
+        raise ValueError("中断した修正の試行を保存記録から確定できません。元のRunを保持し、必要な編集は新しいRunに引き継いでください。")
+
+
 def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     """保存された工程と設定から、再開操作を提供できるか判定する。"""
     status = record.get("status")
-    if record.get("script_inflight") or record.get("unconfirmed_command") or record.get("migration_stop_unconfirmed") or status not in (
+    if (has_unconfirmed_repair_history(record) or record.get("script_inflight") or record.get("unconfirmed_command")
+            or record.get("migration_stop_unconfirmed") or status not in (
         _SCRIPT_RESUME_STATUSES | CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES
-    ):
+    )):
         return False
     if "unit_id" in record:
         find_unit(config, record["unit_id"])
@@ -73,7 +88,7 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
 
 
 def can_resume_build(record):
-    return (record.get("status") in (
+    return (not has_unconfirmed_repair_history(record) and record.get("status") in (
         _BUILD_RESUME_STATUSES | CHECKER_RESUME_STATUSES | VERIFIED_STATUSES
         | _SCRIPT_RESUME_STATUSES | {"editor_checkpoint"}
     ) and not record.get("script_inflight") and not record.get("unconfirmed_command") and bool(record.get("completed_capsules"))
@@ -221,7 +236,9 @@ def stage_migration_rewind(run_path, worktree, unit, record, plan, operation):
 
 
 def plan_stage_resume(config, run_id, stage, *, through_capsule=None, rewind_to=None):
-    block_unknown_script(run_records.load_saved_run(config, run_id)[2])
+    _, _, record, _ = run_records.load_saved_run(config, run_id)
+    block_unknown_script(record)
+    require_confirmed_repair_history(record)
     if stage == "migration":
         return plan_migration_resume(config, run_id, through_capsule, rewind_to=rewind_to)
     if through_capsule is not None or rewind_to is not None:
@@ -242,7 +259,7 @@ def plan_checker_resume(config, run_id):
     if verification_scripts(config, command) or config.get("scripts", {}).get("after_migration"):
         raise ValueError("ビルドまたはチェッカーの前後スクリプトがある Run は通常の再開を使用してください。")
     with editor_queue_store.editor_queue(run_path) as queue, worktree_source_lock(worktree):
-        _, _, record, _ = run_records.load_saved_run(config, run_id)
+        _, _, record, unit = run_records.load_saved_run(config, run_id)
         require_completed_command(record)
         if record.get("script_decisions_pending"):
             raise ValueError("Resolve the saved one-time script response before running the checker alone")
@@ -255,10 +272,22 @@ def plan_checker_resume(config, run_id):
                 or record.get("repair_pending") or record.get("stopped_migration_draft") or queue["edits"]
                 or any(prompt["status"] != "sent" for prompt in queue["prompts"])):
             raise ValueError("移行を完了し、保留中の編集・追加指示・修正を解決してから再開してください。")
+        receipt = build_receipt.check_build_receipt(config, worktree, record)
+        verification = record.get("verification")
+        if (not has_verification_evidence(verification) or verification["build_project"] != config["build_project"]
+                or verification["scripts"]):
+            raise ValueError("チェッカー単独再開に必要な検証証跡がありません。ビルドから再実行してください。")
+        versions = target_versions(worktree, unit)
+        if None in versions.values() or versions != verification["target_hashes"]:
+            raise ValueError("検証した移行先の版を確認できません。再ビルドしてください。")
+        inputs = verification_files(config, worktree, unit["target"], command, {})
+        if None in inputs.values():
+            raise ValueError("チェッカーの検証入力を確認できません。設定や入力ファイルを確認してください。")
         plan = {
             "run_id": run_id, "start_stage": "checker", "intent": "checker", "repair": False,
+            "targets": versions, "input_files": inputs,
             "invalidates": ["checker"], "checker_command": command, "completed_capsules": record["completed_capsules"],
-            "edit_revision": queue.get("edit_revision"), "build_receipt": build_receipt.check_build_receipt(config, worktree, record),
+            "edit_revision": queue.get("edit_revision"), "build_receipt": receipt,
         }
     plan["version"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()
     return plan

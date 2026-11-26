@@ -10,9 +10,9 @@ from ..context import capsules as capsule_files
 from ..context.capsules import is_php_input
 from ..context.context_handoff import unresolved_junie_memos, unresolved_operator_notes
 from ..verification import build_receipt
-from ..verification.checker_output import CHECKER_SUCCESS_MESSAGE
+from ..verification.checker_output import CHECKER_SUCCESS_MESSAGE, accepted_findings, checker_findings
 from ..verification.verification_files import (
-    configured_verification_checker, verification_files, verification_scripts,
+    configured_verification_checker, has_verification_evidence, verification_files, verification_scripts,
 )
 from .run_records import edit_run_record
 from .worktree_targets import review_target_hash
@@ -39,7 +39,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
 
     capsules, source_count = _ledger_capsules(manifest["parts"], mappings, current_hash)
     verification_passed, input_status = _ledger_verification(
-        config, worktree, record, unit["target"], targets, len(capsules), current_hash,
+        config, run_path, worktree, record, unit["target"], targets, len(capsules), current_hash,
     )
     return {
         "run_id": run_id,
@@ -90,14 +90,11 @@ def _ledger_capsules(
 
 
 def _ledger_verification(
-    config: dict[str, Any], worktree: Path, record: dict[str, Any], primary_target: str, targets: list[str],
+    config: dict[str, Any], run_path: Path, worktree: Path, record: dict[str, Any], primary_target: str, targets: list[str],
     capsule_count: int, current_hash: Callable[[str], str | None],
 ) -> tuple[bool, str | None]:
     verification = record.get("verification") or {}
     saved_checker = verification.get("checker_command")
-    saved_configuration = verification.get("configured_checker_command", saved_checker)
-    # 旧形式のnullは、未設定とビルドのみで省略した場合の両方で保存されていた。
-    ambiguous_checker = saved_checker is None and "configured_checker_command" not in verification
     configured_checker = configured_verification_checker(config, verification)
     scripts = verification_scripts(config, configured_checker)
     status = record["status"]
@@ -117,11 +114,11 @@ def _ledger_verification(
         and record.get("completed_capsules") == capsule_count
         and record.get("build_exit_code") == 0
         and verification.get("build_project") == config["build_project"]
-        and verification.get("scripts", {}) == scripts
+        and verification.get("scripts") == scripts
         and verification.get("scripts_passed") is True
-        and not ambiguous_checker
+        and "configured_checker_command" in verification and "checker_command" in verification
         and not (record.get("checker_required") and saved_checker is None)
-        and saved_configuration == configured_checker == saved_checker
+        and verification["configured_checker_command"] == configured_checker == saved_checker
         and (status == "build_succeeded" if saved_checker is None else checker_passed)
     )
     if verification_passed:
@@ -129,21 +126,31 @@ def _ledger_verification(
         verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
     input_status = None
     if verification_passed:
-        current_inputs = verification_files(config, worktree, primary_target, configured_checker, scripts)
-        saved_inputs = verification.get("input_files")
-        if verification.get("inputs_changed_during_verification") or (
-            saved_inputs is not None and saved_inputs != current_inputs
-        ) or any(digest is None for digest in current_inputs.values()):
-            input_status = "changed"
-        elif saved_inputs is None and current_inputs:
-            input_status = "legacy"
-        if input_status:
-            verification_passed = False
+        if not has_verification_evidence(verification) or "inputs_changed_during_verification" not in verification:
+            input_status = "missing"
+        else:
+            current_inputs = verification_files(config, worktree, primary_target, configured_checker, scripts)
+            if (verification["inputs_changed_during_verification"] is not False
+                    or verification["input_files"] != current_inputs or None in current_inputs.values()):
+                input_status = "changed"
+        verification_passed = input_status is None
     if verification_passed and verification.get("checker_only"):
         try:
             build_receipt.check_build_receipt(config, worktree, record)
         except ValueError:
             verification_passed = False
+
+    if verification_passed and status == "checker_accepted":
+        log = run_path / "checker.log"
+        try:
+            if log.is_symlink() or not log.is_file():
+                return False, "missing"
+            findings, unrecognized = checker_findings(log, worktree)
+        except (OSError, ValueError):
+            return False, "missing"
+        verification_passed = not unrecognized and bool(findings) and (
+            {finding.finding_id for finding in findings} == accepted_findings(record, findings, approved_file_hashes)
+        )
 
     return verification_passed, input_status
 
