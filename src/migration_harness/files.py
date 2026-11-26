@@ -45,3 +45,17 @@ def safe_target(root: Path, relative: Path) -> Path:
     if target.exists() and not target.is_file():
         raise ValueError(f"target is not a regular file: {relative}")
     return target
+
+
+def has_completion_record(path: Path, token: str) -> bool:
+    """現在の呼び出しが残した完了トークンだけを受理する。"""
+    if path.is_symlink() or not path.is_file():
+        return False
+    expected = token.encode("ascii")
+    try:
+        with path.open("rb") as stream:
+            # 許容するのは末尾の改行だけ。最大許容長より1バイト多く読み、追記された本文を拒否する。
+            value = stream.read(len(expected) + 3)
+    except OSError:
+        return False
+    return value in (expected, expected + b"\n", expected + b"\r\n")

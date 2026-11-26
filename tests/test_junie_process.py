@@ -144,7 +144,7 @@ class JunieProcessTests(unittest.TestCase):
                 if fail:
                     events = Mock(path=None, usage=[0] * len(junie_cli.USAGE_FIELDS), result="would be adopted")
                     events.read_new_events.return_value = True
-                    with (patch.object(junie_cli, "_JunieSessionEvents", return_value=events),
+                    with (patch.object(junie_cli, "SessionEvents", return_value=events),
                           patch.object(JunieProcess, "stop", side_effect=OSError("cannot confirm")),
                           self.assertRaisesRegex(junie_cli.JunieStopError, "終了を確認できません")):
                         junie_cli.run_interactive(command, completion, "token", (target,), accept_result=accepted)
@@ -157,7 +157,7 @@ class JunieProcessTests(unittest.TestCase):
                 elif retry:
                     events = Mock(path=None, usage=[0] * len(junie_cli.USAGE_FIELDS), result=None)
                     events.read_new_events.return_value = True
-                    with patch.object(junie_cli, "_JunieSessionEvents", return_value=events):
+                    with patch.object(junie_cli, "SessionEvents", return_value=events):
                         self.assertEqual(junie_cli.run_interactive(command, completion, "token", (target,)), 0)
                     self.assertEqual(launches.call_count, 2)
                 elif cancel:

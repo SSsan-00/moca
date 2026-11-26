@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 from fixtures import SavedRunFixture
 from migration_harness.verification import build_receipt
 from migration_harness import cli, errors, execution, workflow
-from migration_harness.junie import junie_cli
+from migration_harness.junie import junie_cli, session_events
 from migration_harness.runs import run_records, stopped_repair, target_snapshots, worktree_targets as target_files
 from migration_harness.verification import checker_output, grounded_evidence, repairs
 from migration_harness.web import dashboard, dashboard_settings
@@ -41,7 +41,7 @@ class JunieConnectionTests(unittest.TestCase):
             return json.dumps(entry).encode("utf-8") + b"\n"
 
         with TemporaryDirectory() as directory, patch.dict("os.environ", {"JUNIE_HOME": directory}):
-            events = junie_cli._JunieSessionEvents("this-launch")
+            events = session_events.SessionEvents("this-launch")
             sessions = Path(directory) / "sessions"
             for name in ("current", "unrelated"):
                 (sessions / name).mkdir(parents=True)
@@ -98,7 +98,7 @@ class JunieConnectionTests(unittest.TestCase):
             },
         }}
         with TemporaryDirectory() as directory, patch.dict("os.environ", {"JUNIE_HOME": directory}):
-            events = junie_cli._JunieSessionEvents("current-completion-token")
+            events = session_events.SessionEvents("current-completion-token")
             sessions = Path(directory) / "sessions"
             for name in ("ours", "unrelated"):
                 (sessions / name).mkdir(parents=True)

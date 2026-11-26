@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
-from migration_harness.junie import junie_cli
+from migration_harness.junie import acp_session, junie_cli
 from migration_harness.runs import run_records
 from migration_harness.runs.editor_queue import add_prompt, editor_queue
 from migration_harness import workflow
@@ -182,11 +182,11 @@ class MultipleTargetsTest(HarnessCase):
 
     # 中断時の編集が残り、再開後に両方のファイルを比較できることを検証する。
     def test_partial_edits_are_kept_and_both_targets_are_compared(self):
-        from migration_harness.junie import junie_cli
+        from migration_harness.junie import acp_session, junie_cli
 
         def cancelled_while_editing(args, *rest, **kwargs):
             self.assertIn("reread the target and make a fresh, smaller patch", args[-1])
-            session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+            session = acp_session.AcpSession.__new__(acp_session.AcpSession)
             session.steering_waiting = None
             session.steering_new_turn = False
             self.assertTrue(session._advance_prompt(3, {"result": {"stopReason": "cancelled"}}))

@@ -14,7 +14,7 @@ from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.errors import format_error
 from migration_harness.log_text import decode_log_text
-from migration_harness.junie import junie_cli
+from migration_harness.junie import session_events
 from migration_harness.junie.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
 from test_junie_thoughts import trajectory
 
@@ -63,7 +63,7 @@ class DashboardExternalLogTests(unittest.TestCase):
             logs = home / "logs"
             logs.mkdir(parents=True)
             with patch.dict(os.environ, {"JUNIE_HOME": str(home)}, clear=True):
-                events = junie_cli._JunieSessionEvents("fixed-test-token")
+                events = session_events.SessionEvents("fixed-test-token")
                 log = logs / "log-local-pid-123.log"
                 text = f"2026-11-17 20:56:48.002 [main] ERROR {JAPANESE}\r\n"
                 log.write_bytes(text.encode("cp932"))

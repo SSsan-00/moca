@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from migration_harness.execution import ExecutionControl, control_scope
-from migration_harness.junie import junie_cli
+from migration_harness.junie import acp_session, junie_cli
 
 
 BRAVE_ON = {"id": "brave_mode", "type": "select", "currentValue": "on",
@@ -17,8 +17,8 @@ class JunieBraveAcpTests(unittest.TestCase):
     def session(self, *, required=True, effort=None):
         command = junie_cli.build_command(Path.cwd(), "synthetic instruction", None,
                                           model="gpt-6-luna", effort=effort)
-        with patch.object(junie_cli, "Thread"):
-            session = junie_cli._AcpSession(
+        with patch.object(acp_session, "Thread"):
+            session = acp_session.AcpSession(
                 Mock(), command, Path.cwd(), Mock(), Path("complete"), "fixture-token", None,
                 require_brave=required,
             )
@@ -108,8 +108,8 @@ class JunieBraveAcpTests(unittest.TestCase):
 
                 with (
                     control_scope(control), patch.object(junie_cli, "_launch_process", side_effect=launch),
-                    patch.object(junie_cli, "_JunieSessionEvents", return_value=events),
-                    patch.object(junie_cli, "_close_junie", return_value=0), patch.object(junie_cli, "_AcpSession") as acp,
+                    patch.object(junie_cli, "SessionEvents", return_value=events),
+                    patch.object(junie_cli, "_close_junie", return_value=0), patch.object(junie_cli, "AcpSession") as acp,
                 ):
                     acp.return_value.advance.return_value = True
                     command = ["junie", "--brave", "--prompt", "synthetic instruction"]

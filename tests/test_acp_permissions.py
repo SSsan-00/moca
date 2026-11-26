@@ -8,8 +8,7 @@ from queue import Queue
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from migration_harness.junie import junie_cli
-from migration_harness.junie import migration_session
+from migration_harness.junie import acp_session, junie_cli, migration_session
 from migration_harness.junie.acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
 from migration_harness.config import _execution_settings
 from migration_harness.web.dashboard import Dashboard
@@ -134,8 +133,8 @@ send(id=3,result={"stopReason":"end_turn"})
 
     def test_permission_dialog_requires_the_current_initialized_session(self):
         show_request = Mock(return_value=None)
-        with patch.object(junie_cli, "Thread"):
-            session = junie_cli._AcpSession(Mock(), ["junie"], self.workspace, show_request,
+        with patch.object(acp_session, "Thread"):
+            session = acp_session.AcpSession(Mock(), ["junie"], self.workspace, show_request,
                                            self.workspace / "complete", "token", None)
         session.send = Mock()
         params = {
@@ -169,7 +168,7 @@ send(id=3,result={"stopReason":"end_turn"})
         requests, metrics = [], []
         pin_token = junie_cli.reference_read_scope.set(reads)
         counter_token = junie_cli.permission_observer.set(lambda *args: metrics.append(args))
-        session = junie_cli._AcpSession(process, ["junie", "prompt"], self.workspace, requests.append,
+        session = acp_session.AcpSession(process, ["junie", "prompt"], self.workspace, requests.append,
                                        self.workspace / "complete", "token", None)
         try:
             session.initialize()
@@ -209,7 +208,7 @@ send(id=3,result={"stopReason":"end_turn"})
         application.begin_operation()
         record = {"run_id": self.run_path.name, "status": "ready", "current_capsule": 2}
         def exercise():
-            session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+            session = acp_session.AcpSession.__new__(acp_session.AcpSession)
             session.reference_reads = junie_cli.reference_read_scope.get()
             session.observe_permission = junie_cli.permission_observer.get()
             session.writes, session.outgoing = deque(), Queue()

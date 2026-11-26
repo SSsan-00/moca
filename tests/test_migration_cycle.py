@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness.junie import junie_cli
+from migration_harness.junie import junie_cli, junie_launch
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.context import context_handoff, migration_materials
@@ -115,7 +115,7 @@ class TaskGuidelinesTests(unittest.TestCase):
             # The bundle travels as a guidelines file, including with the Windows BAT launcher.
             command = junie_cli.build_command(root, prompt, None, guidelines=output)
             with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
-                _, _, env = junie_cli._windows_batch_command([r"C:\Junie\junie.cmd", *command[1:]])
+                _, _, env = junie_launch._windows_batch_command([r"C:\Junie\junie.cmd", *command[1:]])
             self.assertEqual(env["JUNIE_IDE_GUIDELINES"], str(output))
             self.assertNotIn("LAST SOURCE LINE", env["JUNIE_PROMPT"])
 

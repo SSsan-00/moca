@@ -146,7 +146,7 @@ src/migration_harness の直下に CLI・設定・工程制御と共通処理を
 | [target_snapshots.py](src/migration_harness/runs/target_snapshots.py)・[stopped_repair.py](src/migration_harness/runs/stopped_repair.py) | 移行先の保存版とハッシュ照合、停止下書きの比較・選択・復元。 |
 | [csharp_keyword_guard.py](src/migration_harness/verification/csharp_keyword_guard.py) | 反映前に、新しく追加した予約語エスケープ付き宣言を確認。 |
 | [source_context.py](src/migration_harness/context/source_context.py) | 移行先周辺の参照ファイルの固定と復元。 |
-| [junie_cli.py](src/migration_harness/junie/junie_cli.py)・[execution.py](src/migration_harness/execution.py) | Junieの起動・ACP・イベント・通信再試行、外部プロセスの実行とキャンセル。 |
+| [junie_cli.py](src/migration_harness/junie/junie_cli.py)・[execution.py](src/migration_harness/execution.py) | Junie の起動・停止確認・通信再試行、外部プロセスの実行とキャンセル。ACP、ログ照合、使用量の分担は[アーキテクチャ](docs/architecture.md#プロセスと成果物の受け渡し)を参照。 |
 | [dashboard.py](src/migration_harness/web/dashboard.py) | ローカルHTTPとSSE、設定・進捗・レビュー・エディタの操作窓口。 |
 | [run_manager.py](src/migration_harness/runs/run_manager.py) | 最大5件の並列実行、待機キューの保存・復元、Runごとの状態と操作の振り分け。 |
 | [editor_queue.py](src/migration_harness/runs/editor_queue.py) | 手修正と追加指示の保存・送信待ち、変更の合流と競合判定。移行先ソースの読み書きは `worktree_targets.py` に集約する。 |

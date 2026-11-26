@@ -8,10 +8,11 @@ from time import monotonic, sleep
 from uuid import uuid4
 
 from ..junie import junie_cli
+from ..junie.acp_session import AcpSession
 from ..junie.reply_text import DuplicateJsonKey, load_unique_json, unwrap_json_fence
 
 
-class RuleChat(junie_cli._AcpSession):
+class RuleChat(AcpSession):
     def __init__(self, project, model, effort):
         self.response = []
         self.size = 0

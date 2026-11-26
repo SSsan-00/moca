@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
-from migration_harness.junie import junie_cli
+from migration_harness.junie import acp_session, junie_cli
 from migration_harness.web.dashboard import Dashboard
 from migration_harness.runs.editor_queue import LivePrompts, add_prompt, editor_queue
 from migration_harness.execution import OperationCancelled, control_scope
@@ -220,7 +220,7 @@ class JunieSteeringTests(unittest.TestCase):
                 with (
                     ThreadPoolExecutor(max_workers=1) as pool,
                     patch.dict(os.environ, {"JUNIE_HOME": str(root / "home")}),
-                    patch.object(junie_cli, "ACP_TIMEOUT", 2 if scenario == "deadline" else 30, create=True),
+                    patch.object(acp_session, "ACP_TIMEOUT", 2 if scenario == "deadline" else 30),
                     patch.object(junie_cli, "_launch_process", side_effect=launch_agent),
                 ):
                     future = pool.submit(run)

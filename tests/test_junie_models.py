@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import tomlkit
 
 from fixtures import HarnessCase, prepare_fixture
-from migration_harness.junie import junie_cli
+from migration_harness.junie import junie_cli, junie_launch
 from migration_harness import workflow
 from migration_harness.config import load_config
 from migration_harness.web.dashboard_settings import read_settings, save_settings_file
@@ -127,7 +127,7 @@ class ModelCliTests(unittest.TestCase):
         self.assertIn("high", junie_cli._task_command(command))
         self.assertNotIn("--model", junie_cli.build_command(Path("project"), "task", None))
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
-            _, _, environment = junie_cli._windows_batch_command([r"C:\Junie\junie.cmd", *command[1:]])
+            _, _, environment = junie_launch._windows_batch_command([r"C:\Junie\junie.cmd", *command[1:]])
         self.assertEqual(environment["JUNIE_MODEL"], "sonnet")
         self.assertEqual(environment["JUNIE_EFFORT"], "high")
         with self.assertRaisesRegex(ValueError, "モデルも選択"):

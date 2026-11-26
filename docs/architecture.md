@@ -302,7 +302,9 @@ sequenceDiagram
 | アンカー生成 | `--task` 対応を確認して優先使用し、未対応なら対話CLIへ切り替えます。 |
 | 通信失敗と停止 | モデル通信に失敗すると、同じ作業領域と完了トークンで 1 秒、3 秒の間隔を置いて最大 2 回再試行します。停止境界ではプロセス群の終了を確認します。終了を確認できない場合は `JunieStopError` で止まり、利用者による残存プロセスの確認が必要です。 |
 
-実装は [junie_cli.py](../src/migration_harness/junie/junie_cli.py)、子プロセスや Windows の Job Object は [junie_process.py](../src/migration_harness/junie/junie_process.py) と [windows_job.py](../src/migration_harness/windows_job.py) を参照してください。
+[junie_cli.py](../src/migration_harness/junie/junie_cli.py) が実行モード選択・再試行と、起動からプロセス群の終了確認、使用量回収、端末復元までの順序を管理します。引数と Windows ランチャーの起動は [junie_launch.py](../src/migration_harness/junie/junie_launch.py)、プロセス群の所有は [junie_process.py](../src/migration_harness/junie/junie_process.py) と [windows_job.py](../src/migration_harness/windows_job.py) が担当します。
+
+[acp_session.py](../src/migration_harness/junie/acp_session.py) は ACP の入出力・許可・追加指示・モデル設定を扱います。ACP の応答が終わっただけでは、ファイルへの反映や子プロセスの終了は確定しません。[session_events.py](../src/migration_harness/junie/session_events.py) は今回の起動と照合できたイベントの追記だけを読み、[usage.py](../src/migration_harness/junie/usage.py) が利用量と、取得または推定できた費用を集計します。
 
 `migration-complete-<token>.txt` の内容と全移行先の存在を照合してから完了数を増やします。終了コードは診断情報として記録します。トークン未発行や停止時も、対象外変更や版の照合を通過した下書きは保存される場合があります。終了確認済みで対象外を変更していない停止下書きには、原文と版を照合した任意メモを紐づけられます。再開で版が合う場合も未確認の手がかりとしてだけ渡し、進捗に数えません。オペレーターへの質問を保存する経路では、回答を待つチェックポイントに入ります。 [workflow.py](../src/migration_harness/workflow.py)
 

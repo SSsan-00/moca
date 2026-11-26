@@ -18,7 +18,7 @@ from time import sleep
 from typing import Any, Literal
 from urllib.request import urlopen
 
-from ..junie import junie_cli
+from ..junie.usage import USAGE_FIELDS
 from ..config import find_unit, target_paths
 from .timings import update_timings
 
@@ -129,13 +129,13 @@ def junie_usage_recorder(
                 lookup_rate = not prior_usage
             row = next((row for row in rows if row["phase"] == phase and row.get("capsule") == capsule), None)
             if row is None:
-                row = {"phase": phase, "capsule": capsule, **dict.fromkeys(junie_cli.USAGE_FIELDS, 0)}
+                row = {"phase": phase, "capsule": capsule, **dict.fromkeys(USAGE_FIELDS, 0)}
                 rows.append(row)
             elif not any(delta):
                 if not changes:
                     return
             previous_responses = row["responses"]
-            for field, value in zip(junie_cli.USAGE_FIELDS, delta, strict=True):
+            for field, value in zip(USAGE_FIELDS, delta, strict=True):
                 row[field] += value
             cost_known = getattr(delta, "cost_known", 0)
             if cost_known or "cost_known" in row:

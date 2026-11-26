@@ -659,7 +659,7 @@ end_line = 1
         from threading import Event
         from unittest.mock import Mock
 
-        from migration_harness.junie import junie_cli
+        from migration_harness.junie import acp_session
 
         chat = RuleChat.__new__(RuleChat)
         chat.response = []
@@ -684,7 +684,7 @@ end_line = 1
         ):
             self.assertEqual(chat.wait(ready=True, cancelled=Event(), publish=lambda *_: None), "")
         self.assertEqual(chat.session_id, "slow-connection")
-        self.assertGreater(chat._connection_timeout(), junie_cli.ACP_TIMEOUT)
+        self.assertGreater(chat._connection_timeout(), acp_session.ACP_TIMEOUT)
 
     def test_chat_proposals_are_not_written_until_accepted(self):
         proposed = "前\u2028中\u2029後\u0085末\r\n"
