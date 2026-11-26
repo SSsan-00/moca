@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from migration_harness import cli
+from migration_harness import cli, terminal_brand
 
 
 class MoCALauncherTests(unittest.TestCase):
@@ -38,18 +38,53 @@ class MoCALauncherTests(unittest.TestCase):
         banner.assert_not_called()
         dashboard.assert_called_once_with({}, open_browser=True)
 
-    def test_banner_is_monochrome_and_falls_back_to_ascii(self):
-        for encoding, height, center, arrow in (("utf-8", 6, 2, "████▄"), ("cp1252", 3, 1, "|>")):
-            with self.subTest(encoding=encoding):
+    def test_banner_fits_or_uses_a_readable_fallback_without_escape_codes(self):
+        for encoding, columns, height, literal in (
+            ("utf-8", 80, 6, None), ("cp1252", 80, 3, "MoCA"), ("utf-8", 36, 3, "MoCA"),
+            ("utf-8", 8, 1, "MoCA"), ("utf-8", 4, 0, None),
+        ):
+            with self.subTest(encoding=encoding, columns=columns):
                 raw = io.BytesIO()
                 with io.TextIOWrapper(raw, encoding=encoding) as terminal:
-                    with patch.object(sys, "stderr", terminal), patch.object(cli, "_is_console", return_value=True):
+                    with (
+                        patch.object(sys, "stderr", terminal),
+                        patch.object(terminal, "fileno", return_value=2),
+                        patch.object(cli, "_is_console", return_value=True),
+                        patch.object(terminal_brand, "get_terminal_size", return_value=os.terminal_size((columns, 24))),
+                        patch.dict(os.environ, {"NO_COLOR": "1"}),
+                        patch.object(terminal_brand, "_console_state") as state,
+                    ):
                         cli._show_moca_banner()
+                    state.assert_not_called()
                     lines = raw.getvalue().decode(encoding).splitlines()
                 self.assertEqual(len(lines), height)
-                self.assertTrue(lines[center].endswith(f"{arrow}  MoCA"))
-                self.assertEqual(sum("MoCA" in line for line in lines), 1)
+                self.assertTrue(all(len(line) < columns for line in lines))
                 self.assertNotIn("\033", "".join(lines))
+                if literal:
+                    self.assertEqual("".join(lines).count(literal), 1)
+                elif height == 6:
+                    self.assertIn("████", lines[3])
+                    self.assertGreater(len(lines[3]), 65)
+
+    def test_palette_matches_console_background_and_keeps_contrast(self):
+        def color(r, g, b):
+            return r | (g << 8) | (b << 16)
+        palette = [0] * 16
+        palette[7] = color(255, 255, 255)
+        palette[6] = color(135, 77, 49)
+        palette[14] = color(226, 164, 124)
+        self.assertEqual(terminal_brand._accent_index(palette, 0x07), 14)
+        self.assertEqual(terminal_brand._accent_index(palette, 0x70), 6)
+        self.assertIsNone(terminal_brand._accent_index(palette, 0x4007))
+        self.assertIsNone(terminal_brand._accent_index([0] * 16, 7))
+        classic = [0] * 16
+        classic[4] = color(197, 15, 31)
+        classic[6] = color(193, 156, 0)
+        classic[7] = color(204, 204, 204)
+        classic[14] = color(249, 241, 165)
+        classic[15] = color(242, 242, 242)
+        self.assertEqual(terminal_brand._accent_index(classic, 0x07), 14)
+        self.assertEqual(terminal_brand._accent_index(classic, 0xF0), 4)
 
     def test_redirection_of_any_stream_suppresses_the_banner(self):
         for stream in ("stdin", "stdout", "stderr"):

@@ -14,18 +14,6 @@ from migration_harness.config import load_config, target_paths
 from migration_harness.errors import format_error
 
 
-# progress-demo.html の 80×28 のSVGから、端末の半マスに合わせたシルエット。
-_MOCA_MARK = """                          █▄▄
-         ▄████▄           ████▄
-      ▄▄████████▄       ▄████████▄  MoCA
-    ▄████▀   ▀███▄   ▄██████████▀▀
-  ▄████▀       ████████▀  ███▀▀
-  ▀█▀           ▀███▀     ▀▀"""
-_MOCA_MARK_ASCII = r"""    /\      |\
-   /  \    /|>  MoCA
-  /    \__/ |/"""
-
-
 def _is_console(stream) -> bool:
     if stream is None or not stream.isatty():
         return False
@@ -42,12 +30,9 @@ def _show_moca_banner() -> None:
     try:
         if not all(_is_console(stream) for stream in (sys.stdin, sys.stdout, sys.stderr)):
             return
-        banner = _MOCA_MARK
-        try:
-            banner.encode(sys.stderr.encoding or "ascii")
-        except (UnicodeEncodeError, LookupError):
-            banner = _MOCA_MARK_ASCII
-        print(banner, file=sys.stderr, flush=True)
+        from migration_harness.terminal_brand import write_banner
+
+        write_banner(sys.stderr)
     except (OSError, ValueError):
         # 起動中に端末が切断されても、バナーだけで起動を止めない。
         pass
