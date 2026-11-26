@@ -650,7 +650,7 @@ def pinned_php_sources(manifest: dict[str, Any]) -> list[dict[str, str]] | None:
     return sources
 
 
-def read_pinned_php(capsule_path: Path, source: dict[str, str]) -> bytes:
+def read_pinned_php(capsule_path: Path, source: dict[str, str], *, max_bytes: int | None = None) -> bytes:
     """固定済みPHPの保存先を検証し、manifestと一致する内容だけを返す。"""
     relative = Path(source["snapshot"])
     if relative.anchor or ".." in relative.parts:
@@ -658,7 +658,10 @@ def read_pinned_php(capsule_path: Path, source: dict[str, str]) -> bytes:
     path = safe_target(capsule_path, relative)
     if not path.is_file():
         raise ValueError(f"保存済みPHPが見つかりません: {source['snapshot']}")
-    content = path.read_bytes()
+    with path.open("rb") as stream:
+        content = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+    if max_bytes is not None and len(content) > max_bytes:
+        raise ValueError("固定済みPHPの静的検査のサイズ上限を超えています。")
     if hashlib.sha256(content).hexdigest() != source["sha256"]:
         raise ValueError(f"保存済みPHPのハッシュが一致しません: {source['path']}")
     return content

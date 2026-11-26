@@ -417,6 +417,10 @@ def _normalize_unit(unit, root, project_context, common_rules, common_references
         normalized["target_context"] = {**project_context, **target_context_policy(unit.get("target_context", {}))}
     if "draft_imports" in unit:
         normalized["draft_import_commands"] = _draft_import_commands(unit, target_files, root)
+    if "static_evidence" in unit:
+        normalized["static_evidence"] = _file_path(
+            unit["static_evidence"], root, f"unit {unit['id']} static_evidence", inside=True,
+        )
     if "targets" in unit:
         normalized["targets"] = [target.as_posix() for target in target_files]
         normalized["target"] = normalized["targets"][0]

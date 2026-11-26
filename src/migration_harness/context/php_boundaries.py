@@ -144,3 +144,26 @@ def _functions(text: str, tokens: list[tuple[str, int, int]], *, partial: bool =
         if not text[covered_until:following].strip():
             functions.append(PhpFunction(name, line, end_line, bisect_right(line_starts, name_start)))
     return tuple(functions)
+
+
+def static_source_indicators(text: str) -> tuple[tuple[dict, ...], bool]:
+    opening = _OPEN.match(text, int(text.startswith("\ufeff")))
+    if opening is None:
+        return (), False
+    try:
+        tokens = _tokens(text, opening.end())
+    except ValueError:
+        return (), False
+    line_starts = [0, *(end.end() for end in _LINE_END.finditer(text))]
+    indicators = []
+    for index, (word, offset, _) in enumerate(tokens[:-1]):
+        next_word, _, _ = tokens[index + 1]
+        kind = word.casefold()
+        line = bisect_right(line_starts, offset)
+        if kind in {"class", "interface", "trait", "enum", "const"} and _IDENTIFIER.fullmatch(next_word):
+            indicators.append({"kind": kind, "value": next_word, "start_line": line, "end_line": line})
+        elif (next_word == "(" and _IDENTIFIER.fullmatch(word) and text[offset - 1:offset] == "$") or kind in {
+            "call_user_func", "call_user_func_array", "eval", "include", "include_once", "require", "require_once",
+        }:
+            indicators.append({"kind": "dynamic", "value": word, "start_line": line, "end_line": line})
+    return tuple(indicators), True
