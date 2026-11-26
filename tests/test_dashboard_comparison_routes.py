@@ -40,6 +40,50 @@ class DashboardComparisonRoutesTests(HarnessCase):
             with urlopen(url + "migration-ledger", timeout=3) as response:
                 self.assertEqual(json.load(response)["capsules"][0]["sources"][0]["id"], "1:1")
 
+    def test_static_evidence_is_explicit_run_bound_and_read_only(self):
+        (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Page {}\n", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        prepared = prepare_fixture(config, "sample")
+        run_id = prepared["run_id"]
+        record_path = Path(prepared["run_path"]) / "run.json"
+        before = record_path.read_bytes()
+        report = {"run_id": run_id, "status": "unverified", "reason": "対応の確認が必要です。", "ranges": []}
+        with (
+            patch("migration_harness.runs.static_migration_evidence.migration_evidence", return_value=report) as inspect,
+            self.live_dashboard(config, run_id) as url,
+        ):
+            self.ready_event(url)
+            with urlopen(url + "migration-ledger", timeout=3):
+                pass
+            endpoint = url + f"migration-evidence?run_id={run_id}"
+            wrong = "00000000-0000-4000-8000-000000000001"
+            invalid_requests = (
+                (Request(endpoint, headers={"Host": "example.invalid"}), 403),
+                (Request(url + "migration-evidence"), 404),
+                (Request(endpoint + f"&run_id={wrong}", headers={"X-Run-ID": run_id}), 404),
+                (Request(url + f"migration-evidence?run_id={wrong}", headers={"X-Run-ID": run_id}), 404),
+            )
+            for request, expected in invalid_requests:
+                with self.subTest(url=request.full_url, headers=request.headers):
+                    with self.assertRaises(HTTPError) as rejected:
+                        urlopen(request, timeout=3)
+                    self.assertEqual(rejected.exception.code, expected)
+                    rejected.exception.close()
+            with self.assertRaises(HTTPError) as rejected:
+                urlopen(Request(endpoint, method="POST", data=b""), timeout=3)
+            self.assertEqual(rejected.exception.code, 404)
+            rejected.exception.close()
+            inspect.assert_not_called()
+            with urlopen(Request(endpoint, headers={"X-Run-ID": run_id}), timeout=3) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(json.load(response), report)
+            self.assertEqual(inspect.call_count, 1)
+            self.assertEqual(inspect.call_args.args[1], run_id)
+            self.assertEqual(record_path.read_bytes(), before)
+
     def test_rewind_prompt_and_ledger_agree_on_launch_target_before_adoption(self):
         from migration_harness.context.context_handoff import record_handoff
 

@@ -820,6 +820,11 @@
     #open-migration-ledger { min-height: 36px; height: 36px; }
     .migration-ledger-target { margin: 4px 0 8px; color: var(--muted); overflow-wrap: anywhere; }
     .migration-ledger-target code { color: var(--ink); }
+    .migration-evidence { margin: 12px 0; padding: 10px 0; border-block: 1px solid var(--line); }
+    .migration-evidence p { margin: 5px 0; }
+    .migration-evidence-list { max-height: 18rem; margin: 6px 0 0; padding-left: 1.5rem; overflow: auto; }
+    .migration-evidence-list li { margin: 4px 0; }
+    .migration-evidence-list :is(details, code) { overflow-wrap: anywhere; }
     .migration-ledger-comparisons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
     .migration-ledger-comparisons [hidden] { display: none; }
     .migration-ledger-list { margin: 0; padding: 0; list-style: none; }
@@ -1678,6 +1683,12 @@
       <p class="run-detail">Run ID <code id="migration-ledger-run-id"></code></p>
       <p class="migration-ledger-target">移行先 <code id="migration-ledger-target"></code></p>
       <p class="migration-ledger-target" id="migration-ledger-completion" role="status"></p>
+      <section class="migration-evidence" aria-label="静的証跡">
+        <button class="review-action" id="migration-evidence-check" type="button" disabled>静的証跡を確認</button>
+        <p class="run-detail">原文と移行先の版・対応候補を照合します。動作の同等性や移行完了を示すものではありません。</p>
+        <p class="run-detail" id="migration-evidence-status" role="status" hidden></p>
+        <ol class="migration-evidence-list" id="migration-evidence-ranges" aria-label="原文範囲ごとの静的証跡" hidden></ol>
+      </section>
       <div class="migration-ledger-comparisons">
         <button class="review-action" id="migration-ledger-compare" type="button">差分を開く</button>
         <div id="migration-candidate-comparison" hidden>

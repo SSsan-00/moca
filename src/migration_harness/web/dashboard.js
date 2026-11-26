@@ -200,6 +200,7 @@ function syncActions() {
   stopButton.disabled = !connected || submitting || !snapshot.cancellable || stopping;
   stopButton.textContent = stopping ? "停止を待っています" : "停止";
   migrationLedgerButton.disabled = !connected || !snapshot.worktree_path;
+  migrationEvidence.sync();
   dashboardViewer.disabled = viewer.disabled = !connected || !snapshot.worktree_path || !snapshot.diff_viewer_enabled || snapshotting.has(snapshot.run_id);
   element("#migration-ledger-compare").disabled = dashboardViewer.disabled;
   for (const button of anchorButtons) {
@@ -811,14 +812,138 @@ async function loadMigrationLedger({keepCompletion = false} = {}) {
   }
 }
 
+function bindMigrationEvidence({load, currentRun}) {
+  const button = document.querySelector("#migration-evidence-check");
+  const feedback = document.querySelector("#migration-evidence-status");
+  const ranges = document.querySelector("#migration-evidence-ranges");
+  const statuses = {
+    verified: "明示条件を確認済み",
+    mismatch: "明示条件の不一致",
+    review_candidate: "対応候補・要確認",
+    unverified: "判定不能",
+    excluded: "対象外",
+  };
+  const origins = {anchor: "アンカー候補", ai: "AI提案", human: "人の関連付け", mechanical: "機械的な照合"};
+  let pending;
+
+  function sync() {
+    button.disabled = !!pending || !currentRun();
+  }
+
+  function status(text) {
+    feedback.textContent = text;
+    feedback.hidden = !text;
+  }
+
+  function reset() {
+    pending?.abort();
+    pending = undefined;
+    status("");
+    ranges.replaceChildren();
+    ranges.hidden = true;
+    sync();
+  }
+
+  function locationOf({path, start_line: start, end_line: end}) {
+    const lines = start == null ? "" : start === end ? ` · ${start}行目` : ` · ${start}–${end}行`;
+    return `${path || "ファイル不明"}${lines}`;
+  }
+
+  function hashLine(parent, hash) {
+    if (!hash) return;
+    const line = document.createElement("p");
+    const digest = document.createElement("code");
+    digest.textContent = hash;
+    line.append("版（SHA-256） ", digest);
+    parent.append(line);
+  }
+
+  function rowFor(source) {
+    const label = Object.hasOwn(statuses, source.status) ? statuses[source.status] : statuses.unverified;
+    const row = document.createElement("li");
+    const detail = document.createElement("details");
+    const title = document.createElement("summary");
+    title.textContent = `[${source.id}] ${locationOf(source)} · ${label}`;
+    detail.append(title);
+    hashLine(detail, source.source_sha256);
+    if (source.reasons?.length) {
+      const reasons = document.createElement("p");
+      reasons.textContent = source.reasons.join(" / ");
+      detail.append(reasons);
+    }
+    if (source.targets?.length) {
+      const targets = document.createElement("ul");
+      for (const target of source.targets) {
+        const entry = document.createElement("li");
+        const name = document.createElement("code");
+        name.textContent = locationOf(target);
+        entry.append(name);
+        if (Object.hasOwn(origins, target.origin)) entry.append(` · ${origins[target.origin]}`);
+        hashLine(entry, target.sha256);
+        targets.append(entry);
+      }
+      detail.append(targets);
+    }
+    row.append(detail);
+    return row;
+  }
+
+  button.addEventListener("click", async () => {
+    const runId = currentRun();
+    if (pending || !runId) return;
+    reset();
+    const request = pending = new AbortController();
+    const isCurrent = () => pending === request && currentRun() === runId;
+    sync();
+    status("静的証跡を確認しています…");
+    try {
+      const report = await load(runId, request.signal);
+      if (!isCurrent()) return;
+      if (report.run_id !== runId) throw new Error("表示中の実行と確認結果が一致しません。");
+      const rows = Array.isArray(report.ranges) ? report.ranges : [];
+      const counts = Object.entries(statuses)
+        .filter(([key]) => Number.isSafeInteger(report.summary?.[key]) && report.summary[key] > 0)
+        .map(([key, label]) => `${label} ${report.summary[key]}件`);
+      const overview = report.status === "ready" && rows.length
+        ? `原文 ${rows.length} 範囲の確認結果。${counts.length ? " " + counts.join(" · ") : ""}`
+        : `未確認：${report.reason || "照合できる原文範囲がありません。"}`;
+      status(overview);
+      for (const row of rows) ranges.append(rowFor(row));
+      ranges.hidden = !rows.length;
+    } catch (error) {
+      if (isCurrent()) status(`静的証跡を確認できませんでした。 ${error.message}`);
+    } finally {
+      if (pending === request) {
+        pending = undefined;
+        sync();
+      }
+    }
+  });
+  return {reset, sync};
+}
+
+const migrationEvidence = bindMigrationEvidence({
+  currentRun: () => migrationLedgerDialog.open && connected && snapshot.worktree_path && snapshot.ready && !snapshot.queued
+    && snapshot.run_id === selectedRunId ? selectedRunId : "",
+  load: async (runId, signal) => {
+    const response = await runFetch(`migration-evidence?run_id=${encodeURIComponent(runId)}`, {cache: "no-store", signal});
+    if (!response.ok) throw await responseError(response);
+    return response.json();
+  },
+});
+migrationLedgerDialog.addEventListener("close", () => {
+  if (!migrationLedgerDialog.open) migrationEvidence.reset();
+});
 document.addEventListener("harnessrunselect", () => {
   ++migrationLedgerRequest;
+  migrationEvidence.reset();
   if (migrationLedgerDialog.open) migrationLedgerDialog.close();
 });
 migrationLedgerButton.addEventListener("click", () => {
   showUnresolvedNotes("#unresolved-junie-memos", []);
   showUnresolvedNotes("#unresolved-operator-notes", []);
   openMigrationLedger("移行台帳を読み込み中");
+  migrationEvidence.reset();
   loadMigrationLedger();
 });
 window.addEventListener("focus", () => {
@@ -2007,6 +2132,7 @@ function receiveProgress(event) {
   if (progressChanged) {
     migrationLedgerRequest++;
     migrationCompletion = undefined;
+    migrationEvidence.reset();
   }
   dashboardRevision = Number(event.lastEventId);
   const buildState = buildDrafts.get(data.run_id);

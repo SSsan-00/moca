@@ -170,7 +170,7 @@ window.harnessDemoTransport = (() => {
   }
 
   const get = new Set(["workspace", "token-runs", "junie-models", "settings", "junie-requests", "junie-thoughts",
-    "recovery", "recovery-plan", "recovery-file", "migration-ledger", "checker-output", "prompts", "resume-plan"]);
+    "recovery", "recovery-plan", "recovery-file", "migration-ledger", "migration-evidence", "checker-output", "prompts", "resume-plan"]);
   const post = new Set(["settings", "control", "prompts", "recovery-plan"]);
   const json = (value, status = 200) => new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
   async function request(path, init = {}) {
@@ -200,6 +200,8 @@ window.harnessDemoTransport = (() => {
       if (!run) return new Response("サンプルのRunが見つかりません。", {status: 404});
       switch (route) {
         case "migration-ledger": return json(ledger(run));
+        case "migration-evidence": return json({run_id: id, status: "unverified", ranges: [],
+          reason: "デモでは実際の原文や移行先の静的照合は行いません。"});
         case "recovery": return json(recoveryStatus(run));
         case "recovery-plan": return body ? await saveRecovery(run, body) : json(recoveryPlan(run, query.get("kind")));
         case "recovery-file": {

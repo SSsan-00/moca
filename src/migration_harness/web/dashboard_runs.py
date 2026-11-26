@@ -422,3 +422,26 @@ def send_ledger(request):
             request.send_body(200, "application/json", json.dumps(ledger, ensure_ascii=False).encode("utf-8"))
     else:
         request.send_error(404)
+
+
+
+def send_migration_evidence(request):
+    query = parse_qs(urlsplit(request.path).query, keep_blank_values=True)
+    with request.dashboard.condition:
+        state = request.dashboard.state
+        config = request.server.config.copy()
+    run_id = state.get("run_id")
+    if not run_id or query.get("run_id") != [run_id] or not state.get("worktree_path"):
+        request.send_error(404)
+        return
+    if not state.get("ready") or state.get("queued"):
+        request.send_conflict(ValueError("実行中・待機中は静的証跡を確認できません。"))
+        return
+    from ..runs.static_migration_evidence import migration_evidence
+
+    try:
+        report = migration_evidence(config, run_id)
+    except DASHBOARD_ERRORS as exc:
+        request.send_conflict(exc)
+    else:
+        request.send_body(200, "application/json", json.dumps(report, ensure_ascii=False).encode("utf-8"))

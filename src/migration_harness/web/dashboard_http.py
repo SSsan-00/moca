@@ -186,6 +186,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             dashboard_runs.send_build_review(self)
         elif route == "migration-ledger":
             dashboard_runs.send_ledger(self)
+        elif route == "migration-evidence":
+            dashboard_runs.send_migration_evidence(self)
         elif self.path.startswith(prefix + "review/"):
             dashboard_comparison.send_comparison(self)
         else:

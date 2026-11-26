@@ -166,7 +166,7 @@ async function checkDashboard() {
     : selector === ".run-model:has([data-run-model])" && exerciseModels ? [modelGroup] : [];
   const location = new URL("http://localhost/dashboard/?run=A");
   const runtime = vm.createContext({
-    document: page, Event, URL, URLSearchParams, Headers, TextEncoder, location,
+    document: page, Event, URL, URLSearchParams, Headers, TextEncoder, AbortController, location,
     Option: class { constructor(label, value) { this.label = label; this.value = value; } },
     effortLabels: {low: "Low", high: "High"},
     history: {replaceState(_, __, url) { location.href = url.href; }},
@@ -192,12 +192,13 @@ async function checkDashboard() {
     bindHarnessWorkspace(value) { actions = value; },
     bindTokenRuns: () => ({}),
     migrationLedgerButton: new Element(), migrationLedgerDialog: new Element(),
+    openMigrationLedger() { runtime.migrationLedgerDialog.open = true; },
     workspaceTabs: new Element(), workspaceControls() {}, setInterval() {},
     renderRunTokenSummary() {}, updateMigrationLedgerStatuses() {},
     fetch(path, options) {
       if (path === "junie-requests") return Promise.resolve({ok: true, json: async () => []});
       const body = options.body ? JSON.parse(options.body) : {};
-      const request = {path, headers: options.headers, body};
+      const request = {path, headers: options.headers, body, signal: options.signal};
       requests.push(request);
       if (path === "prompts" && !options.body) return Promise.resolve({ok: true, json: async () => ({
         run_id: options.headers.get("X-Run-ID"), conversation: [], prompts: [],
@@ -230,7 +231,7 @@ async function checkDashboard() {
           request.reject = () => reject(Error("fixture model save failed"));
         });
       }
-      if (path === "comparison" || body.action === "anchors") {
+      if (path === "comparison" || body.action === "anchors" || path.startsWith("migration-evidence?")) {
         return new Promise(resolve => { request.resolve = resolve; });
       }
       return Promise.resolve({ok: true, json: async () => ({run_id: body.run_id})});
@@ -307,6 +308,44 @@ async function checkDashboard() {
   requests.at(-1).resolve({ok: true, json: async () => ({run_id: "B", id: "anchors"})});
   await retry;
   assert.deepEqual(opened, ["review/A/plain.html", "review/B/anchors.html"]);
+
+  assert.equal(requests.filter(item => item.path.startsWith("migration-evidence")).length, 0,
+    "progress, opening a Run and ordinary ledger refresh must not start evidence inspection");
+  exerciseModels = true;
+  await selectRun("A");
+  await runtime.migrationLedgerButton.emit("click");
+  assert.equal(requests.filter(item => item.path.startsWith("migration-evidence")).length, 0);
+  const evidenceButton = dashboardElement("#migration-evidence-check");
+  assert.equal(evidenceButton.disabled, false);
+  const evidenceStatus = dashboardElement("#migration-evidence-status");
+  const evidenceRows = dashboardElement("#migration-evidence-ranges");
+  const oldEvidence = evidenceButton.emit("click"), oldEvidenceRequest = requests.at(-1);
+  assert.equal(oldEvidenceRequest.path, "migration-evidence?run_id=A");
+  assert.equal(oldEvidenceRequest.headers.get("X-Run-ID"), "A");
+  assert.equal(evidenceButton.disabled, true);
+  await selectRun("B");
+  assert.equal(oldEvidenceRequest.signal.aborted, true);
+  oldEvidenceRequest.resolve({ok: true, json: async () => ({run_id: "A", status: "ready", ranges: [{}]})});
+  await oldEvidence;
+  assert.equal(evidenceStatus.hidden, true);
+  assert.equal(evidenceRows.children.length, 0);
+  await runtime.migrationLedgerButton.emit("click");
+  const checkEvidence = evidenceButton.emit("click");
+  const report = {run_id: "B", status: "ready", summary: {review_candidate: 1}, ranges: [{
+    id: "1:1", path: "<example.php>", start_line: 2, end_line: 4, status: "review_candidate",
+    reasons: ["<b>テキストのまま</b>"], targets: [{path: "Page.cs", start_line: 1, end_line: 2, origin: "human"}],
+  }]};
+  assert.equal(requests.at(-1).path, "migration-evidence?run_id=B");
+  requests.at(-1).resolve({ok: true, json: async () => report});
+  await checkEvidence;
+  assert.match(evidenceStatus.textContent, /対応候補・要確認 1件/);
+  const evidenceDetail = evidenceRows.children[0].children[0];
+  assert.match(evidenceDetail.children[0].textContent, /<example.php>/);
+  assert.equal(evidenceDetail.children[1].textContent, "<b>テキストのまま</b>");
+  runtime.migrationLedgerDialog.open = false;
+  await runtime.migrationLedgerDialog.emit("close");
+  assert.equal(evidenceRows.children.length, 0);
+  exerciseModels = false;
 
   const openPrompt = async () => {
     progressDialog.dialog.open = true;
