@@ -31,7 +31,7 @@ from .resume_plan import previously_required_checker
 from .run_records import run_model_options
 from .target_snapshots import (
     save_capsule_checkpoint as _save_capsule_checkpoint, save_target_snapshot as _save_target_snapshot,
-    verified_snapshot_files as _verified_target_snapshot,
+    validate_snapshot_metadata, verified_snapshot_files as _verified_target_snapshot,
 )
 from .worktree_targets import finish_pending_targets, target_hash, target_newline, worktree_source_lock
 
@@ -363,10 +363,14 @@ def _check_reference_adoption_basis(worktree, targets, capsule, pending, *, requ
 
 def validate_saved_reference_adoption(record, targets):
     pending = record.get("reference_refresh")
-    if not isinstance(pending, dict) or "adoption" not in pending:
+    if pending is None:
+        return
+    label = "run.json の参考資料の反映記録"
+    if not isinstance(pending, dict):
+        raise ValueError(f"{label} が壊れています。")
+    if "adoption" not in pending:
         return
     adoption = pending["adoption"]
-    label = "run.json の参考資料の反映記録"
     if not isinstance(adoption, dict):
         raise ValueError(f"{label} が壊れています。")
     names = {path.as_posix() for path in targets}
@@ -375,6 +379,16 @@ def validate_saved_reference_adoption(record, targets):
         if (not isinstance(values, dict) or values.keys() != names
                 or not all(content_hash(value, missing=field != "after") for value in values.values())):
             raise ValueError(f"{label} の {field} で対象版を確認できません。")
+    output = adoption.get("output")
+    if not isinstance(output, str) or Path(output).name != output or not output.startswith("reference-output-"):
+        raise ValueError(f"{label} の output を特定できません。")
+    for field in ("generated", "backup"):
+        try:
+            snapshot = validate_snapshot_metadata(adoption.get(field))
+        except ValueError as error:
+            raise ValueError(f"{label} の {field} で保存版を確認できません。") from error
+        if snapshot["base"] != adoption["before"] or snapshot["targets"].keys() != names:
+            raise ValueError(f"{label} の {field} が対象版と一致しません。")
     refs, edits = adoption.get("reference_hashes"), adoption.get("editor_edits")
     if not isinstance(refs, dict) or not all(content_hash(value) for value in refs.values()):
         raise ValueError(f"{label} の reference_hashes が不正です。")

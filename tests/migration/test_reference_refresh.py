@@ -741,7 +741,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         agent_target = self.agent / "Example.cs"
         paths = (queue_path, self.target, agent_target, self.run_path / adoption["output"] / "operator-edits.json")
         before = [path.read_bytes() for path in paths]
-        for field in ("draft", "reference_hashes", "editor_edits", "operator_edits_sha256"):
+        for field in ("draft", "output", "backup", "generated", "reference_hashes", "editor_edits", "operator_edits_sha256"):
             with self.subTest(field=field):
                 invalid = {key: value for key, value in adoption.items() if key != field}
                 self.save_record({**original, "reference_refresh": {**original["reference_refresh"], "adoption": invalid}})
