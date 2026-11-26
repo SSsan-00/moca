@@ -4,7 +4,7 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 
 ## 実行環境と設定
 
-ハーネスは Windows 上の Python 3.11 以上で動作します。準備には Git、移行には認証済みの Junie CLI、ビルドにはアプリが要求する .NET SDK が必要です。配布パッケージはダッシュボードの HTML・JavaScript と Monaco Editor を含みます。
+ハーネスは Windows 上の Python 3.11 以上で動作します。準備には Git、移行には認証済みの Junie CLI、ローカルのC#／Razor診断と予約語確認には .NET 9 SDK、正式ビルドにはアプリが要求するSDKが必要です。配布パッケージにダッシュボードとMonaco Editorが含まれているため、通常利用にNode.jsは不要です。
 
 | TOML | 契約 |
 | --- | --- |
@@ -31,7 +31,7 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 3. **検証**。 `after_migration` の後、`before_build` → `dotnet build` → `after_build` の順に実行します。チェッカーを設定した場合は続けて `before_checker` → チェッカー → `after_checker` を実行します。 `after_checker` はチェッカーの終了コードを取得した場合に実行します。スクリプトが失敗した場合はその工程で止まります。
 4. **修正とレビュー**。修正可能なビルドエラーやチェッカー出力をJunieへ渡し、修正後にビルドからやり直します。回数上限、対象外の指摘、診断の繰り返しなどで修正を止め、ログと理由を保存します。自動修正に渡すチェッカー出力は最大65,536バイト、構造化して抽出した診断は合計8,000文字までです。
 
-チェッカーの合格は、終了コード `0` で無出力、または標準出力と標準エラーを合わせた応答全体が UTF-8 の `特に気になる点はありません。` の場合です。前後の空白・改行・先頭のBOMを許容し、明示的な成功応答は正の終了コードでも受け付けます。起動失敗・中断は合格にしません。それ以外の出力は終了コード `0` でも確認・修正へ回し、JSON内や引用中の成功文言では合格にしません。JSON・自由記述・サマリーが混ざる出力は、抽出した指摘の重なりではなく、空白を正規化した全文で繰り返しを判定します。
+チェッカーの合格は、終了コード `0` で無出力、または標準出力と標準エラーを合わせた応答全体が `特に気になる点はありません。` の場合です。UTF-8を優先し、UTF-8 BOMがなく厳密にUTF-8で読めないときはWindowsのCP932を試します。成功応答の前後の空白・改行と先頭のUTF-8 BOMを許容し、正の終了コードでも記録します。起動失敗・中断は合格にしません。それ以外の出力は終了コード `0` でも確認・修正へ回し、JSON内や引用中の成功文言では合格にしません。JSON・自由記述・サマリーが混ざる出力は、抽出した指摘の重なりではなく、空白を正規化した全文で繰り返しを判定します。
 
 `resume` はRunのUUID、アプリルート、移行単位、移行先、worktreeの場所を現在の設定と照合します。未完了のカプセルがあれば保存したカプセルと下書きから続けます。全カプセル処理後は原則としてビルドから検証し直します。保存済みのエディタ指示が残っている場合はビルド前に処理します。準備がworktree作成前に止まった場合は新しいRunが必要です。
 
@@ -67,11 +67,15 @@ Junieの補助メモは1回の呼び出しにつき計3件まで任意で受け�
 
 ### ルール整理の設定反映
 
+ダッシュボードのルール整理はRunから独立した下書きとACPセッションを管理します。停止、初期化失敗、応答失敗の後に終了を確認できなければ、元のWindows Jobとセッションを保持し、相談の再起動・モデル変更・反映などを止めます。**終了を再確認** で同じJobの終了を確認できた場合のみ解除します。生成ルールの登録変更は反映後に準備するRunから有効になります。
+
 `tools/rule_review.py` は移行前に分類や登録を変更するためのツールです。意味を変える候補では、`meaning` で現行の版と配置先を確認し、固定原文と候補を比較した `meaning-review.json` を用意してから `apply` します。義務・条件・例外・優先関係・説明の出典と配置を照合し、古い版、未解決事項、照合できない根拠のある候補は反映を止めます。新規登録は両コマンドで `--register-new` を指定し、既存ルールを変更しません。機械照合は既知の記録を検査するもので、文章の意味や未知の矛盾まで保証しません。
 
 ## 移行先ファイルの保存
 
 生成・修正した移行先ソースは **BOM付きUTF-8** で保存します。Junieの結果をworktreeへ反映する前にUTF-8として検証し、BOMがなければ先頭に `EF BB BF` を付けます。本文と改行のバイト列を保持し、既存BOMは重複させません。UTF-8として読めない出力は、その回のworktreeへの反映前にエラーにします。
+
+移行の指示では、C#の予約語と衝突する宣言とその参照だけを未使用名に変え、JSONキー、フォーム項目名、SQLなどの外部名は維持します。反映前に .NET 9 SDK の解析でC#とRazorを確認し、新規の予約語エスケープ付き宣言や確認できない条件付き候補があれば、ファイルと行を示してどの移行先も上書きしません。既存の宣言、通常のRazor遷移、外部APIへの参照や契約上必要なオーバーライドなどは一律に拒否しません。停止した自動修正の下書きも復元前の作業ツリー版と照合し、同じ確認を行います。
 
 復旧用には、反映前のworktreeとBOM付与後のJunie出力のハッシュを保存します。Junieの作業領域とworktreeに同じバイト列を保存するため、次のカプセル・追加指示・自動修正・再開でも同じ版を参照できます。
 
@@ -139,6 +143,8 @@ src/migration_harness の直下に CLI・設定・工程制御と共通処理を
 | [capsules.py](src/migration_harness/context/capsules.py)・[rule_materials.py](src/migration_harness/rules/rule_materials.py) | 入力の固定、分割、資料・manifestの生成と読み戻し。 |
 | [run_records.py](src/migration_harness/runs/run_records.py)・[timings.py](src/migration_harness/runs/timings.py) | Runの検証・保存と工程計測。 |
 | [worktree_targets.py](src/migration_harness/runs/worktree_targets.py) | 移行先のUTF-8・サイズ検証、BOM付き保存、版の照合、Junie出力の反映と復旧。 |
+| [target_snapshots.py](src/migration_harness/runs/target_snapshots.py)・[stopped_repair.py](src/migration_harness/runs/stopped_repair.py) | 移行先の保存版とハッシュ照合、停止下書きの比較・選択・復元。 |
+| [csharp_keyword_guard.py](src/migration_harness/verification/csharp_keyword_guard.py) | 反映前に、新しく追加した予約語エスケープ付き宣言を確認。 |
 | [source_context.py](src/migration_harness/context/source_context.py) | 移行先周辺の参照ファイルの固定と復元。 |
 | [junie_cli.py](src/migration_harness/junie/junie_cli.py)・[execution.py](src/migration_harness/execution.py) | Junieの起動・ACP・イベント・通信再試行、外部プロセスの実行とキャンセル。 |
 | [dashboard.py](src/migration_harness/web/dashboard.py) | ローカルHTTPとSSE、設定・進捗・レビュー・エディタの操作窓口。 |
