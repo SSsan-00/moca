@@ -39,15 +39,16 @@ class MoCALauncherTests(unittest.TestCase):
         dashboard.assert_called_once_with({}, open_browser=True)
 
     def test_banner_is_monochrome_and_falls_back_to_ascii(self):
-        for encoding, arrow in (("utf-8", "▶"), ("cp1252", "|>")):
+        for encoding, height, center, arrow in (("utf-8", 6, 2, "████▄"), ("cp1252", 3, 1, "|>")):
             with self.subTest(encoding=encoding):
                 raw = io.BytesIO()
                 with io.TextIOWrapper(raw, encoding=encoding) as terminal:
                     with patch.object(sys, "stderr", terminal), patch.object(cli, "_is_console", return_value=True):
                         cli._show_moca_banner()
                     lines = raw.getvalue().decode(encoding).splitlines()
-                self.assertEqual(len(lines), 3)
-                self.assertIn(f"{arrow}  MoCA", lines[1])
+                self.assertEqual(len(lines), height)
+                self.assertTrue(lines[center].endswith(f"{arrow}  MoCA"))
+                self.assertEqual(sum("MoCA" in line for line in lines), 1)
                 self.assertNotIn("\033", "".join(lines))
 
     def test_redirection_of_any_stream_suppresses_the_banner(self):

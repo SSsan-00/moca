@@ -14,9 +14,13 @@ from migration_harness.config import load_config, target_paths
 from migration_harness.errors import format_error
 
 
-_MOCA_MARK = """    ╱╲      ◣
-   ╱  ╲    ╱█▶  MoCA
-  ╱    ╲──╯ ◤"""
+# progress-demo.html の 80×28 のSVGから、端末の半マスに合わせたシルエット。
+_MOCA_MARK = """                          █▄▄
+         ▄████▄           ████▄
+      ▄▄████████▄       ▄████████▄  MoCA
+    ▄████▀   ▀███▄   ▄██████████▀▀
+  ▄████▀       ████████▀  ███▀▀
+  ▀█▀           ▀███▀     ▀▀"""
 _MOCA_MARK_ASCII = r"""    /\      |\
    /  \    /|>  MoCA
   /    \__/ |/"""
