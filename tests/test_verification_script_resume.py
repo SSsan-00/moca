@@ -9,6 +9,7 @@ from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.junie import junie_cli
+from migration_harness.verification import repairs
 
 
 class InterruptedVerificationScriptTests(SavedRunFixture):
@@ -122,7 +123,7 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
         passed = '{"verdict":"passed","evidence_lines":[1]}'
         with (self.controlled_commands([KeyboardInterrupt, informational, problem, passed]) as (builds, judge),
               patch.object(junie_cli, "require_interactive_cli"),
-              patch.object(workflow, "_attempt_repair") as repair):
+              patch.object(repairs, "attempt_repair") as repair):
             with self.assertRaises(workflow.RunScriptError):
                 self.resume_run()
             plan = workflow.plan_build_resume(self.config, self.run_id, through_completion=True)
@@ -211,7 +212,7 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
                 passed = '{"verdict":"passed","evidence_lines":[1]}'
                 with self.controlled_commands([passed]) as (builds, judge), patch.object(
                     junie_cli, "require_interactive_cli"
-                ), patch.object(workflow, "_attempt_repair") as repair:
+                ), patch.object(repairs, "attempt_repair") as repair:
                     with self.assertRaises(workflow.RunScriptError):
                         self.resume_run()
                     pending = self.record()["verification_script_pending"]

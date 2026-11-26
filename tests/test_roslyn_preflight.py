@@ -9,6 +9,9 @@ from unittest.mock import patch
 from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness.junie import junie_cli
+from migration_harness.verification import (
+    pipeline as verification_pipeline, repairs, roslyn_evidence, roslyn_syntax,
+)
 from migration_harness.execution import OperationCancelled
 from migration_harness.verification import roslyn_syntax
 
@@ -27,7 +30,7 @@ class RoslynPreflightTests(SavedRunFixture):
 
     def run_verification(self, *, repair=None, build=True):
         command_patch, calls = self.mock_commands(*([("dotnet", 0, b"Build succeeded\n")] if build else []))
-        with command_patch, patch.object(workflow, "_repair_target", side_effect=repair) as junie, redirect_stdout(io.StringIO()):
+        with command_patch, patch.object(repairs, "_repair_target", side_effect=repair) as junie, redirect_stdout(io.StringIO()):
             result = workflow.resume_with_junie(self.config, self.run_id)
         return result, calls, junie.call_count
 
@@ -162,7 +165,7 @@ class RoslynPreflightTests(SavedRunFixture):
             self.assertEqual(phase, "before_build")
             self.target.write_text(INVALID, encoding="utf-8")
             return False
-        with patch.object(workflow, "_verification_script", side_effect=before_build):
+        with patch.object(verification_pipeline, "_verification_script", side_effect=before_build):
             result, calls, attempts = self.run_verification(repair=lambda *args: None, build=False)
         self.assertEqual((len(calls), attempts), (0, 1))
         self.assertEqual(result["roslyn_preflight"]["reason"], "no_edits")
@@ -184,7 +187,7 @@ class RoslynPreflightTests(SavedRunFixture):
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
         (agent / self.target.name).write_text(VALID, encoding="utf-8")
-        text, truncated = workflow._roslyn_repair_diff(self.worktree, agent, [Path(self.target.name)])
+        text, truncated = roslyn_evidence.roslyn_repair_diff(self.worktree, agent, [Path(self.target.name)])
         self.assertFalse(truncated)
         self.assertIn("--- a/Example.cs", text)
         self.assertIn("+class Example { int Value = 42; }", text)

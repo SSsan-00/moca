@@ -316,7 +316,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.record["status"] = "checker_succeeded"
         result = {"run_id": "example"}
         with patch.object(run_records, "load_saved_run", return_value=(self.run, self.worktree, self.record, {})), \
-             patch.object(workflow, "_load_resume_context", return_value=(result, True, False, False)), \
+             patch.object(resume_plan, "load_resume_context", return_value=(result, True, False, False)), \
              patch.object(resume_plan, "can_resume_run", return_value=True), \
              patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose), \
              patch.object(workflow, "_verify_worktree", return_value={"status": "checker_succeeded"}) as verify:

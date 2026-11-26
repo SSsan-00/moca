@@ -15,8 +15,9 @@ from urllib.parse import urlsplit
 
 from browser_run import run_browser
 
-from migration_harness import workflow
-from migration_harness.runs import editor_queue as editor_queue_store, reference_refresh, target_snapshots
+from migration_harness.runs import (
+    editor_queue as editor_queue_store, reference_refresh, target_snapshots, verification_edits,
+)
 from migration_harness.config import target_paths
 from migration_harness.context.source_context import stage_target_context
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
@@ -139,7 +140,7 @@ max_bytes = 9007199254740993 # preserve this value
                     with editor_queue(run) as queue:
                         request = {"edits": saved_edits(queue), "edit_revision": queue["edit_revision"],
                                    "targets": target_versions(worktree, unit)}
-                    workflow._apply_verification_edits(run, worktree, unit, request)
+                    verification_edits.apply_verification_edits(run, worktree, unit, request)
                     view.publish({**view.state, "ready": True})
                 elif handler.path == fixture_root + "fixture-editor-merge":
                     record_path = run / "run.json"

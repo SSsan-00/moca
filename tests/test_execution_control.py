@@ -12,6 +12,7 @@ from migration_harness.runs import run_records
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.junie import junie_cli
+from migration_harness.verification import build_cycle
 from migration_harness.web.dashboard import Dashboard
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope, run_process
 from migration_harness.runs.timings import freeze_timings, update_timings
@@ -130,7 +131,7 @@ class ExecutionIntegrationTests(HarnessCase):
         with (
             patch.object(run_records, "update_timings",
                          side_effect=lambda record, **kwargs: update_timings(record, now=clock, **kwargs)),
-            patch.object(workflow, "monotonic", side_effect=lambda: clock),
+            patch.object(build_cycle, "monotonic", side_effect=lambda: clock),
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(junie_cli, "run_interactive", side_effect=migrate),
             patch.object(execution, "run_process", side_effect=execute),
@@ -244,7 +245,7 @@ class ExecutionIntegrationTests(HarnessCase):
         self.assertEqual(stopped.get("repair_history", []), [])
         self.assertEqual(len(stopped["build_attempt_seconds"]), 1)
         with (
-            patch.object(workflow, "monotonic", side_effect=(10, 12)),
+            patch.object(build_cycle, "monotonic", side_effect=(10, 12)),
             patch.object(execution, "run_process", return_value=subprocess.CompletedProcess(["dotnet"], 0)),
         ):
             resumed = workflow.resume_with_junie(self.settings, result["run_id"])

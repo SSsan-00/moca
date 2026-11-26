@@ -19,9 +19,10 @@ from migration_harness import workflow
 from migration_harness import execution, files as harness_files
 from migration_harness.junie import junie_cli
 from migration_harness.runs import (
-    editor_queue as editor_queue_store, migration_draft, run_records, worktree_targets as target_files,
+    editor_queue as editor_queue_store, migration_draft, run_records, stage_scripts,
+    worktree_targets as target_files,
 )
-from migration_harness.verification import build_receipt
+from migration_harness.verification import build_cycle, build_receipt, repairs
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.execution import check_cancelled, current_operation_id
 from migration_harness.junie import junie_conversation
@@ -403,7 +404,7 @@ class JunieConversationTests(SavedRunFixture):
 
     def test_compound_verification_keeps_prohibitions_and_unknown_conditions(self):
         mocked, calls = self.mock_commands(("dotnet", 0, b"new build result"), ("dotnet", 1, b"new build failure"))
-        with mocked, patch.object(workflow, "_repair_build_failure") as repair:
+        with mocked, patch.object(build_cycle, "repair_build_failure") as repair:
             report, _ = self.send("ビルドして、結果を教えて")
             self.assertIn("new build result", self.wait_for(report, "done")["logs"][0]["text"])
             self.wait_until_idle()
@@ -666,7 +667,7 @@ class JunieConversationTests(SavedRunFixture):
             self.assertIsNone(operator_instruction)
             return True
 
-        with patch.object(workflow, "_repair_build_failure", side_effect=repair) as attempt:
+        with patch.object(build_cycle, "repair_build_failure", side_effect=repair) as attempt:
             self.run_build_through([
                 ("dotnet", 1, b"fixture build failed"), ("dotnet", 0, b"build ok"), ("checker", 0, b""),
             ], "checker_succeeded")
@@ -1021,7 +1022,7 @@ class JunieConversationTests(SavedRunFixture):
     def test_build_only_failure_does_not_start_checker_or_a_repair(self):
         self.config["max_repair_attempts"] = 2
         mocked, calls = self.mock_commands(("dotnet", 1, b"Example.cs(1,1): error CS1002: missing semicolon\n"))
-        with mocked, patch.object(workflow, "_attempt_repair") as repair:
+        with mocked, patch.object(repairs, "attempt_repair") as repair:
             identifier, _ = self.send("ビルドして")
             entry = self.wait_for(identifier, "done")
             self.assertIn("ビルド失敗", entry["message"])
@@ -2034,7 +2035,7 @@ class JunieConversationTests(SavedRunFixture):
             ("dotnet", 0, b"ok\n"), ("checker", 1, b"NEW Example.cs:2 warning: unresolved\n"),
         )
         text = "この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度"
-        with mocked, patch.object(workflow, "_repair_target") as junie:
+        with mocked, patch.object(repairs, "_repair_target") as junie:
             identifier, _ = self.send(text)
             self.wait_for(identifier, "done")
             self.assertIn("previous finding", junie.call_args.args[5])
@@ -2052,7 +2053,7 @@ class JunieConversationTests(SavedRunFixture):
         diagnostic = b"Example.cs(1,1): error CS1002: Current build diagnostic\n"
         mocked, calls = self.mock_commands(("dotnet", 1, diagnostic), ("dotnet", 0, b"ok\n"))
         self.save_edit("class Corrected {}\n")
-        with mocked, patch.object(junie_cli, "require_interactive_cli"), patch.object(workflow, "_repair_target") as repair:
+        with mocked, patch.object(junie_cli, "require_interactive_cli"), patch.object(repairs, "_repair_target") as repair:
             identifier, _ = self.send("保存した版でビルドして。まだエラーがあれば直して")
             self.assertIn("ビルド成功", self.wait_for(identifier, "done")["message"])
             self.assertIn("Current build diagnostic", repair.call_args.args[5])
@@ -2127,7 +2128,7 @@ class JunieConversationTests(SavedRunFixture):
 
     def test_stop_after_natural_build_exit_waits_without_cancelling_checker(self):
         completed, release = Event(), Event()
-        script_phase = workflow._run_script_phase
+        script_phase = stage_scripts.run_script_phase
         replace = Path.replace
         sharing_violation = Event()
         calls = []
@@ -2154,7 +2155,7 @@ class JunieConversationTests(SavedRunFixture):
             return replace(source, target)
 
         with (
-            patch.object(workflow, "_run_script_phase", side_effect=after_build),
+            patch.object(stage_scripts, "run_script_phase", side_effect=after_build),
             patch.object(execution, "run_process", side_effect=work),
             patch.object(Path, "replace", replace_record),
         ):

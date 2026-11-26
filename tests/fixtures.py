@@ -10,7 +10,7 @@ from pathlib import Path
 
 from migration_harness import workflow
 from migration_harness import execution
-from migration_harness.runs import run_records
+from migration_harness.runs import migration_workspace, run_records
 from migration_harness.verification import roslyn_syntax
 from migration_harness.config import load_config
 
@@ -18,7 +18,7 @@ from migration_harness.config import load_config
 def prepare_fixture(config, unit_id):
     run_id = str(uuid.uuid4())
     with run_records.execution_lock(config, run_id), run_records.execution_lock(config, "prepare", wait=True):
-        return workflow._prepare_run(config, unit_id, run_id)
+        return migration_workspace.prepare_run(config, unit_id, run_id)
 
 
 def stub_syntax_diagnostics():

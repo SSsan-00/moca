@@ -14,6 +14,7 @@ from migration_harness.context import capsules as capsule_files, migration_mater
 from migration_harness.junie import migration_session
 from migration_harness.rules import detail_review_evidence, detail_selection, rule_search
 from migration_harness.runs import run_records
+from migration_harness.verification import pipeline as verification_pipeline
 
 
 class RuleMaterialsTests(HarnessCase):
@@ -222,7 +223,7 @@ class RuleMaterialsTests(HarnessCase):
                 config["checker_command"] = [sys.executable, str(checker), verdict]
                 record.update(status="junie_finished", completed_capsules=record["context_capsules"])
                 with patch.object(execution, "run_process", side_effect=process):
-                    result = workflow._run_verification(config, config["units"][0], run, record)
+                    result = verification_pipeline.run_verification(config, config["units"][0], run, record, process_queued_edits=self.fail)
                 self.assertEqual(result["status"], overall)
                 rows = review_rules(config, run["run_id"])["rules"]
                 self.assertEqual([row["verification_state"] for row in rows], [expected, "human_review_needed"])

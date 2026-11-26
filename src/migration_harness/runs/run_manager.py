@@ -321,7 +321,7 @@ class RunManager:
         return {"run_id": run_id}
 
     def submit(self, action, selected=None):
-        from ..workflow import BUILD_THROUGH_STAGE, can_resume_build, can_resume_run
+        from .resume_plan import BUILD_THROUGH_STAGE, can_resume_build, can_resume_run
 
         with self.condition:
             if self.closing:

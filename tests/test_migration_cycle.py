@@ -14,9 +14,9 @@ from migration_harness import execution
 from migration_harness.context import context_handoff, migration_materials
 from migration_harness.junie import migration_session
 from migration_harness.runs import (
-    migration_capsules, operator_feedback, run_records, worktree_targets as target_files,
+    migration_capsules, operator_feedback, run_records, stage_scripts, worktree_targets as target_files,
 )
-from migration_harness.verification import checker_output, grounded_evidence, script_handoff
+from migration_harness.verification import checker_output, grounded_evidence, repairs, script_handoff
 from fixtures import HarnessCase, SavedRunFixture, prepare_fixture
 
 
@@ -221,7 +221,7 @@ class CycleRecoveryTests(SavedRunFixture):
                   return_value='{"verdict":"informational","evidence_lines":[1]}') as agent,
             self.assertRaises(workflow.RunScriptError),
         ):
-            workflow._run_script_phase(self.config, "after_build", self.run_path, self.run_path, record, once=True)
+            stage_scripts.run_script_phase(self.config, "after_build", self.run_path, self.run_path, record, once=True)
         first, second = [json.loads(call.args[0].split("\n", 1)[1]) for call in agent.call_args_list]
         self.assertEqual(first["untrusted_lines"], ["fresh first response"])
         self.assertEqual(second["untrusted_lines"], ["fresh second response"])
@@ -242,12 +242,12 @@ class CycleRecoveryTests(SavedRunFixture):
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
             self.assertRaises(workflow.RunScriptError),
         ):
-            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
+            stage_scripts.run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
         saved = self.record()
         self.assertEqual(len(saved["script_command_progress"]["after_prepare"]), 1)
         self.assertEqual(saved["script_advisories"][-1]["status"], "interrupted")
         with patch("migration_harness.verification.checker_advisory.run_text_advisory") as agent:
-            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
+            stage_scripts.run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
         agent.assert_not_called()
         self.assertEqual(counter.read_text(encoding="utf-8"), "x")
         self.assertIn("after_prepare", self.record()["completed_script_phases"])
@@ -262,7 +262,7 @@ class CycleRecoveryTests(SavedRunFixture):
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
             self.assertRaises(workflow.RunScriptError),
         ):
-            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
+            stage_scripts.run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
         saved = self.record()
         self.assertEqual(saved["script_decisions_pending"]["after_prepare"]["command_number"], 1)
         for changed in ({"junie_apply_output_decisions": False}, {"scripts": {}}):
@@ -271,7 +271,7 @@ class CycleRecoveryTests(SavedRunFixture):
                 patch("migration_harness.verification.checker_advisory.run_text_advisory") as agent,
                 self.assertRaises(workflow.RunScriptError),
             ):
-                workflow._run_script_phase({**self.config, **changed}, "after_prepare", self.run_path,
+                stage_scripts.run_script_phase({**self.config, **changed}, "after_prepare", self.run_path,
                                            self.run_path, self.record(), once=True)
             agent.assert_not_called()
             self.assertNotIn("after_prepare", self.record().get("completed_script_phases", []))
@@ -280,7 +280,7 @@ class CycleRecoveryTests(SavedRunFixture):
         saved = self.record()
         with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                    return_value='{"verdict":"passed","evidence_lines":[1]}') as agent:
-            workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
+            stage_scripts.run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, saved, once=True)
         agent.assert_called_once()
         self.assertEqual(counter.read_text(encoding="utf-8"), "x")
         self.assertEqual(self.record()["script_decisions_pending"], {})
@@ -311,7 +311,7 @@ class CycleRecoveryTests(SavedRunFixture):
         responses = ['{"verdict":"problem","evidence_lines":[1]}', '{"verdict":"passed","evidence_lines":[1]}']
         with (
             patch.object(execution, "run_process", side_effect=process),
-            patch.object(workflow, "_repair_target", side_effect=repair) as repair_call,
+            patch.object(repairs, "_repair_target", side_effect=repair) as repair_call,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=responses),
         ):
@@ -332,7 +332,7 @@ class CycleRecoveryTests(SavedRunFixture):
         with patch("migration_harness.verification.checker_advisory.run_text_advisory",
                    return_value='{"verdict":"handoff","evidence_lines":[1],"symbol":"CalculateShipping"}') as agent:
             for _ in range(2):
-                workflow._run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
+                stage_scripts.run_script_phase(self.config, "after_prepare", self.run_path, self.run_path, self.record(), once=True)
         agent.assert_called_once()
         self.assertEqual(counter.read_text(encoding="utf-8"), "x")
         saved = self.record()
@@ -367,7 +367,7 @@ class CycleRecoveryTests(SavedRunFixture):
         responses = ['{"verdict":"problem","evidence_lines":[1]}', '{"verdict":"passed","evidence_lines":[1]}']
         with (
             patch.object(execution, "run_process", side_effect=process),
-            patch.object(workflow, "_repair_target", side_effect=repair) as repair_call,
+            patch.object(repairs, "_repair_target", side_effect=repair) as repair_call,
             patch.object(grounded_evidence, "grounded_diagnostic",
                          return_value={"status": "grounded", "citations": [{"target":"Example.cs","source_id":"source"}]}),
             patch.object(junie_cli, "require_interactive_cli"),
@@ -411,7 +411,7 @@ class CycleRecoveryTests(SavedRunFixture):
 
     def test_fewer_checker_findings_continue_in_same_run_then_rebuild_and_check(self):
         self.config["max_repair_attempts"] = 2
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 1, self.first + self.second),
                 self.build, ("fixture-checker", 1, self.second.replace(b":2", b":3")),
@@ -428,7 +428,7 @@ class CycleRecoveryTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 2
         first = f"{self.target}(1,1): error CS1002: ; expected\n".encode()
         second = f"{self.target}(2,1): error CS0103: name does not exist\n".encode()
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(("dotnet", 1, first + second), ("dotnet", 1, second), self.build, self.success)
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertEqual(repair.call_count, 2)
@@ -438,7 +438,7 @@ class CycleRecoveryTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 2
         first = self.first + self.second + b"Static check failed: 2 findings.\n"
         second = self.second + b"Static check failed: 1 findings.\n"
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 1, first),
                 self.build, ("fixture-checker", 1, second), self.build, ("fixture-checker", 0, b""),
@@ -457,7 +457,7 @@ class CycleRecoveryTests(SavedRunFixture):
             "findings": [findings[0].finding_id, hashlib.sha256(" ".join(diagnostic.decode().split()).encode()).hexdigest()],
             "raw_checker_output": True,
         }]})
-        with patch.object(workflow, "_repair_target") as repair:
+        with patch.object(repairs, "_repair_target") as repair:
             result = self.resume(self.build, ("fixture-checker", 1, diagnostic))
         self.assertEqual(result["status"], "checker_needs_review")
         self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
@@ -467,7 +467,7 @@ class CycleRecoveryTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 2
         log = "".join(f"{self.target}({line},3): error CS1003: ',' expected\n" for line in range(1, 20001)).encode()
         self.assertGreater(len(log), 65_536)
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(("dotnet", 1, log), self.build, self.success)
         self.assertEqual(result["status"], "checker_succeeded")
         repair.assert_called_once()
@@ -480,7 +480,7 @@ class CycleRecoveryTests(SavedRunFixture):
         repeated = f"{self.target}(1,3): error CS1003: ',' expected\n".encode() * 1200
         for tail in (b"Other.cs(1,1): error CS1002: ; expected\n", b"error MSB1009: project missing\n",
                      b"x" * 65_537 + b"\n"):
-            with self.subTest(tail=tail[:60]), patch.object(workflow, "_repair_target") as repair:
+            with self.subTest(tail=tail[:60]), patch.object(repairs, "_repair_target") as repair:
                 result = self.resume(("dotnet", 1, repeated + tail))
                 self.assertEqual(result["status"], "build_failed")
                 repair.assert_not_called()
@@ -489,14 +489,14 @@ class CycleRecoveryTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 2
         log = "".join(f"{self.target}({line},3): error CS0103: unknown name symbol{line:05d}\n"
                       for line in range(1, 1001)).encode()
-        with patch.object(workflow, "_repair_target") as repair:
+        with patch.object(repairs, "_repair_target") as repair:
             result = self.resume(("dotnet", 1, log))
         self.assertEqual(result["status"], "build_failed")
         repair.assert_not_called()
 
     def test_progress_does_not_reset_limit(self):
         self.config["max_repair_attempts"] = 1
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(self.build, ("fixture-checker", 1, self.first + self.second),
                                  self.build, ("fixture-checker", 1, self.second))
         self.assertEqual(result["status"], "checker_needs_review")
@@ -505,7 +505,7 @@ class CycleRecoveryTests(SavedRunFixture):
 
     def test_regressions_still_stop_after_partial_progress(self):
         self.config["max_repair_attempts"] = 4
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 1, self.first + self.second),
                 self.build, ("fixture-checker", 1, self.second),
@@ -517,7 +517,7 @@ class CycleRecoveryTests(SavedRunFixture):
 
     def test_replacing_remaining_findings_with_new_errors_is_not_strict_progress(self):
         self.config["max_repair_attempts"] = 4
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 1, self.first + self.second),
                 self.build, ("fixture-checker", 1, self.second + b"C Example.cs:3 error: regression\n"),
@@ -527,8 +527,8 @@ class CycleRecoveryTests(SavedRunFixture):
         repair.assert_called_once()
 
     def test_raw_output_and_legacy_fingerprints_do_not_use_subset_shortcut(self):
-        self.assertTrue(workflow._repair_stalled({"b"}, [{"findings": ["a", "b"]}], kind="checker", raw=True))
-        self.assertTrue(workflow._repair_stalled({"b"}, [{"findings": ["old"]}], kind="checker", legacy={"old"}))
-        self.assertTrue(workflow._repair_stalled({"b"}, [
+        self.assertTrue(repairs.repair_stalled({"b"}, [{"findings": ["a", "b"]}], kind="checker", raw=True))
+        self.assertTrue(repairs.repair_stalled({"b"}, [{"findings": ["old"]}], kind="checker", legacy={"old"}))
+        self.assertTrue(repairs.repair_stalled({"b"}, [
             {"findings": ["a", "b"], "raw_checker_output": True},
         ], kind="checker"))

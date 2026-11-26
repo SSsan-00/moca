@@ -502,3 +502,7 @@ def _finish_migration_editor_adoption(agent_root, worktree, targets, queue, adop
         save_stopped_migration(record_path, record, agent_root, targets, workspace_unchanged=True)
     elif saved == baseline:
         target_files.apply_agent_targets(agent_root, worktree, targets, baseline, record, record_path)
+
+
+def saved_edits(queue):
+    return {name: edit["id"] for name, edit in queue["edits"].items()}

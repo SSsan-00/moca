@@ -11,6 +11,8 @@ from migration_harness.context import capsules
 from migration_harness.junie import junie_cli
 from migration_harness.web import review_anchors
 from migration_harness import workflow
+from migration_harness.runs import stage_scripts
+from migration_harness.verification import build_cycle
 from migration_harness.config import load_config
 from migration_harness.web.diff_viewer import capture_workspace, review_html
 from migration_harness.web.settings_form import build_settings_draft
@@ -60,7 +62,7 @@ class ConfigFilePathTests(HarnessCase):
         prepared = prepare_fixture(absolute, "orders")
         record = json.loads((Path(prepared["run_path"]) / "run.json").read_bytes())
         with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as build:
-            workflow._build_worktree(absolute, prepared, record)
+            build_cycle._build_worktree(absolute, prepared, record)
         self.assertEqual(build.call_args.args[0][-1], str(Path(prepared["worktree_path"]) / "App.csproj"))
         self.assertNotEqual(build.call_args.kwargs["cwd"], self.project)
 
@@ -167,7 +169,7 @@ class ConfigFilePathTests(HarnessCase):
         prepared = prepare_fixture(config, "orders")
         worktree = Path(prepared["worktree_path"])
         with patch.dict(os.environ, {"PYTHONIOENCODING": "cp1252"}):
-            workflow._run_script_phase(config, "before_migration", worktree, Path(prepared["run_path"]))
+            stage_scripts.run_script_phase(config, "before_migration", worktree, Path(prepared["run_path"]))
         log = Path(prepared["run_path"]) / "before_migration.log"
         self.assertIn("配置しました: Page.cs", log.read_text(encoding="utf-8"))
         self.assertEqual((worktree / "Page.cs").read_bytes(), draft.read_bytes())

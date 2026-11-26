@@ -7,7 +7,7 @@ from unittest.mock import patch
 from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness import execution
-from migration_harness.runs import worktree_targets as target_files
+from migration_harness.runs import stage_scripts, worktree_targets as target_files
 
 
 PASSED = '{"verdict":"passed","evidence_lines":[1]}'
@@ -52,7 +52,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
         return workflow.resume_with_junie(self.config, self.run_id)
 
     def run_phase(self):
-        workflow._run_script_phase(self.config, self.phase, self.worktree, self.run_path, self.record(), once=True)
+        stage_scripts.run_script_phase(self.config, self.phase, self.worktree, self.run_path, self.record(), once=True)
 
     def pending_output(self):
         record = self.record()
@@ -73,7 +73,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
             raise KeyboardInterrupt
 
         with self.commands() as (commands, judge):
-            with patch.object(workflow, "_script_output_sha256", side_effect=interrupt):
+            with patch.object(stage_scripts, "_script_output_sha256", side_effect=interrupt):
                 with self.assertRaises(workflow.RunScriptError) as error:
                     self.resume()
             self.assertTrue(error.exception.interrupted)
@@ -130,7 +130,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
             with self.subTest(phase=phase):
                 self.configure_hook(phase)
                 with self.commands() as (commands, judge):
-                    with patch.object(workflow, "_script_output_sha256", side_effect=KeyboardInterrupt):
+                    with patch.object(stage_scripts, "_script_output_sha256", side_effect=KeyboardInterrupt):
                         with self.assertRaises(workflow.RunScriptError):
                             self.run_phase()
                     with self.assertRaisesRegex(workflow.RunScriptError, "no verifiable full-range hash"):

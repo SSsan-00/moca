@@ -198,3 +198,11 @@ class RunInterrupted(KeyboardInterrupt):
         """再開対象のRun IDを例外に関連付ける。"""
         super().__init__(run_id)
         self.run_id = run_id
+
+
+class RunScriptError(RuntimeError):
+    def __init__(self, message: str, run_id: str | None, *, interrupted: bool = False) -> None:
+        """工程スクリプトの失敗情報を保持する。"""
+        super().__init__(message)
+        self.run_id = run_id
+        self.interrupted = interrupted

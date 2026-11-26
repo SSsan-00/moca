@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fixtures import HarnessCase, prepare_fixture
 from migration_harness import workflow
 from migration_harness import execution
+from migration_harness.verification import checker_cycle
 from migration_harness.command_paths import expand_command_paths
 from migration_harness.config import load_config
 from migration_harness.web.settings_form import build_settings_draft
@@ -108,7 +109,7 @@ class CommandPathsTests(HarnessCase):
         result = self.prepare_verification()
         record = json.loads((Path(result["run_path"]) / "run.json").read_bytes())
         with patch.object(execution, "run_process") as execute:
-            checked, _, _ = workflow._run_checker(self.command, result, record, None)
+            checked, _, _ = checker_cycle.run_checker(self.command, result, record, None)
         execute.assert_not_called()
         self.assertEqual(checked["status"], "checker_failed")
         self.assertIn("[build].project", checked["error"])

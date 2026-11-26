@@ -12,6 +12,7 @@ from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.context import migration_materials
 from migration_harness.junie import migration_session
+from migration_harness.verification import build_cycle, repairs
 from migration_harness.web.diff_viewer import capture_workspace
 
 
@@ -321,22 +322,22 @@ class MultipleTargetsTest(HarnessCase):
     def test_razor_model_error_repairs_only_the_matching_source_page(self):
         model, page = map(Path, self.targets)
         project = self.worktree / "App.csproj"
-        generator = self.worktree / "obj" / "Debug" / workflow._RAZOR_GENERATOR
+        generator = self.worktree / "obj" / "Debug" / build_cycle._RAZOR_GENERATOR
         diagnostic = f"(2,8): error CS0246: Missing PageModel [{project}]\n"
         actual = f"{self.worktree / page}{diagnostic}"
         duplicate = f"{generator / 'Page_cshtml.g.cs'}{diagnostic}"
         unrelated = f"{generator / 'Other_cshtml.g.cs'}{diagnostic}"
         record = {"build_exit_code": 1, "repair_history": []}
-        with patch.object(junie_cli, "require_interactive_cli"), patch.object(workflow, "_attempt_repair") as repair:
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(repairs, "attempt_repair") as repair:
             log = self.run_path / "build.log"
             for contents in (duplicate, unrelated + actual):
                 log.write_text(contents, encoding="utf-8")
-                self.assertFalse(workflow._repair_build_failure(
+                self.assertFalse(build_cycle.repair_build_failure(
                     self.settings, (model, page), self.worktree, self.run_path, record,
                 ))
             repair.assert_not_called()
             log.write_text(duplicate + actual, encoding="utf-8")
-            self.assertTrue(workflow._repair_build_failure(
+            self.assertTrue(build_cycle.repair_build_failure(
                 self.settings, (model, page), self.worktree, self.run_path, record,
             ))
             repair.assert_called_once()
@@ -345,7 +346,7 @@ class MultipleTargetsTest(HarnessCase):
 
     def test_razor_symbolic_paths_require_an_unambiguous_matching_diagnostic(self):
         project = self.worktree / "App.csproj"
-        generator = self.worktree / "obj" / "Debug" / workflow._RAZOR_GENERATOR
+        generator = self.worktree / "obj" / "Debug" / build_cycle._RAZOR_GENERATOR
         diagnostic = f"(2,8): error CS0246: Missing PageModel [{project}]\n"
         record = {"build_exit_code": 1, "repair_history": []}
         log = self.run_path / "build.log"
@@ -360,9 +361,9 @@ class MultipleTargetsTest(HarnessCase):
             generated = f"{generator / generated_name}{diagnostic}"
             log.write_text(source + generated, encoding="utf-8")
             with self.subTest(page=page), patch.object(junie_cli, "require_interactive_cli"), patch.object(
-                workflow, "_attempt_repair",
+                repairs, "attempt_repair",
             ) as repair:
-                repair_build = workflow._repair_build_failure
+                repair_build = build_cycle.repair_build_failure
                 self.assertTrue(repair_build(self.settings, targets, self.worktree, self.run_path, record))
                 self.assertEqual(repair.call_args.args[2], (page,))
                 repair.reset_mock()

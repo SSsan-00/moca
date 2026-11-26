@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from migration_harness.verification import checker_output
 from migration_harness.junie import junie_cli
-from migration_harness import workflow
+from migration_harness.verification import repairs
 from fixtures import SavedRunFixture
 
 
@@ -113,7 +113,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 2
         text = "\r\n  特に気になる点はありません。\t\r\n"
         for exit_code in (0, 1):
-            with self.subTest(exit_code=exit_code), patch.object(workflow, "_repair_target") as repair:
+            with self.subTest(exit_code=exit_code), patch.object(repairs, "_repair_target") as repair:
                 result = self.resume(self.build, ("fixture-checker", exit_code, text.encode("utf-8-sig")))
             self.assertEqual(result["status"], "checker_succeeded")
             self.assertEqual(result["checker_exit_code"], exit_code)
@@ -130,7 +130,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
             "特に気になる点はありません。\n追加チェックで不一致を検出しました。",
         ):
             for exit_code in (0, 1):
-                with self.subTest(text=text, exit_code=exit_code), patch.object(workflow, "_repair_target") as repair:
+                with self.subTest(text=text, exit_code=exit_code), patch.object(repairs, "_repair_target") as repair:
                     result = self.resume(self.build, ("fixture-checker", exit_code, text.encode()))
                 self.assertEqual(result["status"], "checker_needs_review")
                 self.assertNotIn("checker_success_message", self.record())
@@ -189,7 +189,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 1
         for output, reason in ((b"\xff", "output_encoding"), (b"\0", "output_unreadable"),
                                (b"x" * 65_537, "output_too_large")):
-            with self.subTest(reason=reason), patch.object(workflow, "_repair_target") as repair:
+            with self.subTest(reason=reason), patch.object(repairs, "_repair_target") as repair:
                 result = self.resume(self.build, ("fixture-checker", 0, output))
             self.assertEqual(result["status"], "checker_needs_review")
             self.assertEqual(self.record()["checker_review_reason"], reason)
@@ -199,7 +199,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
         self.resume(self.build, ("fixture-checker", 0, diagnostic().encode()))
         self.assertEqual(len(self.review()["findings"]), 1)
         self.config["max_repair_attempts"] = 1
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(self.build, ("fixture-checker", 0, diagnostic().encode()), self.build, self.success)
         self.assertEqual(result["status"], "checker_succeeded")
         repair.assert_called_once()
@@ -209,7 +209,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
         first = diagnostic(remedy="税を加算する", message="税を加算してください")
         second = diagnostic()
         shifted = diagnostic(line="15").replace("　", " ").replace(":", "：")
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 1, (first + second).encode()),
                 self.build, ("fixture-checker", 1, shifted.encode()), self.build, self.success,
@@ -224,7 +224,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
 
     def test_repeated_block_stops_even_when_label_spacing_and_line_change(self):
         self.config["max_repair_attempts"] = 2
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 1, diagnostic().encode()),
                 self.build, ("fixture-checker", 1, diagnostic(line="23").replace("　", "").encode()),
@@ -235,7 +235,7 @@ class PrefixedCheckerRepairTests(SavedRunFixture):
 
     def test_reported_file_outside_configured_targets_blocks_repair(self):
         self.config["max_repair_attempts"] = 1
-        with patch.object(workflow, "_repair_target") as repair:
+        with patch.object(repairs, "_repair_target") as repair:
             self.resume(self.build, ("fixture-checker", 1, diagnostic(path="Other.cs").encode()))
         self.assertEqual(self.record()["checker_review_reason"], "outside_targets")
         repair.assert_not_called()

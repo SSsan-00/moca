@@ -1,3 +1,4 @@
+
 from pathlib import Path
 
 from ..command_paths import expand_command_paths
@@ -59,3 +60,10 @@ def verification_files(config, worktree, target, checker, scripts):
                 continue
             paths["command:" + arg.as_posix()] = worktree / arg
     return {name: _file_fingerprint(path) if path is not None else None for name, path in paths.items()}
+
+
+def checker_provenance(config):
+    if not config.get("checker_from_cli"):
+        return {"checker_from_cli": False}
+    return {"checker_from_cli": True, "toml_checker_command": config.get("toml_checker_command"),
+            "toml_checker_scope": "project"}

@@ -12,6 +12,7 @@ from threading import Lock, RLock
 from typing import Any
 from weakref import WeakValueDictionary
 
+from ..config import target_paths
 from ..files import has_symlink_component, safe_target, sha256_file
 from ..verification.csharp_keyword_guard import reject_new_keyword_escapes
 from .run_records import write_run_record
@@ -230,3 +231,7 @@ def apply_agent_targets(
 
 def recorded_target_hashes(cwd, record):
     return {path: review_target_hash(cwd, Path(path)) for path in record.get("targets", [record["target"]])}
+
+
+def target_versions(worktree, unit):
+    return {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}

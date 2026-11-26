@@ -8,6 +8,7 @@ from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.junie import junie_cli
+from migration_harness.verification import repairs
 
 
 PASSED = '{"verdict":"passed","evidence_lines":[1]}'
@@ -105,7 +106,7 @@ class BeforeBuildVersionTests(SavedRunFixture):
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=verdicts),
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(
-                workflow, "_attempt_repair", side_effect=repair or AssertionError("unexpected automatic repair")
+                repairs, "attempt_repair", side_effect=repair or AssertionError("unexpected automatic repair")
             ) as repair_attempt,
         ):
             yield builds, repair_attempt

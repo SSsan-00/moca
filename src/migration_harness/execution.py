@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from concurrent.futures import Future
 from contextlib import closing, contextmanager
@@ -180,3 +181,9 @@ def run_process(
         if check and process.returncode:
             raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def print_progress(message: str) -> None:
+    """端末が表せないパスの文字があっても、移行・ビルドを中断しない。"""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(message.encode(encoding, errors="backslashreplace").decode(encoding), flush=True)

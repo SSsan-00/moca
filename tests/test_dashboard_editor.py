@@ -25,6 +25,7 @@ from migration_harness.junie import junie_cli
 from migration_harness import workflow
 from migration_harness import errors, execution
 from migration_harness.runs import editor_queue as editor_queue_store
+from migration_harness.verification import repairs
 from migration_harness.config import load_config
 from migration_harness.execution import control_scope
 from migration_harness.verification import build_receipt
@@ -418,13 +419,13 @@ class DashboardEditorTests(HarnessCase):
                 with patch.object(junie_cli, "require_interactive_cli"), \
                         patch.object(junie_cli, "run_interactive", side_effect=junie):
                     if scenario == "completed":
-                        workflow._attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
+                        repairs.attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
                                                  run_path, "diagnostic", record, {"kind": "build"})
                         self.assertEqual(len(calls), 2)
                         self.assertIn("Last = 42", (worktree / "Page.cs").read_text(encoding="utf-8-sig"))
                     else:
                         with self.assertRaises(errors.CheckerRepairBlocked) as blocked:
-                            workflow._attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
+                            repairs.attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
                                                      run_path, "diagnostic", record, {"kind": "build"})
                         self.assertEqual(blocked.exception.reason, "operator_conflict" if scenario == "conflict" else "handoff_unsafe")
                         self.assertEqual(len(calls), 1)
@@ -539,7 +540,7 @@ class DashboardEditorTests(HarnessCase):
         run_path, worktree, _, _ = run_records.load_saved_run(self.settings, result["run_id"])
         self.view.begin_operation()
         calls, builds = [], []
-        charge = workflow._charge_repair
+        charge = repairs._charge_repair
 
         def finish_repair(record):
             charge(record)
@@ -568,7 +569,7 @@ class DashboardEditorTests(HarnessCase):
 
         with patch.object(junie_cli, "require_interactive_cli"), \
                 patch.object(junie_cli, "run_interactive", side_effect=junie), \
-                patch.object(workflow, "_charge_repair", side_effect=finish_repair), \
+                patch.object(repairs, "_charge_repair", side_effect=finish_repair), \
                 patch.object(execution, "run_process", side_effect=build):
             completed = workflow.resume_with_junie(self.settings, result["run_id"])
         self.assertEqual(completed["status"], "build_succeeded", completed.get("error"))

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from migration_harness.workflow import _run_checker
+from migration_harness.verification.checker_cycle import run_checker
 
 
 class CheckerIncompleteOutputTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class CheckerIncompleteOutputTests(unittest.TestCase):
             with patch("migration_harness.execution.run_process", side_effect=process), patch(
                 "migration_harness.runs.run_records.write_run_record"
             ):
-                result, findings, raw = _run_checker(
+                result, findings, raw = run_checker(
                     ["fixture-checker"], {"run_path": run, "worktree_path": root}, record, None,
                     require_zero_for_success=advisory,
                 )

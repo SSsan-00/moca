@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
-from migration_harness.verification import build_receipt
+from migration_harness.verification import build_receipt, checker_cycle
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.runs.worktree_targets import save_target_edit, worktree_source_lock
 
@@ -65,15 +65,15 @@ class CheckerResumeLockTests(SavedRunFixture):
                 "build_receipt": self.receipt}
         with (
             patch.object(build_receipt, "check_build_receipt", return_value={"inputs": {}, "artifacts": {}}),
-            patch.object(workflow, "_run_checker") as checker,
+            patch.object(checker_cycle, "run_checker") as checker,
         ):
             with self.assertRaisesRegex(ValueError, "再開計画"):
-                workflow._resume_checker(self.config, self.config["units"][0], result, self.record(),
+                checker_cycle.resume_checker(self.config, self.config["units"][0], result, self.record(),
                                          plan, "test")
             with editor_queue(self.run_path) as queue:
                 queue["edit_revision"] = "changed"
             with self.assertRaisesRegex(ValueError, "計画後"):
-                workflow._resume_checker(self.config, self.config["units"][0], result, self.record(),
+                checker_cycle.resume_checker(self.config, self.config["units"][0], result, self.record(),
                                          plan, "test")
             checker.assert_not_called()
             self.assertEqual(self.record()["checker_build"], self.receipt)

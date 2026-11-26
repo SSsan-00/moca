@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness import errors, execution
+from migration_harness.verification import checker_cycle
 from migration_harness.verification import checker_advisory, checker_output
 from test_checker_prefixes import diagnostic
 
@@ -96,11 +97,11 @@ class CheckerEncodingTests(SavedRunFixture):
         text = "検査結果に差分あり。"
         raw = text.encode("cp932")
         self.checker_log.write_bytes(raw)
-        log, _, decoded, _, _ = workflow._checker_repair_inputs(
+        log, _, decoded, _, _ = checker_cycle.checker_repair_inputs(
             self.run_path, [], (Path("Example.cs"),), use_raw_output=True,
         )
         self.assertEqual(decoded, text)
         self.assertEqual(log.read_bytes(), raw)
         self.checker_log.write_bytes(raw + b"a" * (65_537 - len(raw)))
         with self.assertRaisesRegex(errors.CheckerRepairBlocked, "too large"):
-            workflow._checker_repair_inputs(self.run_path, [], (Path("Example.cs"),), use_raw_output=True)
+            checker_cycle.checker_repair_inputs(self.run_path, [], (Path("Example.cs"),), use_raw_output=True)

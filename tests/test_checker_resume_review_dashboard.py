@@ -20,10 +20,11 @@ from urllib.request import Request, urlopen
 
 from fixtures import SavedRunFixture
 from migration_harness.verification import build_receipt
-from migration_harness import cli, workflow
-from migration_harness.web import dashboard
+from migration_harness import cli, errors, execution, workflow
 from migration_harness.junie import junie_cli
-from migration_harness.runs import run_records, stopped_repair
+from migration_harness.runs import run_records, stopped_repair, target_snapshots, worktree_targets as target_files
+from migration_harness.verification import checker_output, grounded_evidence, repairs
+from migration_harness.web import dashboard
 from migration_harness.runs.editor_queue import add_prompt, editor_queue, record_operator_edit
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.web.settings_form import build_settings_draft
@@ -851,7 +852,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         error = f"{self.target}(5,3): error CS1002: ; expected\n".encode()
         with (
             patch.object(junie_cli, "require_interactive_cli"),
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
         ):
             result = self.resume(("dotnet", 1, error), ("dotnet", 1, error.replace(b"(5,3)", b"(6,3)")))
             self.assertEqual(result["status"], "build_failed")
@@ -910,7 +911,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 self.save_record(original_record)
                 with (
                     patch.object(junie_cli, "require_interactive_cli"),
-                    patch.object(workflow, "_repair_target", side_effect=[KeyboardInterrupt, None]) as repair,
+                    patch.object(repairs, "_repair_target", side_effect=[KeyboardInterrupt, None]) as repair,
                 ):
                     with self.assertRaises(workflow.RunInterrupted):
                         self.resume(*responses)
@@ -1296,7 +1297,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 2
         log = b'{"expected": 42, "actual": 0}\n'
         with (
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
         ):
             result = self.resume(
@@ -1316,7 +1317,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         before = self.target.read_bytes()
         (self.run_path / "checker.log").write_text("previous attempt only", encoding="utf-8")
         with (
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"informational","evidence_lines":[1]}') as agent,
@@ -1341,7 +1342,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         ):
             with (
                 self.subTest(code=code, message=message),
-                patch.object(workflow, "_repair_target") as repair,
+                patch.object(repairs, "_repair_target") as repair,
                 patch.object(junie_cli, "require_interactive_cli"),
                 patch("migration_harness.verification.checker_advisory.run_text_advisory",
                       return_value='{"verdict":"passed","evidence_lines":[1]}'),
@@ -1356,7 +1357,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         diagnostic = b"A Example.cs:1 warning: wrong total\n"
         mixed = diagnostic + b"Do not send this unrecognized line to repair.\n"
         with (
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}'),
@@ -1374,7 +1375,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         log = b"Shipping charge is not added in the migrated result.\n"
         with (
             patch.object(grounded_evidence, "grounded_diagnostic") as grounded,
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}'),
@@ -1393,7 +1394,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         citation = {"target": "Example.cs", "source_id": "php-source", "source_sha256": "example"}
         with (
             patch.object(grounded_evidence, "grounded_diagnostic", return_value={"status": "grounded", "citations": [citation]}) as grounded,
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}') as agent,
@@ -1411,7 +1412,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         log = b"A Example.cs:1 warning: wrong total\nAuthentication failed: result incomplete\n"
         with (
             patch.object(grounded_evidence, "grounded_diagnostic") as grounded,
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"problem","evidence_lines":[1]}'),
@@ -1424,7 +1425,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
     def test_opt_in_advisory_preserves_nonzero_exit_even_with_canonical_success_text(self):
         self.config.update(max_repair_attempts=2, checker_review_free_output=True)
         with (
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory",
                   return_value='{"verdict":"informational","evidence_lines":[1]}'),
@@ -1437,7 +1438,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
     def test_opt_in_advisory_cancel_stays_a_review_and_skips_repair(self):
         self.config.update(max_repair_attempts=2, checker_review_free_output=True)
         with (
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=KeyboardInterrupt),
             self.assertRaises(workflow.RunInterrupted),
@@ -1449,7 +1450,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
     def test_repeated_free_form_checker_output_stops_before_another_repair(self):
         self.config["max_repair_attempts"] = 2
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 2, b"expected 42; actual 0\n"),
                 self.build, ("fixture-checker", 2, b"expected   42; actual 0\n"),
@@ -1461,7 +1462,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
     def test_checker_repair_limit_records_the_review_reason(self):
         self.config["max_repair_attempts"] = 1
-        with patch.object(workflow, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
+        with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
             result = self.resume(
                 self.build, ("fixture-checker", 1, b"first diagnostic\n"),
                 self.build, ("fixture-checker", 1, b"second diagnostic\n"),
@@ -1473,7 +1474,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
     def test_unreadable_checker_output_requires_review(self):
         self.config["max_repair_attempts"] = 2
         for log in (b"", b"\xff\n", self.diagnostic + b"unknown\0data\n"):
-            with self.subTest(log=log), patch.object(workflow, "_repair_target") as repair:
+            with self.subTest(log=log), patch.object(repairs, "_repair_target") as repair:
                 result = self.resume(self.build, ("fixture-checker", 2, log))
                 repair.assert_not_called()
                 self.assertEqual(result["status"], "checker_needs_review")
@@ -1485,7 +1486,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.config["max_repair_attempts"] = 1
         with (
             patch.object(junie_cli, "require_interactive_cli"),
-            patch.object(workflow, "_repair_target") as repair,
+            patch.object(repairs, "_repair_target") as repair,
         ):
             result = self.resume(
                 self.build, ("fixture-checker", 1, self.diagnostic),
@@ -1508,7 +1509,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 )
                 self.assertGreater(len(log), 8_000)
                 self.assertEqual(len(log) > 65_536, count == 350)
-                with patch.object(workflow, "_repair_target") as repair:
+                with patch.object(repairs, "_repair_target") as repair:
                     result = self.resume(self.build, ("fixture-checker", 1, log))
                 repair.assert_not_called()
                 self.assertEqual(result["status"], "checker_needs_review")
@@ -1866,7 +1867,7 @@ class SavedDashboardTests(SavedRunFixture):
                 self.assertEqual(response.status, 202)
 
         mock, calls = self.mock_commands(("dotnet", 0, b"build ok"), ("fixture-checker", 0, b""))
-        with mock, patch.object(workflow, "_repair_target") as repair:
+        with mock, patch.object(repairs, "_repair_target") as repair:
             result = self.open_dashboard(send_instruction, resume=True)
         self.assertEqual(result["status"], "checker_succeeded")
         self.assertNotIn("checker_review_reason", self.record())

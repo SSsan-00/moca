@@ -13,9 +13,9 @@ from threading import Event, Thread
 from ..config import target_paths
 from ..errors import format_error
 from ..files import safe_target
-from ..runs.editor_queue import EDITOR_TARGET_SUFFIXES, editor_prompt_selection, editor_queue, editor_text
+from ..runs.editor_queue import saved_edits, EDITOR_TARGET_SUFFIXES, editor_prompt_selection, editor_queue, editor_text
 from ..runs.run_records import load_saved_run, run_model_options, validate_run_id
-from ..runs.worktree_targets import review_target_hash
+from ..runs.worktree_targets import target_versions, review_target_hash
 from ..verification.checker_advisory import AdvisoryReplyTooLarge, AdvisoryTransportLimit, run_text_advisory
 from .junie_cli import JunieStopError
 
@@ -186,14 +186,6 @@ def _intent(text, phase):
     ) or STATUS_QUESTION.fullmatch(re.split(r"[?。.!、,\n]", value, maxsplit=1)[0]):
         return "clarify"
     return "junie"
-
-
-def target_versions(worktree, unit):
-    return {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}
-
-
-def saved_edits(queue):
-    return {name: edit["id"] for name, edit in queue["edits"].items()}
 
 
 def _finish(entry, status, message):

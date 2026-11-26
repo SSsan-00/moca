@@ -14,7 +14,9 @@ from ui_dependencies import node_executable
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.junie import junie_cli
-from migration_harness.runs import editor_queue as editor_queue_store, operator_feedback, reference_refresh
+from migration_harness.runs import (
+    editor_queue as editor_queue_store, operator_feedback, reference_refresh, verification_edits,
+)
 from migration_harness.files import sha256_file
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs import editor_queue, run_records
@@ -92,7 +94,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         with editor_queue.editor_queue(self.run_path) as queue:
             request = {"edits": saved_edits(queue), "edit_revision": queue["edit_revision"],
                        "targets": target_versions(self.worktree, unit)}
-        workflow._apply_verification_edits(self.run_path, self.worktree, unit, request)
+        verification_edits.apply_verification_edits(self.run_path, self.worktree, unit, request)
 
     def check_build_history_recovery(self, *, partial=False):
         changes = {self.target.name: "class FirstManual {}\n"}

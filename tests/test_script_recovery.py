@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness import execution
-from migration_harness.runs import run_records
+from migration_harness.runs import run_records, stage_scripts
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.runs.recovery_status import recovery_status
 from migration_harness.runs.run_manager import RunManager
@@ -36,7 +36,7 @@ class ScriptRecoveryTests(SavedRunFixture):
         self.save_record({**self.record(), "status": "prepared", "completed_capsules": 0})
 
     def run_phase(self):
-        workflow._run_script_phase(self.config, self.phase, self.worktree, self.run_path, self.record(), once=True)
+        stage_scripts.run_script_phase(self.config, self.phase, self.worktree, self.run_path, self.record(), once=True)
 
     def simulate_crash_after_exit(self):
         original = run_records.write_run_record

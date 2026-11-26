@@ -12,7 +12,21 @@ from ..errors import CheckerRepairBlocked
 from ..execution import check_cancelled, junie_dashboard_control, report_activity
 from ..files import safe_target
 from ..runs import run_records
+from ..runs.run_records import run_model_options
 from .acp_permissions import PinnedReferenceReads
+
+
+def advisory_model_options(config, record, run_path):
+    selected = ({"model": config.get("junie_model"), "effort": config.get("junie_effort")}
+                if record is None else run_model_options(run_path, record, config))
+    model = selected["model"]
+    if not model:
+        return {}
+    options = {"model": model}
+    effort = selected["effort"]
+    if effort:
+        options["effort"] = effort
+    return options
 
 
 def unlisted_workspace_files(
