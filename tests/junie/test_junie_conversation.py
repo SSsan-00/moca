@@ -29,6 +29,7 @@ from migration_harness.junie import junie_conversation
 from migration_harness.junie.junie_conversation import _intent
 from migration_harness.runs.run_manager import RunManager
 from migration_harness.verification import checker_advisory
+from tests.support.editor_save_fixtures import pending_editor_edit
 from tests.support.build_receipt_fixtures import saved_build_receipt
 from tests.support.fixtures import SavedRunFixture
 from tests.verification.test_checker_advisory import LITE_EMPTY_MODELS, LITE_SELECTED, acp_reply
@@ -286,7 +287,7 @@ class JunieConversationTests(SavedRunFixture):
     def save_edit(self, text, target="Example.cs"):
         _, editor = self.request("editor?" + urlencode({"target": target}))
         self.request("editor", {"kind": "save", "run_id": self.run_id, "target": target,
-                                "base": editor["content"], "content": text,
+                                "base": editor["content"], "content": text, "save_id": uuid.uuid4().hex,
                                 "edit_id": editor["edit"]["id"] if editor["edit"] else None})
 
     def test_receipt_precedes_interpretation_and_query_does_not_stop_a_build(self):
@@ -625,7 +626,8 @@ class JunieConversationTests(SavedRunFixture):
 
             _, editor = self.request("editor")
             _, response = self.request("editor", {"kind": "save", "run_id": self.run_id, "target": self.target.name,
-                                                  "base": editor["content"], "content": edited, "edit_id": None})
+                                                  "base": editor["content"], "content": edited, "edit_id": None,
+                                                  "save_id": uuid.uuid4().hex})
             self.assertFalse(response["queued"])
             with self.assertRaises(HTTPError) as stale:
                 self.start_stage_plan(before_edit)
@@ -793,9 +795,9 @@ class JunieConversationTests(SavedRunFixture):
                           "verification": {"target_hashes": {"Example.cs": "previous"}}})
         self.build_log.write_text("error CS1002: missing semicolon\n", encoding="utf-8")
         with editor_queue(self.run_path) as queue:
-            queue["edits"]["Example.cs"] = {
+            pending_editor_edit(queue, "Example.cs", {
                 "id": "draft", "status": "queued", "base": "class Original {}\n", "content": "class Draft {}\n",
-            }
+            })
         original_record = self.record()
         original_target = self.target.read_bytes()
         original_edit = self.request("editor")[1]["edit"]
@@ -2188,9 +2190,9 @@ class JunieConversationTests(SavedRunFixture):
     def test_conflicting_saved_edit_is_preserved_and_does_not_build(self):
         self.target.write_bytes(b"class Changed {}\n")
         with editor_queue(self.run_path) as queue:
-            queue["edits"]["Example.cs"] = {
+            pending_editor_edit(queue, "Example.cs", {
                 "id": "saved", "status": "queued", "base": "class Original {}\n", "content": "class Operator {}\n",
-            }
+            })
         with patch.object(execution, "run_process") as run:
             identifier, _ = self.send("保存した版でビルドして")
             self.assertIn("Example.cs", self.wait_for(identifier, "failed")["message"])

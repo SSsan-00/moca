@@ -32,10 +32,12 @@ class SavedDashboardQueueValidationTests(TestCase):
         self.queue.parent.mkdir()
 
     def document(self, *jobs):
-        return {"project_root": self.config["project_root"], "jobs": list(jobs)}
+        return {"project_root": self.config["project_root"], "jobs": list(jobs),
+                "cancelled_conversations": {}, "blocked_conversations": {}}
 
-    def test_c0d583c_queue_retains_order_and_bytes_across_read_and_restore(self):
-        jobs = [{"run_id": run_id, "unit_id": unit, "action": "run"} for run_id, unit in ((_RUN_A, "a"), (_RUN_B, "b"))]
+    def test_current_queue_retains_ids_order_and_bytes_across_read_and_restore(self):
+        jobs = [{"run_id": run_id, "unit_id": unit, "action": "run", "operation_id": unit * 32}
+                for run_id, unit in ((_RUN_A, "a"), (_RUN_B, "b"))]
         data = json.dumps(self.document(*jobs), indent=4).encode()
         self.queue.write_bytes(data)
         temporary = self.queue.with_suffix(".tmp")
@@ -45,7 +47,7 @@ class SavedDashboardQueueValidationTests(TestCase):
         self.assertEqual(temporary.read_bytes(), b"an incomplete later write")
         self.assertEqual(list(manager.pending), [_RUN_A, _RUN_B])
         self.assertEqual({key: manager.jobs[key]["unit_id"] for key in manager.pending}, {_RUN_A: "a", _RUN_B: "b"})
-        self.assertEqual(len({job["operation_id"] for job in manager.jobs.values()}), 2)
+        self.assertEqual(list(manager.jobs.values()), jobs)
         self.assertFalse(manager.workers)
         self.assertEqual(self.queue.read_bytes(), data)
 
@@ -64,26 +66,29 @@ class SavedDashboardQueueValidationTests(TestCase):
         self.assertIn(_RUN_A, saved["blocked_conversations"])
 
     def test_corrupt_queue_is_rejected_before_restore_without_writing_or_retaining_lock(self):
-        legacy_job = {"run_id": _RUN_A, "unit_id": "a", "action": "run"}
-        root = self.document(legacy_job)
+        job = {"run_id": _RUN_A, "unit_id": "a", "action": "run", "operation_id": "a" * 32}
+        root = self.document(job)
         bad = (
             b'{"jobs": ',
             b'{"jobs": [],"jobs":[]}',
             b'{"jobs": NaN}',
             b"[]",
             {**root, "schema_version": 9},
+            *({k: v for k, v in root.items() if k != omitted} for omitted in root),
+            {**root, "jobs": [{k: v for k, v in job.items() if k != "operation_id"}]},
+            {**root, "jobs": [{**job, "operation_id": None, "running": True}]},
             {**root, "project_root": "different-project"},
             {"project_root": root["project_root"]},
             {**root, "jobs": {}},
             {**root, "jobs": [False]},
             {**root, "cancelled_conversations": []},
             {**root, "blocked_conversations": {_RUN_A: False}},
-            {**root, "jobs": [{**legacy_job, "run_id": 42}]},
-            {**root, "jobs": [{**legacy_job, "running": 0}]},
-            {**root, "jobs": [{**legacy_job, "operation_id": "typo"}]},
-            {**root, "jobs": [legacy_job, {**legacy_job, "unit_id": "b"}]},
-            {**root, "jobs": [legacy_job, {**legacy_job, "run_id": _RUN_B}]},
-            {**root, "jobs": [{**legacy_job, "operation_id": "a" * 32},
+            {**root, "jobs": [{**job, "run_id": 42}]},
+            {**root, "jobs": [{**job, "running": 0}]},
+            {**root, "jobs": [{**job, "operation_id": "typo"}]},
+            {**root, "jobs": [job, {**job, "unit_id": "b", "operation_id": "b" * 32}]},
+            {**root, "jobs": [job, {**job, "run_id": _RUN_B, "operation_id": "b" * 32}]},
+            {**root, "jobs": [{**job, "operation_id": "a" * 32},
                               {"run_id": _RUN_B, "unit_id": "b", "action": "run", "operation_id": "a" * 32}]},
         )
         for payload in bad:

@@ -641,8 +641,8 @@ class ParallelDashboardTests(HarnessCase):
         new_config = {**self.settings, "run_root": str(new_root)}
         queue = new_root / "dashboard-queue.json"
         queue.write_text(json.dumps({"project_root": self.settings["project_root"], "jobs": [
-            {"action": "run", "run_id": str(uuid.uuid4()), "unit_id": "sample"},
-        ]}), encoding="utf-8")
+            {"action": "run", "run_id": str(uuid.uuid4()), "unit_id": "sample", "operation_id": uuid.uuid4().hex},
+        ], "cancelled_conversations": {}, "blocked_conversations": {}}), encoding="utf-8")
         saved_queue = queue.read_bytes()
         replace = Path.replace
 
@@ -747,7 +747,8 @@ class ParallelDashboardTests(HarnessCase):
         self.manager.results[old_id] = {"status": "previous"}
         run_id, operation = str(uuid.uuid4()), uuid.uuid4().hex
         job = {"action": "run", "run_id": run_id, "unit_id": "sample", "operation_id": operation}
-        queue.write_text(json.dumps({"project_root": self.settings["project_root"], "jobs": [job]}), encoding="utf-8")
+        queue.write_text(json.dumps({"project_root": self.settings["project_root"], "jobs": [job],
+                                     "cancelled_conversations": {}, "blocked_conversations": {}}), encoding="utf-8")
         content = original.decode().replace('worktree_root = "trees"', 'worktree_root = "other-trees"')
         seen = []
         replace = Path.replace
@@ -934,7 +935,8 @@ class ParallelDashboardTests(HarnessCase):
             self.assertEqual(php["run_id"], run_id)
             self.assertEqual(php["content"], f"<?php echo {number};\n")
         saved = request(ids[0], body={"kind": "save", "run_id": ids[0], "target": first["target"],
-                                     "base": first["content"], "content": "class Edited {}\n", "edit_id": None})
+                                     "base": first["content"], "content": "class Edited {}\n", "edit_id": None,
+                                     "save_id": uuid.uuid4().hex})
         self.assertEqual(saved["content"], "class Edited {}\n")
         request(ids[0], "prompts", {"run_id": ids[0], "text": "first run only"})
         self.assertEqual(request(ids[1])["content"], second["content"])

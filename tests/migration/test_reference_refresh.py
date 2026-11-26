@@ -1,6 +1,7 @@
 import codecs
 import io
 import json
+import uuid
 import unittest
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
@@ -494,7 +495,8 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         _, before = editor()
         status, after = editor({"kind": "save", "run_id": self.run_id, "target": target,
                                 "base": before["content"], "content": content,
-                                "edit_id": (before.get("edit") or {}).get("id"), "resolve": resolve, "save_id": save_id})
+                                "edit_id": (before.get("edit") or {}).get("id"), "resolve": resolve,
+                                "save_id": save_id or uuid.uuid4().hex})
         self.assertEqual(status, 200)
         self.assertEqual(after["save_timing"], "resume")
         self.assertTrue(after["queued"])
@@ -769,7 +771,8 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             _, before = editor()
             overlapping = self.base.replace("reference A", "different choice").replace("old label", "first human edit")
             status, saved = editor({"kind": "save", "run_id": self.run_id, "target": "Example.cs",
-                                    "base": self.base, "content": overlapping, "edit_id": before["edit"]["id"]})
+                                    "base": self.base, "content": overlapping, "edit_id": before["edit"]["id"],
+                                    "save_id": uuid.uuid4().hex})
             self.assertEqual(status, 200)
             self.assertTrue(saved["queued"])
             self.assertEqual(self.resume_fixture()["status"], "editor_checkpoint")
@@ -1134,7 +1137,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             editor = self.open_editor()
             _, before = editor()
             action = {"kind": "save", "run_id": self.run_id, "target": "Example.cs",
-                      "base": before["content"], "content": self.resolved, "edit_id": None}
+                      "base": before["content"], "content": self.resolved, "edit_id": None, "save_id": uuid.uuid4().hex}
             with self.assertRaises(HTTPError) as wrong_run:
                 editor({**action, "run_id": "00000000-0000-0000-0000-000000000000"})
             wrong_run.exception.close()

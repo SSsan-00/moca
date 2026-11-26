@@ -36,6 +36,7 @@ from ..runs.editor_queue import (
     record_queued_editor_save,
     replayed_editor_save,
     stage_editor_save,
+    valid_save_id,
 )
 from ..runs.editor_view import editor_version, editor_view_versions, prompt_timing, update_history_delta
 from ..runs.run_records import edit_run_record, load_saved_run, validate_run_id
@@ -134,7 +135,7 @@ def send_editor(request, action: dict[str, Any] | None = None) -> None:
 class EditorSave:
     base: str
     draft: str
-    save_id: str | None
+    save_id: str
     edit_id: str | None
     resolve: bool
     intent: dict
@@ -144,7 +145,7 @@ class EditorSave:
         base = editor_text(action.get("base"))
         draft = editor_text(action.get("content"))
         save_id = action.get("save_id")
-        if save_id is not None and (not isinstance(save_id, str) or not re.fullmatch(r"[0-9a-f]{32}", save_id)):
+        if not valid_save_id(save_id):
             raise ValueError("保存IDが無効です。エディタを開き直してください。")
         edit_id, resolve = action.get("edit_id"), action.get("resolve", False)
         if type(resolve) is not bool:
@@ -155,7 +156,7 @@ class EditorSave:
         if "base_version" in action:
             base_version = action["base_version"]
             if (not isinstance(base_version, str) or not re.fullmatch(r"[0-9a-f]{64}", base_version)
-                    or not save_id or edit_id is not None or resolve):
+                    or edit_id is not None or resolve):
                 raise ValueError("下書きの元の版を確認できません。")
             intent["base_version"] = base_version
         if "adoption" in action:
@@ -163,7 +164,7 @@ class EditorSave:
                     or any(not isinstance(adoption[key], str) or not re.fullmatch(pattern, adoption[key])
                            for key, pattern in (("save_id", r"[0-9a-f]{32}"), ("edit_id", r"[0-9a-f]{24}"),
                                                 ("version", r"[0-9a-f]{64}")))
-                    or base_version is not None or edit_id is not None or resolve or not save_id):
+                    or base_version is not None or edit_id is not None or resolve):
                 raise ValueError("編集中の下書きの採用版を確認できません。")
             intent["adoption"] = adoption
         return cls(base, draft, save_id, edit_id, resolve, intent)
@@ -173,6 +174,8 @@ def editor_payload(view, config, manager, query, state, run_id, action):
     """取得または版を照合して保存し、キューの更新を完了してから内容を返す。"""
     if action is not None and action.get("run_id") != run_id:
         raise ValueError("表示中の実行が変わりました。")
+    save = (EditorSave.from_action(action.get("target"), action)
+            if action is not None and action.get("kind") == "save" else None)
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     versions = None
     if action is None:
@@ -188,7 +191,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
         targets = tuple(path for path in target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
         names = [path.as_posix() for path in targets]
         name = query.get("target", names[:1] or [None])[0]
-        if action is not None and action.get("kind") == "save":
+        if save is not None:
             name = action.get("target")
             if name not in names:
                 raise ValueError("設定された移行先ファイルを選んでください。")
@@ -211,7 +214,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
         try:
             original, content = editor_target(root, Path(name)) if name else (None, "")
         except (OSError, ValueError) as exc:
-            if action is not None and action.get("kind") == "save":
+            if save is not None:
                 raise
             original, content = None, ""
             read_error = format_error(exc)
@@ -228,8 +231,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
                     record.update(changes)
             elif action.get("kind") == "prompt" and timing:
                 add_prompt(queue, action)
-            elif action.get("kind") == "save" and name:
-                save = EditorSave.from_action(name, action)
+            elif save is not None and name:
                 base_version = save.intent.get("base_version")
                 adoption = save.intent.get("adoption")
                 # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
@@ -241,7 +243,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
                         original, content = editor_target(worktree, Path(name))
                     if adoption is not None:
                         original, content = editor_target(root, Path(name))
-                    replay = (save.save_id is not None or not edit and not from_agent) and replayed_editor_save(
+                    replay = replayed_editor_save(
                         queue, edit, original, content, save.save_id, save.intent,
                     )
                     if not replay:

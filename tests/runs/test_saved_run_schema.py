@@ -113,22 +113,55 @@ class SavedEditorSchemaTests(unittest.TestCase):
         self.target.write_bytes(b"new\n")
         self.history = self.run / "editor.json"
 
-    def test_legacy_save_receipt_and_missing_history_remain_compatible(self):
+    def test_missing_history_is_new_but_legacy_receipts_cannot_be_replayed(self):
         with editor_queue.editor_queue(self.run) as history:
             self.assertEqual(history, {"edits": {}, "prompts": []})
         self.assertFalse(self.history.exists())
-        digest = lambda text: sha256(text.encode("utf-8")).hexdigest()
-        identifier = "old-request"
-        receipt = {"target": self.name, "base": digest("old\n"), "draft": digest("new\n"), "after": digest("new\n")}
-        self.history.write_text(json.dumps({"edits": {}, "prompts": [], "immediate_save_requests": {identifier: receipt}}),
-                                encoding="utf-8")
-        before = self.history.read_bytes()
-        with editor_queue.editor_queue(self.run) as history:
-            intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
-            self.assertTrue(editor_queue.replayed_editor_save(
-                history, None, self.target.read_bytes(), "new\n", identifier, intent,
-            ))
-        self.assertEqual(self.history.read_bytes(), before)
+        intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
+        receipt = {key: intent[key] for key in ("target", "base", "draft")}
+        receipt["after"] = sha256(self.target.read_bytes()).hexdigest()
+        for field, identifier in (("immediate_save_requests", "a" * 32), ("immediate_saves", self.name)):
+            with self.subTest(field=field):
+                data = json.dumps({"edits": {}, "prompts": [], field: {identifier: receipt}}).encode()
+                self.history.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "旧形式"), editor_queue.editor_queue(self.run):
+                    self.fail("legacy-only receipt was made visible")
+                self.assertEqual(self.history.read_bytes(), data)
+                self.assertEqual(self.target.read_bytes(), b"new\n")
+
+    def test_mixed_journal_uses_only_current_receipt_and_keeps_old_fields_as_recorded(self):
+        current_id, old_id = "2" * 32, "1" * 32
+        original = {"edits": {}, "prompts": []}
+        intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
+        digest = sha256(self.target.read_bytes()).hexdigest()
+        legacy = {"immediate_save_requests": {old_id: {"target": self.name, "base": intent["base"],
+                                                        "draft": intent["draft"], "after": digest}}}
+        modern = {"save_requests": {current_id: {**intent, "after": digest}},
+                  "latest_save_requests": {self.name: current_id}}
+        before = json.dumps(original).encode()
+        self.history.write_bytes(before)
+        journal = self.run / editor_queue.EDITOR_SAVE_PENDING
+        record = {"target": self.name, "before": None, "after": digest, "history_before": sha256(before).hexdigest()}
+        for evidence in ({}, legacy, {**modern, "latest_save_requests": {}}, {**modern, "save_requests": {
+                current_id: {**intent, "after": sha256(b"later").hexdigest()}}}):
+            data = json.dumps({**record, "history_after": {**original, **evidence}}).encode()
+            journal.write_bytes(data)
+            with self.subTest(evidence=evidence), self.assertRaises(ValueError), editor_queue.editor_queue(
+                    self.run, recover=(self.worktree, (Path(self.name),))):
+                self.fail("journal not supported by the current receipt must not recover")
+            self.assertEqual(journal.read_bytes(), data)
+            self.assertEqual(self.history.read_bytes(), before)
+            self.assertEqual(self.target.read_bytes(), b"new\n")
+        mixed = {**original, **legacy, **modern}
+        journal.write_text(json.dumps({**record, "history_after": mixed}), encoding="utf-8")
+        with editor_queue.editor_queue(self.run, recover=(self.worktree, (Path(self.name),))) as recovered:
+            self.assertEqual(recovered, mixed)
+            args = recovered, None, self.target.read_bytes(), "new\n"
+            self.assertTrue(editor_queue.replayed_editor_save(*args, current_id, intent))
+            with self.assertRaisesRegex(ValueError, "旧形式"):
+                editor_queue.replayed_editor_save(*args, old_id, intent)
+        self.assertEqual(json.loads(self.history.read_bytes()), mixed)
+        self.assertFalse(journal.exists())
 
     def test_broken_history_or_pending_journal_keeps_both_versions(self):
         valid = {"edits": {}, "prompts": []}
@@ -169,6 +202,10 @@ class SavedEditorSchemaTests(unittest.TestCase):
         journal = self.run / editor_queue.EDITOR_SAVE_PENDING
         old = b'{"edits": {}, "prompts": []}'
         persisted = {"edits": {}, "prompts": [{"id": "saved", "text": "Keep the edit.", "status": "queued"}]}
+        identifier = "c" * 32
+        intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
+        persisted.update(save_requests={identifier: {**intent, "after": sha256(self.target.read_bytes()).hexdigest()}},
+                         latest_save_requests={self.name: identifier})
         journal.write_text(json.dumps({
             "target": self.name, "before": sha256(b"old\n").hexdigest(),
             "after": sha256(self.target.read_bytes()).hexdigest(),

@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+from tests.support.editor_save_fixtures import pending_editor_edit
 from tests.support.fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness import execution
@@ -166,9 +167,9 @@ class ScriptRecoveryTests(SavedRunFixture):
                 self.run_phase()
         self.assertTrue(failure.exception.interrupted)
         with editor_queue(self.run_path) as queue:
-            queue["edits"][self.target.name] = {
+            pending_editor_edit(queue, self.target.name, {
                 "id": "manual-edit", "base": "private original", "status": "conflict", "content": "private draft",
-            }
+            })
             queue["prompts"] = [
                 {"id": "waiting-prompt", "status": "queued", "text": "private instruction"},
                 {"id": "sent-prompt", "status": "sent", "text": "private previous instruction"},

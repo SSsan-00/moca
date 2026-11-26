@@ -18,6 +18,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+from tests.support.editor_save_fixtures import pending_editor_edit
 from tests.support.fixtures import SavedRunFixture
 from migration_harness.rules.rule_materials import COMPACT_RULE_GUIDELINES, write_rule_files
 from migration_harness.verification import build_receipt
@@ -1846,9 +1847,9 @@ class SavedDashboardTests(SavedRunFixture):
                     self.assertEqual(data["unconfirmed_command"], changes.get("unconfirmed_command"))
 
             with editor_queue(self.run_path) as queue:
-                queue["edits"][self.target.name] = {
+                pending_editor_edit(queue, self.target.name, {
                     "id": "fixture-edit", "base": "class Original {}", "content": "class Manual {}", "status": "conflict",
-                }
+                })
             self.save_record({**original, "repair_pending": {"draft": {"snapshot": "modern-snapshot"}}})
             with urlopen(f"{url}recovery?run_id={self.run_id}", timeout=3) as response:
                 data = json.load(response)

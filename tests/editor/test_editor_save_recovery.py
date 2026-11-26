@@ -1,6 +1,7 @@
 import io
 import json
 import subprocess
+import uuid
 from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from threading import Thread
@@ -82,7 +83,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
 
     def save_action(self, text):
         return {"kind": "save", "run_id": self.run_id, "target": self.target.name,
-                "base": self.editor()["content"], "content": text, "edit_id": None}
+                "base": self.editor()["content"], "content": text, "edit_id": None, "save_id": uuid.uuid4().hex}
 
     def fail_history(self, path, queue):
         if path.name == "editor.json":
@@ -107,7 +108,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         for target, draft in changes.items():
             before = self.editor(target=target)
             saved = self.editor({"kind": "save", "run_id": self.run_id, "target": target,
-                                 "base": before["content"], "content": draft, "edit_id": None})
+                                 "base": before["content"], "content": draft, "edit_id": None, "save_id": uuid.uuid4().hex})
             self.assertTrue(saved["queued"])
             self.assertEqual(saved["edit"]["content"], draft)
         original_queue = (self.run_path / "editor.json").read_bytes()
@@ -502,6 +503,21 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         with editor_queue.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["prompts"], [])
             self.assertEqual(len(queue["operator_edits"][self.target.name]), 1)
+
+    def test_old_save_without_valid_id_cannot_commit_a_pending_modern_journal(self):
+        self.stage_old_instruction()
+        payload = self.save_action("class Manual {}\n")
+        with patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history):
+            self.assertIn("履歴", self.http_conflict(payload))
+        files = (self.target, self.run_path / "editor.json", self.run_path / editor_queue.EDITOR_SAVE_PENDING)
+        before = tuple(path.read_bytes() for path in files)
+        for value in ({}, {"save_id": None}, {"save_id": 123}, {"save_id": "not-a-save-id"}):
+            with self.subTest(value=value):
+                old = {key: item for key, item in payload.items() if key != "save_id"}
+                self.assertIn("保存ID", self.http_conflict({**old, **value}))
+                self.assertEqual(tuple(path.read_bytes() for path in files), before)
+        self.assertEqual(self.editor(payload)["accepted_save_id"], payload["save_id"])
+        self.assertFalse(files[2].exists())
 
     def test_successful_save_retry_and_external_change_do_not_rewrite_history(self):
         self.stage_old_instruction()

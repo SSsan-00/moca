@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from tests.support.editor_save_fixtures import pending_editor_edit
 from tests.support.fixtures import SavedRunFixture
 from migration_harness import execution, workflow
 from migration_harness.runs.editor_queue import add_prompt, editor_queue
@@ -12,9 +13,9 @@ class VerificationFollowupTests(SavedRunFixture):
         record = self.record()
         before = self.target.read_text(encoding="utf-8")
         with editor_queue(self.run_path) as queue:
-            queue["edits"][self.target.name] = {
+            pending_editor_edit(queue, self.target.name, {
                 "id": "manual-edit", "base": before, "content": "class Edited {}\n", "status": "queued",
-            }
+            })
             add_prompt(queue, {"text": "Keep the operator edit."})
 
         with (
