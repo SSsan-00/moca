@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,6 @@ from .worktree_targets import review_target_hash
 
 
 def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
-    """保存した対応を現在の移行先で照合し、閲覧用の状態をまとめる。"""
     run_path, worktree, record, unit = run_records.load_saved_run(config, run_id)
     _, manifest = capsule_files.load_capsule_manifest(run_path)
     if manifest.get("unit_id", unit["id"]) != unit["id"]:
@@ -37,9 +37,34 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
                 hashes[path] = None
         return hashes[path]
 
+    capsules, source_count = _ledger_capsules(manifest["parts"], mappings, current_hash)
+    verification_passed, input_status = _ledger_verification(
+        config, worktree, record, unit["target"], targets, len(capsules), current_hash,
+    )
+    return {
+        "run_id": run_id,
+        "target": unit["target"],
+        "targets": targets,
+        "capsules": capsules,
+        "unresolved_junie_memos": unresolved_junie_memos(
+            run_path, worktree, tuple(Path(path) for path in targets), record,
+        ),
+        "unresolved_operator_notes": operator_notes,
+        "completion": {
+            "complete": verification_passed and source_count > 0,
+            "verification_passed": verification_passed,
+            **({"verification_input_status": input_status} if input_status else {}),
+            "total": source_count,
+        },
+    }
+
+
+def _ledger_capsules(
+    parts: list[dict[str, Any]], mappings: dict[str, Any], current_hash: Callable[[str], str | None],
+) -> tuple[list[dict[str, Any]], int]:
     capsules = []
-    total = 0
-    for part in manifest["parts"]:
+    source_count = 0
+    for part in parts:
         sources = []
         for index, source in enumerate(part.get("sources", [])):
             if not is_php_input(source):
@@ -52,17 +77,22 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
             if mapping:
                 path = mapping["path"]
                 valid = current_hash(path) == mapping["sha256"]
-                pending = "candidate_snapshot" in mapping
                 entry["mapping"] = {
                     **{key: mapping[key] for key in ("path", "start_line", "end_line")},
                     "valid": valid,
                 }
-                if valid and pending:
+                if valid and "candidate_snapshot" in mapping:
                     entry["mapping"].update(snapshot_id=mapping["candidate_snapshot"], anchors=mapping["anchors"])
             sources.append(entry)
-            total += 1
         capsules.append({"index": part["index"], "sources": sources})
+        source_count += len(sources)
+    return capsules, source_count
 
+
+def _ledger_verification(
+    config: dict[str, Any], worktree: Path, record: dict[str, Any], primary_target: str, targets: list[str],
+    capsule_count: int, current_hash: Callable[[str], str | None],
+) -> tuple[bool, str | None]:
     verification = record.get("verification") or {}
     saved_checker = verification.get("checker_command")
     saved_configuration = verification.get("configured_checker_command", saved_checker)
@@ -81,10 +111,10 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         checker_passed = bool(approved_file_hashes) and all(
             digest is not None and current_hash(path) == digest for path, digest in approved_file_hashes.items()
         )
-    # worktreeは直接編集しない前提。設定と移行対象の版だけを照合し、全体は走査しない。
+    # 台帳の閲覧で作業ツリー全体を走査しない。
     verification_passed = (
         not record.get("target_apply_pending")
-        and record.get("completed_capsules") == len(capsules)
+        and record.get("completed_capsules") == capsule_count
         and record.get("build_exit_code") == 0
         and verification.get("build_project") == config["build_project"]
         and verification.get("scripts", {}) == scripts
@@ -99,7 +129,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         verification_passed = None not in current_targets.values() and current_targets == verification.get("target_hashes")
     input_status = None
     if verification_passed:
-        current_inputs = verification_files(config, worktree, unit["target"], configured_checker, scripts)
+        current_inputs = verification_files(config, worktree, primary_target, configured_checker, scripts)
         saved_inputs = verification.get("input_files")
         if verification.get("inputs_changed_during_verification") or (
             saved_inputs is not None and saved_inputs != current_inputs
@@ -115,22 +145,7 @@ def migration_ledger(config: dict[str, Any], run_id: str) -> dict[str, Any]:
         except ValueError:
             verification_passed = False
 
-    return {
-        "run_id": run_id,
-        "target": unit["target"],
-        "targets": targets,
-        "capsules": capsules,
-        "unresolved_junie_memos": unresolved_junie_memos(
-            run_path, worktree, tuple(Path(path) for path in targets), record,
-        ),
-        "unresolved_operator_notes": operator_notes,
-        "completion": {
-            "complete": verification_passed and total > 0,
-            "verification_passed": verification_passed,
-            **({"verification_input_status": input_status} if input_status else {}),
-            "total": total,
-        },
-    }
+    return verification_passed, input_status
 
 
 def record_migration_candidates(

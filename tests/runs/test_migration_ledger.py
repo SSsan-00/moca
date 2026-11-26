@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
-from migration_harness.runs import run_records
+from migration_harness.runs import migration_ledger, run_records
 from migration_harness import workflow
 from migration_harness.web.diff_viewer import capture_workspace, save_workspace
 
@@ -96,6 +96,24 @@ class LedgerReviewTest(HarnessCase):
         self.assertTrue(self.source()["mapping"]["valid"])
         self.target.write_text("public void Changed() {}\n", encoding="utf-8")
         self.assertFalse(self.source()["mapping"]["valid"])
+
+    def test_ledger_shares_the_target_version_for_mapping_and_completion(self):
+        self.prepare_for_verification()
+        self.verify()
+        name = self.target.name
+        with run_records.edit_run_record(self.record_path) as (record, changes):
+            changes["migration_mappings"] = {
+                "1:0": {"path": name, "start_line": 1, "end_line": 1,
+                        "sha256": record["verification"]["target_hashes"][name]},
+            }
+
+        before = self.record_path.read_bytes()
+        with patch.object(migration_ledger, "review_target_hash", wraps=migration_ledger.review_target_hash) as read_hash:
+            result = workflow.migration_ledger(self.settings, self.run_id)
+        read_hash.assert_called_once_with(self.target.parent, Path(name))
+        self.assertTrue(result["capsules"][0]["sources"][0]["mapping"]["valid"])
+        self.assertTrue(result["completion"]["complete"])
+        self.assertEqual(self.record_path.read_bytes(), before)
 
     def test_anchor_usage_keeps_mappings_after_stale_record_write(self):
         self.prepare_for_verification()
