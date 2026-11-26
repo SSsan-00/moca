@@ -63,3 +63,31 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         self.apply_pair("Page.cshtml", before, "@page\n@{ int @event = 1; }\n", r"Page.cshtml:2:.*@event")
         self.apply_pair("Page.cshtml", before, "@page\n@functions { public int @event { get; set; } }\n",
                         r"Page.cshtml:2:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_normal_razor_control_flow_can_be_adopted(self):
+        before = "@page\n@using System\n@if (true) { <p>old</p> }\n"
+        after = (
+            "@page\n@using System\n@using System.Linq\n@if (true) { <p>new</p> }\n"
+            "@if (Model.Enabled) { <p>enabled</p> }\n"
+            "@foreach (var name in Model.Names) { <p>@name</p> }\n"
+            "@using (Html.BeginForm()) { <p>form</p> }\n"
+            '@{ const string Example = "@event"; /* int @class; */ }\n'
+            "@* int @event; *@\n"
+        )
+        self.apply_pair("Page.cshtml", before, after)
+        self.apply_pair("Page.cshtml", "@page\n", "@page\n@using System\n")
+        self.apply_pair("Page.cshtml", after, after.replace("enabled", "active").replace(
+            "<p>@name</p>", "<span>@name</span>"))
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_partial_razor_can_be_repaired_without_losing_original_declarations(self):
+        before = "@page\n@if (true) {\n    int @event = 1;\n"
+        self.apply_pair("Page.cshtml", before, before + "}\n")
+        self.apply_pair("Page.cshtml", before, before.replace("@event", "eventValue") + "}\n")
+        self.apply_pair("Page.cshtml", before, before + "    int @class = 2;\n", r"Page.cshtml:4:.*@class")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_razor_reports_original_column_with_unicode(self):
+        self.apply_pair("Page.cshtml", "@page\n",
+                        '@page\n@{ var example = "😀"; int @event = 1; }\n', r"Page.cshtml:2:.*@event")
