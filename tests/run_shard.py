@@ -35,6 +35,7 @@ REQUIRED_RUN_MODELS = {
         "test_shortest_counterexample_for_fenced_adoption",
         "test_shortest_counterexample_for_missing_exit_fence",
         "test_shortest_counterexample_for_stale_success",
+        "test_restart_cannot_discard_an_unfinalized_hook_attempt",
         "test_incomplete_search_is_a_failure",
     )),
 }

@@ -22,6 +22,7 @@ class ModelFailure(AssertionError):
 
 def explore(initial, transitions, invariant, *, state_limit=5_000, time_limit=2.0):
     started = monotonic()
+    deadline = started + time_limit
     parents = {initial: None}
     pending = deque([initial])
     edges = 0
@@ -40,10 +41,12 @@ def explore(initial, transitions, invariant, *, state_limit=5_000, time_limit=2.
         raise ModelFailure(condition, (), initial)
     while pending:
         before = pending.popleft()
-        if monotonic() - started >= time_limit:
+        if monotonic() >= deadline:
             raise ModelFailure("incomplete/time-limit", trace(before), before)
         for action, after in transitions(before):
             edges += 1
+            if edges % 256 == 0 and monotonic() >= deadline:
+                raise ModelFailure("incomplete/time-limit", (*trace(before), action), after)
             if condition := invariant(before, action, after):
                 raise ModelFailure(condition, (*trace(before), action), after)
             witnessed.add(action)
@@ -308,6 +311,9 @@ def hook_actions(state):
 def hook_invariant(before, action, state):
     if state.stage == Hook.RUNNING and action == "spawn hook" and (before.stage != Hook.RESERVED or not before.attempts):
         return "HOOK-NOT-RECORDED"
+    if (action in ("restart", "interrupt hook") and before.stage in (Hook.RESERVED, Hook.RUNNING)
+            and (state.stage != Hook.UNKNOWN or state.attempts != before.attempts)):
+        return "HOOK-INCOMPLETE-ATTEMPT-LOST"
     if before.stage == Hook.UNKNOWN and state.stage not in (Hook.UNKNOWN, Hook.RESERVED):
         return "HOOK-UNKNOWN-RESULT"
     if before.stage == Hook.UNKNOWN and state.stage == Hook.RESERVED and action != "explicit retry with verified command":
@@ -394,6 +400,18 @@ class RunStateModelsTests(unittest.TestCase):
             explore(VerificationModel(0, True), mutated, verification_invariant)
         self.assertEqual(problem.exception.condition, "VERIFY-STALE-BUILD")
         self.assertEqual(problem.exception.trace, ("build success", "external edit", "publish stale complete"))
+
+    def test_restart_cannot_discard_an_unfinalized_hook_attempt(self):
+        def mutated(state):
+            for action, after in hook_actions(state):
+                if action == "restart" and state.stage == Hook.RUNNING:
+                    after = HookModel()
+                yield action, after
+
+        with self.assertRaises(ModelFailure) as problem:
+            explore(HookModel(), mutated, hook_invariant)
+        self.assertEqual(problem.exception.condition, "HOOK-INCOMPLETE-ATTEMPT-LOST")
+        self.assertEqual(problem.exception.trace, ("persist hook attempt", "spawn hook", "restart"))
 
     def test_incomplete_search_is_a_failure(self):
         with self.assertRaisesRegex(ModelFailure, "incomplete/state-limit"):
