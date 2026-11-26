@@ -13,6 +13,14 @@ from .log_text import decode_log_text
 
 
 Command = str | bytes | PathLike[str] | Sequence[str | bytes | PathLike[str]]
+
+
+class CheckerRepairBlocked(ValueError):
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 _REDACTED = "[REDACTED]"
 _FLAG = re.compile(r"(?<![\w-])(?:--[\w-]+|-a\b)")
 _VALUE = re.compile(
