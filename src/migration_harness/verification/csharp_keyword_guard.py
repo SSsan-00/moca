@@ -89,13 +89,22 @@ def reject_keyword_changes(pending, *, before_path, after_path):
     try:
         reply = _run_editor(_prepare_tool(), "--escaped-keywords", json.dumps(revisions).encode("utf-8"), 6)
         findings = json.loads(reply.stdout)
-        if reply.returncode or not isinstance(findings, list) or len(findings) != len(revisions):
+        if (reply.returncode or not isinstance(findings, list) or len(findings) != len(revisions)
+                or any(not isinstance(scan, dict) or not isinstance(scan.get("declarations"), list)
+                       or "uncheckedLine" not in scan or (
+                           scan["uncheckedLine"] is not None
+                           and (type(scan["uncheckedLine"]) is not int or scan["uncheckedLine"] < 1))
+                       for scan in findings)):
             raise ValueError("invalid compiler response")
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         names = ", ".join(name for name, _, _ in candidates)
         raise ValueError(f"C#予約語の確認を完了できません。.NET 9 SDKを確認してください: {names}") from error
     for index, (name, before, after) in enumerate(candidates):
-        if problem := next(_new_escapes(before, after, *findings[2 * index:2 * index + 2]), None):
+        previous, proposed = findings[2 * index:2 * index + 2]
+        if line := proposed["uncheckedLine"] or (previous["uncheckedLine"] if proposed["declarations"] else None):
+            raise ValueError(f"{name}:{line}: 条件付きコンパイル内の予約語を確認できないため反映を止めました。"
+                             "条件分岐を確認し、変更対象の宣言は@を付けずに改名してから再開してください。")
+        if problem := next(_new_escapes(before, after, previous["declarations"], proposed["declarations"]), None):
             row, spelling = problem
             raise ValueError(f"{name}:{row + 1}: 新しく追加した宣言 {spelling} は反映できません。"
                              "@を付けず、宣言と参照を意味のある未使用名に揃えてから再開してください。")

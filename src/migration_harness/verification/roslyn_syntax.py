@@ -17,7 +17,7 @@ from .roslyn_context import (
     ProjectContextUnavailable, editor_content_proof, editor_project_context, editor_project_snapshot,
 )
 
-_SCRIPTS = [Path(__file__).with_name(name) for name in ("roslyn_program.cs", "roslyn_semantic.cs")]
+_SCRIPTS = [Path(__file__).with_name(name) for name in ("roslyn_program.cs", "roslyn_semantic.cs", "roslyn_keyword_conditions.cs")]
 _TOOL_LOCK = threading.Lock()
 _EDITOR_SLOTS = threading.BoundedSemaphore(2)
 _SEMANTIC_SLOT = threading.BoundedSemaphore(1)

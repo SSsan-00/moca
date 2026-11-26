@@ -91,3 +91,61 @@ class CSharpKeywordGuardTests(unittest.TestCase):
     def test_razor_reports_original_column_with_unicode(self):
         self.apply_pair("Page.cshtml", "@page\n",
                         '@page\n@{ var example = "😀"; int @event = 1; }\n', r"Page.cshtml:2:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_conditional_declarations_in_csharp_are_checked_before_adoption(self):
+        cases = [
+            ("#if NET9_0\n    int @event = 1;\n#endif", 3),
+            ("#if DEBUG\n    int @event = 1;\n#endif", 3),
+            ("#if NET9_0 && (FEATURE == true) && !SILENT\n    int @event = 1;\n#endif", 3),
+            ("#if DEBUG\n#elif CUSTOM\n    int @event = 1;\n#else\n#endif", 4),
+            ("#if DEBUG\n#elif CUSTOM\n#else\n    int @event = 1;\n#endif", 5),
+            ("#if OUTER\n#if !INNER\n    int @event = 1;\n#endif\n#endif", 4),
+        ]
+        for conditional, line in cases:
+            with self.subTest(conditional=conditional):
+                self.apply_pair("Page.cs", "class Page {}", f"class Page {{\n{conditional}\n}}",
+                                fr"Page.cs:{line}:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_unresolved_branch_stops_instead_of_assuming_result_is_empty(self):
+        expression = " && ".join(f"SYMBOL_{i}" for i in range(20))
+        self.apply_pair("Page.cs", "class Page {}",
+                        f"class Page {{\n#if {expression}\n    int @event;\n#endif\n}}",
+                        r"Page.cs:3:.*条件付きコンパイル")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_conditional_comments_existing_declarations_and_unreachable_branches_remain_allowed(self):
+        before = "class Page {\n#if LOCAL_FEATURE\n    int @event = 1;\n#endif\n}"
+        after = ('class Page {\n#if LOCAL_FEATURE\n    int @event = 2;\n'
+                 '    // int @class;\n    string Saved = "@if";\n'
+                 '    string Lines = """\n        int @event;\n        """;\n'
+                 '#elif CUSTOM\n    /* int @struct; */\n#endif\n'
+                 '#if false\n    int @event;\n#endif\n}')
+        self.apply_pair("Page.cs", before, after)
+        inactive = "class Page {\n#if false\n    int @event;\n#endif\n}"
+        self.apply_pair("Page.cs", inactive, inactive.replace("#if false", "#if NET9_0"),
+                        r"Page.cs:3:.*@event")
+        self.apply_pair("Page.cs", "class Page {}",
+                        "#define LOCAL\nclass Page {\n#if LOCAL\n    int @event;\n#endif\n}",
+                        r"Page.cs:4:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_conditional_razor_checks_csharp_and_allows_comments_and_regular_directives(self):
+        before = '@using System\n@if (true) { <p>existing</p> }\n'
+        allowed = before + '@{\n#if CUSTOM\n    // int @event;\n    var text = "@class";\n#endif\n}\n'
+        self.apply_pair("Page.cshtml", before, allowed)
+        self.apply_pair("Page.cshtml", before, allowed.replace("// int @event;", "int @event;"),
+                        r"Page.cshtml:5:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_override_event_forms_preserve_external_base_contract_but_plain_events_are_blocked(self):
+        before = "class Page : Base {}"
+        for member in ("public override event System.Action @event;",
+                       "public override event System.Action @event { add {} remove {} }"):
+            with self.subTest(member=member):
+                self.apply_pair("Page.cs", before, f"class Page : Base {{ {member} }}")
+        for member in ("public event System.Action @event;", "public event System.Action @event { add {} remove {} }",
+                       "public System.Action @event;"):
+            with self.subTest(member=member):
+                self.apply_pair("Page.cs", before, f"class Page : Base {{ {member} }}", r"Page.cs:1:.*@event")
