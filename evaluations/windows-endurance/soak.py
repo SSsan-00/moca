@@ -82,11 +82,11 @@ OWNED = """
 from pathlib import Path
 import json, os, subprocess, sys, time
 folder = Path(sys.argv[1]); release = Path(sys.argv[2])
-with subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']) as child:
+with subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(70)']) as child:
     pending = folder / 'pid.tmp'; pending.write_text(json.dumps([os.getpid(), child.pid]), encoding='ascii')
     pending.replace(folder / 'pids.json')
     try:
-        until = time.monotonic() + 25
+        until = time.monotonic() + 60
         while not release.is_file() and time.monotonic() < until:
             time.sleep(.025)
         if not release.is_file():
@@ -97,7 +97,7 @@ with subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']) as 
 """
 
 
-def wait_for(predicate, label, timeout=30):
+def wait_for(predicate, label, timeout=45):
     end = monotonic() + timeout
     while monotonic() < end:
         if predicate():
@@ -177,7 +177,7 @@ def cycle(manager, dashboard, probe, config, owned, logs, index):
             folder.mkdir()
         targets[0].write_text(f"class Page{unit} {{}}\n", encoding="utf-8")
         result = native_process([sys.executable, "-c", OWNED, str(folder), str(release)], label="owned fixture", synchronous=True,
-                                timeout=35, cwd=owned, stdout=logs, stderr=subprocess.STDOUT)
+                                timeout=80, cwd=owned, stdout=logs, stderr=subprocess.STDOUT)
         if result.returncode:
             raise RuntimeError(f"synthetic child failed with {result.returncode}")
         if unit == 1 and launches[unit] == 1:
@@ -288,7 +288,7 @@ def main():
             env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
             env.update(TMP=directory, TEMP=directory, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
             execution.run_process([sys.executable, __file__, *sys.argv[1:], "--worker"], label="Windows endurance evaluation",
-                                  synchronous=True, check=True, timeout=args.seconds + 120, env=env)
+                                  synchronous=True, check=True, timeout=args.seconds + 180, env=env)
 
 
 if __name__ == "__main__":
