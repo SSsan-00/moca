@@ -33,7 +33,8 @@ def _read_queue(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        if path.name == "editor.json" and path.with_suffix(".json.tmp").exists():
+        if (path.name == "editor.json" and path.with_suffix(".json.tmp").exists()
+                and not editor_save_pending(path.parent)):
             raise ValueError(_HISTORY_RECOVERY + " 保存途中の記録だけが残っています。")
         return '{"edits": {}, "prompts": []}'
     except UnicodeError as error:

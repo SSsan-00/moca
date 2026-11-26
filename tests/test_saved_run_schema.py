@@ -163,6 +163,30 @@ class SavedEditorSchemaTests(unittest.TestCase):
         self.assertFalse(self.history.exists())
 
 
+    def test_first_save_recovers_from_valid_journal_without_reading_temporary_history(self):
+        temporary = self.history.with_suffix(".json.tmp")
+        temporary.write_bytes(b'{"edits":')
+        journal = self.run / editor_queue.EDITOR_SAVE_PENDING
+        old = b'{"edits": {}, "prompts": []}'
+        persisted = {"edits": {}, "prompts": [{"id": "saved", "text": "Keep the edit.", "status": "queued"}]}
+        journal.write_text(json.dumps({
+            "target": self.name, "before": sha256(b"old\n").hexdigest(),
+            "after": sha256(self.target.read_bytes()).hexdigest(),
+            "history_before": sha256(old).hexdigest(), "history_after": persisted,
+        }), encoding="utf-8")
+        before = journal.read_bytes()
+        with self.assertRaises(ValueError), editor_queue.editor_queue(self.run):
+            self.fail("history-only read cannot perform recovery")
+        self.assertEqual(journal.read_bytes(), before)
+        self.assertFalse(self.history.exists())
+        self.assertEqual(temporary.read_bytes(), b'{"edits":')
+        with editor_queue.editor_queue(self.run, recover=(self.worktree, (Path(self.name),))) as recovered:
+            self.assertEqual(recovered, persisted)
+        self.assertEqual(json.loads(self.history.read_bytes()), persisted)
+        self.assertFalse(journal.exists() or temporary.exists())
+        self.assertEqual(self.target.read_bytes(), b"new\n")
+
+
 class SavedConfigSchemaTests(unittest.TestCase):
     def test_legacy_config_can_be_read_and_bad_versions_or_types_are_not_rewritten(self):
         base = ('[project]\nroot="app"\nworktree_root="trees"\nrun_root="runs"\n'
