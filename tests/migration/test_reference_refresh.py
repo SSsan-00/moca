@@ -52,6 +52,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.record = {"target": self.target.as_posix(), "targets": list(before),
                        "status": "interrupted", "completed_capsules": 1, "current_capsule": 1, "context_capsules": 1,
                        "junie_max_steps": None, "junie_model": None, "junie_effort": None, "resume_attempts": 0,
+                       "max_context_chars": 1000, "source_boundary_review_required": False,
                        "target_hashes": before.copy(), "build_exit_code": 0, "checker_exit_code": 0,
                        "capsule_checkpoints": {"1": target_snapshots.save_capsule_checkpoint(
                            self.run, self.worktree, self.targets, before)}}
@@ -294,7 +295,7 @@ class ReferenceRefreshTests(unittest.TestCase):
                                 encoding="utf-8-sig")
             completion.write_text(token, encoding="utf-8")
 
-        with patch.object(capsule_files, "load_capsule_manifest", return_value=(self.capsule, {"parts": [], "rule_files": []})), \
+        with patch.object(capsule_files, "load_capsule_manifest", return_value=(self.capsule, {"parts": [], "rule_files": [], "materials": {}, "segment_offset": 0})), \
              patch.object(junie_cli, "build_command", return_value=[]), \
              patch.object(migration_session, "run_budgeted_junie", side_effect=run_model) as model:
             reference_refresh.refresh_target_context_on_resume({"junie_max_steps": 10}, {}, self.run, self.worktree, self.record,
@@ -441,7 +442,10 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             manifest = json.loads(manifest_path.read_bytes())
             second = self.capsule / "second.txt"
             second.write_bytes(b"second capsule")
-            manifest["parts"].append({"index": 2, "path": str(second), "chars": 14, "sources": []})
+            digest = target_hash(second)
+            manifest["parts"].append({"index": 2, "path": str(second), "chars": 14, "sources": [],
+                                      "sha256": digest, "segment_sha256": digest})
+            manifest["total_context_chars"] += 14
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             record.update(status="interrupted", current_capsule=2, context_capsules=2)
         (self.worktree / self.targets[0]).write_bytes(self.human.encode("utf-8-sig"))
