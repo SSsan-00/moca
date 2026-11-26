@@ -161,6 +161,45 @@ end_line = 1
         self.assertEqual((path / "sources/rule-0001.md").read_bytes(), b"first\r\nnew exception\r\n")
         self.assertEqual((path / "sources/rule-0002.md").read_bytes(), new_data)
 
+    def test_edit_size_limit_includes_preserved_line_endings_and_bom(self):
+        limit = 2 * 1024 * 1024
+        for newline, bom in product(("\n", "\r\n"), (b"", b"\xef\xbb\xbf")):
+            with self.subTest(newline=repr(newline), bom=bool(bom)):
+                original = self.app / "original.md"
+                original.write_bytes(bom + ("original" + newline).encode("utf-8"))
+                draft = self.workspace.start()
+                source = draft["files"][0]["source"]
+                root = self.workspace.draft(draft["id"])
+                body_file = root / "sources" / source
+                state_file = root / "state.json"
+                version = self.workspace.file_text(draft["id"], source)["version"]
+
+                header = "規則"
+                suffix = "x" * (limit - len(bom + (header + newline).encode("utf-8")))
+                expected = bom + (header + newline + suffix).encode("utf-8")
+                self.assertEqual(len(expected), limit)
+                accepted_edit = dict(source=source, text=header + "\n" + suffix,
+                                     base_version=version, save_id="a" * 32)
+                saved = self.send(draft, "edit", **accepted_edit)
+                receipt = saved["accepted_edit"]
+                self.assertEqual(receipt["version"], sha256(expected).hexdigest())
+                reopened = self.workspace.file_text(draft["id"], source)
+                self.assertEqual(reopened, {"text": expected.decode("utf-8-sig"),
+                                            "revision": saved["revision"], "version": receipt["version"]})
+                preview = self.send(saved, "preview")
+                self.assertIn(suffix, preview["preview"]["text_diff"])
+                state_before = state_file.read_bytes()
+
+                oversize = accepted_edit | {"text": accepted_edit["text"] + "!", "base_version": receipt["version"],
+                                            "save_id": "b" * 32}
+                with self.assertRaisesRegex(ValueError, r"容量上限.*2 MiB"):
+                    self.send(preview, "edit", **oversize)
+                self.assertEqual(body_file.read_bytes(), expected)
+                self.assertEqual(state_file.read_bytes(), state_before)
+                self.assertFalse((root / "edit-pending.json").exists())
+                self.assertEqual(self.workspace.file_text(draft["id"], source), reopened)
+                self.assertEqual(self.send(draft, "edit", **accepted_edit)["accepted_edit"], receipt)
+
     def optimize_with_plan(self, draft, plan):
         self.rule_reply_plan = plan
         fixture = self

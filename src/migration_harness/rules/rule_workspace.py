@@ -135,8 +135,10 @@ def _read_draft_state(path):
 
 
 def _decode(data):
-    if len(data) > _MAX_SOURCE or b"\0" in data:
-        raise ValueError("Markdownの容量上限を超えたか、テキストではありません。")
+    if len(data) > _MAX_SOURCE:
+        raise ValueError("Markdownの容量上限（2 MiB）を超えています。")
+    if b"\0" in data:
+        raise ValueError("Markdownはテキストではありません。")
     return data.decode("utf-8-sig")
 
 
@@ -364,7 +366,6 @@ class RuleWorkspace:
                 data = base64.b64decode(encoded, validate=True)
             except (ValueError, binascii.Error):
                 raise ValueError("Markdownを読み込めません。") from None
-        _decode(data)
         source = action.get("source")
         addition = None
         if source == "new":
@@ -383,6 +384,7 @@ class RuleWorkspace:
                 data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
             if not encoded and original.startswith(b"\xef\xbb\xbf"):
                 data = b"\xef\xbb\xbf" + data
+            _decode(data)
         state_before = _draft_state_digest(state) if original != data else None
         body_after = _digest(data)
         confirmation = ({**identity, "source": source, "revision": state["revision"] + 1, "sha256": body_after}

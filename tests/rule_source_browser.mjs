@@ -130,6 +130,34 @@ export async function checkRuleSourceEditor({evaluate, wait, field, change, clic
     await click(save);
     await ready();
     assert.equal((await draft(selected)).toString("utf8"), "\ufeff最新の版から編集");
+    await select(a);
+    await ready();
+    const state = path.join(workspace, pack, draftId, "state.json");
+    const previousState = await fs.readFile(state);
+    await evaluate(`(() => {
+      ruleIO.oversized = "# limit\\n" + "x".repeat(2 * 1024 * 1024 - 8);
+      const textarea = ${field(text)};
+      textarea.value = ruleIO.oversized;
+      textarea.dispatchEvent(new Event("input", {bubbles: true}));
+    })()`);
+    await click(save);
+    await wait(status + ".includes('容量上限（2 MiB）')");
+    await ready();
+    assert(await evaluate(field(text) + ".value === ruleIO.oversized"));
+    assert.deepEqual(await draft(a), originalA);
+    assert.deepEqual(await fs.readFile(state), previousState);
+    await select(b);
+    await ready();
+    await select(a);
+    await ready();
+    assert(await evaluate(field(text) + ".value === ruleIO.oversized"));
+    await evaluate("window.confirm = () => true");
+    try { await click("rules-discard-source"); }
+    finally { await evaluate("window.confirm = window.ruleIO.originalConfirm"); }
+    await ready();
+    assert.equal(await value(text), originalA.toString("utf8").replaceAll("\r\n", "\n"));
+    await select(selected);
+    await ready();
   } finally {
     await evaluate("ruleIO.restore()");
   }
