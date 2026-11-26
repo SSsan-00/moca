@@ -1,5 +1,8 @@
+import codecs
+import json
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,26 +15,28 @@ from migration_harness.verification import csharp_keyword_guard
 
 class CSharpKeywordGuardTests(unittest.TestCase):
     def apply_pair(self, name, before, after, expected=None):
+        before_bytes = before.encode("utf-8")
+        after_bytes = codecs.BOM_UTF8 + after.encode("utf-8")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             agent, worktree = root / "agent", root / "tree"
             agent.mkdir()
             worktree.mkdir()
             old, new = worktree / name, agent / name
-            old.write_text(before, encoding="utf-8")
-            new.write_text(after, encoding="utf-8")
+            old.write_bytes(before_bytes)
+            new.write_bytes(after_bytes)
             hashes = {name: sha256_file(old)}
             record = {"target": name, "target_hashes": hashes.copy()}
             args = (agent, worktree, (Path(name),), hashes, record, root / "run.json")
             if expected:
                 with self.assertRaisesRegex(ValueError, expected):
                     apply_agent_targets(*args)
-                self.assertEqual(old.read_text(encoding="utf-8"), before)
+                self.assertEqual(old.read_bytes(), before_bytes)
                 self.assertNotIn("target_apply_pending", record)
-                self.assertEqual(new.read_text(encoding="utf-8-sig"), after)
+                self.assertEqual(new.read_bytes(), after_bytes)
             else:
                 apply_agent_targets(*args)
-                self.assertEqual(old.read_text(encoding="utf-8-sig"), after)
+                self.assertEqual(old.read_bytes(), after_bytes)
 
     def test_keyword_free_targets_do_not_start_roslyn(self):
         with patch.object(csharp_keyword_guard, "_prepare_tool", side_effect=AssertionError("no analyzer")):
@@ -209,3 +214,46 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         self.apply_pair("Page.cs", before, branches.replace("    (int", "    // (int"))
         expression = " && ".join(f"SYMBOL_{i}" for i in range(20))
         self.apply_pair("Page.cs", before, branches.replace("FEATURE", expression), r"Page.cs:3:.*条件付きコンパイル")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_csharp_newline_boundaries_match_roslyn_and_do_not_rewrite_bytes(self):
+        for separator in ("\n", "\r\n", "\r", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=separator):
+                before = f'class Page {{{separator}    int @class = 1; }}'
+                after = f'class Page {{{separator}    string Text = "😀"; int @class = 2; }}'
+                self.apply_pair("Page.cs", before, after)
+                self.apply_pair("Page.cs", before, after[:-1] + "int @event; }", r"Page.cs:2:.*@event")
+
+        # Vertical tab and form feed are C# whitespace, not Roslyn line breaks.
+        mixed = 'class Page {\r\n    int @class = 1;\x85\u2028    \v\fint @event;\u2029}'
+        self.apply_pair("Page.cs", "class Page {}", mixed.replace("@class", "Other").replace("@event", "EventValue"))
+        self.apply_pair("Page.cs", mixed.replace("int @event;", ""), mixed, r"Page.cs:4:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_razor_newline_boundaries_use_the_original_source(self):
+        self.apply_pair("Page.cshtml", "@page\r\n", '@page\r\n@{ var label = "😀";\u2028    int @event; }',
+                        r"Page.cshtml:3:.*@event")
+        self.apply_pair("Page.cshtml", "@page\r\n", "@page\r\n<p>Title</p>\u2028@if (true) { <p>OK</p> }")
+
+    def test_inconsistent_compiler_findings_stop_before_adoption(self):
+        no_findings = {"declarations": [], "uncheckedLine": None}
+        occurrence = {"line": 1, "column": 8, "text": "@event", "value": "event", "kind": "VariableDeclarator"}
+        reports = [
+            (no_findings, {**no_findings, "declarations": [{**occurrence, "line": 9}]}),
+            (no_findings, {**no_findings, "declarations": [{**occurrence, "column": 9}]}),
+            (no_findings, {**no_findings, "declarations": [{**occurrence, "text": "@class"}]}),
+            (no_findings, {**no_findings, "declarations": [{**occurrence, "value": "EventValue"}]}),
+            (no_findings, {**no_findings, "declarations": [occurrence, occurrence]}),
+            ({**no_findings, "declarations": [occurrence]}, no_findings),
+            (no_findings, {**no_findings, "uncheckedLine": 9}),
+        ]
+        for reports_for_pair in reports:
+            with (
+                self.subTest(reports=reports_for_pair),
+                patch.object(csharp_keyword_guard, "_prepare_tool"),
+                patch.object(csharp_keyword_guard, "_run_editor", return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(reports_for_pair),
+                )),
+            ):
+                self.apply_pair("Page.cs", "class Page {}", "class Page {\u2028    int @event; }",
+                                r"Page.cs:.*予約語の確認結果がソースと一致しない")

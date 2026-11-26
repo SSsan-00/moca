@@ -13,6 +13,7 @@ from .roslyn_syntax import _prepare_tool, _run_editor
 _ESCAPE = re.compile(r"@([A-Za-z_][A-Za-z_0-9]*)")
 _UNICODE_ESCAPE = re.compile(r"\\(?:u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})")
 _DIFF_TOKEN = re.compile(r"@\w+|\w+|\S")
+_ROSLYN_LINE_BREAK = re.compile(r"\r\n|[\r\n\x85\u2028\u2029]")
 
 
 def _could_contain_keyword_escape(text):
@@ -32,14 +33,36 @@ def _read_version(path, expected):
     data = path.read_bytes() if expected is not None else b""
     if expected is not None and hashlib.sha256(data).hexdigest() != expected:
         raise ValueError("移行先が更新されたため、C#予約語の確認をやり直してください。")
-    return data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    return data.decode("utf-8-sig")
 
 
-def _positions(findings):
+def _scan_version(name, source, report):
+    error = ValueError(f"{name}: C#予約語の確認結果がソースと一致しないため反映を止めました。")
+    if not isinstance(report, dict) or not isinstance(report.get("declarations"), list) or "uncheckedLine" not in report:
+        raise error
+    unchecked = report["uncheckedLine"]
+    declarations = report["declarations"]
+    if unchecked is None and not declarations:
+        return [], {}, None
+    lines = _ROSLYN_LINE_BREAK.split(source)
+    if unchecked is not None and (type(unchecked) is not int or not 1 <= unchecked <= len(lines)):
+        raise error
     rows = {}
-    for item in findings:
-        rows.setdefault(item["line"], []).append((item["column"], item["text"], item["value"], item["kind"]))
-    return {row: sorted(items) for row, items in rows.items()}
+    for item in declarations:
+        if not isinstance(item, dict):
+            raise error
+        row, column, spelling, value, kind = (item.get(key) for key in ("line", "column", "text", "value", "kind"))
+        if (type(row) is not int or not 0 <= row < len(lines) or type(column) is not int or column < 0
+                or not isinstance(spelling, str) or not spelling or not isinstance(value, str)
+                or value not in _CSHARP_RESERVED or not isinstance(kind, str) or not kind
+                or not lines[row].startswith(spelling, column)):
+            raise error
+        rows.setdefault(row, []).append((column, spelling, value, kind))
+    for items in rows.values():
+        items.sort()
+        if any(left[0] + len(left[1]) > right[0] for left, right in zip(items, items[1:])):
+            raise error
+    return lines, rows, unchecked
 
 
 def _diff_tokens(lines, start, end, positions):
@@ -56,11 +79,14 @@ def _diff_tokens(lines, start, end, positions):
     return tokens, declarations
 
 
-def _new_escapes(before, after, old_matches, new_matches):
-    if not new_matches:
+def _new_escapes(old_lines, new_lines, existing, proposed):
+    if not proposed:
         return
-    old_lines, new_lines = before.split("\n"), after.split("\n")
-    existing, proposed = _positions(old_matches), _positions(new_matches)
+    if not existing:
+        for row in sorted(proposed):
+            for _, spelling, _, _ in proposed[row]:
+                yield row, spelling
+        return
     for tag, old_start, old_end, new_start, new_end in SequenceMatcher(None, old_lines, new_lines).get_opcodes():
         new_rows = range(new_start, new_end)
         if not any(row in proposed for row in new_rows):
@@ -86,19 +112,6 @@ def _new_escapes(before, after, old_matches, new_matches):
         yield from declarations.values()
 
 
-def _parse_scan_results(reply, revision_count):
-    reports = json.loads(reply.stdout)
-    if reply.returncode or not isinstance(reports, list) or len(reports) != revision_count:
-        raise ValueError("invalid compiler response")
-    for report in reports:
-        if not isinstance(report, dict) or not isinstance(report.get("declarations"), list) or "uncheckedLine" not in report:
-            raise ValueError("invalid compiler response")
-        line = report["uncheckedLine"]
-        if line is not None and (type(line) is not int or line < 1):
-            raise ValueError("invalid compiler response")
-    return reports
-
-
 def reject_new_keyword_escapes(agent_root: Path, worktree: Path, pending: dict) -> None:
     reject_keyword_changes(
         pending, before_path=lambda name: safe_target(worktree, Path(name)),
@@ -118,17 +131,26 @@ def reject_keyword_changes(pending, *, before_path, after_path):
     if not candidates:
         return
     revisions = [{"Path": name, "Text": text} for name, before, after in candidates for text in (before, after)]
+    names = ", ".join(name for name, _, _ in candidates)
     try:
         reply = _run_editor(_prepare_tool(), "--escaped-keywords", json.dumps(revisions).encode("utf-8"), 6)
-        reports = _parse_scan_results(reply, len(revisions))
+        if reply.returncode:
+            raise ValueError("compiler exited unsuccessfully")
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        names = ", ".join(name for name, _, _ in candidates)
         raise ValueError(f"C#予約語の確認を完了できません。.NET 9 SDKを確認してください: {names}") from error
+    try:
+        reports = json.loads(reply.stdout)
+        if not isinstance(reports, list) or len(reports) != len(revisions):
+            raise ValueError("unexpected number of reports")
+    except ValueError as error:
+        raise ValueError(f"{names}: C#予約語の確認結果を読み取れないため反映を止めました。") from error
     for (name, before, after), previous, proposed in zip(candidates, reports[::2], reports[1::2], strict=True):
-        if line := proposed["uncheckedLine"] or (previous["uncheckedLine"] if proposed["declarations"] else None):
+        old_lines, existing, old_unchecked = _scan_version(name, before, previous)
+        new_lines, new_positions, new_unchecked = _scan_version(name, after, proposed)
+        if line := new_unchecked or (old_unchecked if new_positions else None):
             raise ValueError(f"{name}:{line}: 条件付きコンパイル内の予約語を確認できないため反映を止めました。"
                              "条件分岐を確認し、変更対象の宣言をエスケープせずに改名してから再開してください。")
-        if problem := next(_new_escapes(before, after, previous["declarations"], proposed["declarations"]), None):
+        if problem := next(_new_escapes(old_lines, new_lines, existing, new_positions), None):
             row, spelling = problem
             raise ValueError(f"{name}:{row + 1}: 新しく追加した宣言 {spelling} は反映できません。"
                              "エスケープせず、宣言と参照を意味のある未使用名に揃えてから再開してください。")

@@ -170,3 +170,18 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
         for name, content in proposed.items():
             self.assertEqual((self.worktree / name).read_bytes(), codecs.BOM_UTF8 + content)
+
+    def test_unicode_newline_in_stopped_draft_is_rejected_without_writing(self):
+        for separator in ("\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=separator):
+                invalid = f'class Original {{{separator}    string Text = "😀"; int @event; }}'.encode()
+                self.choose_draft({**_AFTER, "Example.cs": invalid})
+                self.assert_rejected("Example.cs")
+
+    def test_permitted_recovery_keeps_mixed_newlines(self):
+        edited = 'class Original {\r\n    string Text = "😀";\x85    int @class = 2;\u2028}\r\u2029'.encode()
+        proposed = {**_AFTER, "Example.cs": edited}
+        self.choose_draft(proposed)
+        self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
+        for name, content in proposed.items():
+            self.assertEqual((self.worktree / name).read_bytes(), codecs.BOM_UTF8 + content)
