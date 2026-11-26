@@ -779,21 +779,24 @@ def _validate_pinned_ranges(source: dict[str, Any], content: bytes) -> None:
         for span in row.get("character_slices", ()):
             line = span["line"]
             sliced_widths[line] = max(sliced_widths.get(line, 0), span["context_end_column"])
-    number = 0
     try:
         text = content.decode(source["encoding"])
     except (LookupError, UnicodeError) as exc:
         raise ValueError(f"固定PHPの文字コードが無効です: {source['path']}") from exc
+    lines = text.count("\r") + text.count("\n") - text.count("\r\n") + bool(text and not text.endswith(("\r", "\n")))
+    if lines < last:
+        raise ValueError(f"固定PHPの保存範囲がファイルの行数を超えています: {source['path']}:{last}")
+    if not sliced_widths:
+        return
+    last_slice = max(sliced_widths)
     with StringIO(text, newline="") as stream:
         for number, line in enumerate(stream, 1):
             if number % 256 == 0:
                 check_cancelled()
-            if sliced_widths.get(number, 0) > len(line.rstrip("\r\n")):
+            if (width := sliced_widths.get(number)) and width > len(line.rstrip("\r\n")):
                 raise ValueError(f"固定PHPの保存範囲が行の長さを超えています: {source['path']}:{number}")
-            if number == last:
+            if number == last_slice:
                 break
-    if number < last:
-        raise ValueError(f"固定PHPの保存範囲がファイルの行数を超えています: {source['path']}:{last}")
 
 
 def read_pinned_php(capsule_path: Path, source: dict[str, Any]) -> bytes:
