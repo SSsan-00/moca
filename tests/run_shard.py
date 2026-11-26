@@ -53,6 +53,8 @@ REQUIRED_RUN_MODELS = {
 
 
 REQUIRED_WINDOWS_RECOVERY = {
+    "test_workflow_mutations.WorkflowMutationTests.test_stale_mapping_is_detected",
+    "test_workflow_mutations.WorkflowMutationTests.test_only_the_expected_assertion_counts_as_detection",
     *("test_windows_recovery_faults.WindowsRecoveryFaultTests." + name for name in (
         "test_atomic_json_survives_termination_before_and_after_replace",
         "test_real_windows_sharing_violation_retries_or_leaves_old_record",
