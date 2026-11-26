@@ -49,6 +49,7 @@
   function beginTurn(draft, instruction) {
     const newSession = !draft.messages.some(message => message.role === "junie");
     draft.messages.push({role: "operator", text: instruction || "注文取消のルールを整理して"});
+    delete draft.proposal;
     draft.live = {status: "running", text: "（デモ）サンプルの回答を準備しています。"};
     const timer = setTimeout(() => {
       pendingTurn = undefined;
