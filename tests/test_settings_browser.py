@@ -7,13 +7,16 @@ import tempfile
 import tomllib
 import unittest
 import uuid
+from collections import deque
 from contextlib import redirect_stdout
 from pathlib import Path
 from threading import Thread
+from time import perf_counter
 from unittest.mock import patch
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
-from browser_run import run_browser
+from browser_run import print_browser_output, run_browser
 
 from migration_harness.config import load_config, target_paths
 from migration_harness.runs import (
@@ -247,13 +250,29 @@ max_bytes = 9007199254740993 # preserve this value
                     return post(handler)
                 handler.send_body(200, "application/json", b"{}")
 
-            server.RequestHandlerClass.do_POST = allow_fixture_resume
             token = "T" * 32
             server.junie_notifications.links[token] = RunNotice(run_id, "script_failed", "failed")
-            notification_url = f"http://127.0.0.1:{server.server_port}/junie-open/{token}"
+            notification_route = f"/junie-open/{token}"
+            notification_url = f"http://127.0.0.1:{server.server_port}{notification_route}"
+            requests = deque(maxlen=12)
+            labels = {notification_route: "notification", fixture_root: "dashboard"}
+
+            class BrowserFixtureHandler(server.RequestHandlerClass):
+                do_POST = allow_fixture_resume
+
+                def do_GET(self):
+                    label = labels.get(self.path.partition("?")[0])
+                    if label is not None:
+                        requests.append((label, "entered", perf_counter()))
+                    super().do_GET()
+                    if label is not None:
+                        requests.append((label, "returned", perf_counter()))
+
+            server.RequestHandlerClass = BrowserFixtureHandler
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
+                self._prepare_semantic_worker(url, run_id, worktree / "Example.cs")
                 helper = Path(__file__).with_name("settings_browser.mjs")
                 catalog = [
                     {"id": "fixture-luna", "name": "Fixture Luna", "efforts": ["low", "medium"]},
@@ -269,10 +288,17 @@ max_bytes = 9007199254740993 # preserve this value
                     )
                     for script, profile, arguments, deadline in checks:
                         with self.subTest(scenario=script.stem):
-                            result = run_browser([*node_args, str(script), chrome, str(root / profile), *arguments],
-                                                 timeout=deadline)
-                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                            print(result.stdout, end="", flush=True)
+                            requests.clear()
+                            started = perf_counter()
+                            try:
+                                result = run_browser([*node_args, str(script), chrome, str(root / profile), *arguments],
+                                                     timeout=deadline)
+                                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            except AssertionError as exc:
+                                observed = "; ".join(f"{label} {event} +{at - started:.2f}s"
+                                                     for label, event, at in requests.copy())
+                                raise AssertionError(f"{exc}\nFixture HTTP: {observed or 'no navigation request'}") from None
+                            print_browser_output(result.stdout)
                 self.assertEqual(view.actions.qsize(), 1)
                 self.assertEqual(view.actions.get_nowait()["action"], "resume")
             finally:
@@ -291,3 +317,21 @@ max_bytes = 9007199254740993 # preserve this value
             self.assertEqual(saved["junie"]["max_input_bytes"], 2000)
             self.assertEqual(saved["diff_viewer"]["html"], "viewer.html")
             self.assertIn("# preserve this value", path.read_text(encoding="utf-8"))
+
+
+    def _prepare_semantic_worker(self, url, run_id, path):
+        # Compile the real SDK helper and prove the server's worker responds before timing UI waits.
+        request = Request(url + "roslyn-diagnostics", data=json.dumps({
+            "run_id": run_id, "target": path.name, "content": path.read_text(encoding="utf-8"),
+            "version": "browser-fixture-bootstrap", "mode": "semantic",
+        }).encode("utf-8"), headers={
+            "Origin": f"http://{urlsplit(url).netloc}", "Content-Type": "application/json", "X-Run-ID": run_id,
+        })
+        started = perf_counter()
+        print_browser_output("[fixture] start cold Roslyn semantic HTTP")
+        with urlopen(request, timeout=30) as response:
+            report = json.load(response)
+        print_browser_output(f"[fixture] cold Roslyn semantic HTTP {perf_counter() - started:.2f}s"
+                             f"; status={report['status']}; reason={report['reason']}")
+        self.assertEqual(report["version"], "browser-fixture-bootstrap")
+        self.assertEqual((report["target"], report["status"], report["findings"]), (path.name, "clear", []))

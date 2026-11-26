@@ -4,18 +4,48 @@ const a = "rule-0001.md", b = "rule-0002.md";
 const idSelector = "rules-drafts", sourceSelector = "rules-sources";
 const saveButton = "rules-save-source", discardButton = "rules-discard-source", input = "rules-text";
 
-async function withDraft({evaluate, wait, field, change, click, value}, check) {
-  const previous = await value(idSelector);
+export async function startRuleDraft({evaluate, wait, field}) {
+  try {
+    const {previous} = await wait(`(() => {
+      const button = ${field("rules-start")};
+      if (!button?.matches(":enabled")) return false;
+      const previous = ${field(idSelector)}.value;
+      button.click();
+      return {previous};
+    })()`, undefined, "click the enabled new rule draft button");
+    const id = await wait(`(() => {
+      const selected = ${field(idSelector)}.value;
+      return selected && selected !== ${JSON.stringify(previous)} && !${field(saveButton)}.disabled && selected;
+    })()`, undefined, "wait for the new rule draft and its source editor");
+    return {id, previous};
+  } catch (error) {
+    const state = await evaluate(`({
+      draft: ${field(idSelector)}?.value, startDisabled: ${field("rules-start")}?.disabled,
+      saveDisabled: ${field(saveButton)}?.disabled, status: ${field("rules-status")}?.textContent,
+      stopError: ${field("rules-stop-error")}?.textContent,
+    })`).catch(() => null);
+    throw new Error(error.message + "; last rule draft state: " + JSON.stringify(state), {cause: error});
+  }
+}
+
+async function selectRuleSource({wait, field}, picker, item) {
+  await wait(`(() => {
+    const select = ${field(picker)}, value = ${JSON.stringify(item)};
+    if (!select || select.disabled || !Array.from(select.options).some(option => option.value === value)) return false;
+    select.value = value;
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+    return true;
+  })()`, undefined, "choose an available rule draft or source: " + picker);
+  await wait(`${field(picker)}.value === ${JSON.stringify(item)} && !${field(saveButton)}.disabled`,
+    undefined, "wait for the selected rule draft or source: " + picker);
+}
+
+async function withDraft(browser, check) {
+  const {evaluate, wait, field, change, click} = browser;
   const ready = () => wait("!" + field(saveButton) + ".disabled");
-  const start = async () => {
-    const old = await value(idSelector);
-    await click("rules-start");
-    await wait(field(idSelector) + ".value && " + field(idSelector) + ".value !== " + JSON.stringify(old));
-    await ready();
-    return value(idSelector);
-  };
-  const id = await start();
-  const select = async (picker, item) => { await change(picker, item); await ready(); };
+  const {id, previous} = await startRuleDraft(browser);
+  const start = async () => (await startRuleDraft(browser)).id;
+  const select = (picker, item) => selectRuleSource(browser, picker, item);
   const type = text => change(input, text, "input");
   const save = async () => { await click(saveButton); await ready(); };
   const get = source => evaluate(`fetch(${JSON.stringify("rule-workspace?" + new URLSearchParams({id, ...(source ? {source} : {})}))})

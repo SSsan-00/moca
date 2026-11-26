@@ -1,13 +1,20 @@
+import os
 import subprocess
 import tempfile
 import time
 
+from migration_harness.execution import print_progress
 from migration_harness.windows_job import CREATE_SUSPENDED, WindowsJob
 
 
 def _read(stream):
     stream.seek(0)
     return stream.read().decode("utf-8", errors="replace")
+
+
+def print_browser_output(output):
+    if output:
+        print_progress(output.removesuffix("\n"))
 
 
 def run_browser(command, *, timeout):
@@ -18,7 +25,8 @@ def run_browser(command, *, timeout):
         expired = False
         cleanup_error = None
         try:
-            child = subprocess.Popen(command, stdout=output, stderr=errors, creationflags=CREATE_SUSPENDED)
+            env = {**os.environ, "MOCA_BROWSER_JOB_OWNS_CHILDREN": "1"}
+            child = subprocess.Popen(command, stdout=output, stderr=errors, creationflags=CREATE_SUSPENDED, env=env)
             try:
                 job.start(child)
             except BaseException:

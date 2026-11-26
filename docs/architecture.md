@@ -445,10 +445,22 @@ Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合�
 
 ## ダッシュボードの回帰テスト
 
-`python -m unittest discover -s tests -p "test_editor_run_isolation.py"` と `python -m unittest discover -s tests -p "test_settings_browser.py"` でダッシュボードの検証を実行します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
+`python -m unittest discover -s tests -p "test_editor_run_isolation.py"` と `python -m unittest discover -s tests -p "test_settings_browser.py"` でダッシュボードの検証を実行します。実ブラウザーの前に、同じ一時Runの診断HTTPへ未編集C#を渡し、.NET 9の初回ヘルパー準備・型診断の成否と時間を別に記録します。ブラウザー内でも未保存C#・Razorの実診断と表示を検証します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
 
 保存済み Run が必要なテストでは `tests/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。
 
-CI では Windows の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモの3件が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
+CI では Windows の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモ、ブラウザーの画面同期・待機診断が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
 
-Windows の回帰テストは `conversation-editor`（会話と途中追加指示、HTTP エディタと .NET 9 診断、並行 Run、参考資料の追従）および Node.js・ブラウザーを使うテストを含む `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python バージョンごとの ID 集合、skip 理由、最長ジョブの実測を比較し、ジョブ名を変える場合は `.github/codex/issue.py` も更新します。
+Chromiumの段階ログは開始・完了・実時間を記録します。条件待ちが2秒を超えると画面と待機ラベルを出すので、親の期限超過時も直前に何を待っていたかを区別できます。ルール下書きの開始は、ボタンが操作可能なことを確認した同じ評価内で一度だけ押し、新しい下書きと編集欄の準備を待ちます。タイムアウトした場合は選択・ボタン・状態表示を失敗理由に含めますが、操作は再送しません。
+
+Windowsでの再現・診断:
+
+```powershell
+$env:HARNESS_REQUIRE_UI = "1"
+python -m unittest discover -s tests -p "test_settings_browser.py" -v
+python -m unittest discover -s tests -p "test_browser_run.py" -v
+```
+
+前半（エディター診断）90秒、後半（設定、ルール整理、実行タブ、デモなど）110秒の既存の親期限は別々に適用します。親で打ち切った場合は捕捉済みの標準出力・標準エラーと後始末までの実時間を記録し、テストが起動したプロセスだけ回収します。Chromium本体の終了通知が遅い場合も、親が所有するプロセス用Job内で終了を検証し、確認できなければ失敗とします。ナビゲーションや画面の検証が失敗した場合は、終了できても合格にしません。#263の当初の110秒超過と、後に報告されたルール下書き選択待ちが同じ原因とは断定しません。
+
+Windows の回帰テストは `conversation-editor`（会話と途中追加指示、HTTP エディタと .NET 9 診断、並行 Run、参考資料の追従）、Node.js の VM 回帰とその他のテストを含む `remaining`、実ブラウザーの `chromium` の3分割を両 Python 版で独立した Windows ランナー上で並行実行します。各テスト ID は一つの分割に入り、必須 UI テストは担当する分割で成功しなければなりません。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python バージョンごとの ID 集合、skip 理由、最長ジョブの実測を比較し、ジョブ名を変える場合は `.github/codex/issue.py` も更新します。

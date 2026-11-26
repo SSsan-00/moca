@@ -8,7 +8,7 @@ import unittest
 from time import perf_counter
 
 
-WINDOWS_SHARDS = ("conversation-editor", "remaining")
+WINDOWS_SHARDS = ("conversation-editor", "remaining", "chromium")
 CONVERSATION_EDITOR_MODULES = {
     "test_dashboard_editor",
     "test_editor_semantic_project",
@@ -19,6 +19,7 @@ CONVERSATION_EDITOR_MODULES = {
 }
 
 REQUIRED_UI = {
+    "test_browser_run.BrowserRunnerTests.test_rule_draft_waits_and_diagnostics",
     "test_settings_browser.SettingsBrowserTests.test_settings_round_trip_in_chromium",
     "test_editor_run_isolation.EditorRunIsolationTests.test_same_file_in_multiple_runs_with_delayed_responses",
     "test_parallel_demo.ParallelDemoTests.test_five_workers_fifo_resume_and_cancellation",
@@ -107,13 +108,25 @@ def test_cases(suite):
             yield test
 
 
+def shard_for(test_id):
+    module = test_id.partition(".")[0]
+    if module == "test_settings_browser":
+        return "chromium"
+    return "conversation-editor" if module in CONVERSATION_EDITOR_MODULES else "remaining"
+
+
+def required_ui_for(shard):
+    return {
+        test_id for test_id in REQUIRED_UI
+        if shard == "full" or shard_for(test_id) == shard
+    }
+
+
 def windows_shards(tests):
     """全テストを発見順に分け、重複、欠落、空の分割を拒否する。"""
     groups = {name: [] for name in WINDOWS_SHARDS}
     for test in tests:
-        module = test.id().partition(".")[0]
-        name = "conversation-editor" if module in CONVERSATION_EDITOR_MODULES else "remaining"
-        groups[name].append(test)
+        groups[shard_for(test.id())].append(test)
     discovered = Counter(test.id() for test in tests)
     scheduled = Counter(test.id() for group in groups.values() for test in group)
     if scheduled != discovered or any(count != 1 for count in scheduled.values()) or not all(groups.values()):
@@ -146,16 +159,16 @@ def main():
             print(f"TEST_TIME {seconds:.3f} {name}")
     print(f"Discovered: {discovered}; ran: {result.testsRun}; passed: {len(result.passed)}; "
           f"failed: {len(result.failures)}; errors: {len(result.errors)}; skipped: {len(result.skipped)}")
-    missing_ui = REQUIRED_UI - result.passed if args.require_ui else set()
+    missing_ui = required_ui_for(args.shard) - result.passed if args.require_ui else set()
     if missing_ui:
         print("Required UI tests did not pass: " + ", ".join(sorted(missing_ui)))
-    missing_models = REQUIRED_RUN_MODELS - result.passed if args.shard != "conversation-editor" else set()
+    missing_models = REQUIRED_RUN_MODELS - result.passed if args.shard in {"full", "remaining"} else set()
     if missing_models:
         print("Required Run state checks did not pass: " + ", ".join(sorted(missing_models)))
-    missing_recovery = REQUIRED_WINDOWS_RECOVERY - result.passed if args.shard != "conversation-editor" else set()
+    missing_recovery = REQUIRED_WINDOWS_RECOVERY - result.passed if args.shard in {"full", "remaining"} else set()
     if missing_recovery:
         print("Required Windows recovery checks did not pass: " + ", ".join(sorted(missing_recovery)))
-    missing_saved_state = REQUIRED_SAVED_STATE - result.passed if args.shard != "conversation-editor" else set()
+    missing_saved_state = REQUIRED_SAVED_STATE - result.passed if args.shard in {"full", "remaining"} else set()
     if missing_saved_state:
         print("Required saved state checks did not pass: " + ", ".join(sorted(missing_saved_state)))
     return 0 if result.wasSuccessful() and not (missing_ui or missing_models or missing_recovery or missing_saved_state) else 1

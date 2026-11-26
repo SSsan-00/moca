@@ -31,6 +31,8 @@ export function beginPhase(name) {
 }
 export async function eventually(read, label, attempts = 100) {
   const start = performance.now();
+  const stalled = setTimeout(() => trace("still waiting in " + phase + ": " + label), 2_000);
+  stalled.unref();
   try {
     for (let index = 0; index < attempts; index++) {
       polls++;
@@ -38,8 +40,9 @@ export async function eventually(read, label, attempts = 100) {
       if (value) return value;
       await pause(100);
     }
-    throw new Error("Timed out: " + label);
+    throw new Error("Timed out: " + label + " (waited " + seconds(performance.now() - start) + ")");
   } finally {
+    clearTimeout(stalled);
     conditionMs += performance.now() - start;
   }
 }
@@ -80,6 +83,17 @@ async function connectPage(debuggerUrl, deadline) {
   });
   await cdp("Runtime.enable", {}, Math.min(10_000, Math.max(1, deadline - performance.now())));
   await cdp("Page.enable", {}, Math.max(1, deadline - performance.now()));
+  // A DevTools connection can open while the initial renderer is still starting.
+  // Require a reply from the initial document before using this target.
+  while (performance.now() < deadline) {
+    const result = await cdp("Runtime.evaluate", {
+      expression: "location.href === 'about:blank' && document.readyState === 'complete'",
+      returnByValue: true,
+    }, Math.min(10_000, Math.max(1, deadline - performance.now())));
+    if (result.result?.value === true) return;
+    await pause(100);
+  }
+  throw new Error("Initial Chromium document did not become ready");
 }
 
 function waitForExit(chrome, timeout) {
@@ -94,7 +108,7 @@ function waitForExit(chrome, timeout) {
   });
 }
 
-async function closeBrowser(chrome) {
+async function closeBrowser(chrome, parentJobOwnsChildren = false) {
   try {
     if (socket?.readyState === WebSocket.OPEN) {
       // Browser.close may close DevTools before replying. Wait for the process, not a CDP reply.
@@ -107,7 +121,12 @@ async function closeBrowser(chrome) {
     if (!await waitForExit(chrome, 1_500)) {
       trace("Chromium did not exit after close; stopping the test process");
       chrome.kill();
-      if (!await waitForExit(chrome, 1_500)) throw new Error("Chromium did not exit after termination");
+      if (!await waitForExit(chrome, 1_500)) {
+        if (!parentJobOwnsChildren) throw new Error("Chromium did not exit after termination");
+        trace("Chromium still present; the parent Windows Job will verify termination");
+        chrome.stderr.destroy();
+        chrome.unref();
+      }
     }
   } finally {
     socket?.close();
@@ -169,28 +188,29 @@ export async function startBrowser(executable, profile) {
   throw new Error(`Chromium did not start:\n${failures.join("\n")}`);
 }
 
-function pageLoaded(connection) {
-  let dispose;
+export async function navigate(method, params) {
+  const connection = socket;
+  const observed = new Set();
+  const navigationEvents = new Set(["Page.frameStartedLoading", "Page.frameNavigated", "Page.loadEventFired"]);
+  let receive, timer, acknowledged = false;
   const loaded = new Promise((resolve, reject) => {
-    const receive = event => {
-      if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
+    receive = event => {
+      const {method} = JSON.parse(event.data);
+      if (navigationEvents.has(method)) observed.add(method);
+      if (method === "Page.loadEventFired") resolve();
     };
-    const timer = setTimeout(() => reject(new Error("Browser page did not finish loading")), 15_000);
-    dispose = () => {
-      clearTimeout(timer);
-      connection.removeEventListener("message", receive);
-    };
+    timer = setTimeout(() => reject(new Error("Browser page did not finish loading")), 15_000);
     connection.addEventListener("message", receive);
   });
-  return {loaded, dispose};
-}
-
-export async function navigate(method, params) {
-  const {loaded, dispose} = pageLoaded(socket);
   try {
-    await Promise.all([loaded, cdp(method, params)]);
+    await Promise.all([loaded, cdp(method, params).then(() => { acknowledged = true; })]);
+  } catch (error) {
+    trace("navigation: command acknowledged=" + acknowledged + "; socket readyState=" + connection.readyState
+      + "; events=" + ([...observed].join(",") || "none"));
+    throw error;
   } finally {
-    dispose();
+    clearTimeout(timer);
+    connection.removeEventListener("message", receive);
   }
 }
 export async function evaluate(expression, userGesture = false) {
@@ -198,7 +218,7 @@ export async function evaluate(expression, userGesture = false) {
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
   return result.result.value;
 }
-export const wait = (expression, attempts) => eventually(async () => {
+export const wait = (expression, attempts, label = expression) => eventually(async () => {
   try {
     return await evaluate(expression);
   } catch (error) {
@@ -206,7 +226,7 @@ export const wait = (expression, attempts) => eventually(async () => {
     if (!/Execution context was destroyed|Cannot find context|Inspected target navigated or closed/.test(error.message)) throw error;
     return false;
   }
-}, expression, attempts);
+}, label, attempts);
 
 export function reportBrowserFailure(error) {
   trace("failed " + phase + "; last completed: " + completed);
@@ -217,6 +237,6 @@ export async function finishBrowser(chrome, success) {
   if (success) finishPhase();
   phase = null;
   beginPhase("Chromium teardown");
-  await closeBrowser(chrome);
+  await closeBrowser(chrome, process.platform === "win32" && process.env.MOCA_BROWSER_JOB_OWNS_CHILDREN === "1");
   finishPhase();
 }
