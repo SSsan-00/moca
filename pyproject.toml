@@ -19,7 +19,7 @@ php-to-csharp-harness = "migration_harness.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"migration_harness.verification" = ["roslyn_program.cs", "roslyn_semantic.cs", "roslyn_keyword_conditions.cs", "roslyn_keyword_binding.cs"]
+"migration_harness.verification" = ["roslyn_program.cs", "roslyn_semantic.cs", "roslyn_keyword_conditions.cs", "roslyn_keyword_binding.cs", "roslyn_static_evidence.cs"]
 # ダッシュボードのJavaScriptは、インストール後もPythonモジュールから配信する。
 "migration_harness.web" = ["dashboard.js", "dashboard_editor.js", "dashboard_runs.js", "dashboard_settings.js", "dashboard_log_presentation.js", "dashboard_chat.js", "dashboard_rule_workspace.js", "monaco/*.js", "monaco/*.css", "monaco/LICENSE", "monaco/ThirdPartyNotices.txt"]
 

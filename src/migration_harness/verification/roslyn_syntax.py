@@ -17,7 +17,10 @@ from .roslyn_context import (
     ProjectContextUnavailable, editor_content_proof, editor_project_context, editor_project_snapshot,
 )
 
-_SCRIPTS = [Path(__file__).with_name(name) for name in ("roslyn_program.cs", "roslyn_semantic.cs", "roslyn_keyword_conditions.cs", "roslyn_keyword_binding.cs")]
+_SCRIPTS = [Path(__file__).with_name(name) for name in (
+    "roslyn_program.cs", "roslyn_semantic.cs", "roslyn_keyword_conditions.cs", "roslyn_keyword_binding.cs",
+    "roslyn_static_evidence.cs",
+)]
 _TOOL_LOCK = threading.Lock()
 _EDITOR_SLOTS = threading.BoundedSemaphore(2)
 _SEMANTIC_SLOT = threading.BoundedSemaphore(1)
@@ -183,6 +186,82 @@ def _run_editor(command, mode, payload, timeout, *, worker=None):
     return subprocess.run([*command, mode], input=payload, cwd=Path(command[-1]).parent, capture_output=True,
                           timeout=timeout, check=False, env=_environment(),
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+_STATIC_EVIDENCE_REASONS = frozenset({
+    "ok", "unsupported_file_type", "empty_target", "razor_parse_errors", "project_preprocessor_required",
+    "syntax_errors", "razor_context_unverified", "fact_limit",
+})
+_STATIC_EVIDENCE_KINDS = frozenset({"method", "type", "property", "const", "literal"})
+_SOURCE_LINE_BREAK = re.compile(r"\r\n|[\r\n\x85\u2028\u2029]")
+
+
+def _decode_static_evidence(completed, targets):
+    if completed.returncode or len(completed.stdout) > 4 * 1024 * 1024:
+        raise ValueError("Invalid static evidence response")
+    reports = json.loads(completed.stdout)
+    if not isinstance(reports, list) or len(reports) != len(targets):
+        raise ValueError("Invalid static evidence report count")
+    result = []
+    total = 0
+    for index, (report, target) in enumerate(zip(reports, targets, strict=True)):
+        if (not isinstance(report, dict) or set(report) != {"index", "path", "complete", "reason", "facts"}
+                or type(report["index"]) is not int or report["index"] != index or report["path"] != target["Path"]
+                or type(report["complete"]) is not bool or report["reason"] not in _STATIC_EVIDENCE_REASONS
+                or (report["reason"] == "ok") != report["complete"] or not isinstance(report["facts"], list)):
+            raise ValueError("Invalid static evidence report")
+        facts = report["facts"]
+        total += len(facts)
+        if total > 4_000:
+            raise ValueError("Too many static evidence facts")
+        maximum = 1 + sum(1 for _ in _SOURCE_LINE_BREAK.finditer(target["Text"]))
+        for fact in facts:
+            if (not isinstance(fact, dict) or set(fact) != {"kind", "value", "start_line", "end_line"}
+                    or fact["kind"] not in _STATIC_EVIDENCE_KINDS or not isinstance(fact["value"], str)
+                    or len(fact["value"]) > 4_096 or (fact["kind"] != "literal" and not fact["value"])
+                    or type(fact["start_line"]) is not int or type(fact["end_line"]) is not int
+                    or not 1 <= fact["start_line"] <= fact["end_line"] <= maximum):
+                raise ValueError("Invalid static evidence fact")
+        result.append({key: report[key] for key in ("complete", "reason", "facts")})
+    return result
+
+
+def collect_static_evidence(targets: list[dict[str, str]]) -> list[dict]:
+    """Read inline source only; complete covers explicit syntax, not runtime behavior."""
+    if not isinstance(targets, list) or any(
+        not isinstance(target, dict) or set(target) != {"Path", "Text"}
+        or not isinstance(target["Path"], str) or not target["Path"] or "\0" in target["Path"]
+        or not isinstance(target["Text"], str) for target in targets
+    ):
+        raise ValueError("Static evidence requires a path and inline source text for each target")
+    if not targets:
+        return []
+
+    def unavailable(reason):
+        return [{"complete": False, "reason": reason, "facts": []} for _ in targets]
+
+    if len(targets) > 64 or sum(len(target["Text"]) + len(target["Path"]) for target in targets) > 8 * 1024 * 1024:
+        return unavailable("input_limit")
+    try:
+        payload = json.dumps(targets, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except UnicodeError:
+        return unavailable("invalid_unicode")
+    if len(payload) > 16 * 1024 * 1024:
+        return unavailable("input_limit")
+    try:
+        check_cancelled()
+        completed = _run_editor(_prepare_tool(), "--migration-static-evidence", payload, 10)
+        check_cancelled()
+    except subprocess.TimeoutExpired:
+        return unavailable("timeout")
+    except ConfiguredProcessIncomplete:
+        return unavailable("analyzer_stop_unconfirmed")
+    except (OSError, ValueError):
+        return unavailable("analyzer_unavailable")
+    try:
+        return _decode_static_evidence(completed, targets)
+    except (TypeError, ValueError):
+        return unavailable("analyzer_output")
 
 
 def editor_context_revision(

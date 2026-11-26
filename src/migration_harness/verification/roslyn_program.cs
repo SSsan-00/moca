@@ -29,6 +29,7 @@ internal static partial class Program
         Console.OutputEncoding = new UTF8Encoding(false);
         Console.InputEncoding = new UTF8Encoding(false, true);
         if (args[0] == "--escaped-keywords") return ReportEscapedKeywords(Console.In.ReadToEnd());
+        if (args[0] == "--migration-static-evidence") return ReportStaticEvidence(Console.In.ReadToEnd());
         if (args[0] == "--semantic") return RunSemantic(Console.In.ReadToEnd());
         if (args[0] == "--semantic-stream")
         {
