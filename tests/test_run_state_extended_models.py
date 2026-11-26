@@ -163,7 +163,10 @@ IGNORED_RESULTS = ("foreign reply", "old operation reply", "wrong version reply"
 def operation_contract(before, action, after, phase):
     if action in IGNORED_RESULTS and after != before:
         return f"{phase}-REJECTED-STATE-CHANGED"
-    if action == "begin" and (not before.pending or before.pending.stage != Stage.QUEUED):
+    if action == "begin" and (
+        not before.pending or before.pending.stage != Stage.QUEUED
+        or after.pending != Pending(before.pending.identity, Stage.RUNNING)
+    ):
         return f"{phase}-START-UNACCEPTED"
     if action in ("receive success", "receive failure") and (
         not before.pending or before.pending.stage != Stage.RUNNING
@@ -176,12 +179,15 @@ def operation_contract(before, action, after, phase):
 def build_contract(before, action, after):
     if violation := operation_contract(before, action, after, "BUILD"):
         return violation
+    if action == "accept build" and (before.pending is not None or after.issued != before.issued + 1
+            or after.pending != Pending(Evidence(0, after.issued, before.version))):
+        return "BUILD-WRONG-IDENTITY"
     if after.saved and after.saved != before.saved:
         if before.pending is None or before.pending.stage != Stage.RECEIVED or not before.pending.success or not before.storage:
             return "BUILD-UNSAVED-RESULT"
         if after.saved != before.pending.identity or after.saved.version != after.version:
             return "BUILD-STALE-RESULT"
-    if after.complete and (not after.saved or after.saved.version != after.version):
+    if after.complete and after.saved != Evidence(0, after.issued, after.version):
         return "BUILD-STALE-COMPLETE"
     return None
 
@@ -231,6 +237,9 @@ def check_actions(state):
 def check_contract(before, action, after):
     if violation := operation_contract(before, action, after, "CHECK"):
         return violation
+    if action == "accept check" and (before.pending is not None or after.issued != before.issued + 1
+            or after.pending != Pending(Evidence(0, after.issued, before.version, before.build.operation))):
+        return "CHECK-WRONG-IDENTITY"
     for success, new, old in ((True, after.saved, before.saved), (False, after.failed, before.failed)):
         if new and new != old:
             if before.pending is None or before.pending.stage != Stage.RECEIVED or not before.storage:
@@ -399,6 +408,11 @@ class ExtendedRunStateModelsTests(unittest.TestCase):
                                        s.pending, stage=Stage.RECEIVED, success=True)))
                                    if s.pending and s.pending.stage == Stage.QUEUED else None,
                                    "BUILD-REPLY-BEFORE-START", ("accept build", "receive success"))
+        self.assert_counterexample(BuildFlow(), build_actions, build_contract,
+                                   lambda s: ("begin", replace(s, pending=Pending(
+                                       replace(s.pending.identity, operation=42), Stage.RUNNING)))
+                                   if s.pending and s.pending.stage == Stage.QUEUED else None,
+                                   "BUILD-START-UNACCEPTED", ("accept build", "begin"))
 
     def test_second_check_on_same_build_rejects_late_results_and_needs_valid_approval(self):
         self.check_model(CheckFlow(), check_actions, check_contract,
