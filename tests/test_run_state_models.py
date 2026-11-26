@@ -127,6 +127,10 @@ def slot_invariant(before, action, state):
             return "RUN-OWNER"
         if phase == Run.BLOCK and state.evidence[run] == Fence.NO:
             return "RUN-DURABLE-FENCE"
+        if action == f"unknown exit {run}" and phase != Run.BLOCK:
+            return "RUN-FENCE-NOT-ENTERED"
+        if action == "restart" and before.runs[run] in (Run.WORK, Run.STOP, Run.OUTPUT, Run.BLOCK) and phase != Run.BLOCK:
+            return "RUN-STARTED-AFTER-RESTART"
         if before.runs[run] == Run.BLOCK and phase != Run.BLOCK and action != f"explicit verified recovery {run}":
             return "RUN-UNCONFIRMED"
         if action == f"start {run}" and (before.runs[run] != Run.WAIT or not before.storage_available):
@@ -367,6 +371,18 @@ class RunStateModelsTests(unittest.TestCase):
             explore(SlotModel(), mutated, slot_invariant)
         self.assertEqual(problem.exception.condition, "RUN-UNCONFIRMED")
         self.assertEqual(problem.exception.trace, ("start 0", "restart", "adopt 0"))
+
+    def test_shortest_counterexample_for_missing_exit_fence(self):
+        def mutated(state):
+            for action, after in slot_actions(state):
+                if action == "unknown exit 0":
+                    after = after.change(0, Run.WAIT, evidence=Fence.NO)
+                yield action, after
+
+        with self.assertRaises(ModelFailure) as problem:
+            explore(SlotModel(), mutated, slot_invariant)
+        self.assertEqual(problem.exception.condition, "RUN-FENCE-NOT-ENTERED")
+        self.assertEqual(problem.exception.trace, ("start 0", "stop 0", "unknown exit 0"))
 
     def test_shortest_counterexample_for_stale_success(self):
         def mutated(state):
