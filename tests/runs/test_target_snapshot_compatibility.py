@@ -17,24 +17,19 @@ def digest(value):
 
 
 class TargetSnapshotCompatibilityTests(unittest.TestCase):
-    def test_legacy_numbered_files_follow_the_manifest_not_reserialized_run_order(self):
-        # ddb72be / 375687a persisted optional missing entries in a versionless manifest.
+    def test_numbered_files_follow_writer_manifest_not_reserialized_run_order(self):
         with TemporaryDirectory() as folder:
             root = Path(folder).resolve()
-            identifier = "stopped-repair-" + "1" * 32
-            snapshot = root / identifier
-            snapshot.mkdir()
-            targets = {"Z.cs": digest(b"unfinished Z"), "Mid.cs": None, "A.cs": digest(b"edited A")}
-            legacy = {"snapshot": identifier, "base": {**targets, "Unchanged.cs": digest(b"unchanged")},
-                      "targets": targets, "workspace_unchanged": True}
-            manifest = snapshot / "draft.json"
-            manifest.write_text(json.dumps(legacy), encoding="utf-8")
-            (snapshot / "0.draft").write_bytes(b"unfinished Z")
-            (snapshot / "2.draft").write_bytes(b"edited A")
-            from_run = {**json.loads(json.dumps(legacy, sort_keys=True)), "junie_memos": []}
+            paths = {name: root / name for name in ("Z.cs", "Mid.cs", "A.cs")}
+            paths["Z.cs"].write_bytes(b"unfinished Z")
+            paths["A.cs"].write_bytes(b"edited A")
+            base = {**{name: None for name in paths}, "Unchanged.cs": digest(b"unchanged")}
+            draft = target_snapshots.save_target_snapshot(root, paths, base, workspace_unchanged=True)
+            manifest = root / draft["snapshot"] / "draft.json"
+            from_run = {**json.loads(json.dumps(draft, sort_keys=True)), "junie_memos": []}
             before = manifest.read_bytes()
             files = target_snapshots.verified_snapshot_files(root, from_run)
-            self.assertEqual(list(files), list(targets))
+            self.assertEqual(list(files), list(paths))
             self.assertEqual(files["Z.cs"].read_bytes(), b"unfinished Z")
             self.assertFalse(files["Mid.cs"].exists())
             self.assertEqual(files["A.cs"].read_bytes(), b"edited A")
@@ -83,7 +78,7 @@ class TargetSnapshotCompatibilityTests(unittest.TestCase):
 
 
 class SavedProofRecoveryTests(SavedRunFixture):
-    def test_legacy_agent_draft_is_preserved_and_malformed_draft_stops_without_sync(self):
+    def test_working_repair_draft_is_preserved_and_malformed_draft_stops_without_sync(self):
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
         draft = agent / self.target.name

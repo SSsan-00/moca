@@ -24,7 +24,7 @@ Python製のローカルハーネスが入力、作業場所、工程、レビ�
 
 ## 実行順序と再開
 
-モデルと推論の強さは準備時の `junie_model`・`junie_effort` としてRunに保存します。移行・ルール適用判定・自動修正・追加指示・比較アンカー生成・再開ではRunの指定を使います。既定値も未指定として保存し、後から変更した設定を混ぜません。旧版Runで `junie_model` がない場合は現在のモデル設定を使い、`junie_effort` がない場合は推論の強さを指定しません。別名・既定モデルが指す実モデルはJunie側の設定に従います。
+モデルと推論の強さは準備時の `junie_model`・`junie_effort` としてRunに保存します。移行・ルール適用判定・自動修正・追加指示・比較アンカー生成・再開ではRunの指定を使います。既定値も未指定として保存し、後から変更した設定を混ぜません。記録が欠けて選択を特定できないRunには、現在の設定を補いません。別名・既定モデルが指す実モデルはJunie側の設定に従います。
 
 1. **準備**。新しいUUIDのRunを作り、アプリルートで `before_prepare` を実行します。入力を検証し、カプセルの作成が成功してから基準リビジョンのdetached worktreeを作成し、`after_prepare` を実行します。worktree作成後のスクリプトはworktreeで実行します。
 2. **移行**。未完了の `after_prepare` があれば再開し、`before_migration` を実行して、必要に応じて詳細ルールの適用判定を行います。Junieをカプセルごとに起動し、保存済みの移行先と今回の担当範囲を渡します。完了トークンと編集内容を検証し、worktreeに反映します。
@@ -155,7 +155,7 @@ src/migration_harness の直下に CLI・設定・工程制御と共通処理を
 回帰テストは `python -m pip install -e .` の後に `python -m unittest discover -s tests -t . -v` で実行します。入力規模、ルール、再開・修正の検証シナリオは [evaluations/](evaluations/) にあります。
 
 Runの安全条件は [有限状態モデル検査](docs/run-state-models.md) でも確認します。モデルはPython 3.11の標準ライブラリだけで実行でき、製品への追加インストールは不要です。
-保存形式・旧Runの互換条件・記録破損時の復旧は [Runの保存形式と復旧](docs/persisted-run-compatibility.md) を参照。
+現在の保存形式・証跡不足時の再検証・再開できない記録からの手動引継ぎは [Runの保存形式と復旧](docs/persisted-run-compatibility.md) を参照。
 
 ファイル保存の境界条件は `test_worktree_targets.py`、移行・修正・反映途中の復旧は `test_multiple_targets.py`、チェッカーの解析と再検証は `test_checker_prefixes.py`・`test_checker_resume_review_dashboard.py`、画面からの編集と合流は `test_dashboard_editor.py` で確認します。Windows固有の改行変換と `cmd.exe` のテストは、Windows以外ではスキップします。
 

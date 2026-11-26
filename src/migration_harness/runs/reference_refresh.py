@@ -22,6 +22,7 @@ from ..files import has_completion_record, safe_target
 from ..junie import junie_cli, migration_session
 from ..junie.migration_session import task_guidelines, unlisted_workspace_files
 from ..rules import detail_selection
+from ..saved_state import content_hash, saved_object
 from .editor_queue import (
     editor_target, editor_text, finish_applied_editor_edit, merge_edit, record_operator_edit,
 )
@@ -351,8 +352,7 @@ def _stage_reference_proposal(run_path, worktree, targets, proposal, baseline, b
 def _check_reference_adoption_basis(worktree, targets, capsule, pending, *, require_current):
     active = target_context_snapshot(capsule, pending["snapshot"])
     _, captured = target_context_inventory(active)
-    conflict = pending.get("conflict", {})
-    expected = pending["adoption"].get("reference_hashes", conflict.get("reference_hashes", captured))
+    expected = pending["adoption"]["reference_hashes"]
     if (captured != expected or any(target_hash(safe_target(active, Path("files") / name)) != digest
                                     for name, digest in captured.items())):
         raise ValueError("反映に使った参考資料の保存版が一致しません。" + _REFERENCE_RESOLUTION_GUIDANCE)
@@ -361,24 +361,50 @@ def _check_reference_adoption_basis(worktree, targets, capsule, pending, *, requ
                          + _REFERENCE_RESOLUTION_GUIDANCE)
 
 
+def validate_saved_reference_adoption(record, targets):
+    pending = record.get("reference_refresh")
+    if not isinstance(pending, dict) or "adoption" not in pending:
+        return
+    adoption = pending["adoption"]
+    label = "run.json の参考資料の反映記録"
+    if not isinstance(adoption, dict):
+        raise ValueError(f"{label} が壊れています。")
+    names = {path.as_posix() for path in targets}
+    for field in ("before", "after", "draft"):
+        values = adoption.get(field)
+        if (not isinstance(values, dict) or values.keys() != names
+                or not all(content_hash(value, missing=field != "after") for value in values.values())):
+            raise ValueError(f"{label} の {field} で対象版を確認できません。")
+    refs, edits = adoption.get("reference_hashes"), adoption.get("editor_edits")
+    if not isinstance(refs, dict) or not all(content_hash(value) for value in refs.values()):
+        raise ValueError(f"{label} の reference_hashes が不正です。")
+    if (not isinstance(edits, dict) or not edits.keys() <= names
+            or not all(content_hash(value) for value in edits.values())):
+        raise ValueError(f"{label} の editor_edits が不正です。")
+    if bool(edits) != ("operator_edits_sha256" in adoption) or (
+            edits and not content_hash(adoption["operator_edits_sha256"])):
+        raise ValueError(f"{label} の operator_edits_sha256 で手修正履歴を確認できません。")
+
+
 def _reference_operator_history(run_path, adoption):
-    if "operator_edits_sha256" not in adoption:
-        return None
     data = safe_target(run_path, Path(adoption["output"]) / "operator-edits.json").read_bytes()
     if hashlib.sha256(data).hexdigest() != adoption["operator_edits_sha256"]:
         raise ValueError("参考資料の反映に使った手修正の履歴が一致しません。")
-    return json.loads(data)
+    history = saved_object(data.decode("utf-8"), "operator-edits.json")
+    if history.keys() - adoption["editor_edits"].keys() or any(
+        not isinstance(diffs, list) or not all(isinstance(diff, str) for diff in diffs)
+        for diffs in history.values()
+    ):
+        raise ValueError("operator-edits.json の手修正履歴が反映記録と一致しません。")
+    return history
 
 
 def _finish_reference_editor_edits(queue, adoption, edit_versions, history):
-    if history is not None:
-        for name, diffs in history.items():
-            queue.setdefault("operator_edits", {}).setdefault(name, []).extend(diffs)
+    for name, diffs in history.items():
+        queue.setdefault("operator_edits", {}).setdefault(name, []).extend(diffs)
     for name, version in adoption["editor_edits"].items():
         if edit_versions.get(name) == version:
-            edit = finish_applied_editor_edit(queue, name, adoption["after"][name])
-            if history is None:
-                record_operator_edit(queue, name, edit["base"], edit["content"])
+            finish_applied_editor_edit(queue, name, adoption["after"][name])
     queue["last_reference_adoption"] = adoption["output"]
 
 
@@ -387,8 +413,8 @@ def _complete_reference_adoption(run_path, worktree, canonical, targets, capsule
     before, after = adoption["before"], adoption["after"]
     journal = record.get("target_apply_pending", {})
     conflict = pending.get("conflict", {})
-    planned_draft = adoption.get("draft") or conflict.get("draft") or before
-    adopted_edits = adoption.get("editor_edits", {})
+    planned_draft = adoption["draft"]
+    adopted_edits = adoption["editor_edits"]
     record_path = run_path / "run.json"
     with editor_queue_store.editor_queue(run_path) as queue, worktree_source_lock(worktree):
         current = _reference_target_versions(worktree, targets)

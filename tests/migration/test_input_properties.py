@@ -257,12 +257,15 @@ class InputProperties(unittest.TestCase):
                     self.assertEqual(checker_output.checker_response_status(log), "checker_needs_review")
                     self.assertEqual(log.read_bytes(), raw)
 
-    def test_versionless_run_reads_valid_old_fields_and_never_rewrites_corruption(self):
+    def test_versionless_run_reads_current_fields_and_never_rewrites_corruption(self):
         from migration_harness.runs.run_records import read_run_record
 
         path = self.root / "run.json"
         for seed, rng in samples(314_500):
-            record = {"status": "prepared", "completed_capsules": rng.randrange(6), "notes": phrase(rng, 4)}
+            record = {"run_id": "01bd23d8-e578-4783-84a2-2f1b8aefb909", "project_root": str(self.root),
+                      "unit_id": "sample", "status": "junie_running", "target": "Page.cs", "targets": ["Page.cs"],
+                      "context_capsules": 6, "completed_capsules": rng.randrange(6), "notes": phrase(rng, 4),
+                      "junie_model": None, "junie_effort": None}
             raw = json.dumps(record, ensure_ascii=False).encode("utf-8")
             wrong_type = {**record, "completed_capsules": str(record["completed_capsules"])}
             for variant, data, message in (

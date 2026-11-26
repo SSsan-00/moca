@@ -147,6 +147,7 @@ def _resume_with_junie(
 ) -> dict[str, Any]:
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = run_records.load_saved_run(config, run_id)
+    reference_refresh.validate_saved_reference_adoption(record, harness_config.target_paths(unit))
     block_unknown_script(record)
     if record.get("migration_stop_unconfirmed"):
         raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
