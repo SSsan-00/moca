@@ -187,17 +187,14 @@ class CheckerAdvisoryTests(unittest.TestCase):
                         self.assertEqual(result["status"], "unavailable")
                         self.assertNotIn("verdict", result)
 
-    def test_old_run_uses_only_saved_effort_for_free_output_advisory(self):
+    def test_free_output_advisory_uses_explicit_saved_settings_and_rejects_older_runs(self):
         with TemporaryDirectory() as folder:
             run = Path(folder)
             (run / "checker.log").write_text("One diagnostic.\n", encoding="utf-8")
             config = {"junie_model": "current-model", "checker_review_free_output": True}
             for current, saved, model, effort in (
-                ("high", {"junie_model": "saved-model"}, "saved-model", None),
-                ("low", {"junie_model": "saved-model"}, "saved-model", None),
-                ("low", {}, "current-model", None),
-                ("high", {"junie_effort": None}, "current-model", None),
-                ("low", {"junie_effort": "high"}, "current-model", "high"),
+                ("high", {"junie_model": "saved-model", "junie_effort": None}, "saved-model", None),
+                ("low", {"junie_model": "saved-model", "junie_effort": "high"}, "saved-model", "high"),
             ):
                 with self.subTest(current=current, saved=saved):
                     config["junie_effort"] = current
@@ -223,6 +220,18 @@ class CheckerAdvisoryTests(unittest.TestCase):
                                          (checked["status"], checked["reason"]))
                     else:
                         self.assertEqual(("reported", "informational"), (checked["status"], checked["verdict"]))
+
+            for old in ({}, {"junie_model": "saved-model"}, {"junie_effort": None}):
+                with self.subTest(old=old), patch.object(junie_cli, "_launch_process") as launch:
+                    path = run / "run.json"
+                    content = json.dumps(old).encode()
+                    path.write_bytes(content)
+                    with self.assertRaisesRegex(ValueError, "設定・進捗"):
+                        checker_cycle.review_free_checker_output(
+                            config, {"run_path": str(run)}, {"checker_exit_code": 0, **old},
+                        )
+                    self.assertEqual(content, path.read_bytes())
+                    launch.assert_not_called()
 
     def test_before_prepare_advisory_keeps_configured_effort(self):
         with TemporaryDirectory() as folder:
