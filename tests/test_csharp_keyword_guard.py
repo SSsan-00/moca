@@ -237,7 +237,10 @@ class CSharpKeywordGuardTests(unittest.TestCase):
 
     def test_inconsistent_compiler_findings_stop_before_adoption(self):
         no_findings = {"declarations": [], "uncheckedLine": None}
-        occurrence = {"line": 1, "column": 8, "text": "@event", "value": "event", "kind": "VariableDeclarator"}
+        occurrence = {
+            "line": 1, "column": 8, "text": "@event", "value": "event",
+            "bindings": ['["VariableDeclarator","type:Page:0","variable:event"]'], "retainers": [""],
+        }
         reports = [
             (no_findings, {**no_findings, "declarations": [{**occurrence, "line": 9}]}),
             (no_findings, {**no_findings, "declarations": [{**occurrence, "column": 9}]}),
@@ -257,3 +260,115 @@ class CSharpKeywordGuardTests(unittest.TestCase):
             ):
                 self.apply_pair("Page.cs", "class Page {}", "class Page {\u2028    int @event; }",
                                 r"Page.cs:.*予約語の確認結果がソースと一致しない")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_new_declarations_in_other_types_are_not_existing_declarations(self):
+        before = "class A { int @event = 1; }\nclass B {}"
+        after = "class A { int oldValue = 1; }\nclass B { int @event = 1; }"
+        self.apply_pair("Page.cs", before, after, r"Page.cs:2:.*@event")
+        self.apply_pair(
+            "Page.cs",
+            "class A {\n    int @event = 1;\n}\nclass B {}",
+            "class A {}\nclass B {\n    int @event = 1;\n}",
+            r"Page.cs:3:.*@event",
+        )
+        self.apply_pair("Page.cs", before, "class A {\n    int @event = 2;\n}\nclass B {}")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_local_declarations_in_other_methods_overloads_and_blocks_are_new(self):
+        cases = (
+            (
+                "void A() { int @event = 1; } void B() { }",
+                "void A() { int original = 1; } void B() { int @event = 1; }",
+            ),
+            (
+                "void A(int x) { int @event = 1; } void A(string x) { }",
+                "void A(int x) { int original = 1; } void A(string x) { int @event = 1; }",
+            ),
+            (
+                "void A() { { int @event = 1; } { } }",
+                "void A() { { int original = 1; } { int @event = 1; } }",
+            ),
+            (
+                "void A(bool first) { if (first) { int @event = 1; } else { } }",
+                "void A(bool first) { if (first) { int original = 1; } else { int @event = 1; } }",
+            ),
+        )
+        for before, after in cases:
+            with self.subTest(before=before):
+                self.apply_pair("Page.cs", f"class Page {{ {before} }}", f"class Page {{ {after} }}",
+                                r"Page.cs:1:.*@event")
+        before = r"class Page { void A(int value) { { int @ev\u0065nt = 1; } } }"
+        after = "class Page {\n void A(int number) { { int @event = 2; } }\n}"
+        self.apply_pair("Page.cs", before, after)
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_existing_razor_namespace_and_conditional_scopes_are_not_interchangeable(self):
+        before = "@functions {\nclass A { int @event = 1; }\nclass B {}\n}\n"
+        after = "@functions {\nclass A { int normal = 1; }\nclass B { int @event = 1; }\n}\n"
+        self.apply_pair("Page.cshtml", before, after, r"Page.cshtml:3:.*@event")
+        self.apply_pair("Page.cshtml", before, before.replace("= 1", "= 2"))
+
+        before = "namespace Outer.Inner; class A { int @event; }"
+        self.apply_pair("Page.cs", before, "namespace Outer { namespace Inner { class A { int @event; } } }")
+        self.apply_pair("Page.cs", before, before.replace("Inner", "Other"), r"Page.cs:1:.*@event")
+
+        before = "#if false\nclass B {\n#else\nclass A {\n#endif\n    int @event = 1;\n}"
+        self.apply_pair("Page.cs", before, before.replace("= 1", "= 2"))
+        self.apply_pair("Page.cs", before, before.replace("#if false", "#if FEATURE"), r"Page.cs:6:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_another_type_blocks_the_whole_normal_adoption_batch(self):
+        versions = {
+            "Good.cs": (b"class Good {}", b"class Good { int valid; }"),
+            "Page.cs": (
+                b"class A { int @event = 1; }\nclass B {}",
+                b"class A { int oldValue = 1; }\nclass B { int @event = 1; }",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            agent, worktree = root / "agent", root / "tree"
+            agent.mkdir()
+            worktree.mkdir()
+            for name, (before, after) in versions.items():
+                (worktree / name).write_bytes(before)
+                (agent / name).write_bytes(codecs.BOM_UTF8 + after)
+            hashes = {name: sha256_file(worktree / name) for name in versions}
+            record = {"targets": list(versions), "target_hashes": hashes.copy()}
+            with self.assertRaisesRegex(ValueError, r"Page.cs:2:.*@event"):
+                apply_agent_targets(agent, worktree, tuple(map(Path, versions)), hashes, record, root / "run.json")
+            self.assertNotIn("target_apply_pending", record)
+            for name, (before, after) in versions.items():
+                self.assertEqual((worktree / name).read_bytes(), before)
+                self.assertEqual((agent / name).read_bytes(), codecs.BOM_UTF8 + after)
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_unique_named_member_can_move_inside_the_same_type(self):
+        before = "class A {\n    int @event = 1;\n    int First;\n    int Second;\n    int Third;\n}"
+        moved = "class A {\n    int First;\n    int Second;\n    int Third;\n    int @event = 2;\n}"
+        self.apply_pair("Page.cs", before, moved)
+        self.apply_pair("Page.cs", before, moved[:-1] + "    int @event;\n}", r"Page.cs:\d+:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_tuple_declarations_inside_distinct_fields_have_distinct_owners(self):
+        before = "class A { (int @event, int Count) First; (int Normal, int Count) Second; }"
+        after = "class A { (int Normal, int Count) First; (int @event, int Count) Second; }"
+        self.apply_pair("Page.cs", before, after, r"Page.cs:1:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_unnamed_block_reordering_does_not_confuse_old_and_new_locals(self):
+        before = "class Page { void Use() { { int @event = 1; } { int anchor = 2; } } }"
+        wrong = "class Page { void Use() { { int anchor = 2; int @event = 1; } } }"
+        self.apply_pair("Page.cs", before, wrong, r"Page.cs:1:.*@event")
+        self.apply_pair("Page.cs", before, before.replace("{ int anchor = 2; }", "{ int anchor = 2; } { int unrelated; }"))
+        reordered = before.replace("{ int @event = 1; } { int anchor = 2; }",
+                                   "{ int anchor = 2; } { int @event = 1; }")
+        self.apply_pair("Page.cs", before, reordered, r"Page.cs:1:.*@event")
+        self.apply_pair("Page.cs", before, before.replace("@event = 1", "@event = 2"))
+        before = "class Page { void Use() {\n{\n int @event = 1;\n int value = 2;\n} } }"
+        self.apply_pair("Page.cs", before, before.replace("value = 2", "value = 3"))
+        before = ("class Page { void Use(bool flag) { if (flag) { int @event = 1; } "
+                  "if (flag) { int anchor = 2; } } }")
+        wrong = "class Page { void Use(bool flag) { if (flag) { int anchor = 2; int @event = 1; } } }"
+        self.apply_pair("Page.cs", before, wrong, r"Page.cs:1:.*@event")
