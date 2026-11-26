@@ -187,6 +187,36 @@ class ContextHandoffTests(unittest.TestCase):
         (self.run / "context-handoff.json").write_text("invalid", encoding="utf-8")
         self.assertIn("unreadable", handoff_prompt(self.run, self.root, self.targets, {}))
 
+    def test_unknown_operator_memo_versions_do_not_discard_saved_history(self):
+        note = self.add()
+        path = self.run / "context-handoff.json"
+        run_before = self.record.read_bytes()
+        for version in (True, 1.0, "1", 2):
+            with self.subTest(version=version):
+                raw = json.dumps({"version": version, "notes": [note]}).encode()
+                path.write_bytes(raw)
+                with self.assertRaisesRegex(ValueError, "invalid context handoff"):
+                    self.add("Another note")
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(self.record.read_bytes(), run_before)
+                self.assertIn("unreadable", handoff_prompt(self.run, self.root, self.targets, {}))
+
+    def test_replay_reinstates_the_operators_note_when_only_its_saved_id_survived(self):
+        note = self.add()
+        path = self.run / "context-handoff.json"
+        damaged = {**note, "note": "accidentally edited history"}
+        path.write_text(json.dumps({"version": 1, "notes": [damaged]}), encoding="utf-8")
+        run_before = self.record.read_bytes()
+        with self.assertRaisesRegex(ValueError, "superseded context handoff ID does not exist"):
+            self.add("Do not replace an unverified predecessor", supersedes=note["id"])
+        self.assertEqual(self.add(), note)
+        self.assertEqual(json.loads(path.read_bytes())["notes"], [damaged, note])
+        self.assertEqual([row["state"] for row in context_handoff(self.run, self.root, self.targets, {})],
+                         ["pending", "needs_review"])
+        self.assertIn(note["note"], handoff_prompt(self.run, self.root, self.targets, {}))
+        self.assertNotIn(damaged["note"], handoff_prompt(self.run, self.root, self.targets, {}))
+        self.assertEqual(self.record.read_bytes(), run_before)
+
     def test_junie_memos_are_versioned_bounded_and_do_not_supersede_operator(self):
         from migration_harness.context.context_handoff import junie_memo_request, save_junie_memo
         from migration_harness.runs.worktree_targets import target_hash

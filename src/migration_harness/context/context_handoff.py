@@ -25,7 +25,8 @@ def _read_handoff(run_path: Path) -> list:
     if path.stat().st_size > 1024 * 1024:
         raise ValueError("context handoff is too large")
     result = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(result, dict) or result.get("version") != 1 or not isinstance(result.get("notes"), list):
+    if (not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] != 1
+            or not isinstance(result.get("notes"), list)):
         raise ValueError("invalid context handoff")
     rows = result["notes"]
     if len(rows) > _MAX_NOTES:
@@ -74,7 +75,7 @@ def record_handoff(
     safe_target(run_path, Path("context-handoff.json.tmp"))
     with lock_run_record(path):
         rows = _read_handoff(run_path)
-        known = {row["id"] for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)}
+        known = {row["id"] for row in rows if isinstance(row, dict) and _matches_note_id(row)}
         if record["id"] in known:
             return record
         if len(rows) == _MAX_NOTES:
