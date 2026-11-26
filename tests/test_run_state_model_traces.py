@@ -38,7 +38,9 @@ class RunStateModelTraceTests(unittest.TestCase):
                     with self.assertRaisesRegex(OSError, "interrupted adoption"):
                         apply_agent_targets(agent, worktree, targets, hashes, record, record_path)
 
-                saved = json.loads(record_path.read_bytes())
+                persisted = record_path.read_bytes()
+                saved = json.loads(persisted)
+                self.assertEqual(set(saved["target_apply_pending"]), set(hashes))
                 after_first = dict(apply_actions(ApplyModel()))["save pending plan"]
                 after_first = dict(apply_actions(after_first))["write 0"]
                 self.assertEqual(after_first.files, (File.DRAFT, File.BASE))
@@ -58,7 +60,7 @@ class RunStateModelTraceTests(unittest.TestCase):
                         finish_pending_targets(agent, worktree, targets, saved, record_path)
                     self.assertEqual((worktree / targets[0]).read_bytes(), codecs.BOM_UTF8 + drafts[targets[0]])
                     self.assertEqual((worktree / targets[1]).read_bytes(), manual)
-                    self.assertEqual(json.loads(record_path.read_bytes()), saved)
+                    self.assertEqual(record_path.read_bytes(), persisted)
                 else:
                     safely_finished = dict(apply_actions(restarted))["write 1"]
                     safely_finished = dict(apply_actions(safely_finished))["record adoption"]
