@@ -177,6 +177,18 @@ class CSharpKeywordGuardTests(unittest.TestCase):
                         r"Page.cshtml:2:.*@cl\\u0061ss")
 
     @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_razor_namespace_and_using_directives_map_the_original_unicode_name(self):
+        original = "@page\n<p>Old</p>\n"
+        name = "ev\u200cent"
+        for directive in (f"@namespace {name}", f"@namespace Outer.{name}.Inner",
+                          f"@using {name} = System.Int32"):
+            with self.subTest(directive=directive):
+                after = f"@page\n@* {directive} *@\n{directive}\n<p>New</p>\n"
+                self.apply_pair("Page.cshtml", original, after, fr"Page.cshtml:3:.*{re.escape(name)}")
+                self.apply_pair("Page.cshtml", after, after.replace("<p>New</p>", "<p>Edited</p>"))
+                self.apply_pair("Page.cshtml", original, f"@page\n@* {directive} *@\n<p>Unchanged name</p>\n")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
     def test_edited_lines_preserve_an_old_keyword_name_across_unicode_spellings(self):
         before = r'class Page { string S = "😀"; int @cl\u0061ss = 1; }'
         after = r'class Page { string S = "new"; int @class = 2; }'

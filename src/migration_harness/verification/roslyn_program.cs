@@ -109,7 +109,8 @@ internal static partial class Program
         {
             if (!IsEscapedReservedKeyword(token) || !IsDeclaration(token)) continue;
             var span = token.Span;
-            if (razor is not null && !TryMapRazorSpan(razor, generated, original, span, out span)) continue;
+            if (razor is not null && !TryMapRazorSpan(razor, generated, original, span, out span)
+                && !TryMapRazorNamespace(razor.CodeDocument, original, token, out span)) continue;
             if (!seen.Add(span.Start)) continue;
             var position = original.Lines.GetLinePosition(span.Start);
             var prefix = original.ToString(TextSpan.FromBounds(original.Lines[position.Line].Start, span.Start));
@@ -149,7 +150,7 @@ internal static partial class Program
         EnumMemberDeclarationSyntax node => token == node.Identifier,
         TupleElementSyntax node => token == node.Identifier,
         LabeledStatementSyntax node => token == node.Identifier,
-        IdentifierNameSyntax node => IsUsingAlias(node) || IsNamespaceName(node),
+        IdentifierNameSyntax node => IsUsingAlias(node) || NamespaceDeclaration(node) is not null,
         TypeParameterSyntax node => token == node.Identifier,
         SingleVariableDesignationSyntax node => token == node.Identifier,
         ForEachStatementSyntax node => token == node.Identifier,
@@ -165,11 +166,25 @@ internal static partial class Program
     private static bool IsUsingAlias(IdentifierNameSyntax name) =>
         name.Parent is NameEqualsSyntax { Parent: UsingDirectiveSyntax } alias && alias.Name == name;
 
-    private static bool IsNamespaceName(IdentifierNameSyntax identifier)
+    private static BaseNamespaceDeclarationSyntax? NamespaceDeclaration(IdentifierNameSyntax identifier)
     {
         for (SyntaxNode? name = identifier; name is NameSyntax; name = name.Parent)
-            if (name.Parent is BaseNamespaceDeclarationSyntax declaration && declaration.Name == name) return true;
-        return false;
+            if (name.Parent is BaseNamespaceDeclarationSyntax declaration && declaration.Name == name) return declaration;
+        return null;
+    }
+
+    // Razor does not include its generated namespace declaration in SourceMappings.
+    private static bool TryMapRazorNamespace(RazorCodeDocument doc, SourceText original, SyntaxToken token, out TextSpan span)
+    {
+        span = default;
+        if (token.Parent is not IdentifierNameSyntax identifier || NamespaceDeclaration(identifier) is not { } declaration
+            || !doc.TryComputeNamespace(false, out var name, out var source) || source is not { } from
+            || !string.Equals(from.FilePath, doc.Source.FilePath, StringComparison.OrdinalIgnoreCase)
+            || from.AbsoluteIndex < 0 || from.Length != declaration.Name.Span.Length
+            || from.AbsoluteIndex > original.Length - from.Length || name != declaration.Name.ToString()
+            || name != original.ToString(new TextSpan(from.AbsoluteIndex, from.Length))) return false;
+        span = new TextSpan(from.AbsoluteIndex + token.SpanStart - declaration.Name.SpanStart, token.Span.Length);
+        return true;
     }
 
     private static SourceText GetRazorGeneratedText(RazorCSharpDocument razor) => RazorGeneratedText?.GetValue(razor) switch
