@@ -2,7 +2,7 @@ import tomlkit
 
 from fixtures import HarnessCase
 from migration_harness.config import load_config
-from migration_harness.web.dashboard import _read_settings, _save_settings
+from migration_harness.web.dashboard_settings import read_settings, save_settings_file
 from migration_harness.web.settings_form import build_settings_draft
 
 
@@ -29,7 +29,7 @@ target = "Orders.cs"
         self.path.write_text(self.content, encoding="utf-8")
 
     def save(self, content):
-        return _save_settings(self.path, content, _read_settings(self.path)[1])
+        return save_settings_file(self.path, content, read_settings(self.path)[1])
 
     def rules(self, config):
         return [item for item in config["units"][0]["inputs"] if item["role"] == "migration_rules"]

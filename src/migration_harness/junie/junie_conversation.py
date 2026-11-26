@@ -348,7 +348,7 @@ class JunieConversations:
     def _submit_saved(self, run_id, run_path, worktree, unit, queue, identifier, text,
                       options, stage_plan, stage_error, selection):
         """キューとRunManagerのロック内で照合し、対象版を記録して指示を受け付ける。"""
-        from ..web.dashboard import _prompt_timing
+        from ..runs.editor_view import prompt_timing
 
         history = queue.setdefault("conversation", [])
         if (existing := _existing_receipt(history, identifier, text, selection)) is not None:
@@ -422,7 +422,7 @@ class JunieConversations:
         if ("query_intent" not in entry and not request and not _clarification(history)
                 and intent == "junie" and record["status"] in {"junie_running", "editor_checkpoint", "editor_followup"}
                 and not state.get("ready")):
-            timing = _prompt_timing(self.manager.config, state, run_path, record,
+            timing = prompt_timing(self.manager.config, state, run_path, record,
                                     pending_edits=bool(queue["edits"]),
                                     live=bool(view.control and view.control.junie_steering))
             if timing in {"checkpoint", "immediate"}:
@@ -618,7 +618,7 @@ class JunieConversations:
                     _finish(waiting, "failed", UNCONFIRMED_BUILD)
 
     def _advance_waiting_entry(self, config, run_path, worktree, unit, queue, history, view, state, record, job):
-        from ..web.dashboard import _prompt_timing
+        from ..runs.editor_view import prompt_timing
 
         phase = record["status"]
         entry = next((item for item in history if item["status"] == "waiting"), None)
@@ -642,7 +642,7 @@ class JunieConversations:
             if entry["edit_revision"] != queue.get("edit_revision"):
                 _finish(entry, "failed", "保存版が更新されました。エディタで確認して指示を送信し直してください。")
                 return True
-            timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
+            timing = prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
                                     live=bool(view.control and view.control.junie_steering))
             if timing is None:
                 entry["message"] = "現在の工程が終わってから、Junie に渡せるか確認します。"

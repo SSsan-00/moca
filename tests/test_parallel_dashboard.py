@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase, prepare_fixture
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_runs, dashboard_settings
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_manager
 from migration_harness import workflow
@@ -125,7 +125,7 @@ class ParallelDashboardTests(HarnessCase):
                     return {"version": "a" * 64} if mode == "read" else None
 
                 name = "plan_stopped_repair" if mode == "read" else "resolve_stopped_repair"
-                with patch.object(dashboard, name, side_effect=slow), ThreadPoolExecutor(max_workers=1) as pool:
+                with patch.object(dashboard_runs, name, side_effect=slow), ThreadPoolExecutor(max_workers=1) as pool:
                     if mode == "read":
                         future = pool.submit(get, f"recovery-plan?run_id={run_id}&kind=draft", run_id)
                     else:
@@ -630,7 +630,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_failed_settings_replace_keeps_old_scope_and_new_queue_untouched(self):
         post, _ = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         previous = copy.deepcopy(self.settings)
         old_id = str(uuid.uuid4())
         old_view = self.manager.new_view(old_id, "unit-0")
@@ -675,7 +675,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_settings_preflight_failure_leaves_saved_toml_and_old_owner(self):
         post, _ = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         previous = copy.deepcopy(self.settings)
         root = self.root / "new-runs"
         proposed = {**self.settings, "run_root": str(root)}
@@ -731,7 +731,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertEqual(self.settings, {"config_path": str(path)})
         status, saved = post("settings", request)
         self.assertEqual(status, 200)
-        self.assertEqual(dashboard._read_settings(path)[1], saved["version"])
+        self.assertEqual(dashboard_settings.read_settings(path)[1], saved["version"])
         self.assertEqual(self.manager.root, self.settings["run_root"])
         with self.assertRaises(RuntimeError), execution_lock(self.settings, "dashboard"):
             pass
@@ -739,7 +739,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_settings_worktree_switch_keeps_owner_and_restores_waiting_job_after_commit(self):
         post, _ = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         owner, root, queue = self.manager.owner, self.manager.root, self.manager.queue_path
         self.manager.limit = 0
         old_id = str(uuid.uuid4())
@@ -786,7 +786,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_rules_do_not_mix_externally_changed_project_with_live_settings(self):
         post, get = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         (self.project / "original.md").write_bytes(b"PROJECT_A_RULE\n")
         project_b = self.root / "app-b"
         project_b.mkdir()
@@ -831,7 +831,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertEqual([draft["id"] for draft in get("rule-workspace")["drafts"]],
                          [old_draft["id"]])
 
-        self.assertEqual(save(toml_b, dashboard._read_settings(path)[1])[0], 200)
+        self.assertEqual(save(toml_b, dashboard_settings.read_settings(path)[1])[0], 200)
         self.assertEqual(Path(self.settings["project_root"]), project_b)
         new_draft = rule("start")[1]
         source = f'rule-workspace?id={new_draft["id"]}&source=rule-0001.md'

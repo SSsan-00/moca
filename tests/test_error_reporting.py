@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from migration_harness import cli
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_settings
 from migration_harness.errors import format_error, safe_command
 from migration_harness.workflow import RunInterrupted, RunScriptError
 
@@ -346,21 +346,30 @@ class DashboardErrorReportingTests(unittest.TestCase):
 
     def test_settings_and_workspace_read_errors_keep_http_contract_and_diagnostics(self):
         def inspect(view, url):
-            for endpoint, target, error in (
-                ("settings", "_read_settings", PermissionError("cannot read settings.toml")),
-                ("settings", "build_settings_draft", TypeError("invalid settings table")),
-                ("workspace", "load_saved_run", ValueError("unused")),
+            for target, error in (
+                ("read_settings", PermissionError("cannot read settings.toml")),
+                ("build_settings_draft", TypeError("invalid settings table")),
             ):
-                with self.subTest(endpoint=endpoint, target=target):
-                    with patch.object(dashboard, target, side_effect=error):
+                with self.subTest(target=target):
+                    with patch.object(dashboard_settings, target, side_effect=error) as failing:
                         with self.assertRaises(HTTPError) as raised:
-                            urlopen(url + endpoint, timeout=3)
+                            urlopen(url + "settings", timeout=3)
+                    failing.assert_called_once()
                     with raised.exception as response:
                         self.assertEqual(response.code, 409)
                         self.assertEqual(response.headers.get_content_type(), "text/plain")
                         details = response.read().decode()
-                        self.assertIn("dashboard.py", details)
-                        self.assertIn(str(error) if endpoint == "settings" else "TypeError", details)
+                        self.assertIn("dashboard_settings.py", details)
+                        self.assertIn(str(error), details)
+            # An invalid unit list fails inside the real workspace calculation, before a Run is loaded.
+            with self.assertRaises(HTTPError) as raised:
+                urlopen(url + "workspace", timeout=3)
+            with raised.exception as response:
+                self.assertEqual(response.code, 409)
+                self.assertEqual(response.headers.get_content_type(), "text/plain")
+                details = response.read().decode()
+                self.assertIn("dashboard_runs.py", details)
+                self.assertIn("TypeError", details)
             self.assertTrue(view.state["ready"])
             raise KeyboardInterrupt
 

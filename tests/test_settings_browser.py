@@ -15,14 +15,14 @@ from urllib.parse import urlsplit
 
 from browser_run import run_browser
 
+from migration_harness.config import load_config, target_paths
 from migration_harness.runs import (
     editor_queue as editor_queue_store, reference_refresh, target_snapshots, verification_edits,
 )
-from migration_harness.config import target_paths
 from migration_harness.context.source_context import stage_target_context
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs.editor_queue import editor_queue
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_settings
 from migration_harness.junie.junie_notifications import RunNotice
 from migration_harness.junie.junie_thoughts import FILENAME as JUNIE_LOG_NAME
 from ui_dependencies import node_executable, require_ui_dependency
@@ -81,7 +81,7 @@ targets = ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs", "wwwroot
 [units.target_context]
 max_bytes = 9007199254740993 # preserve this value
 """, encoding="utf-8")
-            config = dashboard.load_config(path)
+            config = load_config(path)
             run_id = str(uuid.uuid4())
             run = root / "runs" / run_id
             worktree = root / "trees" / run_id
@@ -252,7 +252,7 @@ max_bytes = 9007199254740993 # preserve this value
                     {"id": "fixture-lite", "name": "Fixture Lite", "efforts": ["none"]},
                     {"id": "fixture-unknown", "name": "Fixture Unknown"},
                 ]
-                with patch.object(dashboard, "list_models", return_value=catalog):
+                with patch.object(dashboard_settings, "list_models", return_value=catalog):
                     checks = (
                         (helper.with_name("editor_semantic_browser_driver.mjs"), "editor-browser",
                          [url, run_id, str(path)], 90),

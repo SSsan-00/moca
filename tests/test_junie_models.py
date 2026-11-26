@@ -15,7 +15,7 @@ from fixtures import HarnessCase, prepare_fixture
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
 from migration_harness.config import load_config
-from migration_harness.web.dashboard import _read_settings, _save_settings
+from migration_harness.web.dashboard_settings import read_settings, save_settings_file
 from migration_harness.web.settings_form import build_settings_draft
 
 
@@ -30,14 +30,14 @@ class ModelSettingsTests(HarnessCase):
     def test_save_reload_custom_model_and_clear_preserve_other_settings(self):
         content = self.path.read_text() + '\n[junie]\nmax_steps = 7 # Keep limit\nmodel = "sonnet" # Keep model\n'
         draft = build_settings_draft(content, {"junie": {"model": "custom/my-model", "effort": "high"}})
-        _save_settings(self.path, draft["content"], _read_settings(self.path)[1])
+        save_settings_file(self.path, draft["content"], read_settings(self.path)[1])
         self.assertEqual(load_config(self.path)["junie_model"], "custom/my-model")
         self.assertEqual(load_config(self.path)["junie_effort"], "high")
         self.assertEqual(build_settings_draft(self.path.read_text())["form"]["junie"]["model"], "custom/my-model")
         self.assertIn('# Keep model', draft["content"])
         self.assertEqual(build_settings_draft(self.path.read_text())["form"]["junie"]["effort"], "high")
         cleared = build_settings_draft(draft["content"], {"junie": {"model": "", "effort": ""}})
-        _save_settings(self.path, cleared["content"], _read_settings(self.path)[1])
+        save_settings_file(self.path, cleared["content"], read_settings(self.path)[1])
         self.assertIsNone(load_config(self.path)["junie_model"])
         self.assertIsNone(load_config(self.path)["junie_effort"])
         self.assertIn('max_steps = 7 # Keep limit', self.path.read_text())
@@ -49,7 +49,7 @@ class ModelSettingsTests(HarnessCase):
                 document = tomlkit.parse(original)
                 document["junie"] = {"model": model}
                 with self.assertRaisesRegex(ValueError, "モデル"):
-                    _save_settings(self.path, tomlkit.dumps(document), _read_settings(self.path)[1])
+                    save_settings_file(self.path, tomlkit.dumps(document), read_settings(self.path)[1])
                 self.assertEqual(self.path.read_text(), original)
 
     def test_effort_validation_requires_a_model_and_preserves_file_on_failure(self):
@@ -59,13 +59,13 @@ class ModelSettingsTests(HarnessCase):
                 document = tomlkit.parse(original)
                 document["junie"] = {"model": "sonnet", "effort": effort}
                 with self.assertRaisesRegex(ValueError, "推論の強さ"):
-                    _save_settings(self.path, tomlkit.dumps(document), _read_settings(self.path)[1])
+                    save_settings_file(self.path, tomlkit.dumps(document), read_settings(self.path)[1])
                 self.assertEqual(self.path.read_text(), original)
         with self.assertRaisesRegex(ValueError, "モデルも選択"):
-            _save_settings(self.path, original + '\n[junie]\neffort = "high"\n', _read_settings(self.path)[1])
+            save_settings_file(self.path, original + '\n[junie]\neffort = "high"\n', read_settings(self.path)[1])
         for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
             content = original + f'\n[junie]\nmodel = "custom"\neffort = "{effort}"\n'
-            settings = _save_settings(self.path, content, _read_settings(self.path)[1])
+            settings = save_settings_file(self.path, content, read_settings(self.path)[1])
             self.assertEqual(settings["junie_effort"], effort)
 
     def test_prepared_run_keeps_model_when_settings_change_including_default(self):

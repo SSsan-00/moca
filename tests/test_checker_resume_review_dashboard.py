@@ -24,7 +24,7 @@ from migration_harness import cli, errors, execution, workflow
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_records, stopped_repair, target_snapshots, worktree_targets as target_files
 from migration_harness.verification import checker_output, grounded_evidence, repairs
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_settings
 from migration_harness.runs.editor_queue import add_prompt, editor_queue, record_operator_edit
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.web.settings_form import build_settings_draft
@@ -1994,7 +1994,7 @@ class SavedDashboardTests(SavedRunFixture):
                 check_cancelled()
                 raise AssertionError("preview should be cancelled")
 
-            with patch.object(dashboard, "preview_target_context", side_effect=wait_for_cancel):
+            with patch.object(dashboard_settings, "preview_target_context", side_effect=wait_for_cancel):
                 with self.post(url, "settings", request) as response:
                     self.assertTrue(json.loads(response.readline())["progress"])
                     self.assertEqual(json.loads(response.readline()), {"progress": "fixture scanning"})

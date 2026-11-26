@@ -20,7 +20,7 @@ from migration_harness.runs import (
 from migration_harness.files import sha256_file
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs import editor_queue, run_records
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_editor
 
 
 class EditorSaveRecoveryTests(SavedRunFixture):
@@ -565,7 +565,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         body = self.target.read_bytes()
         history = self.run_path / "editor.json"
         before = history.read_bytes()
-        with patch.object(dashboard, "save_target_edit", side_effect=OSError("fixture target is unwritable")):
+        with patch.object(dashboard_editor, "save_target_edit", side_effect=OSError("fixture target is unwritable")):
             self.assertIn("履歴", self.http_conflict(payload))
         self.start_server()
         self.assertEqual(self.editor()["content"], payload["base"])
