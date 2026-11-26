@@ -24,6 +24,7 @@ internal static partial class Program
         if (args.Length != 1) return 2;
         Console.OutputEncoding = new UTF8Encoding(false);
         Console.InputEncoding = new UTF8Encoding(false, true);
+        if (args[0] == "--escaped-keywords") return ReportEscapedKeywords(Console.In.ReadToEnd());
         if (args[0] == "--semantic") return RunSemantic(Console.In.ReadToEnd());
         if (args[0] == "--semantic-stream")
         {
@@ -84,6 +85,58 @@ internal static partial class Program
         Console.WriteLine(JsonSerializer.Serialize(new { findings, skipped, truncated, razor }));
         return 0;
     }
+    private static int ReportEscapedKeywords(string payload)
+    {
+        var targets = JsonSerializer.Deserialize<Target[]>(payload) ?? [];
+        Console.WriteLine(JsonSerializer.Serialize(targets.Select(EscapedKeywords)));
+        return 0;
+    }
+
+    private static IEnumerable<object> EscapedKeywords(Target target)
+    {
+        var original = SourceText.From(target.Text ?? "");
+        RazorCSharpDocument? razor = target.Path.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase)
+            ? RazorCode(target.Path, original.ToString()) : null;
+        var generated = razor?.Text ?? original;
+        var parse = CSharpSyntaxTree.ParseText(generated, Options);
+        foreach (var token in parse.GetRoot().DescendantTokens())
+        {
+            if (!token.IsKind(SyntaxKind.IdentifierToken) || !token.Text.StartsWith('@')
+                || SyntaxFacts.GetKeywordKind(token.ValueText) == SyntaxKind.None || !IsDeclaration(token)) continue;
+            var span = token.Span;
+            if (razor is not null && !TryMapRazorSpan(razor, generated, original, span, out span)) continue;
+            var position = original.Lines.GetLinePosition(span.Start);
+            var prefix = original.ToString(TextSpan.FromBounds(original.Lines[position.Line].Start, span.Start));
+            yield return new { text = token.Text, line = position.Line, column = prefix.EnumerateRunes().Count() };
+        }
+    }
+
+    private static bool IsDeclaration(SyntaxToken token) => token.Parent switch
+    {
+        VariableDeclaratorSyntax node => token == node.Identifier,
+        ParameterSyntax node => token == node.Identifier,
+        PropertyDeclarationSyntax node => token == node.Identifier && node.ExplicitInterfaceSpecifier is null
+                                          && !node.Modifiers.Any(SyntaxKind.OverrideKeyword),
+        EventDeclarationSyntax node => token == node.Identifier && node.ExplicitInterfaceSpecifier is null
+                                       && !node.Modifiers.Any(SyntaxKind.OverrideKeyword),
+        MethodDeclarationSyntax node => token == node.Identifier && node.ExplicitInterfaceSpecifier is null
+                                        && !node.Modifiers.Any(SyntaxKind.OverrideKeyword),
+        LocalFunctionStatementSyntax node => token == node.Identifier,
+        BaseTypeDeclarationSyntax node => token == node.Identifier,
+        DelegateDeclarationSyntax node => token == node.Identifier,
+        EnumMemberDeclarationSyntax node => token == node.Identifier,
+        TypeParameterSyntax node => token == node.Identifier,
+        SingleVariableDesignationSyntax node => token == node.Identifier,
+        ForEachStatementSyntax node => token == node.Identifier,
+        CatchDeclarationSyntax node => token == node.Identifier,
+        FromClauseSyntax node => token == node.Identifier,
+        LetClauseSyntax node => token == node.Identifier,
+        JoinClauseSyntax node => token == node.Identifier,
+        JoinIntoClauseSyntax node => token == node.Identifier,
+        QueryContinuationSyntax node => token == node.Identifier,
+        _ => false,
+    };
+
     private static RazorCSharpDocument RazorCode(string path, string source)
     {
         var engine = RazorProjectEngine.Create(RazorConfiguration.Default,

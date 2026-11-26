@@ -22,9 +22,10 @@ _TOOL_LOCK = threading.Lock()
 _EDITOR_SLOTS = threading.BoundedSemaphore(2)
 _SEMANTIC_SLOT = threading.BoundedSemaphore(1)
 _CONTEXT_SLOTS = threading.BoundedSemaphore(2)
-_DOTNET_SDK = re.compile(r"(9|10)\.0\.(\d+) \[(.+)\]")
+_DOTNET_9 = re.compile(r"9\.0\.(\d+) \[(.+)\]")
 _SUPPORTED = frozenset({".cs", ".cshtml"})
-_tools = {}
+_tool_directory = None
+_tool_command = None
 _tool_dotnet_root = None
 
 
@@ -38,86 +39,67 @@ def _checked_process(command, cwd, timeout):
                        synchronous=True, timeout=timeout, env=_environment())
 
 
-def _framework_references(dotnet_root, name, release="9.0"):
+def _framework_references(dotnet_root, name):
     pack = dotnet_root / "packs" / name
-    versions = [(int(path.name.rsplit(".", 1)[1]), path / "ref" / f"net{release}")
-                for path in pack.glob(f"{release}.*") if path.name.rsplit(".", 1)[1].isdecimal()]
+    versions = [(int(path.name.rsplit(".", 1)[1]), path / "ref" / "net9.0") for path in pack.glob("9.0.*")
+                if re.fullmatch(r"9\.0\.\d+", path.name)]
     if not versions:
-        raise OSError(f".NET {release} reference pack not available")
+        raise OSError(".NET 9 reference pack not available")
     references = sorted(max(versions)[1].glob("*.dll"))
     if not references:
-        raise OSError(f"empty .NET {release} reference pack")
+        raise OSError("empty .NET 9 reference pack")
     return references
 
 
-def _installed_sdk(keyword_guard):
-    dotnet = shutil.which("dotnet")
-    if not dotnet:
-        raise OSError(".NET SDK not available")
-    discovered = _checked_process([dotnet, "--list-sdks"], None, 3)
-    sdks = []
-    for line in discovered.stdout.decode("utf-8", "replace").splitlines():
-        if (match := _DOTNET_SDK.fullmatch(line.strip())) and (keyword_guard or match[1] == "9"):
-            version = f"{match[1]}.0.{match[2]}"
-            sdks.append((int(match[1]), int(match[2]), Path(match[3]) / version))
-    if discovered.returncode or not sdks:
-        raise OSError("compatible .NET SDK not available")
-    major, _, sdk = max(sdks)
-    return dotnet, sdk, f"{major}.0"
-
-
-def _compile_tool(dotnet, sdk, release, scripts, razor_folder):
-    roslyn = sdk / "Roslyn" / "bincore"
-    razor = sdk / "Sdks" / "Microsoft.NET.Sdk.Razor" / razor_folder
-    references = _framework_references(sdk.parent.parent, "Microsoft.NETCore.App.Ref", release)
-    libraries = [
-        roslyn / "Microsoft.CodeAnalysis.dll", roslyn / "Microsoft.CodeAnalysis.CSharp.dll",
-        razor / "Microsoft.CodeAnalysis.Razor.Compiler.dll", razor / "Microsoft.AspNetCore.Razor.Utilities.Shared.dll",
-        razor / "Microsoft.Extensions.ObjectPool.dll",
-    ]
-    directory = TemporaryDirectory(prefix="harness-roslyn-")
-    try:
-        root = Path(directory.name)
-        dst = root / "RoslynSyntax.dll"
-        response = root / "compiler.rsp"
-        arguments = ["-nologo", "-target:exe", "-langversion:latest", "-nullable:enable", f'-out:"{dst}"']
-        arguments += [f'"{path}"' for path in scripts]
-        arguments += [f'-r:"{path}"' for path in [*references, *libraries]]
-        response.write_text("\n".join(arguments) + "\n", encoding="utf-8")
-        for library in libraries:
-            shutil.copyfile(library, root / library.name)
-        (root / "RoslynSyntax.runtimeconfig.json").write_text(json.dumps({
-            "runtimeOptions": {"tfm": f"net{release}",
-                               "framework": {"name": "Microsoft.NETCore.App", "version": f"{release}.0"}}
-        }), encoding="utf-8")
-        built = _checked_process([dotnet, "exec", str(roslyn / "csc.dll"), "@" + str(response)], root, 12)
-        if built.returncode or not dst.is_file():
-            raise OSError("Roslyn helper unavailable")
-    except BaseException:
-        directory.cleanup()
-        raise
-    return directory, [dotnet, "exec", str(dst)]
-
-
-def _prepare_tool(*, keyword_guard=False):
-    global _tool_dotnet_root
+def _prepare_tool():
+    global _tool_directory, _tool_command, _tool_dotnet_root
     while not _TOOL_LOCK.acquire(timeout=0.1):
         check_cancelled()
     try:
         check_cancelled()
-        cached = _tools.get(keyword_guard)
-        if cached and Path(cached[1][-1]).is_file():
-            return cached[1]
-        dotnet, sdk, release = _installed_sdk(keyword_guard)
-        scripts, razor = ([Path(__file__).with_name("roslyn_keywords.cs")], "source-generators") if keyword_guard else (
-            _SCRIPTS, "tools")
-        tool = _compile_tool(dotnet, sdk, release, scripts, razor)
-        if cached:
-            cached[0].cleanup()
-        _tools[keyword_guard] = tool
-        if not keyword_guard:
-            _tool_dotnet_root = sdk.parent.parent
-        return tool[1]
+        if _tool_command is not None and Path(_tool_command[-1]).is_file():
+            return _tool_command
+        dotnet = shutil.which("dotnet")
+        if not dotnet:
+            raise OSError(".NET SDK not available")
+        discovered = _checked_process([dotnet, "--list-sdks"], None, 3)
+        sdks = [(int(m[1]), Path(m[2]) / f"9.0.{m[1]}") for line in discovered.stdout.decode("utf-8", "replace").splitlines()
+                if (m := _DOTNET_9.fullmatch(line.strip()))]
+        if discovered.returncode or not sdks:
+            raise OSError(".NET 9 SDK not available")
+        _, sdk = max(sdks, key=lambda item: item[0])
+        roslyn = sdk / "Roslyn" / "bincore"
+        razor = sdk / "Sdks" / "Microsoft.NET.Sdk.Razor" / "tools"
+        references = _framework_references(sdk.parent.parent, "Microsoft.NETCore.App.Ref")
+        libraries = [
+            roslyn / "Microsoft.CodeAnalysis.dll", roslyn / "Microsoft.CodeAnalysis.CSharp.dll",
+            razor / "Microsoft.CodeAnalysis.Razor.Compiler.dll", razor / "Microsoft.AspNetCore.Razor.Utilities.Shared.dll",
+            razor / "Microsoft.Extensions.ObjectPool.dll",
+        ]
+        directory = TemporaryDirectory(prefix="harness-roslyn-")
+        try:
+            root = Path(directory.name)
+            dst = root / "RoslynSyntax.dll"
+            response = root / "compiler.rsp"
+            arguments = ["-nologo", "-target:exe", "-langversion:latest", "-nullable:enable", f'-out:"{dst}"']
+            arguments += [f'"{path}"' for path in _SCRIPTS]
+            arguments += [f'-r:"{path}"' for path in [*references, *libraries]]
+            response.write_text("\n".join(arguments) + "\n", encoding="utf-8")
+            for library in libraries:
+                shutil.copyfile(library, root / library.name)
+            (root / "RoslynSyntax.runtimeconfig.json").write_text(json.dumps({
+                "runtimeOptions": {"tfm": "net9.0", "framework": {"name": "Microsoft.NETCore.App", "version": "9.0.0"}}
+            }), encoding="utf-8")
+            built = _checked_process([dotnet, "exec", str(roslyn / "csc.dll"), "@" + str(response)], root, 12)
+            if built.returncode or not dst.is_file():
+                raise OSError("Roslyn helper unavailable")
+        except BaseException:
+            directory.cleanup()
+            raise
+        if _tool_directory is not None:
+            _tool_directory.cleanup()
+        _tool_directory, _tool_command, _tool_dotnet_root = directory, [dotnet, "exec", str(dst)], sdk.parent.parent
+        return _tool_command
     finally:
         _TOOL_LOCK.release()
 
