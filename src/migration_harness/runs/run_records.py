@@ -200,15 +200,26 @@ def run_model_options(run_path: Path, record: dict[str, Any], config: dict[str, 
 def _validate_run_fields(record: dict[str, Any]) -> None:
     if "status" in record and not nonempty_text(record["status"]):
         raise ValueError("run record contains an invalid status")
-    counters = ("completed_capsules", "context_capsules", "current_capsule", "resume_attempts")
-    for field in counters:
-        if field in record and (type(record[field]) is not int or record[field] < (field == "current_capsule")):
+    for field, minimum in (("completed_capsules", 0), ("context_capsules", 0), ("current_capsule", 1), ("resume_attempts", 0)):
+        if field in record and (type(record[field]) is not int or record[field] < minimum):
             raise ValueError(f"run record has invalid capsule progress ({field})")
-    for field, kind in (("verification", dict), ("target_apply_pending", dict), ("repair_pending", dict),
-                        ("migration_mappings", dict), ("repair_history", list)):
+    for field in ("verification", "target_apply_pending", "repair_pending", "migration_mappings",
+                  "target_hashes", "review_file_hashes", "checker_build"):
         value = record.get(field)
-        if value is not None and not isinstance(value, kind):
+        if value is not None and not isinstance(value, dict):
             raise ValueError(f"run record contains an invalid {field}")
+    for field in ("repair_history", "resume_operations"):
+        if field in record and (not isinstance(record[field], list)
+                                or any(not isinstance(item, dict) for item in record[field])):
+            raise ValueError(f"run record contains an invalid {field}")
+    mappings = record.get("migration_mappings") or {}
+    for entry in mappings.values():
+        if (not isinstance(entry, dict) or not nonempty_text(entry.get("path")) or not nonempty_text(entry.get("sha256"))
+                or type(entry.get("start_line")) is not int or type(entry.get("end_line")) is not int
+                or not 1 <= entry["start_line"] <= entry["end_line"]
+                or ("candidate_snapshot" in entry and
+                    (not nonempty_text(entry["candidate_snapshot"]) or type(entry.get("anchors")) is not int))):
+            raise ValueError("run record contains an invalid migration mapping")
     for field in ("build_exit_code", "checker_exit_code"):
         value = record.get(field)
         if value is not None and type(value) is not int:
