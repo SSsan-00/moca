@@ -27,7 +27,9 @@ from .runs.resume_plan import (
 )
 from .runs.run_records import execution_lock
 from .runs.stage_scripts import block_unknown_script, script_recovery
-from .runs.stopped_repair import plan_stopped_repair, preview_stopped_repair, resolve_stopped_repair
+from .runs.stopped_repair import (
+    plan_stopped_repair, preview_stopped_repair, require_selected_repair_lineage, resolve_stopped_repair,
+)
 from .runs.timings import freeze_timings
 from .runs.verification_edits import apply_verification_edits
 from .runs.worktree_targets import finish_pending_targets, review_target_hash
@@ -149,6 +151,7 @@ def _resume_with_junie(
     if record.get("migration_stop_unconfirmed"):
         raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
                          "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
+    require_selected_repair_lineage(record.get("repair_pending", {}))
     if editor_save_pending(run_path):
         with editor_queue_store.editor_queue(run_path, recover=(worktree_path, harness_config.target_paths(unit))):
             pass

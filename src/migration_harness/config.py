@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -327,8 +328,20 @@ def _execution_settings(raw: dict, root: Path) -> dict[str, Any]:
     }
 
 
+def validate_unit_material_locations(unit: Mapping[str, Any]) -> None:
+    inputs = unit.get("inputs")
+    if not isinstance(inputs, list):
+        return
+    for item in inputs:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("role") == "migration_rules":
+            raise ValueError("共通の移行ルールは [[project.migration_rules]] に移し、role と shared を外してください。")
+        if item.get("role") in REFERENCE_ROLES and item.get("shared") is True:
+            raise ValueError("共通の参考実装は [[project.references]] に移し、role は残して shared を外してください。")
+
+
 def _normalize_units(raw: dict, project: dict, root: Path) -> list[dict[str, Any]]:
-    """移行単位を正規化し、新旧形式の共通資料を収集してから各単位に適用する。"""
     units = raw.get("units")
     if not isinstance(units, list) or not units:
         raise ValueError("at least one [[units]] entry is required")
@@ -356,17 +369,12 @@ def _normalize_units(raw: dict, project: dict, root: Path) -> list[dict[str, Any
         common_references.append(reference)
 
     project_context = target_context_policy(raw.get("target_context", {}))
-    normalized_units = [
-        _normalize_unit(unit, root, project_context, common_rules, common_references) for unit in units
-    ]
-    # 旧形式の共通資料は後の移行単位にも書けるため、全件を収集してから適用する。
-    for unit in normalized_units:
-        unit["inputs"] = common_rules + common_references + unit["inputs"]
-    return normalized_units
+    common_inputs = common_rules + common_references
+    return [_normalize_unit(unit, root, project_context, common_inputs) for unit in units]
 
 
-def _normalize_unit(unit, root, project_context, common_rules, common_references):
-    """移行先と入力を正規化し、旧形式の共通資料を全移行単位向けに収集する。"""
+def _normalize_unit(unit, root, project_context, common_inputs):
+    validate_unit_material_locations(unit)
     targets = unit.get("targets", [unit.get("target")])
     if "targets" in unit and "target" in unit:
         raise ValueError(f"unit {unit['id']}: specify target or targets")
@@ -404,17 +412,9 @@ def _normalize_unit(unit, root, project_context, common_rules, common_references
     inputs = unit.get("inputs", [])
     if not isinstance(inputs, list) or not (normalized_inputs or inputs):
         raise ValueError(f"unit {unit['id']}: specify source or at least one [[units.inputs]] entry")
-    for item in inputs:
-        normalized_input = _normalize_input(item, f"unit {unit['id']}", root=root)
-        if normalized_input["role"] == "migration_rules":
-            if normalized_input not in common_rules:
-                common_rules.append(normalized_input)
-        elif normalized_input["role"] in REFERENCE_ROLES and normalized_input["shared"]:
-            common_references.append(normalized_input)
-        else:
-            normalized_inputs.append(normalized_input)
+    normalized_inputs.extend(_normalize_input(item, f"unit {unit['id']}", root=root) for item in inputs)
 
-    normalized = {"id": unit["id"], "target": targets[0], "inputs": normalized_inputs}
+    normalized = {"id": unit["id"], "target": targets[0], "inputs": common_inputs + normalized_inputs}
     if project_context or "target_context" in unit:
         normalized["target_context"] = {**project_context, **target_context_policy(unit.get("target_context", {}))}
     if "draft_imports" in unit:

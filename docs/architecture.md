@@ -191,7 +191,7 @@ flowchart TD
 
 工程の入口は [workflow.py](../src/migration_harness/workflow.py) に残し、[移行資料](../src/migration_harness/context/migration_materials.py)・[ルール選別](../src/migration_harness/rules/detail_selection.py)・[カプセル実行と採用](../src/migration_harness/runs/migration_capsules.py)・[参照更新](../src/migration_harness/runs/reference_refresh.py)・[台帳](../src/migration_harness/runs/migration_ledger.py)をそれぞれの担当へ分けます。検証では [pipeline.py](../src/migration_harness/verification/pipeline.py) が工程を調整し、[ビルド](../src/migration_harness/verification/build_cycle.py)、[チェッカー](../src/migration_harness/verification/checker_cycle.py)、[修正](../src/migration_harness/verification/repairs.py)、[工程スクリプト](../src/migration_harness/runs/stage_scripts.py) は別の担当です。CLIと画面は同じ保存・再開契約を使います。
 
-`run_root` と `worktree_root` はアプリルートの外に置き、互いに包含しない構成です。TOML から見たプロジェクトパスと、移行入力・移行先の基準の違いは [config.py](../src/migration_harness/config.py) の `load_config` に集約されています。設定の解釈はプロジェクトのパス、実行ツール、移行単位の順です。旧形式の共通資料は全移行単位から集めてから適用します。設定画面は `settings_form.py` でフォームの値を TOML の型に変換し、空欄で継承に戻す場合と、空配列を明示する場合を区別します。 Junie は起動ユーザーの OS 権限で動き、モデルサービスへ移行コンテキストが送られます。作業領域内に限定する指示と書き戻し前の照合が、ハーネス側のファイル反映の境界です。実行するフックやチェッカーの動作はその設定に従います。
+`run_root` と `worktree_root` はアプリルートの外に置き、互いに包含しない構成です。TOML から見たプロジェクトパスと、移行入力・移行先の基準の違いは [config.py](../src/migration_harness/config.py) の `load_config` に集約されています。設定の解釈はプロジェクトのパス、実行ツール、移行単位の順です。プロジェクトの共通資料は各移行単位に適用し、旧位置にある共通資料は自動移動せず設定エラーにします。設定画面は `settings_form.py` でフォームの値を TOML の型に変換し、空欄で継承に戻す場合と、空配列を明示する場合を区別します。 Junie は起動ユーザーの OS 権限で動き、モデルサービスへ移行コンテキストが送られます。作業領域内に限定する指示と書き戻し前の照合が、ハーネス側のファイル反映の境界です。実行するフックやチェッカーの動作はその設定に従います。
 
 ## 2. 起動からワークフローへの入口
 

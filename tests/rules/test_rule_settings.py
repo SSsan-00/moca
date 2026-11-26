@@ -59,40 +59,41 @@ target = "Orders.cs"
         self.assertEqual(reloaded["form"]["migrationRules"][1]["description"], "更新：DBの接続・再試行の例")
         self.assertEqual(self.rules(load_config(self.path))[1]["description"], "更新：DBの接続・再試行の例")
 
-    def test_old_project_and_legacy_unit_rules_default_to_required_without_rewriting_them(self):
-        content = self.content + '''
-[[units.inputs]]
-role = "migration_rules"
-path = "legacy.md" # Keep legacy note
-custom = 42
-'''
-        original = self.rules(self.save(content))
-        self.assertEqual([(rule["usage"], rule["description"]) for rule in original], [("required", ""), ("required", "")])
-        draft = build_settings_draft(content)
-        self.assertNotIn("usage =", draft["content"])
-        self.assertIn('path = "legacy.md" # Keep legacy note', draft["content"])
-        self.assertEqual(tomlkit.parse(draft["content"])["project"]["migration_rules"][1]["custom"], 42)
-        self.assertEqual(self.rules(self.save(draft["content"])), original)
+    def test_legacy_common_material_requires_manual_relocation_without_rewriting(self):
+        obsolete = (
+            ('role = "migration_rules"\n', "[[project.migration_rules]]"),
+            ('role = "reference_php"\nshared = true\n', "[[project.references]]"),
+        )
+        for fields, destination in obsolete:
+            with self.subTest(destination=destination):
+                candidate = self.content + '\n[[units.inputs]]\n' + fields + 'path = "old.md" # Keep note\n'
+                original = self.path.read_bytes()
+                draft = build_settings_draft(candidate)
+                self.assertIsNone(draft["form"])
+                self.assertIn(destination, draft["formError"])
+                self.assertEqual(draft["content"], candidate)
+                with self.assertRaises(ValueError) as invalid_form:
+                    build_settings_draft(candidate, {"project": {"root": "app"}})
+                self.assertIn(destination, str(invalid_form.exception))
+                with self.assertRaises(ValueError) as invalid_save:
+                    self.save(candidate)
+                self.assertIn(destination, str(invalid_save.exception))
+                self.assertEqual(self.path.read_bytes(), original)
+                self.path.write_bytes(candidate.encode("utf-8"))
+                with self.assertRaises(ValueError) as invalid_run:
+                    load_config(self.path)
+                self.assertIn(destination, str(invalid_run.exception))
+                self.assertEqual(self.path.read_bytes(), candidate.encode("utf-8"))
+                self.path.write_bytes(original)
 
-    def test_legacy_reference_metadata_survives_promotion_and_unrelated_form_edit(self):
-        content = self.content + '''
-[[units.inputs]]
-role = "migration_rules"
-path = "legacy-examples.md"
-usage = "reference" # Keep usage note
-description = "画面を移行するときに読む、入力検証の例" # Keep description note
-'''
-        original = self.rules(self.save(content))
-        draft = build_settings_draft(content)
-        entry = draft["form"]["migrationRules"][1]
-        self.assertEqual(entry["usage"], "reference")
-        draft = build_settings_draft(draft["content"], {"migrationRules": [
-            draft["form"]["migrationRules"][0],
-            {"index": entry["index"], "role": entry["role"], "path": entry["path"]},
-        ]})
-        self.assertIn('usage = "reference" # Keep usage note', draft["content"])
-        self.assertIn('description = "画面を移行するときに読む、入力検証の例" # Keep description note', draft["content"])
-        self.assertEqual(self.rules(self.save(draft["content"])), original)
+    def test_old_notification_settings_are_rejected_before_replacing_toml(self):
+        before = self.path.read_bytes()
+        obsolete = self.content + '\n[junie_notifications]\ninterval_seconds = 300\nrepeats = 2\n'
+        with self.assertRaisesRegex(ValueError, r"repeat_after_seconds = \[300, 600\]"):
+            self.save(obsolete)
+        self.assertEqual(self.path.read_bytes(), before)
+        current = self.content + '\n[junie_notifications]\nrepeat_after_seconds = [300, 600]\n'
+        self.assertEqual(self.save(current)["junie_notifications"]["repeat_after_seconds"], (300, 600))
 
     def test_switching_back_to_required_retains_optional_description_and_can_clear_it(self):
         rules = build_settings_draft(self.content)["form"]["migrationRules"]

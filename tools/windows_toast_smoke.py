@@ -19,7 +19,8 @@ def main():
     args = parser.parse_args()
     if os.name != "nt" or args.timeout <= 0:
         parser.error("Run on Windows with a positive timeout.")
-    settings = notification_settings({"interval_seconds": args.interval} if args.interval is not None else {})
+    settings = notification_settings({"repeat_after_seconds": [args.interval, 2 * args.interval]}
+                                     if args.interval is not None else {})
     key = RequestKey("native-fixture-b", "fixture-operation-b", "fixture-request-b")
     expected = {"run": [key.run_id], "junie_operation": [key.operation_id], "junie_request": [key.request_id]}
     waiting, clicked = Event(), Event()

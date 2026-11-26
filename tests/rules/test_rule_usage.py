@@ -30,15 +30,14 @@ description = "DBの詳細"
 [[project.migration_rules]]
 path = "legacy.md"
 encoding = "euc-jp"
+[[project.migration_rules]]
+path = "legacy.md"
+encoding = "euc-jp"
 
 [[units]]
 id = "one"
 source = "unread.php"
 target = "One.cs"
-[[units.inputs]]
-role = "migration_rules"
-path = "legacy.md"
-encoding = "euc-jp"
 [[units]]
 id = "two"
 source = "unread.php"

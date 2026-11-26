@@ -38,9 +38,7 @@ jobs:
         name: Run regression tests with required UI coverage
         env:
           TEST_SHARD: ${{ matrix.suite }}
-        run: |
-          node --version
-          python tests/run_shard.py "$env:TEST_SHARD" --require-ui --timings
+        run: python tests/run_shard.py "$env:TEST_SHARD" --require-ui --timings
       - if: matrix.suite == 'conversation-editor'
         run: python tests/run_shard.py conversation-editor --timings
       - if: matrix.suite == 'remaining'

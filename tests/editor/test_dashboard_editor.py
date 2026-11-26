@@ -892,16 +892,16 @@ path = "rules.php"
 role = "reference_php"
 path = "reference.php"
 
+[[project.references]]
+role = "reference_php"
+path = "other-reference"
+
 [[units]]""", 1) + """
 [[units]]
 id = "other"
 source = "other.php"
 target = "Other.cs"
 
-[[units.inputs]]
-role = "reference_php"
-path = "other-reference"
-shared = true
 """, encoding="utf-8",
         )
         self.settings.update(load_config(config_path))

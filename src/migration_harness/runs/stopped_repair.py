@@ -33,21 +33,27 @@ class _RecoveryPlan:
     stopped: dict[str, Path]
 
 
+def require_selected_repair_lineage(attempt):
+    if attempt is None or ("restore_from" not in attempt and "selection" not in attempt):
+        return
+    draft = attempt.get("draft")
+    if not isinstance(draft, dict) or not draft.get("stopped_snapshot") or not draft.get("base_snapshot"):
+        raise ValueError("停止下書きの選択に元の下書き版または作業ツリー版の記録がありません。"
+                         "保存済みの下書きと作業ツリーを比較し、必要な編集を新しい Run に引き継いでください。")
+
+
 def _original_stopped_draft(run_path, record, attempt):
     active = attempt.get("draft", {})
     if "restore_from" not in attempt and "selection" not in attempt:
         return active
+    require_selected_repair_lineage(attempt)
     verified_snapshot_files(run_path, active)
     history = record.get("stopped_repair_recovery", [])
     if not isinstance(history, list):
         raise ValueError("停止下書きの Run 復旧履歴を確認してください。")
-    if source_id := active.get("stopped_snapshot"):
-        candidates = [item for item in history if isinstance(item, dict) and item.get("snapshot") == source_id]
-        source = candidates[0] if len(candidates) == 1 else None
-    else:
-        # 旧形式は選択ごとに直前の下書き・Junie版・作業版の順で3件を保存した。
-        # 選択が複数あり得る履歴には停止の境界がなく、元の版を推測しない。
-        source = history[-3] if 3 <= len(history) < 6 else None
+    source_id = active["stopped_snapshot"]
+    candidates = [item for item in history if isinstance(item, dict) and item.get("snapshot") == source_id]
+    source = candidates[0] if len(candidates) == 1 else None
     if source:
         validate_snapshot_metadata(source)
     if not source or source["targets"].keys() != active["targets"].keys():
@@ -202,11 +208,8 @@ def _check_repair_adoption(run_path, record, draft, sources, adopted):
     if not adopted:
         return
     history = record.get("stopped_repair_recovery", ())
-    if snapshot_id := draft.get("base_snapshot"):
-        baseline = next((saved for saved in reversed(history) if saved["snapshot"] == snapshot_id), {})
-    else:
-        # Older plans stored the worktree backup last, immediately before saving the selection.
-        baseline = history[-1] if history else {}
+    snapshot_id = draft["base_snapshot"]
+    baseline = next((saved for saved in reversed(history) if saved["snapshot"] == snapshot_id), {})
     expected = draft["base"]
     if (baseline.get("base") != expected
             or baseline.get("targets") != {name: expected[name] for name in draft["targets"]}):
@@ -255,6 +258,7 @@ def recover_selected_repair(run_path, worktree, targets, record):
 
 
 def _restore_selected_repair(run_path, worktree, targets, record, attempt):
+    require_selected_repair_lineage(attempt)
     draft = attempt.get("draft")
     validate_snapshot_metadata(draft)
     baseline, selected_hashes = draft["base"], draft["targets"]

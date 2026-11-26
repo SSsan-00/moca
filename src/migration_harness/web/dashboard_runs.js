@@ -327,7 +327,8 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
         }
         const states = {confirmed: "確認", unchecked: "未確認", error: "不備", skipped: "対象外"};
         feedback.textContent = [
-          result.configuration_ok ? "確認範囲に設定上の不備はありません。実移行は未実行です。" : "設定を確認してください。",
+          result.simulated ? "デモの結果例です。実際のファイルやコマンドは確認していません。"
+            : result.configuration_ok ? "確認範囲に設定上の不備はありません。実移行は未実行です。" : "設定を確認してください。",
           `移行単位: ${result.unit_id}／基準: ${result.commit ?? result.base_ref}`,
           ...result.checks.map(check => `[${states[check.state]}] ${check.phase}: ${check.detail}`
             + (check.command ? `

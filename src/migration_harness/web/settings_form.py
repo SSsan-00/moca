@@ -9,7 +9,9 @@ from typing import Any
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
-from ..config import REFERENCE_ROLES, SCRIPT_PHASES, validate_rule_usage
+from ..config import (
+    REFERENCE_ROLES, SCRIPT_PHASES, validate_rule_usage, validate_unit_material_locations,
+)
 
 
 _TABLE_FIELDS = {
@@ -56,7 +58,7 @@ def _material_form_entry(item: Any, index: int, key: str) -> dict[str, Any]:
         if key != "references" or role in REFERENCE_ROLES:
             fields = _INPUT_FIELDS + _RULE_FIELDS if role == "migration_rules" else _INPUT_FIELDS
             return {"index": index, "role": role or "", **{name: item[name] for name in fields if name in item}}
-    # フォームに出せない旧設定も、元の位置を保持して保存時に残す。
+    # フォームに対応しない入力は、元の位置を保持する。
     return {"index": index}
 
 
@@ -136,48 +138,6 @@ def _apply_material_edits(container: Mapping, key: str, edits: Any) -> None:
                 item.pop(name, None)
             elif item.get(name) != value:
                 item[name] = value
-
-
-def _promote_legacy_materials(document: Any, units: list) -> bool:
-    """旧設定の共通資料を移し、行範囲、文字コード、コメントを保持する。"""
-    promoted = False
-    for unit in units:
-        inputs = unit.get("inputs")
-        if not isinstance(inputs, list):
-            continue
-        legacy = []
-        for index, item in enumerate(inputs):
-            if not isinstance(item, Mapping):
-                continue
-            role = item.get("role")
-            if role == "migration_rules":
-                key = "migration_rules"
-                item.pop("role")
-            elif role in REFERENCE_ROLES and item.get("shared") is True:
-                key = "references"
-            else:
-                continue
-            legacy.append(index)
-            item.pop("shared", None)
-            project = document.setdefault("project", tomlkit.table())
-            materials = project.setdefault(key, tomlkit.aot())
-            if key == "migration_rules" and item in materials:
-                continue
-            if isinstance(materials, tomlkit.items.Array):
-                destination = tomlkit.inline_table()
-                destination.update(item.unwrap())
-                item = destination
-            elif isinstance(item, tomlkit.items.InlineTable):
-                destination = tomlkit.table()
-                destination.update(item)
-                item = destination
-            materials.append(item)
-        for index in reversed(legacy):
-            del inputs[index]
-        if legacy and not inputs:
-            unit.pop("inputs")
-        promoted = promoted or bool(legacy)
-    return promoted
 
 
 def _apply_table_edits(document: Any, changes: dict[str, Any]) -> None:
@@ -370,7 +330,14 @@ def build_settings_draft(content: str, changes: dict[str, Any] | None = None) ->
             raise ValueError("TOMLを直接編集し、書式を修正してください。") from None
         return {"content": content, "form": None}
 
-    promoted = _promote_legacy_materials(document, units)
+    for unit in units:
+        try:
+            validate_unit_material_locations(unit)
+        except ValueError as error:
+            if changes:
+                raise
+            return {"content": content, "form": None, "formError": str(error)}
+
     if changes:
         unit_changes = changes.get("units", {})
         if not isinstance(unit_changes, dict):
@@ -385,7 +352,6 @@ def build_settings_draft(content: str, changes: dict[str, Any] | None = None) ->
             _remove_empty_units(document.get("units", []), changes["removeEmptyUnits"])
         if "scripts" in changes:
             _apply_script_edits(document, changes["scripts"])
-    if changes or promoted:
         content = tomlkit.dumps(document)
 
     return {"content": content, "form": _settings_form(document)}
