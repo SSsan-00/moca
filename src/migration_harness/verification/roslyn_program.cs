@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Microsoft.CodeAnalysis;
@@ -17,6 +18,9 @@ internal static partial class Program
     private sealed record Target(string Path, string? Text);
 
     private const int MaxFindings = 40;
+    // Earlier .NET 9 Razor SDKs expose the generated C# as a string.
+    private static readonly PropertyInfo? RazorGeneratedText = typeof(RazorCSharpDocument).GetProperty("Text")
+        ?? typeof(RazorCSharpDocument).GetProperty("GeneratedCode");
     private static readonly CSharpParseOptions Options = new(LanguageVersion.Preview, kind: SourceCodeKind.Regular);
 
     private static int Main(string[] args)
@@ -97,7 +101,7 @@ internal static partial class Program
         var original = SourceText.From(target.Text ?? "");
         RazorCSharpDocument? razor = target.Path.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase)
             ? RazorCode(target.Path, original.ToString()) : null;
-        var generated = razor?.Text ?? original;
+        var generated = razor is null ? original : GetRazorGeneratedText(razor);
         var parse = CSharpSyntaxTree.ParseText(generated, Options);
         foreach (var token in parse.GetRoot().DescendantTokens())
         {
@@ -135,6 +139,13 @@ internal static partial class Program
         JoinIntoClauseSyntax node => token == node.Identifier,
         QueryContinuationSyntax node => token == node.Identifier,
         _ => false,
+    };
+
+    private static SourceText GetRazorGeneratedText(RazorCSharpDocument razor) => RazorGeneratedText?.GetValue(razor) switch
+    {
+        SourceText text => text,
+        string code => SourceText.From(code),
+        _ => throw new InvalidOperationException("Generated Razor C# is not exposed by this SDK."),
     };
 
     private static RazorCSharpDocument RazorCode(string path, string source)
