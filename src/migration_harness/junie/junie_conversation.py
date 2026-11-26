@@ -16,6 +16,7 @@ from ..files import safe_target
 from ..runs.editor_queue import saved_edits, EDITOR_TARGET_SUFFIXES, editor_prompt_selection, editor_queue, editor_text
 from ..runs.run_records import load_saved_run, run_model_options, validate_run_id
 from ..runs.worktree_targets import target_versions, review_target_hash
+from ..verification.diagnostic_log import review_log
 from ..verification.checker_advisory import AdvisoryReplyTooLarge, AdvisoryTransportLimit, run_text_advisory
 from .junie_cli import JunieStopError
 
@@ -240,9 +241,7 @@ def invalidate_queued_steering(queue):
 
 
 def _diagnostic(run_path, kind):
-    from ..workflow import _review_log
-
-    text, truncated = _review_log(run_path, f"{kind}.log")
+    text, truncated = review_log(run_path, f"{kind}.log")
     return {"kind": kind, "text": text[-8_000:], "truncated": truncated or len(text) > 8_000} if text else None
 
 

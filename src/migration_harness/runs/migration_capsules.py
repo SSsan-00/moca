@@ -14,7 +14,7 @@ from ..context.migration_materials import (
 from ..context.source_context import stage_target_context
 from ..errors import RunInterrupted, format_error
 from ..execution import check_cancelled, report_activity
-from ..files import safe_target
+from ..files import has_completion_record, safe_target
 from ..junie import junie_cli, migration_session
 from ..junie.migration_session import task_guidelines, unlisted_workspace_files
 from ..rules import detail_selection
@@ -142,7 +142,7 @@ def _run_editor_followup(
                 record_path, record, worktree, agent_root, targets, allowed, other_files, prior["targets"],
             )
         raise ValueError("追加指示の実行中に移行対象外のファイルが変更されました。")
-    complete = junie_cli.has_completion_record(completion, token) and all(
+    complete = has_completion_record(completion, token) and all(
         safe_target(agent_root, target).is_file() for target in targets
     )
     # 質問も未完了として扱い、同じ照合で下書きを一度だけ保存する。
@@ -283,7 +283,7 @@ def execute_migration_capsule(config, run_path, record, worktree_root, agent_roo
             if len(changed) > 5:
                 paths += f" (+{len(changed) - 5} more)"
             raise ValueError(f"Junie changed files outside the configured targets: {paths}")
-        completion_recorded = junie_cli.has_completion_record(completion_path, completion_token)
+        completion_recorded = has_completion_record(completion_path, completion_token)
         missing = [path.as_posix() for path, file in zip(relative_targets, agent_targets, strict=True) if not file.is_file()]
         complete = completion_recorded and not missing
         if not complete and (prior := record.get("stopped_migration_draft")):

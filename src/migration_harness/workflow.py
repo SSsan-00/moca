@@ -33,7 +33,7 @@ from .runs.verification_edits import apply_verification_edits
 from .runs.worktree_targets import finish_pending_targets, review_target_hash
 from .verification.build_cycle import build_failure_review, respond_to_build_failure
 from .verification.checker_cycle import repair_from_checker_instruction, resume_checker, review_checker
-from .verification.diagnostic_log import remember_diagnostic, review_log as _review_log
+from .verification.diagnostic_log import remember_diagnostic
 from .verification.pipeline import run_verification
 
 

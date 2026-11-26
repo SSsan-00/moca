@@ -18,7 +18,7 @@ from ..context.source_context import (
     target_context_snapshot,
 )
 from ..execution import report_activity
-from ..files import safe_target
+from ..files import has_completion_record, safe_target
 from ..junie import junie_cli, migration_session
 from ..junie.migration_session import task_guidelines, unlisted_workspace_files
 from ..rules import detail_selection
@@ -154,7 +154,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     paths = tuple(safe_target(proposal, path) for path in targets)
     migration_session.run_budgeted_junie(config, run_path / "run.json", record, "reference_refresh", guidelines, proposal, inputs,
                        args, completion, token, paths, report_usage=run_records.junie_usage_recorder(run_path, "reference_refresh"))
-    if (not junie_cli.has_completion_record(completion, token) or guarded != unlisted_workspace_files(proposal, allowed)
+    if (not has_completion_record(completion, token) or guarded != unlisted_workspace_files(proposal, allowed)
             or not all(path.is_file() for path in paths) or target_context_snapshot(capsule) != pinned):
         raise ValueError("参考資料への追従案を安全に確認できませんでした。")
     return proposal

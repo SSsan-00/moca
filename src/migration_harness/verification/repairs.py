@@ -18,7 +18,7 @@ from ..context.source_context import stage_target_context
 from ..context.target_evidence import diagnostic_references
 from ..errors import CheckerRepairBlocked
 from ..execution import check_cancelled, report_activity
-from ..files import safe_target
+from ..files import has_completion_record, safe_target
 from ..junie import junie_cli, migration_session
 from ..junie.migration_session import task_guidelines, unlisted_workspace_files
 from ..rules.rule_materials import effective_details
@@ -391,7 +391,7 @@ def _adopt_repair_result(run_path, worktree, agent_root, repair_targets, record,
     if unlisted_workspace_files(agent_root, allowed) != other_files:
         raise CheckerRepairBlocked("unexpected_changes", "Junie changed files outside the repair targets; inspect the agent workspace")
     agent_targets = tuple(safe_target(agent_root, path) for path in repair_targets)
-    completed = junie_cli.has_completion_record(completion_path, token)
+    completed = has_completion_record(completion_path, token)
     question = read_operator_review(report, agent_root, worktree, repair_targets, record, completed=completed)
     if question:
         _remember_repair_draft(record, attempt.pop("draft", None))

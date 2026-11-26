@@ -18,9 +18,9 @@ from ..runs.editor_queue import editor_text
 from ..runs.recovery_status import recovery_status
 from ..runs.run_records import load_dashboard_record, load_saved_run, validate_run_id
 from ..runs.worktree_targets import EDIT_BYTES
+from ..verification.diagnostic_log import review_log
 from ..workflow import (
     BUILD_THROUGH_STAGE,
-    _review_log,
     build_failure_review,
     migration_ledger,
     plan_stopped_repair,
@@ -89,7 +89,7 @@ def send_checker_output(request) -> None:
         if record["status"] not in {"checker_needs_review", "checker_failed"}:
             raise ValueError("チェッカーの結果が変わりました。確認画面を開き直してください。")
         if query.get("download") != ["1"]:
-            output, truncated = _review_log(run_path, "checker.log")
+            output, truncated = review_log(run_path, "checker.log")
             body = json.dumps({"output": output, "truncated": truncated}, ensure_ascii=False).encode()
             request.send_body(200, "application/json; charset=utf-8", body)
             return

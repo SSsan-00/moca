@@ -138,7 +138,7 @@ src/migration_harness の直下に CLI・設定・工程制御と共通処理を
 | モジュール | 担当 |
 | --- | --- |
 | [cli.py](src/migration_harness/cli.py)・[config.py](src/migration_harness/config.py) | コマンドの入口、TOML検証と正規化。 |
-| [workflow.py](src/migration_harness/workflow.py) | 準備・移行・再開の順序、Junieへの指示、ビルド・チェッカーの実行と修正、移行台帳。 |
+| [workflow.py](src/migration_harness/workflow.py) | 準備・移行・検証・再開の入口と工程順。各処理の責務は[処理フロー](docs/architecture.md)を参照。 |
 | [checker_output.py](src/migration_harness/verification/checker_output.py) | チェッカー出力の解析、成功文言の判定、指摘ID・修正用識別子の生成、対象ファイルの版にひも付く承認の照合。 |
 | [capsules.py](src/migration_harness/context/capsules.py)・[rule_materials.py](src/migration_harness/rules/rule_materials.py) | 入力の固定、分割、資料・manifestの生成と読み戻し。 |
 | [run_records.py](src/migration_harness/runs/run_records.py)・[timings.py](src/migration_harness/runs/timings.py) | Runの検証・保存と工程計測。 |
@@ -147,7 +147,7 @@ src/migration_harness の直下に CLI・設定・工程制御と共通処理を
 | [csharp_keyword_guard.py](src/migration_harness/verification/csharp_keyword_guard.py) | 反映前に、新しく追加した予約語エスケープ付き宣言を確認。 |
 | [source_context.py](src/migration_harness/context/source_context.py) | 移行先周辺の参照ファイルの固定と復元。 |
 | [junie_cli.py](src/migration_harness/junie/junie_cli.py)・[execution.py](src/migration_harness/execution.py) | Junie の起動・停止確認・通信再試行、外部プロセスの実行とキャンセル。ACP、ログ照合、使用量の分担は[アーキテクチャ](docs/architecture.md#プロセスと成果物の受け渡し)を参照。 |
-| [dashboard.py](src/migration_harness/web/dashboard.py) | ローカルHTTPとSSE、設定・進捗・レビュー・エディタの操作窓口。 |
+| [dashboard.py](src/migration_harness/web/dashboard.py)・[dashboard_http.py](src/migration_harness/web/dashboard_http.py) | 表示とサーバー構成、HTTPとSSEの共通入口。設定・進捗・比較・編集は対応する操作モジュールが担当。 |
 | [run_manager.py](src/migration_harness/runs/run_manager.py) | 最大5件の並列実行、待機キューの保存・復元、Runごとの状態と操作の振り分け。 |
 | [editor_queue.py](src/migration_harness/runs/editor_queue.py) | 手修正と追加指示の保存・送信待ち、変更の合流と競合判定。移行先ソースの読み書きは `worktree_targets.py` に集約する。 |
 | [diff_viewer.py](src/migration_harness/web/diff_viewer.py)・[review_anchors.py](src/migration_harness/web/review_anchors.py) | 一貫した比較スナップショットの作成、対応行の提案と検証。 |
