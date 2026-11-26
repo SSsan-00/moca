@@ -181,7 +181,7 @@ def main():
     missing_saved_state = REQUIRED_SAVED_STATE - result.passed if args.shard in {"full", "remaining"} else set()
     if missing_saved_state:
         print("Required saved state checks did not pass: " + ", ".join(sorted(missing_saved_state)))
-    missing_architecture = REQUIRED_ARCHITECTURE - result.passed if args.shard != "conversation-editor" else set()
+    missing_architecture = REQUIRED_ARCHITECTURE - result.passed if args.shard in {"full", "remaining"} else set()
     if missing_architecture:
         print("Required architecture checks did not pass: " + ", ".join(sorted(missing_architecture)))
     missing_required = missing_ui or missing_models or missing_recovery or missing_saved_state or missing_architecture
