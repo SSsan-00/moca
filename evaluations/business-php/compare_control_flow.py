@@ -2,6 +2,7 @@ import argparse
 from collections import Counter
 from hashlib import sha256
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -107,8 +108,10 @@ class Roslyn:
         self.preparation_failed = False
 
     def _execute(self, command, *, payload=None, timeout):
+        env = os.environ | {"DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE": "1"}
         try:
-            result = subprocess.run(command, cwd=self.workspace, input=payload, capture_output=True, timeout=timeout)
+            result = subprocess.run(command, cwd=self.workspace, input=payload, capture_output=True,
+                                    timeout=timeout, env=env)
         except (OSError, subprocess.SubprocessError):
             raise ValueError("roslyn_unavailable") from None
         if result.returncode:
@@ -123,7 +126,7 @@ class Roslyn:
                 for name in ("Program.cs", "MocaControlFlow.csproj", "global.json", "NuGet.Config"):
                     shutil.copyfile(_HELPER / name, self.workspace / name)
                 self._execute(["dotnet", "build", "MocaControlFlow.csproj", "-c", "Release",
-                               "-o", "out", "--nologo", "-v", "quiet"], timeout=75)
+                               "-o", "out", "--disable-build-servers", "--nologo", "-v", "quiet"], timeout=75)
             except (OSError, ValueError):
                 self.preparation_failed = True
                 raise ValueError("roslyn_unavailable") from None
