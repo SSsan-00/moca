@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 
 from ..execution import HEARTBEAT_SECONDS, check_cancelled, report_activity
 from ..files import safe_target, sha256_file
+from ..saved_state import content_hash, nonempty_text
 
 
 def _fingerprint(root: Path, excluded=(), *, label: str | None = None) -> str:
@@ -146,9 +147,37 @@ def build_artifacts(worktree: Path, inputs: dict) -> dict | None:
         return None
 
 
+_INPUT_NAMES = frozenset({"project", "framework", "dotnet"})
+_INPUT_HASHES = frozenset({"source", "environment", "launcher", "framework_packs"})
+_ARTIFACT_HASHES = frozenset({"bin", "obj"})
+
+
+def _valid_build_receipt(receipt):
+    if not isinstance(receipt, dict) or receipt.keys() != {"inputs", "artifacts"}:
+        return False
+    inputs, artifacts = receipt["inputs"], receipt["artifacts"]
+    return (
+        isinstance(inputs, dict) and inputs.keys() == _INPUT_NAMES | _INPUT_HASHES
+        and all(nonempty_text(inputs[name]) for name in _INPUT_NAMES)
+        and all(content_hash(inputs[name]) for name in _INPUT_HASHES)
+        and isinstance(artifacts, dict) and artifacts.keys() == _ARTIFACT_HASHES
+        and all(content_hash(value) for value in artifacts.values())
+    )
+
+
+def same_build_artifacts(worktree, inputs, receipt):
+    return (
+        _valid_build_receipt(receipt)
+        and receipt["inputs"] == inputs
+        and (artifacts := build_artifacts(worktree, inputs)) is not None
+        and artifacts == receipt["artifacts"]
+    )
+
+
 def check_build_receipt(config, worktree, record):
     receipt = record.get("checker_build")
-    if record.get("build_exit_code") != 0 or not receipt:
+    exit_code = record.get("build_exit_code")
+    if type(exit_code) is not int or exit_code != 0 or not _valid_build_receipt(receipt):
         raise ValueError("照合できるビルド成果物がありません。ビルドを実行してください。")
     inputs = build_inputs(worktree, config["build_project"])
     if not inputs or receipt["inputs"] != inputs:

@@ -29,6 +29,7 @@ from migration_harness.junie import junie_conversation
 from migration_harness.junie.junie_conversation import _intent
 from migration_harness.runs.run_manager import RunManager
 from migration_harness.verification import checker_advisory
+from build_receipt_fixtures import saved_build_receipt
 from fixtures import SavedRunFixture
 from test_checker_advisory import LITE_EMPTY_MODELS, LITE_SELECTED, acp_reply
 
@@ -710,9 +711,10 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(self.record()["status"], "build_succeeded")
 
     def test_dashboard_checker_from_uses_saved_build_without_rebuilding(self):
-        inputs, outputs = {"build": "fixture-inputs"}, {"App.dll": "fixture-artifact"}
+        receipt = saved_build_receipt()
+        inputs, outputs = receipt["inputs"], receipt["artifacts"]
         previous = self.record()
-        previous["checker_build"] = {"inputs": inputs, "artifacts": outputs}
+        previous["checker_build"] = receipt
         previous["verification"] = {"target_hashes": {
             self.target.name: target_files.review_target_hash(self.worktree, Path(self.target.name)),
         }}

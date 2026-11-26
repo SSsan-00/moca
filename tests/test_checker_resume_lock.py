@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
+from build_receipt_fixtures import saved_build_receipt
 from fixtures import SavedRunFixture
 from migration_harness import workflow
 from migration_harness.verification import build_receipt, checker_cycle
@@ -15,7 +16,7 @@ class CheckerResumeLockTests(SavedRunFixture):
     def setUp(self):
         super().setUp()
         record = self.record()
-        self.receipt = {"inputs": {"source": "fixture"}, "artifacts": {"bin": "fixture"}}
+        self.receipt = saved_build_receipt()
         record.update(checker_build=self.receipt, verification={})
         self.save_record(record)
 
