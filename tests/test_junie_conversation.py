@@ -488,7 +488,7 @@ class JunieConversationTests(SavedRunFixture):
         for index in (2, 3):
             part = capsule / f"context-{index}.txt"
             part.write_text(f"capsule {index}", encoding="utf-8")
-            manifest["parts"].append({"index": index, "path": str(part), "chars": 9})
+            manifest["parts"].append({"index": index, "path": str(part), "chars": 9, "sources": []})
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         agent = self.run_path / "agent-workspace"
         agent.mkdir()

@@ -436,7 +436,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             manifest = json.loads(manifest_path.read_bytes())
             second = self.capsule / "second.txt"
             second.write_bytes(b"second capsule")
-            manifest["parts"].append({"index": 2, "path": str(second), "chars": 14})
+            manifest["parts"].append({"index": 2, "path": str(second), "chars": 14, "sources": []})
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             record.update(status="interrupted", current_capsule=2, context_capsules=2)
         (self.worktree / self.targets[0]).write_bytes(self.human.encode("utf-8-sig"))
