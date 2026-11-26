@@ -415,6 +415,11 @@ def run_verification(
             if remaining is None:
                 return checked
             if not remaining and not use_raw_output:
+                verification = record["verification"]
+                if (verification["inputs_changed_during_verification"] or None in verification["input_files"].values()
+                        or any(digest is None or review_target_hash(worktree, Path(name)) != digest
+                               for name, digest in hashes.items())):
+                    return checked
                 require_repair_targets(record, ())
                 record["status"] = "checker_accepted"
                 finish_repair_attempt(record)

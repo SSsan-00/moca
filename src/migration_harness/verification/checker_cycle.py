@@ -301,7 +301,7 @@ def _review_checker(
     if log_path.is_symlink() or not log_path.is_file():
         raise ValueError("checker log must be a regular file inside the run directory")
     findings, unrecognized = checker_output.checker_findings(log_path, worktree)
-    recorded_hashes = record.get("review_file_hashes")
+    recorded_hashes = record.get("review_file_hashes") if finding_id is not None or record.get("checker_reviews") else {}
     verification = record.get("verification")
     if not recorded_hashes or not has_verification_evidence(verification):
         if finding_id is not None:
@@ -321,7 +321,8 @@ def _review_checker(
             or verification["input_files"] != verification_files(config, worktree, unit["target"], command, scripts)
         ):
             if finding_id is not None:
-                raise ValueError("the reviewed file changed or was missing, or verification conditions changed; resume to get current findings")
+                raise ValueError("the reviewed file changed or was missing, or verification conditions changed; "
+                                 "resume to get current findings")
             recorded_hashes = {}
     hashes = {
         path: recorded_hashes.get(path)

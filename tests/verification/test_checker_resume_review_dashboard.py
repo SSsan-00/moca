@@ -1705,6 +1705,19 @@ class CheckerResumeApprovalTests(SavedRunFixture):
                 self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["complete"])
                 self.assertEqual(self.record_path.read_bytes(), before)
 
+    def test_checker_only_plan_is_stale_when_the_external_checker_input_changes(self):
+        script = self.worktree.parent / "checker.py"
+        script.write_bytes(b"print('original')\n")
+        self.config["checker_command"] = [sys.executable, str(script)]
+        plan = {**workflow.plan_checker_resume(self.config, self.run_id), "id": "planned-checker"}
+        before = self.record_path.read_bytes()
+        script.write_bytes(b"print('revised')\n")
+        with patch.object(execution, "run_process") as command:
+            with self.assertRaisesRegex(ValueError, "チェッカー条件が更新されました"):
+                workflow.resume_with_junie(self.config, self.run_id, verification_request=plan)
+            command.assert_not_called()
+        self.assertEqual(self.record_path.read_bytes(), before)
+
     def test_changed_target_invalidates_the_receipt_and_existing_approval(self):
         plan = {**workflow.plan_checker_resume(self.config, self.run_id), "id": "old-target"}
         self.target.write_text("class Updated {}\n", encoding="utf-8")

@@ -58,11 +58,11 @@ def require_saved_checker(config, record):
         raise ValueError("この Run に必要なチェッカーを設定してください。")
 
 
-def has_unconfirmed_repair_history(record):
+def has_unconfirmed_repair_history(record) -> bool:
     history = record.get("repair_history")
     return (
         record.get("error") == "repair interrupted; inspect Junie's workspace"
-        and not record.get("repair_pending") and history
+        and "repair_pending" not in record and bool(history)
         and "junie_exit_code" not in history[-1] and not record.get("target_apply_pending")
     )
 
@@ -77,8 +77,8 @@ def can_resume_run(config: dict[str, Any], record: dict[str, Any]) -> bool:
     status = record.get("status")
     if (has_unconfirmed_repair_history(record) or record.get("script_inflight") or record.get("unconfirmed_command")
             or record.get("migration_stop_unconfirmed") or status not in (
-        _SCRIPT_RESUME_STATUSES | CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES
-    )):
+                _SCRIPT_RESUME_STATUSES | CHECKER_RESUME_STATUSES | VERIFIED_STATUSES | _BUILD_RESUME_STATUSES | _JUNIE_RESUME_STATUSES
+            )):
         return False
     if "unit_id" in record:
         find_unit(config, record["unit_id"])
@@ -261,6 +261,7 @@ def plan_checker_resume(config, run_id):
     with editor_queue_store.editor_queue(run_path) as queue, worktree_source_lock(worktree):
         _, _, record, unit = run_records.load_saved_run(config, run_id)
         require_completed_command(record)
+        require_confirmed_repair_history(record)
         if record.get("script_decisions_pending"):
             raise ValueError("Resolve the saved one-time script response before running the checker alone")
         if record.get("verification_script_pending") is not None:
