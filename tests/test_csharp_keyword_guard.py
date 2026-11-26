@@ -321,6 +321,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
                 self.apply_pair("Page.cs", page(before), page(after), r"Page.cs:1:.*@event")
         for before, after in (
             ("Call(() => { int @event = 1; }, NoOp);", "Call(NoOp, () => { int @event = 1; });"),
+            (f"Call({callback}); Call(NoOp);", f"Call(NoOp); Call({callback});"),
             (f"Call({callback});", f"Other({callback});"),
             (f"first?.Call({callback});", f"second?.Call({callback});"),
             (f"Call({callback});", f"Call({ordinary}); Call({callback});"),
@@ -333,6 +334,8 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         self.apply_pair("Page.cs", page(before), page("Prepare(); " + before.replace(
             "int @event = 1;", "int @event = 3; api.@class();")))
         self.apply_pair("Page.cs", page(before), page(f"Call(second: {ordinary}, first: {callback});"))
+        chain = f"items.Select(x => x+1).Call({callback});"
+        self.apply_pair("Page.cs", page(chain), page(chain.replace("x+1", "x+2")))
 
     @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
     def test_existing_razor_namespace_and_conditional_scopes_are_not_interchangeable(self):

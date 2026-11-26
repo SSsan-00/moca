@@ -66,37 +66,47 @@ internal static partial class Program
         Dictionary<SyntaxNode, (string? Binding, string? Retainer)> cache)
     {
         var owner = callback.Ancestors().First(IsCallbackOwner);
-        var callbacks = owner.DescendantNodes(node => node == owner || !IsCallbackOwner(node))
-            .OfType<AnonymousFunctionExpressionSyntax>();
-        foreach (var group in callbacks.GroupBy(node => CallbackSite(node, owner)))
+        var sites = owner.DescendantNodes(node => node == owner || !IsCallbackOwner(node))
+            .Where(node => node is AnonymousFunctionExpressionSyntax or BaseArgumentListSyntax).ToArray();
+        // Count calls with method groups or other arguments too: a callback can move into one of those slots.
+        var calls = new Dictionary<BaseArgumentListSyntax, string>();
+        foreach (var group in sites.OfType<BaseArgumentListSyntax>().GroupBy(list => CallbackSite(list, owner)))
         {
-            // Repeated indistinguishable calls must keep both their order and their count.
-            int ordinal = 0, count = group.Count();
-            foreach (var node in group)
-                cache[node] = ($"callback:{ordinal++}/{count}:{group.Key}", null);
+            var ordinal = 0;
+            foreach (var list in group) calls.Add(list, $"{ordinal++}/{group.Count()}");
+        }
+        foreach (var group in sites.OfType<AnonymousFunctionExpressionSyntax>().GroupBy(node => CallbackSite(node, owner, calls)))
+        {
+            var ordinal = 0;
+            foreach (var node in group) cache[node] = ($"callback:{ordinal++}/{group.Count()}:{group.Key}", null);
         }
     }
 
-    private static string CallbackSite(AnonymousFunctionExpressionSyntax callback, SyntaxNode owner)
+    private static string CallbackSite(SyntaxNode node, SyntaxNode owner,
+        IReadOnlyDictionary<BaseArgumentListSyntax, string>? calls = null)
     {
-        var path = new List<string> { callback.Kind().ToString() };
-        for (SyntaxNode child = callback; child.Parent is { } parent && parent != owner; child = parent)
+        var path = new List<string> { node.Kind().ToString() };
+        for (var child = node; child.Parent is { } parent && parent != owner; child = parent)
         {
             if (parent is ParenthesizedExpressionSyntax) continue;
             var slot = (parent, child) switch
             {
                 (BaseArgumentListSyntax list, ArgumentSyntax arg) => arg.NameColon is { } name
                     ? "named:" + name.Name.Identifier.ValueText : "position:" + list.Arguments.IndexOf(arg),
-                (InvocationExpressionSyntax call, ArgumentListSyntax) => KeywordHeader(call.Expression),
-                (ConditionalAccessExpressionSyntax access, _) when child == access.WhenNotNull => KeywordHeader(access.Expression),
+                (InvocationExpressionSyntax call, ArgumentListSyntax) => CallbackHeader(call.Expression),
+                (ConditionalAccessExpressionSyntax access, _) when child == access.WhenNotNull => CallbackHeader(access.Expression),
                 (ObjectCreationExpressionSyntax creation, ArgumentListSyntax) => KeywordHeader(creation.Type),
-                (AssignmentExpressionSyntax assignment, _) when child == assignment.Right => KeywordHeader(assignment.Left),
+                (AssignmentExpressionSyntax assignment, _) when child == assignment.Right => CallbackHeader(assignment.Left),
                 _ => parent.ChildNodes().TakeWhile(sibling => sibling != child).Count().ToString(),
             };
+            if (calls is not null && parent is BaseArgumentListSyntax args) slot += ":" + calls[args];
             path.Add(parent.RawKind + ":" + slot);
         }
         return JsonSerializer.Serialize(path);
     }
+
+    private static string CallbackHeader(SyntaxNode node) =>
+        KeywordTokens(node.DescendantTokens(child => child is not AnonymousFunctionExpressionSyntax));
 
     private static bool IsNamedKeywordMember(SyntaxToken token) => token.Parent switch
     {
