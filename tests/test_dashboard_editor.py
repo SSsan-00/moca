@@ -23,6 +23,8 @@ from migration_harness.web import dashboard
 from migration_harness.runs import editor_queue, run_records, worktree_targets
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
+from migration_harness import errors, execution
+from migration_harness.runs import editor_queue as editor_queue_store
 from migration_harness.config import load_config
 from migration_harness.execution import control_scope
 from migration_harness.verification import build_receipt
@@ -101,7 +103,7 @@ class DashboardEditorTests(HarnessCase):
                 self.assertEqual(command, ["fixture-checker"])
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=process) as execute, redirect_stdout(io.StringIO()):
+        with patch.object(execution, "run_process", side_effect=process) as execute, redirect_stdout(io.StringIO()):
             self.assertEqual(workflow.resume_with_junie(self.settings, run_id)["status"], "checker_succeeded")
         self.assertEqual(execute.call_count, 2)
         self.view.ready(self.settings, run_records.load_saved_run(self.settings, run_id)[2])
@@ -146,7 +148,7 @@ class DashboardEditorTests(HarnessCase):
         self.assertEqual(raised.exception.code, 409)
         self.assertIn("再ビルド", raised.exception.read().decode("utf-8"))
         raised.exception.close()
-        with patch.object(workflow, "run_process") as execute, self.assertRaises(ValueError):
+        with patch.object(execution, "run_process") as execute, self.assertRaises(ValueError):
             workflow.resume_with_junie(self.settings, run_id, verification_request={**old_plan, "id": "old-checker"})
         execute.assert_not_called()
         with editor_queue.editor_queue(run_path) as queue:
@@ -366,7 +368,7 @@ class DashboardEditorTests(HarnessCase):
                 with control_scope(control), \
                         patch.object(junie_cli, "require_interactive_cli"), \
                         patch.object(junie_cli, "_launch_process", side_effect=launch_agent), \
-                        patch.object(workflow, "run_process", side_effect=build), \
+                        patch.object(execution, "run_process", side_effect=build), \
                         patch.dict("os.environ", {"JUNIE_HOME": str(self.root / "junie-home")}):
                     if cancelled:
                         with self.assertRaises(workflow.RunInterrupted):
@@ -421,7 +423,7 @@ class DashboardEditorTests(HarnessCase):
                         self.assertEqual(len(calls), 2)
                         self.assertIn("Last = 42", (worktree / "Page.cs").read_text(encoding="utf-8-sig"))
                     else:
-                        with self.assertRaises(workflow.CheckerRepairBlocked) as blocked:
+                        with self.assertRaises(errors.CheckerRepairBlocked) as blocked:
                             workflow._attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
                                                      run_path, "diagnostic", record, {"kind": "build"})
                         self.assertEqual(blocked.exception.reason, "operator_conflict" if scenario == "conflict" else "handoff_unsafe")
@@ -445,7 +447,7 @@ class DashboardEditorTests(HarnessCase):
                 self.view.begin_operation()
                 calls, builds = [], []
                 instruction = "Keep Last = 42 when continuing."
-                merge = workflow._apply_editor_edits
+                merge = editor_queue_store.apply_editor_edits
 
                 def edit_handoff(*args):
                     applied = merge(*args)
@@ -499,8 +501,8 @@ class DashboardEditorTests(HarnessCase):
                 with (
                     patch.object(junie_cli, "require_interactive_cli"),
                     patch.object(junie_cli, "run_interactive", side_effect=junie),
-                    patch.object(workflow, "_apply_editor_edits", side_effect=edit_handoff),
-                    patch.object(workflow, "run_process", side_effect=build), redirect_stdout(io.StringIO()),
+                    patch.object(editor_queue_store, "apply_editor_edits", side_effect=edit_handoff),
+                    patch.object(execution, "run_process", side_effect=build), redirect_stdout(io.StringIO()),
                 ):
                     result = workflow.resume_with_junie(self.settings, run_id)
 
@@ -567,7 +569,7 @@ class DashboardEditorTests(HarnessCase):
         with patch.object(junie_cli, "require_interactive_cli"), \
                 patch.object(junie_cli, "run_interactive", side_effect=junie), \
                 patch.object(workflow, "_charge_repair", side_effect=finish_repair), \
-                patch.object(workflow, "run_process", side_effect=build):
+                patch.object(execution, "run_process", side_effect=build):
             completed = workflow.resume_with_junie(self.settings, result["run_id"])
         self.assertEqual(completed["status"], "build_succeeded", completed.get("error"))
         self.assertEqual(len(calls), 2)

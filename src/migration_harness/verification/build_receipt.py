@@ -1,6 +1,7 @@
 """チェッカー単独再開用に、照合可能な .NET ビルドの版を記録する。"""
 from __future__ import annotations
 
+
 import hashlib
 import json
 import os
@@ -143,3 +144,15 @@ def build_artifacts(worktree: Path, inputs: dict) -> dict | None:
         return {"bin": _fingerprint(bin_root), "obj": _fingerprint(obj_root)}
     except (OSError, ValueError, AttributeError):
         return None
+
+
+def check_build_receipt(config, worktree, record):
+    receipt = record.get("checker_build")
+    if record.get("build_exit_code") != 0 or not receipt:
+        raise ValueError("照合できるビルド成果物がありません。ビルドを実行してください。")
+    inputs = build_inputs(worktree, config["build_project"])
+    if not inputs or receipt["inputs"] != inputs:
+        raise ValueError("ビルド入力、依存関係、または実行環境が変わりました。再ビルドしてください。")
+    if build_artifacts(worktree, inputs) != receipt["artifacts"]:
+        raise ValueError("ビルド成果物が変更または削除されました。再ビルドしてください。")
+    return receipt

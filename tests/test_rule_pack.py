@@ -8,7 +8,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from fixtures import HarnessCase, prepare_fixture
-from migration_harness import workflow
+from migration_harness.context import migration_materials
 from migration_harness.config import load_config
 
 
@@ -217,7 +217,7 @@ class RulePackHarnessTests(HarnessCase):
         manifest = json.loads((capsule / "manifest.json").read_text(encoding="utf-8"))
         agent = Path(result["run_path"]) / "agent-workspace"
         agent.mkdir()
-        workflow._stage_migration_materials(capsule, manifest, agent)
+        migration_materials.stage_migration_materials(capsule, manifest, agent)
         guidelines = (agent / ".migration-materials/guidelines.md").read_text(encoding="utf-8")
         self.assertIn("MANDATORY: keep original values.", guidelines)
         self.assertNotIn("DETAIL: SQL rollback rules.", guidelines)

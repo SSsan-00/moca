@@ -9,8 +9,8 @@ import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock, RLock
-from weakref import WeakValueDictionary
 from typing import Any
+from weakref import WeakValueDictionary
 
 from ..files import has_symlink_component, safe_target, sha256_file
 from ..verification.csharp_keyword_guard import reject_new_keyword_escapes
@@ -226,3 +226,7 @@ def apply_agent_targets(
             record["target_apply_pending"] = pending
             write_run_record(record_path, record)
             finish_pending_targets(agent_root, worktree, targets, record, record_path)
+
+
+def recorded_target_hashes(cwd, record):
+    return {path: review_target_hash(cwd, Path(path)) for path in record.get("targets", [record["target"]])}

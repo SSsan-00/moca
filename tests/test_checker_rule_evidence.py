@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fixtures import HarnessCase, prepare_fixture
 from migration_harness import workflow
+from migration_harness import execution
 from migration_harness.rules.rule_review import review_rules
 from migration_harness.verification.checker_rule_evidence import MAX_RECEIPT_BYTES, checker_rule_context, parse_rule_receipt
 from migration_harness.verification import verification_files
@@ -129,7 +130,7 @@ class CheckerEvidenceVerificationTests(HarnessCase):
                     (self.worktree / "expected.json").write_text('{"value":2}', encoding="utf-8")
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=process):
+        with patch.object(execution, "run_process", side_effect=process):
             result = workflow._run_verification(self.settings, self.unit, self.run, record)
         self.assertEqual(result["status"], "checker_succeeded")
 

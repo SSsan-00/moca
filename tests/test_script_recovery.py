@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.runs import run_records
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.runs.recovery_status import recovery_status
 from migration_harness.runs.run_manager import RunManager
@@ -37,14 +39,14 @@ class ScriptRecoveryTests(SavedRunFixture):
         workflow._run_script_phase(self.config, self.phase, self.worktree, self.run_path, self.record(), once=True)
 
     def simulate_crash_after_exit(self):
-        original = workflow.write_run_record
+        original = run_records.write_run_record
 
         def fail_before_commit(path, record, **kwargs):
             if record.get("script_command_progress"):
                 raise SimulatedCrash
             return original(path, record, **kwargs)
 
-        with patch.object(workflow, "write_run_record", side_effect=fail_before_commit):
+        with patch.object(run_records, "write_run_record", side_effect=fail_before_commit):
             with self.assertRaises(SimulatedCrash):
                 self.run_phase()
 
@@ -133,15 +135,15 @@ class ScriptRecoveryTests(SavedRunFixture):
         self.assertNotIn("script_inflight", self.record())
 
     def test_launch_is_not_attempted_if_start_record_cannot_be_written(self):
-        original = workflow.write_run_record
+        original = run_records.write_run_record
 
         def fail_attempt(path, record, **kwargs):
             if record.get("script_inflight"):
                 raise OSError("write failed")
             return original(path, record, **kwargs)
 
-        with (patch.object(workflow, "write_run_record", side_effect=fail_attempt),
-              patch.object(workflow, "run_process") as process):
+        with (patch.object(run_records, "write_run_record", side_effect=fail_attempt),
+              patch.object(execution, "run_process") as process):
             with self.assertRaisesRegex(OSError, "write failed"):
                 self.run_phase()
             process.assert_not_called()
@@ -159,7 +161,7 @@ class ScriptRecoveryTests(SavedRunFixture):
         self.assertEqual(self.counter.read_text(), "1")
 
     def test_stop_after_start_is_reported_as_unknown_and_preserves_pending_operations(self):
-        with patch.object(workflow, "run_process", side_effect=KeyboardInterrupt):
+        with patch.object(execution, "run_process", side_effect=KeyboardInterrupt):
             with self.assertRaises(workflow.RunScriptError) as failure:
                 self.run_phase()
         self.assertTrue(failure.exception.interrupted)

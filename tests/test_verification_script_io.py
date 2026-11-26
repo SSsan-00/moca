@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness import execution
 
 
 PASSED = '{"verdict":"passed","evidence_lines":[1]}'
@@ -43,7 +44,7 @@ class VerificationScriptIoTests(SavedRunFixture):
 
     @contextmanager
     def commands(self, *advisories, lock_after_hook=None):
-        run = workflow.run_process
+        run = execution.run_process
         builds = []
         with ExitStack() as stack:
             def call(command, **kwargs):
@@ -58,7 +59,7 @@ class VerificationScriptIoTests(SavedRunFixture):
                     stack.enter_context(self.deny_reads(lock_after_hook))
                 return result
 
-            stack.enter_context(patch.object(workflow, "run_process", side_effect=call))
+            stack.enter_context(patch.object(execution, "run_process", side_effect=call))
             judge = stack.enter_context(patch(
                 "migration_harness.verification.checker_advisory.run_text_advisory", side_effect=advisories,
             ))

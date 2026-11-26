@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import patch
 
 from migration_harness.context import capsules
-from migration_harness import workflow
+from migration_harness import files as harness_files
+from migration_harness.context import migration_materials
+from migration_harness.junie import migration_session
 from migration_harness.context.php_boundaries import function_boundaries
 
 
@@ -88,15 +90,15 @@ class LargeInputScalingTests(unittest.TestCase):
             original.write_bytes(data)
             digest = hashlib.sha256(data).hexdigest()
             manifest = {"parts": [{"path": str(original), "index": 1, "sha256": digest, "segment_sha256": digest}]}
-            verified = workflow._stage_source_excerpts(capsule, manifest, agent)
+            verified = migration_materials.stage_source_excerpts(capsule, manifest, agent)
             relative = Path(".migration-materials/source-0001.md")
             (agent / "guidelines.md").write_text("unchanged", encoding="utf-8")
-            with patch.object(workflow, "sha256_file", wraps=workflow.sha256_file) as sha:
-                before = workflow._unlisted_workspace_files(agent, set(), verified)
+            with patch.object(harness_files, "sha256_file", wraps=harness_files.sha256_file) as sha:
+                before = migration_session.unlisted_workspace_files(agent, set(), verified)
                 self.assertEqual([call.args[0].name for call in sha.call_args_list], ["guidelines.md"])
-            self.assertEqual(before, workflow._unlisted_workspace_files(agent, set()))
+            self.assertEqual(before, migration_session.unlisted_workspace_files(agent, set()))
             (agent / relative).write_bytes(b"changed\n")
-            self.assertNotEqual(before, workflow._unlisted_workspace_files(agent, set()))
+            self.assertNotEqual(before, migration_session.unlisted_workspace_files(agent, set()))
             (agent / relative).unlink()
             with self.assertRaisesRegex(ValueError, "staged verification source changed"):
-                workflow._unlisted_workspace_files(agent, set(), verified)
+                migration_session.unlisted_workspace_files(agent, set(), verified)

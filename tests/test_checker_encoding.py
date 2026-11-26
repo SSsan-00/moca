@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness import errors, execution
 from migration_harness.verification import checker_advisory, checker_output
 from test_checker_prefixes import diagnostic
 
@@ -18,7 +19,7 @@ class CheckerEncodingTests(SavedRunFixture):
             "-c",
             f"import sys; sys.stdout.buffer.write(bytes.fromhex({raw.hex()!r})); sys.exit({exit_code})",
         ]
-        run_process = workflow.run_process
+        run_process = execution.run_process
 
         def child(command, **kwargs):
             if command[0] == "dotnet":
@@ -26,7 +27,7 @@ class CheckerEncodingTests(SavedRunFixture):
             self.assertEqual(command[0], sys.executable)
             return run_process(command, **kwargs)
 
-        with patch.object(workflow, "run_process", side_effect=child):
+        with patch.object(execution, "run_process", side_effect=child):
             return workflow.resume_with_junie(self.config, self.run_id)
 
     def test_shift_jis_and_cp932_prefixes_match_utf8_finding_identity(self):
@@ -101,5 +102,5 @@ class CheckerEncodingTests(SavedRunFixture):
         self.assertEqual(decoded, text)
         self.assertEqual(log.read_bytes(), raw)
         self.checker_log.write_bytes(raw + b"a" * (65_537 - len(raw)))
-        with self.assertRaisesRegex(workflow.CheckerRepairBlocked, "too large"):
+        with self.assertRaisesRegex(errors.CheckerRepairBlocked, "too large"):
             workflow._checker_repair_inputs(self.run_path, [], (Path("Example.cs"),), use_raw_output=True)

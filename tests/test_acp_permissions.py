@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from migration_harness.junie import junie_cli
-from migration_harness import workflow
+from migration_harness.junie import migration_session
 from migration_harness.junie.acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
 from migration_harness.config import _execution_settings
 from migration_harness.web.dashboard import Dashboard
@@ -199,7 +199,7 @@ send(id=3,result={"stopReason":"end_turn"})
             self.assertIsNone(junie_cli.reference_read_scope.get())
             self.assertIsNotNone(junie_cli.permission_observer.get())
         with control_scope(application.control), patch.object(junie_cli, "run_interactive", side_effect=exercise):
-            workflow._run_budgeted_junie({}, self.run_path / "run.json", record, "migration", None, self.workspace, [])
+            migration_session.run_budgeted_junie({}, self.run_path / "run.json", record, "migration", None, self.workspace, [])
 
     def test_budgeted_run_counts_only_flushed_pages_and_keeps_last_receipt_without_content(self):
         manifest = self.run_path / "capsule" / "manifest.json"
@@ -230,7 +230,7 @@ send(id=3,result={"stopReason":"end_turn"})
                     self.assertEqual((empty["utf8_bytes"], empty["start_line"], empty["end_line"]), (0, None, None))
         with control_scope(application.control), patch.object(junie_cli, "run_interactive", side_effect=exercise):
             for phase in ("migration", "checker_repair"):
-                workflow._run_budgeted_junie({"junie_pinned_reference_reads": True}, self.run_path / "run.json",
+                migration_session.run_budgeted_junie({"junie_pinned_reference_reads": True}, self.run_path / "run.json",
                                              record, phase, None, self.workspace, [])
         data = json.loads((self.run_path / "run.json").read_text("utf-8"))
         self.assertEqual(data["junie_permission_counts"], {"read": {"pinned_reference_read": 4}})

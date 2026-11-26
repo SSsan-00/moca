@@ -62,7 +62,7 @@ class LedgerReviewTest(HarnessCase):
                 stream.write(b"another build\n")
             return subprocess.CompletedProcess(command, exit_code)
 
-        with stub_syntax_diagnostics(), patch.object(workflow.subprocess, "run", side_effect=build_or_run):
+        with stub_syntax_diagnostics(), patch.object(subprocess, "run", side_effect=build_or_run):
             return workflow.resume_with_junie(self.settings, self.run_id)
 
     def source(self):
@@ -141,7 +141,7 @@ class LedgerReviewTest(HarnessCase):
 
         with (
             patch.object(Path, "open", open_file),
-            patch.object(workflow.subprocess, "run", side_effect=run_command),
+            patch.object(subprocess, "run", side_effect=run_command),
         ):
             self.assertEqual(self.verify()["status"], "build_succeeded")
             self.assertTrue(self.completion()["complete"])
@@ -254,7 +254,7 @@ class LedgerReviewTest(HarnessCase):
         record = json.loads(self.record_path.read_bytes())
         self.assertTrue(self.completion()["complete"])
         self.assertNotIn("input_fingerprint", record["verification"])
-        with patch.object(workflow.subprocess, "run", side_effect=OSError("Git unavailable")):
+        with patch.object(subprocess, "run", side_effect=OSError("Git unavailable")):
             self.assertTrue(self.completion()["complete"])
         # 旧Runに残る全体ハッシュも再計算しない。
         record["verification"]["input_fingerprint"] = "legacy-worktree-fingerprint"

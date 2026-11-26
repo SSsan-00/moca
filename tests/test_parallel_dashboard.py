@@ -21,6 +21,8 @@ from migration_harness.web import dashboard
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_manager
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.runs import migration_workspace
 from migration_harness.execution import check_cancelled, report_activity
 from migration_harness.runs.run_manager import RunManager
 from migration_harness.runs.run_records import execution_lock, load_saved_run, write_run_record
@@ -38,7 +40,7 @@ class ParallelDashboardTests(HarnessCase):
         self.release = [Event() for _ in range(7)]
         self.guard = Lock()
         self.active = self.maximum = 0
-        command = workflow.run_process
+        command = execution.run_process
 
         def migrate(_command, completion, token, targets, **kwargs):
             index = int(targets[0].stem.removeprefix("Page"))
@@ -298,7 +300,7 @@ class ParallelDashboardTests(HarnessCase):
         self.settings["scripts"] = {"before_prepare": [[sys.executable, "-c", "raise SystemExit(3)"]]}
         hook = self.manager.submit({"action": "run", "unit_id": "unit-1"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
-        with patch.object(workflow, "_validate_inputs", side_effect=KeyboardInterrupt):
+        with patch.object(migration_workspace, "validate_inputs", side_effect=KeyboardInterrupt):
             self.settings.pop("scripts")
             stopped = self.manager.submit({"action": "run", "unit_id": "unit-2"})["run_id"]
             self.wait_until(lambda: not self.manager.busy)
@@ -391,7 +393,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertFalse((Path(self.settings["run_root"]) / run_id).exists())
 
         started, release = Event(), Event()
-        validate = workflow._validate_inputs
+        validate = migration_workspace.validate_inputs
 
         def wait_for_input(root, unit):
             if unit["id"] == "unit-0":
@@ -399,7 +401,7 @@ class ParallelDashboardTests(HarnessCase):
                 self.assertTrue(release.wait(5))
             return validate(root, unit)
 
-        with patch.object(workflow, "_validate_inputs", side_effect=wait_for_input):
+        with patch.object(migration_workspace, "validate_inputs", side_effect=wait_for_input):
             self.release[0].set()
             self.release[1].set()
             self.manager.limit = 1

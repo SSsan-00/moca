@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness import execution
 from migration_harness.errors import format_error
 from migration_harness.log_text import decode_log_text
 from migration_harness.junie import junie_cli
@@ -94,13 +95,13 @@ class DashboardRunLogEncodingTests(SavedRunFixture):
             sys.executable, "-c", "from pathlib import Path; import sys; "
             "sys.stderr.buffer.write(Path('fixture-output.bin').read_bytes()); sys.exit(1)",
         ]]}
-        run_process = workflow.run_process
+        run_process = execution.run_process
 
         def child(command, **kwargs):
             self.assertEqual(command[0], sys.executable)
             return run_process(command, **kwargs)
 
-        with patch.object(workflow, "run_process", side_effect=child):
+        with patch.object(execution, "run_process", side_effect=child):
             with self.assertRaises(workflow.RunScriptError) as caught:
                 workflow.resume_with_junie(self.config, self.run_id)
         error = str(caught.exception)

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from migration_harness.verification import checker_advisory as advisory
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
+from migration_harness.verification import checker_advisory
 
 
 FAKE_ACP = r"""
@@ -229,7 +230,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
             config = {"junie_model": "current-model", "junie_effort": "high"}
             item = {"phase": "before_prepare", "command_number": 1, "exit_code": 0,
                     "log": "before_prepare.log", "byte_offset": 0, "byte_length": 8}
-            with patch.object(workflow, "output_advisory", return_value={"status": "reported"}) as review:
+            with patch.object(checker_advisory, "output_advisory", return_value={"status": "reported"}) as review:
                 workflow._review_script_output(config, run, {}, item, apply_decisions=False)
             self.assertEqual({"model": "current-model", "effort": "high"}, review.call_args.kwargs["model_options"])
 

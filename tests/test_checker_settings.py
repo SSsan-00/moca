@@ -7,6 +7,8 @@ from unittest.mock import patch
 from fixtures import HarnessCase
 from migration_harness.web import dashboard
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.junie import junie_cli
 from migration_harness.config import load_config
 from migration_harness.web.settings_form import build_settings_draft
 
@@ -29,14 +31,14 @@ class CheckerSettingsTests(HarnessCase):
         return draft
 
     def build_stub(self):
-        run = workflow.run_process
+        run = execution.run_process
 
         def process(command, **kwargs):
             if command[:2] == ["dotnet", "build"]:
                 return subprocess.CompletedProcess(command, 0)
             return run(command, **kwargs)
 
-        return patch.object(workflow, "run_process", side_effect=process)
+        return patch.object(execution, "run_process", side_effect=process)
 
     def test_unit_form_no_longer_accepts_checker_settings(self):
         draft = build_settings_draft(self.content)
@@ -62,8 +64,8 @@ class CheckerSettingsTests(HarnessCase):
             return 0
 
         with (
-            patch.object(workflow.junie_cli, "require_interactive_cli"),
-            patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=migrate),
             self.build_stub(),
         ):
             result = workflow.run_with_junie(self.settings, "sample")

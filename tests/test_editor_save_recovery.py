@@ -12,6 +12,9 @@ from urllib.request import Request, urlopen
 from fixtures import SavedRunFixture
 from ui_dependencies import node_executable
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.junie import junie_cli
+from migration_harness.runs import editor_queue as editor_queue_store, operator_feedback, reference_refresh
 from migration_harness.files import sha256_file
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs import editor_queue, run_records
@@ -119,7 +122,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
                                                verification_request={**request, "id": request_id})
 
         with (patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify,
-              patch.object(workflow.junie_cli, "run_interactive") as junie):
+              patch.object(junie_cli, "run_interactive") as junie):
             with (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
                   patch.object(Path, "replace", new=fail_second),
                   self.assertRaisesRegex(OSError, "保存履歴が未確定") as failure):
@@ -144,7 +147,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
         inputs = []
-        hint, report = workflow._operator_edit_context(self.run_path, agent, "fixture", inputs, None)
+        hint, report = operator_feedback.operator_edit_context(self.run_path, agent, "fixture", inputs, None)
         self.assertIn("Human-edit handoff", hint)
         self.assertIsNotNone(report)
         self.assertEqual(inputs, [Path(".migration-materials/operator-edits.json")])
@@ -214,7 +217,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
         inputs = []
-        hint, _ = workflow._operator_edit_context(self.run_path, agent, "fixture", inputs, None)
+        hint, _ = operator_feedback.operator_edit_context(self.run_path, agent, "fixture", inputs, None)
         self.assertIn("Human-edit handoff", hint)
         operator = json.loads((agent / inputs[0]).read_bytes())
         with editor_queue.editor_queue(self.run_path) as queue:
@@ -281,8 +284,8 @@ class EditorSaveRecoveryTests(SavedRunFixture):
 
         with (patch.object(subprocess, "Popen", side_effect=git_only),
               patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify,
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive") as junie):
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive") as junie):
             gate = (patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history)
                     if fault is None else patch.object(Path, "replace", new=fail_target))
             with gate, self.assertRaises(OSError):
@@ -317,7 +320,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
             if len(paths) > 1:
                 self.assertEqual((directory / "Second.cs").read_text(encoding="utf-8-sig"), "class SecondManual {}\n")
         inputs = []
-        workflow._operator_edit_context(self.run_path, agent, "fixture-normal", inputs, None)
+        operator_feedback.operator_edit_context(self.run_path, agent, "fixture-normal", inputs, None)
         operator = json.loads((agent / inputs[0]).read_bytes())
         with editor_queue.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
@@ -451,9 +454,9 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         history = self.run_path / "editor.json"
         before = history.read_bytes()
         with patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history), \
-                patch.object(workflow, "_refresh_target_context_on_resume") as refresh, \
-                patch.object(workflow.junie_cli, "run_interactive") as junie, \
-                patch.object(workflow, "run_process") as external:
+                patch.object(reference_refresh, "refresh_target_context_on_resume") as refresh, \
+                patch.object(junie_cli, "run_interactive") as junie, \
+                patch.object(execution, "run_process") as external:
             failure = self.http_conflict(payload)
             self.assertEqual(self.target.read_bytes(), b"\xef\xbb\xbfclass Manual {}\r\n")
             self.assertEqual(history.read_bytes(), before)
@@ -476,9 +479,9 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         self.assertIn("+class Manual {}", saved["operator_edits"][self.target.name][0])
         self.assertEqual(self.editor(payload)["content"], payload["content"])
         self.assertEqual(json.loads(history.read_bytes()), saved)
-        with patch.object(workflow, "_refresh_target_context_on_resume"), \
+        with patch.object(reference_refresh, "refresh_target_context_on_resume"), \
                 patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify, \
-                patch.object(workflow.junie_cli, "run_interactive") as junie:
+                patch.object(junie_cli, "run_interactive") as junie:
             self.assertEqual(workflow.resume_with_junie(self.config, self.run_id)["status"], "build_succeeded")
             verify.assert_called_once()
             junie.assert_not_called()
@@ -548,7 +551,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
         self.start_server()
         self.assertIn("更新", self.http_conflict())
         self.assertIn("更新", self.http_conflict(payload))
-        with patch.object(workflow, "_refresh_target_context_on_resume") as refresh:
+        with patch.object(reference_refresh, "refresh_target_context_on_resume") as refresh:
             with self.assertRaisesRegex(ValueError, "更新"):
                 workflow.resume_with_junie(self.config, self.run_id)
             refresh.assert_not_called()
@@ -666,7 +669,7 @@ class EditorSaveRecoveryTests(SavedRunFixture):
               patch.object(editor_queue, "replace_run_record", side_effect=self.fail_history),
               self.assertRaises(OSError)):
             with editor_queue.editor_queue(self.run_path) as queue:
-                workflow._apply_editor_edits(queue, agent, self.worktree, (Path(self.target.name),), record, self.record_path)
+                editor_queue_store.apply_editor_edits(queue, agent, self.worktree, (Path(self.target.name),), record, self.record_path)
         self.assertTrue(editor_queue.editor_save_pending(self.run_path))
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), merged)
         self.start_server()

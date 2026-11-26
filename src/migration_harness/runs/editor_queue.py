@@ -12,9 +12,14 @@ from subprocess import run
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
+from . import run_records, worktree_targets as target_files
 from ..files import safe_target
+from .migration_draft import save_stopped_migration
 from .run_records import lock_run_record, replace_run_record
-from .worktree_targets import EDIT_BYTES, read_target, target_edit_bytes, target_hash, worktree_source_lock
+from .worktree_targets import (
+    EDIT_BYTES, finish_pending_targets, read_target, save_target_edit, target_application_versions,
+    target_edit_bytes, target_hash, worktree_source_lock,
+)
 
 EDITOR_TARGET_SUFFIXES = frozenset({".cs", ".cshtml"})
 QUEUE_PHASES = {"junie_running", "editor_checkpoint", "editor_followup", "interrupted", "junie_failed"}
@@ -123,7 +128,6 @@ def _recover_editor_adoption(path, before, worktree, targets, record):
     with worktree_source_lock(worktree):
         root = worktree
         if "migration" in adoption:
-            from ..workflow import _recover_migration_editor_adoption
             root = _recover_migration_editor_adoption(path.parent, worktree, targets, queue, adoption)
         complete_editor_adoption(queue, root, targets, adoption)
         if queue.get("last_editor_adoption") == adoption["id"]:
@@ -387,3 +391,114 @@ class LivePrompts:
                 if prompt["id"] in identifiers and prompt["status"] == "steering":
                     # Junieの完了と、ハーネスによる検証・反映の完了を区別する。
                     prompt["status"] = "applying" if success else "queued"
+
+
+def apply_editor_edits(
+    queue: dict[str, Any], agent_root: Path, worktree: Path, targets: tuple[Path, ...],
+    record: dict[str, Any], record_path: Path,
+) -> bool:
+
+    edits = queue["edits"]
+    if not edits:
+        return True
+    merged = {}
+    names = {target.as_posix() for target in targets if target.suffix.lower() in EDITOR_TARGET_SUFFIXES}
+    for name, edit in edits.items():
+        if name not in names:
+            raise ValueError("エディタの保存先が設定された移行先と一致しません。")
+        original, current = editor_target(agent_root, Path(name))
+        text = None if edit["status"] == "conflict" else merge_edit(edit["base"], edit["content"], current)
+        if text is None:
+            edit["status"] = "conflict"
+        else:
+            merged[name] = original, current, text
+    # ひとつでも競合していれば、他のファイルも書き換えずに利用者の解消を待つ。
+    if any(edit["status"] == "conflict" for edit in edits.values()):
+        record.update(status="editor_checkpoint", error="移行先ファイルの編集が競合しました。エディタで解消してから再開してください。")
+        run_records.write_run_record(record_path, record, timing_stage=None)
+        return False
+    with worktree_source_lock(worktree):
+        adopted = record["target_hashes"]
+        if any(target_hash(safe_target(worktree, target)) != adopted[target.as_posix()] for target in targets):
+            raise ValueError("移行先ファイルが外部で更新されました。編集を採用できません。")
+        other = {target.as_posix(): target_application_versions(safe_target(agent_root, target))
+                 for target in targets if target.as_posix() not in merged}
+        stopped = record.get("stopped_migration_draft")
+        adoption = stage_editor_adoption(record_path.parent, queue, merged, migration={
+            "worktree": adopted.copy(), "other": other, "stopped": stopped["snapshot"] if stopped else None,
+        })
+        _finish_migration_editor_adoption(agent_root, worktree, targets, queue, adoption, record, record_path, merged=merged)
+        complete_editor_adoption(queue, agent_root, targets, adoption)
+    return True
+
+
+def _recover_migration_editor_adoption(run_path, worktree, targets, queue, adoption):
+    agent_root = run_path / "agent-workspace"
+    if agent_root.is_symlink() or not agent_root.is_dir() or not agent_root.resolve().is_relative_to(run_path.resolve()):
+        raise ValueError("Junie 作業領域がありません。保存済みの手修正を復旧できません。")
+    record_path = safe_target(run_path, Path("run.json"))
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    _finish_migration_editor_adoption(agent_root, worktree, targets, queue, adoption, record, record_path)
+    return agent_root
+
+
+def _finish_migration_editor_adoption(agent_root, worktree, targets, queue, adoption, record, record_path, *, merged=None):
+    migration = adoption["migration"]
+    entries, others, baseline = adoption["entries"], migration["other"], migration["worktree"]
+    configured = {target.as_posix(): target for target in targets}
+    stopped = record.get("stopped_migration_draft")
+    if (baseline.keys() != configured.keys() or set(entries) & set(others)
+            or set(entries) | set(others) != configured.keys()
+            or bool(migration["stopped"]) != bool(stopped)):
+        raise ValueError("保留編集の復旧記録が現在の移行単位と一致しません。")
+    after, unchanged, pending_edits = {}, {}, {}
+    for name, target in configured.items():
+        current = target_hash(safe_target(agent_root, target))
+        if name in entries:
+            receipt = entries[name]
+            edit = queue["edits"].get(name, {})
+            if edit.get("id") != receipt["edit_id"]:
+                raise ValueError("保留編集の版が変わりました。復旧を中止しました。")
+            after[name] = unchanged[name] = receipt["after"]
+            if current == receipt["after"]:
+                continue
+            if current != receipt["before"]:
+                raise ValueError(f"保留編集の対象が外部で更新されました: {name}")
+            if merged is None:
+                data, text = editor_target(agent_root, target)
+                content = merge_edit(edit["base"], edit["content"], text)
+            else:
+                data, _, content = merged[name]
+            if content is None or hashlib.sha256(target_edit_bytes(data or b"", content)).hexdigest() != receipt["after"]:
+                raise ValueError(f"保留編集の採用結果が変わりました: {name}")
+            pending_edits[name] = {"target": name, "version": current, "content": content}
+        else:
+            raw, normalized = others[name]
+            if current not in ((raw,) if stopped else (raw, normalized)):
+                raise ValueError(f"Junie 作業領域の対象が外部で更新されました: {name}")
+            unchanged[name], after[name] = raw, normalized if normalized is not None else baseline[name]
+
+    saved = record["target_hashes"]
+    pending = record.get("target_apply_pending")
+    if pending:
+        expected = {name: {"before": before, "after": after[name]}
+                    for name, before in baseline.items() if before != after[name]}
+        if stopped or pending != expected or saved != baseline or pending_edits:
+            raise ValueError("移行先の反映記録が保留編集の復旧記録と一致しません。")
+        finish_pending_targets(agent_root, worktree, targets, record, record_path)
+        return
+    if saved != baseline and (stopped or saved != after or pending_edits):
+        raise ValueError("移行先の版が変わりました。保留編集を復旧できません。")
+    if any(target_hash(safe_target(worktree, target)) != saved[name] for name, target in configured.items()):
+        raise ValueError("移行先ファイルが外部で更新されました。保留編集を復旧できません。")
+    if stopped and stopped["snapshot"] != migration["stopped"]:
+        if pending_edits or stopped["targets"] != unchanged:
+            raise ValueError("停止時の下書きが更新されました。保留編集を復旧できません。")
+        return
+    for edit in pending_edits.values():
+        save_target_edit(agent_root, targets, edit)
+    if stopped:
+        record.pop("stopped_migration_save_error", None)
+        save_stopped_migration(record_path, record, agent_root, targets, workspace_unchanged=True)
+    elif saved == baseline:
+        target_files.apply_agent_targets(agent_root, worktree, targets, baseline, record, record_path)

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from fixtures import HarnessCase
 from migration_harness import workflow
+from migration_harness.junie import junie_cli
 
 from migration_harness.context.capsules import prepare_context
 from migration_harness.context.context_handoff import context_handoff, handoff_prompt, record_handoff
@@ -386,8 +387,8 @@ class JunieMemoLifecycleTests(HarnessCase):
                 completion.write_text(token, encoding="utf-8")
             return 0
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=junie), redirect_stdout(io.StringIO())):
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=junie), redirect_stdout(io.StringIO())):
             workflow.run_with_junie(config, "sample")
         self.assertEqual(len(prompts), 2)
         self.assertIn("pending review 1", prompts[1])
@@ -410,12 +411,12 @@ class JunieMemoLifecycleTests(HarnessCase):
                 (completion.parent / f"handoff-{token}.json").write_text(json.dumps([{
                     "kind": "pending", "note": note, "source_id": "php-0001", "start_line": 1, "end_line": 1,
                 }]), encoding="utf-8")
-                workflow.junie_cli.session_closed_observer.get()()
+                junie_cli.session_closed_observer.get()()
                 raise KeyboardInterrupt()
             return 1
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=junie), redirect_stdout(io.StringIO())):
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=junie), redirect_stdout(io.StringIO())):
             with self.assertRaises(workflow.RunInterrupted):
                 workflow.run_with_junie(config, "sample")
             saved, = Path(config["run_root"]).glob("*/run.json")

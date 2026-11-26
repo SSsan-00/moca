@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness.runs import stopped_repair, target_snapshots
 from migration_harness.files import sha256_file
 from migration_harness.runs.recovery_status import recovery_status
 
@@ -40,7 +41,7 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
     def choose_draft(self, proposed):
         for name, content in proposed.items():
             (self.agent / name).write_bytes(content)
-        draft = workflow._snapshot_stopped_repair(
+        draft = target_snapshots.save_workspace_snapshot(
             self.run_path, self.agent, tuple(map(Path, proposed)), self.hashes, workspace_unchanged=True,
         )
         for name in proposed:
@@ -50,8 +51,8 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         return draft
 
     def choose(self, choices):
-        plan = workflow.plan_stopped_repair(self.config, self.run_id)
-        workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
+        plan = stopped_repair.plan_stopped_repair(self.config, self.run_id)
+        stopped_repair.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
 
     def files(self):
         return {path: path.read_bytes() for root in (self.worktree, self.agent) for name in _BEFORE
@@ -76,9 +77,9 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
     def test_rejects_bad_razor_before_any_adoption_and_allows_reselection(self):
         original = self.choose_draft({**_AFTER, "View.cshtml": b"@using System\n@{ int @event = 1; }\n"})
         self.assert_rejected("View.cshtml")
-        plan = workflow.plan_stopped_repair(self.config, self.run_id)
+        plan = stopped_repair.plan_stopped_repair(self.config, self.run_id)
         self.assertEqual(plan["snapshot"], original["snapshot"])
-        preview = workflow.preview_stopped_repair(self.config, self.run_id, plan["version"], "View.cshtml")
+        preview = stopped_repair.preview_stopped_repair(self.config, self.run_id, plan["version"], "View.cshtml")
         self.assertIn("@event", preview["draft"]["text"])
         self.choose({**dict.fromkeys(_AFTER, "draft"), "View.cshtml": "worktree"})
         self.assertFalse(recovery_status(self.config, self.run_id)["draft_keyword_blocked"])
@@ -99,7 +100,7 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         # Reproduce an older version reaching the first file, then stopping before the others.
         self.target.write_bytes(codecs.BOM_UTF8 + invalid)
         self.assert_rejected("Example.cs")
-        self.assertEqual(workflow.plan_stopped_repair(self.config, self.run_id)["snapshot"], stopped["snapshot"])
+        self.assertEqual(stopped_repair.plan_stopped_repair(self.config, self.run_id)["snapshot"], stopped["snapshot"])
         for choice in ("draft", "worktree"):
             with self.subTest(choice=choice), self.assertRaisesRegex(ValueError, r"Example.cs:2:.*@event"):
                 self.choose({**dict.fromkeys(_AFTER, "draft"), "Example.cs": choice})

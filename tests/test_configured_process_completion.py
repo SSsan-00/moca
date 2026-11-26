@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness import execution
 from migration_harness.execution import ConfiguredProcessIncomplete, ExecutionControl, control_scope, run_process
 from migration_harness.runs.recovery_status import recovery_status
 from migration_harness.windows_job import _BASIC_PROCESS_ID_LIST, _JobProcessIds, WindowsJob
@@ -156,7 +157,7 @@ class ConfiguredProcessRunTests(SavedRunFixture):
         self.assertIsNone(availability["unknown_script"])
         self.assertEqual(availability["unconfirmed_command"], record["unconfirmed_command"])
         previous = log.read_bytes()
-        with patch.object(workflow, "run_process") as command:
+        with patch.object(execution, "run_process") as command:
             actions = (
                 lambda: workflow.resume_with_junie(self.config, self.run_id),
                 lambda: workflow.script_recovery(self.config, self.run_id),
@@ -173,14 +174,14 @@ class ConfiguredProcessRunTests(SavedRunFixture):
     def test_incomplete_once_hook_preserves_receipt_and_never_starts_verification(self):
         hook = launcher(waits=False)
         self.config["scripts"] = {"after_migration": [hook]}
-        original = workflow.run_process
+        original = execution.run_process
 
         def execute(command, **kwargs):
             self.assertEqual(command, hook)
             self.assertTrue(kwargs.get("synchronous"))
             return original(command, **kwargs)
 
-        with patch.object(workflow, "run_process", side_effect=execute) as runner:
+        with patch.object(execution, "run_process", side_effect=execute) as runner:
             with self.assertRaisesRegex(workflow.RunScriptError, "新しい Run"):
                 workflow.resume_with_junie(self.config, self.run_id)
             runner.assert_called_once()
@@ -196,7 +197,7 @@ class ConfiguredProcessRunTests(SavedRunFixture):
         checker = launcher(waits=False)
         self.config["checker_command"] = checker
         self.config["scripts"] = {"after_checker": [[sys.executable, "-c", "pass"]]}
-        original = workflow.run_process
+        original = execution.run_process
 
         def execute(command, **kwargs):
             if command[0] == "dotnet":
@@ -206,7 +207,7 @@ class ConfiguredProcessRunTests(SavedRunFixture):
             self.assertTrue(kwargs.get("synchronous"))
             return original(command, **kwargs)
 
-        with patch.object(workflow, "run_process", side_effect=execute) as runner:
+        with patch.object(execution, "run_process", side_effect=execute) as runner:
             completed = workflow.resume_with_junie(self.config, self.run_id)
             self.assertEqual(runner.call_count, 2)
         self.assertEqual(completed["status"], "checker_failed")

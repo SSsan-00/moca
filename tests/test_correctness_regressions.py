@@ -12,6 +12,10 @@ from fixtures import HarnessCase, SavedRunFixture, prepare_fixture
 from migration_harness.junie import junie_cli
 from migration_harness.rules import rule_materials
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.context import capsules as capsule_files
+from migration_harness.rules import detail_review_evidence
+from migration_harness.runs import migration_capsules
 
 
 class CheckerProvenanceTests(SavedRunFixture):
@@ -35,7 +39,7 @@ class CheckerProvenanceTests(SavedRunFixture):
         self.config.update(build_project=project.name, checker_from_cli=True, checker_command=override,
                            toml_checker_command=global_default)
 
-        run_process = workflow.run_process
+        run_process = execution.run_process
 
         def run(command, **kwargs):
             if command[0] != "dotnet":
@@ -47,7 +51,7 @@ class CheckerProvenanceTests(SavedRunFixture):
             return subprocess.CompletedProcess(command, 0)
 
         with (patch("migration_harness.verification.build_receipt.shutil.which", return_value=str(dotnet)),
-              patch.object(workflow, "run_process", side_effect=run) as executed,
+              patch.object(execution, "run_process", side_effect=run) as executed,
               patch.object(junie_cli, "run_interactive", side_effect=AssertionError("Junie must not run")),
               redirect_stdout(io.StringIO())):
             build = workflow.plan_build_resume(self.config, self.run_id)
@@ -98,7 +102,7 @@ class DetailReviewEvidenceTests(HarnessCase):
             (materials / name).write_bytes(raw)
             digests[name] = hashlib.sha256(raw).hexdigest()
         review_root = self.root / "review"
-        inventory = workflow.stage_review_evidence(review_root, capsule, {"rule_files": [], "materials": digests}, None)
+        inventory = detail_review_evidence.stage_review_evidence(review_root, capsule, {"rule_files": [], "materials": digests}, None)
         for i, (raw, lines) in enumerate(cases):
             name = f"reference-{i:04d}.txt"
             key = f"evidence/materials/{name}"
@@ -131,7 +135,7 @@ class DetailReviewEvidenceTests(HarnessCase):
         ])
         prepared = prepare_fixture(config, unit["id"])
         run_path, worktree = Path(prepared["run_path"]), Path(prepared["worktree_path"])
-        capsule, manifest = workflow.load_capsule_manifest(run_path)
+        capsule, manifest = capsule_files.load_capsule_manifest(run_path)
         agent_root = run_path / "agent-workspace"
         agent_root.mkdir()
         record = json.loads((run_path / "run.json").read_bytes())
@@ -161,9 +165,9 @@ class DetailReviewEvidenceTests(HarnessCase):
 
         with patch.object(junie_cli, "run_interactive", side_effect=decide) as reviewer:
             args = config, unit, run_path, record, worktree, targets, agent_root, capsule, manifest
-            workflow._prepare_migration_materials(*args, followup_only=False)
+            migration_capsules.prepare_migration_materials(*args, followup_only=False)
             (worktree / "Context/Helper.cs").write_text(helper.replace("true", "false"), encoding="utf-8")
-            workflow._prepare_migration_materials(*args, followup_only=False)
+            migration_capsules.prepare_migration_materials(*args, followup_only=False)
             self.assertEqual(reviewer.call_count, 1)
         self.assertEqual((agent_root / "Context/Helper.cs").read_text(encoding="utf-8"), helper)
         self.assertIn("preserve leading zeros", (agent_root / ".migration-materials/guidelines.md").read_text(encoding="utf-8"))
@@ -181,12 +185,12 @@ class DetailReviewEvidenceTests(HarnessCase):
         other_run = Path(other["run_path"])
         other_worktree = Path(other["worktree_path"])
         expected_bytes = (other_worktree / "Context/Helper.cs").read_bytes()
-        other_capsule, other_manifest = workflow.load_capsule_manifest(other_run)
+        other_capsule, other_manifest = capsule_files.load_capsule_manifest(other_run)
         other_agent = other_run / "agent-workspace"
         other_agent.mkdir()
         other_record = json.loads((other_run / "run.json").read_bytes())
         with patch.object(junie_cli, "run_interactive", side_effect=decide) as reviewer:
-            workflow._prepare_migration_materials(config, unit, other_run, other_record, other_worktree,
+            migration_capsules.prepare_migration_materials(config, unit, other_run, other_record, other_worktree,
                                                   targets, other_agent, other_capsule, other_manifest, followup_only=False)
             self.assertEqual(reviewer.call_count, 1)
         self.assertFalse(other_record["detail_applicability"][rule]["applies"])

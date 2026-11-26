@@ -59,7 +59,7 @@ class ConfigFilePathTests(HarnessCase):
         self.assertEqual(relative, absolute)
         prepared = prepare_fixture(absolute, "orders")
         record = json.loads((Path(prepared["run_path"]) / "run.json").read_bytes())
-        with patch.object(workflow.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as build:
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as build:
             workflow._build_worktree(absolute, prepared, record)
         self.assertEqual(build.call_args.args[0][-1], str(Path(prepared["worktree_path"]) / "App.csproj"))
         self.assertNotEqual(build.call_args.kwargs["cwd"], self.project)

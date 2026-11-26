@@ -375,7 +375,7 @@ description = "For invoices"'''.strip(), 1))
         self.assertEqual(config.read_bytes(), original)
 
     def test_fixed_exception_must_stay_with_the_obligation_after_pack_split(self):
-        from migration_harness import workflow
+        from migration_harness.context import capsules as capsule_files
         from migration_harness.config import load_config
         from migration_harness.rules.rule_materials import render_guidelines
 
@@ -456,7 +456,7 @@ target = "One.cs"
         self.assertIn(b"# keep this comment", config.read_bytes())
         settings = load_config(config)
         prepared = prepare_fixture(settings, "one")
-        capsule, manifest = workflow.load_capsule_manifest(Path(prepared["run_path"]))
+        capsule, manifest = capsule_files.load_capsule_manifest(Path(prepared["run_path"]))
         rules = render_guidelines(capsule / "materials", manifest, selected=frozenset())
         self.assertIn(primary, rules)
         self.assertIn(exception, rules)

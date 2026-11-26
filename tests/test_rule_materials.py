@@ -9,6 +9,11 @@ from migration_harness.junie import junie_cli
 from migration_harness.rules import rule_materials
 from migration_harness.context import source_context
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.context import capsules as capsule_files, migration_materials
+from migration_harness.junie import migration_session
+from migration_harness.rules import detail_review_evidence, detail_selection, rule_search
+from migration_harness.runs import run_records
 
 
 class RuleMaterialsTests(HarnessCase):
@@ -54,7 +59,7 @@ class RuleMaterialsTests(HarnessCase):
         record = json.loads(record_path.read_bytes())
         rule = "rule-0001.txt"
         record["detail_applicability"] = {rule: {"applies": False, "reason": "Missed exception"}}
-        workflow.write_run_record(record_path, record)
+        run_records.write_run_record(record_path, record)
         report = review_rules(config, run_id)
         self.assertIsNone(report["rules"][0]["independent_verification"])
         self.assertFalse(report["rules"][0]["applicability"])
@@ -73,12 +78,12 @@ class RuleMaterialsTests(HarnessCase):
                                 reference="tests/test_exception: pass", **args)
         self.assertEqual(reviewed["rules"][0]["independent_verification"]["kind"], "passed")
         self.assertIsNone(reviewed["rules"][0]["application"])
-        capsule, manifest = workflow.load_capsule_manifest(run_path)
+        capsule, manifest = capsule_files.load_capsule_manifest(run_path)
         agent = run_path / "agent-workspace"
         agent.mkdir()
         saved = json.loads(record_path.read_bytes())
         selected = rule_materials.effective_details(manifest, saved)
-        workflow._stage_migration_materials(capsule, manifest, agent, selected=selected)
+        migration_materials.stage_migration_materials(capsule, manifest, agent, selected=selected)
         self.assertIn("Keep the final exception.",
                       (agent / ".migration-materials/guidelines.md").read_text(encoding="utf-8"))
         updated = Path(result["worktree_path"]) / next(iter(report["targets"]))
@@ -109,7 +114,7 @@ class RuleMaterialsTests(HarnessCase):
         record["detail_applicability"] = {rule: {
             "applies": True, "insufficient_context": True, "reason": "Need the authoritative PHP mode.",
         }}
-        workflow.write_run_record(path, record)
+        run_records.write_run_record(path, record)
         report = review_rules(config, run_id)
         entry, = report["rules"]
         self.assertTrue(entry["applicability"])
@@ -200,7 +205,7 @@ class RuleMaterialsTests(HarnessCase):
             "if sys.argv[1] == 'incomplete': print('Error: No checks were performed.')\n",
             encoding="utf-8",
         )
-        original_run = workflow.run_process
+        original_run = execution.run_process
 
         def process(command, **kwargs):
             if command[0] == "dotnet":
@@ -216,7 +221,7 @@ class RuleMaterialsTests(HarnessCase):
             with self.subTest(verdict=verdict):
                 config["checker_command"] = [sys.executable, str(checker), verdict]
                 record.update(status="junie_finished", completed_capsules=record["context_capsules"])
-                with patch.object(workflow, "run_process", side_effect=process):
+                with patch.object(execution, "run_process", side_effect=process):
                     result = workflow._run_verification(config, config["units"][0], run, record)
                 self.assertEqual(result["status"], overall)
                 rows = review_rules(config, run["run_id"])["rules"]
@@ -272,7 +277,7 @@ class RuleMaterialsTests(HarnessCase):
         manifest = json.loads((capsule / "manifest.json").read_bytes())
         agent = Path(result["run_path"]) / "agent-workspace"
         agent.mkdir()
-        workflow._stage_migration_materials(capsule, manifest, agent)
+        migration_materials.stage_migration_materials(capsule, manifest, agent)
         return capsule, manifest, agent
 
     def test_large_existing_rules_are_provided_whole_without_reader_calls(self):
@@ -296,7 +301,7 @@ class RuleMaterialsTests(HarnessCase):
         self.assertIn("--ide-guidelines", command)
         (self.project / "rules.md").unlink()
         (agent / ".migration-materials/guidelines.md").write_text("changed")
-        workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
+        migration_materials.stage_migration_materials(capsule, manifest, agent, repair=True)
         self.assertEqual((agent / ".migration-materials/guidelines.md").read_bytes(), inline)
         self.assertEqual((capsule / "materials" / entries[0]["file"]).read_bytes(), content)
 
@@ -345,12 +350,12 @@ class RuleMaterialsTests(HarnessCase):
             })
         self.commit_project()
         result = prepare_fixture(config, "sample")
-        capsule, manifest = workflow.load_capsule_manifest(Path(result["run_path"]))
+        capsule, manifest = capsule_files.load_capsule_manifest(Path(result["run_path"]))
         records = manifest["rule_files"]
         selected = frozenset({records[1]["file"]})
         agent = Path(result["run_path"]) / "agent-workspace"
         agent.mkdir()
-        workflow._stage_migration_materials(capsule, manifest, agent, selected=selected)
+        migration_materials.stage_migration_materials(capsule, manifest, agent, selected=selected)
         inline = (agent / ".migration-materials/guidelines.md").read_bytes().decode()
         self.assertIn(originals[0], inline)
         self.assertIn(originals[1], inline)
@@ -369,7 +374,7 @@ class RuleMaterialsTests(HarnessCase):
             rendered = rule_materials.render_guidelines(capsule / "materials", old, selected=selected)
             self.assertIn(numbered.decode(), rendered)
             self.assertNotIn("lines 1-5 (.migration-materials/rule-0001.txt)", rendered)
-        workflow._stage_migration_materials(capsule, manifest, agent, repair=True, selected=selected)
+        migration_materials.stage_migration_materials(capsule, manifest, agent, repair=True, selected=selected)
         self.assertEqual((agent / ".migration-materials/guidelines.md").read_bytes().decode(), inline)
 
     def test_compact_format_does_not_increase_short_rule_input(self):
@@ -404,7 +409,7 @@ class RuleMaterialsTests(HarnessCase):
         with (patch.object(junie_cli, "_run_session", side_effect=junie_cli.JunieConnectionError("fixture")) as run,
               patch.object(junie_cli.time, "sleep")):
             with self.assertRaisesRegex(ValueError, "起動を止めました"):
-                workflow._run_budgeted_junie(settings, root / "run.json", record, "migration", None, root, [],
+                migration_session.run_budgeted_junie(settings, root / "run.json", record, "migration", None, root, [],
                                              command, root / "complete", "token", ())
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][-1], prompt)
@@ -495,18 +500,18 @@ class RuleMaterialsTests(HarnessCase):
         decisions = {entries[0]["file"]: {"applies": True, "reason": "Outputs orders"}}
         with patch.object(junie_cli, "run_interactive", side_effect=review) as junie:
             with self.assertRaisesRegex(ValueError, "every saved detail"):
-                workflow._review_detail_applicability(self.root, capsule, manifest, targets, record, None)
+                detail_selection.review_detail_applicability(self.root, capsule, manifest, targets, record, None)
             self.assertNotIn("detail_applicability", record)
             decisions[entries[1]["file"]] = {"applies": False, "reason": "No database operations"}
-            selected = workflow._review_detail_applicability(self.root, capsule, manifest, targets, record, None)
+            selected = detail_selection.review_detail_applicability(self.root, capsule, manifest, targets, record, None)
             saved = json.loads((self.root / "run.json").read_text(encoding="utf-8"))
-            self.assertEqual(workflow._review_detail_applicability(self.root, capsule, manifest, targets, saved, None),
+            self.assertEqual(detail_selection.review_detail_applicability(self.root, capsule, manifest, targets, saved, None),
                              selected)
             self.assertEqual(junie.call_count, 2)
         agent = self.root / "agent"
         agent.mkdir()
-        workflow._stage_migration_materials(capsule, manifest, agent, targets=targets)
-        workflow._stage_migration_materials(capsule, manifest, agent, targets=targets, selected=selected)
+        migration_materials.stage_migration_materials(capsule, manifest, agent, targets=targets)
+        migration_materials.stage_migration_materials(capsule, manifest, agent, targets=targets, selected=selected)
         guidelines = (agent / ".migration-materials/guidelines.md").read_text(encoding="utf-8")
         self.assertIn(body, guidelines)
         self.assertNotIn(irrelevant, guidelines)
@@ -516,7 +521,7 @@ class RuleMaterialsTests(HarnessCase):
         (capsule / "materials" / entries[1]["file"]).write_text("changed", encoding="utf-8")
         with patch.object(junie_cli, "run_interactive") as junie:
             with self.assertRaisesRegex(ValueError, "saved detail review material changed"):
-                workflow._review_detail_applicability(self.root, capsule, manifest, targets, {}, None)
+                detail_selection.review_detail_applicability(self.root, capsule, manifest, targets, {}, None)
             junie.assert_not_called()
 
     def test_structured_final_answer_has_no_conflicting_dashboard_progress_instruction(self):
@@ -547,7 +552,7 @@ class RuleMaterialsTests(HarnessCase):
 
                 record = {}
                 with patch.object(junie_cli, "run_interactive", side_effect=reply) as reviewer:
-                    workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), record, None)
+                    detail_selection.review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), record, None)
                 reviewer.assert_called_once()
                 saved = json.loads((self.root / "run.json").read_bytes())
                 self.assertEqual(saved["detail_applicability"], decisions)
@@ -563,7 +568,7 @@ class RuleMaterialsTests(HarnessCase):
         manifest = {"unit_id": "test", "parts": [{"path": str(source)}], "rule_files": entries}
         rule = entries[0]["file"]
         manifest["rule_read_order"] = [{"file": rule, "sha256": entries[0]["sha256"], "lines": [1, 1]}]
-        hint = workflow.review_hint(manifest, {rule: 1})
+        hint = rule_search.review_hint(manifest, {rule: 1})
         self.assertTrue(hint)
         budget = None
         for should_complete, limited in ((True, False), (False, False), (True, True)):
@@ -590,10 +595,10 @@ class RuleMaterialsTests(HarnessCase):
                     args = self.root, capsule, manifest, (Path("Page.cs"),), record, None
                     if should_complete:
                         config = {"junie_input_limits": {"max_input_bytes": budget}} if limited else None
-                        self.assertEqual(workflow._review_detail_applicability(*args, config=config), {rule})
+                        self.assertEqual(detail_selection.review_detail_applicability(*args, config=config), {rule})
                     else:
                         with self.assertRaisesRegex(ValueError, "JSON形式"):
-                            workflow._review_detail_applicability(*args)
+                            detail_selection.review_detail_applicability(*args)
                         self.assertNotIn("detail_applicability", record)
                 self.assertEqual(len(attempts), 2)
                 self.assertIn("previous reply was not valid JSON", attempts[1])
@@ -656,11 +661,11 @@ class RuleMaterialsTests(HarnessCase):
                         args = run, capsule, manifest, (Path("Target.cs"),), record, None
                         with patch.object(junie_cli, "run_interactive", side_effect=reply):
                             if repair:
-                                self.assertEqual(workflow._review_detail_applicability(*args), {rule})
+                                self.assertEqual(detail_selection.review_detail_applicability(*args), {rule})
                                 self.assertEqual(json.loads((run / "run.json").read_bytes())["detail_applicability"], valid)
                             else:
                                 with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
-                                    workflow._review_detail_applicability(*args)
+                                    detail_selection.review_detail_applicability(*args)
                                 self.assertNotIn("detail_applicability", record)
                                 self.assertFalse((run / "run.json").exists())
                         self.assertEqual(len(attempts), 2)
@@ -710,15 +715,15 @@ class RuleMaterialsTests(HarnessCase):
                             kwargs["accept_result"](json.dumps({"review_token": token, "decisions": decisions}))
 
                     args = self.root, capsule, manifest, (Path("Page.cs"),), record, None
-                    with patch.object(workflow, "stage_review_evidence", return_value=inventory), \
+                    with patch.object(detail_review_evidence, "stage_review_evidence", return_value=inventory), \
                             patch.object(junie_cli, "run_interactive", side_effect=review):
                         if repair:
-                            self.assertEqual(workflow._review_detail_applicability(*args), {rule})
+                            self.assertEqual(detail_selection.review_detail_applicability(*args), {rule})
                             self.assertEqual(record["detail_applicability"][rule]["context_evidence"]["file"],
                                              context_file)
                         else:
                             with self.assertRaisesRegex(ValueError, "invalid review context evidence"):
-                                workflow._review_detail_applicability(*args)
+                                detail_selection.review_detail_applicability(*args)
                             self.assertNotIn("detail_applicability", record)
                     self.assertEqual(len(attempts), 2)
 
@@ -786,11 +791,11 @@ class RuleMaterialsTests(HarnessCase):
                 manifest["parts"] = [{"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
                                      for p in (first, last)]
                 with patch.object(junie_cli, "run_interactive", side_effect=review):
-                    workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), {}, None)
+                    detail_selection.review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), {}, None)
                 last.write_text("changed", encoding="utf-8")
                 with patch.object(junie_cli, "run_interactive") as junie:
                     with self.assertRaisesRegex(ValueError, "saved detail review source changed"):
-                        workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), {}, None)
+                        detail_selection.review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), {}, None)
                     junie.assert_not_called()
 
     def test_large_review_rejects_incomplete_or_invalid_decisions_before_saving(self):
@@ -821,7 +826,7 @@ class RuleMaterialsTests(HarnessCase):
                 record = {}
                 with patch.object(junie_cli, "run_interactive", side_effect=review):
                     with self.assertRaises(ValueError):
-                        workflow._review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), record, None)
+                        detail_selection.review_detail_applicability(self.root, capsule, manifest, (Path("Page.cs"),), record, None)
                 self.assertNotIn("detail_applicability", record)
                 self.assertFalse((self.root / "run.json").exists())
 
@@ -831,7 +836,7 @@ class RuleMaterialsTests(HarnessCase):
         for change in (lambda: material.write_text("changed"), material.unlink):
             change()
             with self.assertRaisesRegex(ValueError, "saved migration material"):
-                workflow._stage_migration_materials(capsule, manifest, agent)
+                migration_materials.stage_migration_materials(capsule, manifest, agent)
 
     def test_old_chunked_run_joins_pinned_text_without_new_receipts(self):
         capsule = self.root / "capsule"
@@ -847,7 +852,7 @@ class RuleMaterialsTests(HarnessCase):
         manifest = {"materials": {item["file"]: item["sha256"] for item in chunks}, "rule_chunks": chunks}
         agent = self.root / "agent"
         agent.mkdir()
-        workflow._stage_migration_materials(capsule, manifest, agent)
+        migration_materials.stage_migration_materials(capsule, manifest, agent)
         self.assertIn("".join(contents), (agent / ".migration-materials/guidelines.md").read_bytes().decode())
         self.assertFalse((agent / "migration-read-rules.py").exists())
 
@@ -860,7 +865,7 @@ class RuleMaterialsTests(HarnessCase):
         agent = self.root / "agent"
         agent.mkdir()
         manifest = {"materials": {"shared.md": hashlib.sha256(original).hexdigest()}, "parts": []}
-        workflow._stage_migration_materials(capsule, manifest, agent)
+        migration_materials.stage_migration_materials(capsule, manifest, agent)
         self.assertIn(original, (agent / ".migration-materials/guidelines.md").read_bytes())
         self.assertEqual(rule_materials.render_guidelines(material, {"rule_files": []}), "")
         self.assertNotIn("--ide-guidelines", junie_cli.build_command(agent, "plain", None))

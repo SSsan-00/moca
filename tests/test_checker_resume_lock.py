@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness.verification import build_receipt
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.runs.worktree_targets import save_target_edit, worktree_source_lock
 
@@ -35,8 +36,8 @@ class CheckerResumeLockTests(SavedRunFixture):
             return self.receipt["inputs"]
 
         with (
-            patch.object(workflow, "build_inputs", side_effect=slow_inputs),
-            patch.object(workflow, "build_artifacts", return_value=self.receipt["artifacts"]),
+            patch.object(build_receipt, "build_inputs", side_effect=slow_inputs),
+            patch.object(build_receipt, "build_artifacts", return_value=self.receipt["artifacts"]),
             ThreadPoolExecutor(max_workers=2) as threads,
         ):
             plan = threads.submit(workflow.plan_checker_resume, self.config, self.run_id)
@@ -63,7 +64,7 @@ class CheckerResumeLockTests(SavedRunFixture):
         plan = {"checker_command": self.config["checker_command"], "edit_revision": None,
                 "build_receipt": self.receipt}
         with (
-            patch.object(workflow, "_check_build_receipt", return_value={"inputs": {}, "artifacts": {}}),
+            patch.object(build_receipt, "check_build_receipt", return_value={"inputs": {}, "artifacts": {}}),
             patch.object(workflow, "_run_checker") as checker,
         ):
             with self.assertRaisesRegex(ValueError, "再開計画"):

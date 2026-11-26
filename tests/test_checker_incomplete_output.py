@@ -20,8 +20,8 @@ class CheckerIncompleteOutputTests(unittest.TestCase):
                 stdout.write(message.encode("utf-8"))
                 return SimpleNamespace(returncode=exit_code)
 
-            with patch("migration_harness.workflow.run_process", side_effect=process), patch(
-                "migration_harness.workflow.write_run_record"
+            with patch("migration_harness.execution.run_process", side_effect=process), patch(
+                "migration_harness.runs.run_records.write_run_record"
             ):
                 result, findings, raw = _run_checker(
                     ["fixture-checker"], {"run_path": run, "worktree_path": root}, record, None,

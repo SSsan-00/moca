@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from browser_run import run_browser
 
 from migration_harness import workflow
+from migration_harness.runs import editor_queue as editor_queue_store, reference_refresh, target_snapshots
 from migration_harness.config import target_paths
 from migration_harness.context.source_context import stage_target_context
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
@@ -147,7 +148,7 @@ max_bytes = 9007199254740993 # preserve this value
                     targets = target_paths(unit)
                     saved["target_hashes"] = target_versions(worktree, unit)
                     with editor_queue(run, recover=(worktree, targets)) as queue:
-                        adopted = workflow._apply_editor_edits(
+                        adopted = editor_queue_store.apply_editor_edits(
                             queue, run / "agent-workspace", worktree, targets, saved, record_path,
                         )
                     view.publish({**view.state, "ready": True})
@@ -180,7 +181,7 @@ max_bytes = 9007199254740993 # preserve this value
                     stage_target_context(worktree, targets, capsule, agent, policy={"roots": [], "folders": ["refs"]})
                     (capsule / "manifest.json").write_text('{"parts": [{"index": 1}]}', encoding="utf-8")
                     saved["target_hashes"] = target_versions(worktree, unit)
-                    saved["capsule_checkpoints"] = {"1": workflow._save_capsule_checkpoint(
+                    saved["capsule_checkpoints"] = {"1": target_snapshots.save_capsule_checkpoint(
                         run, worktree, targets, saved["target_hashes"],
                     )}
                     record_path.write_text(json.dumps(saved), encoding="utf-8")
@@ -190,8 +191,8 @@ max_bytes = 9007199254740993 # preserve this value
                 elif handler.path == fixture_root + "fixture-editor-refresh-reference":
                     saved = json.loads((run / "run.json").read_bytes())
                     proposal = run / "reference-proposal-fixture"
-                    with patch.object(workflow, "_propose_reference_refresh", return_value=proposal):
-                        workflow._refresh_target_context_on_resume(
+                    with patch.object(reference_refresh, "_propose_reference_refresh", return_value=proposal):
+                        reference_refresh.refresh_target_context_on_resume(
                             config, config["units"][0], run, worktree, saved, migration_complete=True,
                         )
                     view.observe(saved)

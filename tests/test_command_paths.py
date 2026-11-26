@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fixtures import HarnessCase, prepare_fixture
 from migration_harness import workflow
+from migration_harness import execution
 from migration_harness.command_paths import expand_command_paths
 from migration_harness.config import load_config
 from migration_harness.web.settings_form import build_settings_draft
@@ -46,7 +47,7 @@ class CommandPathsTests(HarnessCase):
         return result
 
     def verify(self, result):
-        execute = workflow.run_process
+        execute = execution.run_process
 
         def process(command, **kwargs):
             if command[:2] == ["dotnet", "build"]:
@@ -58,7 +59,7 @@ class CommandPathsTests(HarnessCase):
         with (
             io.TextIOWrapper(io.BytesIO(), encoding="cp1252") as terminal,
             redirect_stdout(terminal),
-            patch.object(workflow, "run_process", side_effect=process),
+            patch.object(execution, "run_process", side_effect=process),
         ):
             return workflow.resume_with_junie(self.settings, result["run_id"])
 
@@ -106,7 +107,7 @@ class CommandPathsTests(HarnessCase):
         self.settings["scripts"] = {}
         result = self.prepare_verification()
         record = json.loads((Path(result["run_path"]) / "run.json").read_bytes())
-        with patch.object(workflow, "run_process") as execute:
+        with patch.object(execution, "run_process") as execute:
             checked, _, _ = workflow._run_checker(self.command, result, record, None)
         execute.assert_not_called()
         self.assertEqual(checked["status"], "checker_failed")

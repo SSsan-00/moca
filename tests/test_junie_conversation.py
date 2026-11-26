@@ -16,6 +16,12 @@ from urllib.request import Request, urlopen
 from migration_harness.web import dashboard
 from migration_harness.runs import run_manager
 from migration_harness import workflow
+from migration_harness import execution, files as harness_files
+from migration_harness.junie import junie_cli
+from migration_harness.runs import (
+    editor_queue as editor_queue_store, migration_draft, run_records, worktree_targets as target_files,
+)
+from migration_harness.verification import build_receipt
 from migration_harness.runs.editor_queue import editor_queue
 from migration_harness.execution import check_cancelled, current_operation_id
 from migration_harness.junie import junie_conversation
@@ -223,7 +229,7 @@ class JunieConversationTests(SavedRunFixture):
         comment = "ビルドだけ"
         identifier = uuid.uuid4().hex
         with (patch.object(junie_conversation, "run_text_advisory", return_value="変更せずに回答") as review,
-              patch.object(workflow, "run_process") as build):
+              patch.object(execution, "run_process") as build):
             status, response = self.request("editor", {"kind": "conversation", "run_id": self.run_id,
                                                        "text": comment, "id": identifier, "selection": selection})
             self.assertEqual(status, 202)
@@ -298,7 +304,7 @@ class JunieConversationTests(SavedRunFixture):
             kwargs["stdout"].write(b"error CS1002: semicolon expected\n")
             return subprocess.CompletedProcess(command, 1)
 
-        with patch.object(workflow, "run_process", side_effect=build), patch.object(
+        with patch.object(execution, "run_process", side_effect=build), patch.object(
             self.manager.conversations, "advance", side_effect=hold_interpretation,
         ):
             self.start_build()
@@ -362,9 +368,9 @@ class JunieConversationTests(SavedRunFixture):
 
         with (
             patch.object(self.manager.conversations, "advance", side_effect=delayed),
-            patch.object(workflow.junie_cli, "require_interactive_cli"),
-            patch.object(workflow.junie_cli, "run_interactive", side_effect=junie),
-            patch.object(workflow, "run_process", side_effect=external) as verify,
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=junie),
+            patch.object(execution, "run_process", side_effect=external) as verify,
             self.close_workers_before_unpatching(release),
         ):
             try:
@@ -423,11 +429,11 @@ class JunieConversationTests(SavedRunFixture):
         def interrupted(_command, _completion, _token, targets, **_kwargs):
             targets[0].write_bytes(b"partial\xff")
             targets[1].unlink()
-            workflow.junie_cli.session_closed_observer.get()()
+            junie_cli.session_closed_observer.get()()
             raise KeyboardInterrupt
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=interrupted)):
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=interrupted)):
             with self.assertRaises(workflow.RunInterrupted):
                 workflow.resume_with_junie(self.config, self.run_id)
         saved = self.record()["stopped_migration_draft"]
@@ -444,8 +450,8 @@ class JunieConversationTests(SavedRunFixture):
             completion.write_text(token, encoding="ascii")
             return 0
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=finish),
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=finish),
               patch.object(workflow, "_verify_worktree", return_value={})):
             workflow.resume_with_junie(self.config, self.run_id)
         self.assertNotIn("stopped_migration_draft", self.record())
@@ -457,10 +463,10 @@ class JunieConversationTests(SavedRunFixture):
         agent.mkdir()
         partial = b"class Unverified {}"
         (agent / self.target.name).write_bytes(partial)
-        pending = {self.target.name: workflow.sha256_file(self.target)}
+        pending = {self.target.name: harness_files.sha256_file(self.target)}
         record = {**self.record(), "status": "interrupted", "completed_capsules": 0, "current_capsule": 1,
                   "target_hashes": pending}
-        workflow._save_stopped_migration(self.record_path, record, agent, (Path(self.target.name),),
+        migration_draft.save_stopped_migration(self.record_path, record, agent, (Path(self.target.name),),
                                         workspace_unchanged=True)
         _, editor = self.request("editor")
         self.assertEqual(editor["content"], partial.decode())
@@ -486,7 +492,7 @@ class JunieConversationTests(SavedRunFixture):
         agent.mkdir()
         (agent / self.target.name).write_bytes(self.target.read_bytes())
         self.save_record({**self.record(), "status": "interrupted", "current_capsule": 2, "context_capsules": 3,
-                          "target_hashes": {self.target.name: workflow.sha256_file(self.target)}, **changes})
+                          "target_hashes": {self.target.name: harness_files.sha256_file(self.target)}, **changes})
 
     def test_default_migration_resume_runs_from_checkpoint_through_last_capsule(self):
         self.prepare_interrupted_migration(migration_range_stop=2)
@@ -506,10 +512,10 @@ class JunieConversationTests(SavedRunFixture):
 
         payload = {"action": "resume-run", "run_id": self.run_id, "revision": 0,
                    "start_stage": "migration", "plan_version": plan["version"]}
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=run_agent),
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=run_agent),
               patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}) as verify,
-              patch.object(workflow, "run_process") as external):
+              patch.object(execution, "run_process") as external):
             self.assertEqual(self.request("control", payload)[0], 202)
             self.wait_until_idle()
             self.assertEqual(visited, [2, 3])
@@ -534,9 +540,9 @@ class JunieConversationTests(SavedRunFixture):
             completion.write_text(token, encoding="ascii")
             return 0
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=run_agent) as junie,
-              patch.object(workflow, "run_process") as external):
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=run_agent) as junie,
+              patch.object(execution, "run_process") as external):
             self.assertEqual(self.request("control", payload)[0], 202)
             self.wait_until_idle()
             self.assertEqual(self.record()["completed_capsules"], 2)
@@ -565,7 +571,7 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(plan["stages"], ["build", "checker"])
         self.assertNotEqual(plan["version"], self.get_stage_plan("build")["version"])
         commands, calls = self.mock_commands(*responses)
-        with (commands, patch.object(workflow.junie_cli, "run_interactive") as junie):
+        with (commands, patch.object(junie_cli, "run_interactive") as junie):
             self.assertEqual(self.start_stage_plan(plan), 202)
             self.wait_until_idle()
         junie.assert_not_called()
@@ -604,7 +610,7 @@ class JunieConversationTests(SavedRunFixture):
             return subprocess.CompletedProcess(command, 0)
 
         good = '{"verdict":"passed","evidence_lines":[1]}'
-        with (patch.object(workflow, "run_process", side_effect=run),
+        with (patch.object(execution, "run_process", side_effect=run),
               patch.object(checker_advisory, "run_text_advisory", side_effect=[KeyboardInterrupt, good]) as judge):
             self.start_build()
             self.wait_until_idle()
@@ -646,7 +652,7 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(record["status"], "checker_succeeded")
         self.assertEqual(calls, [["dotnet", "build"], hook, ["dotnet", "build"], hook, ["fixture-checker"]])
         self.assertEqual(record["resume_operations"][-1]["version"], plan["version"])
-        self.assertEqual(record["verification"]["target_hashes"][self.target.name], workflow.sha256_file(self.target))
+        self.assertEqual(record["verification"]["target_hashes"][self.target.name], harness_files.sha256_file(self.target))
         self.assertNotIn("verification_script_pending", record)
         superseded, = [item for item in record["script_advisories"] if item["status"] == "superseded"]
         self.assertEqual(superseded["applied"], "rebuild_edited_target")
@@ -679,7 +685,7 @@ class JunieConversationTests(SavedRunFixture):
     def test_dashboard_build_through_rechecks_configuration_before_enqueue(self):
         plan = self.get_stage_plan("build-through")
         self.config["checker_command"] = ["changed-fixture-checker"]
-        with (patch.object(workflow, "run_process") as external, self.assertRaises(HTTPError) as stale):
+        with (patch.object(execution, "run_process") as external, self.assertRaises(HTTPError) as stale):
             self.start_stage_plan(plan)
         with stale.exception as response:
             self.assertEqual(response.code, 409)
@@ -707,12 +713,12 @@ class JunieConversationTests(SavedRunFixture):
         previous = self.record()
         previous["checker_build"] = {"inputs": inputs, "artifacts": outputs}
         previous["verification"] = {"target_hashes": {
-            self.target.name: workflow.review_target_hash(self.worktree, Path(self.target.name)),
+            self.target.name: target_files.review_target_hash(self.worktree, Path(self.target.name)),
         }}
         self.save_record(previous)
         commands, calls = self.mock_commands(("checker", 0, b""))
-        with (patch.object(workflow, "build_inputs", return_value=inputs),
-              patch.object(workflow, "build_artifacts", return_value=outputs), commands):
+        with (patch.object(build_receipt, "build_inputs", return_value=inputs),
+              patch.object(build_receipt, "build_artifacts", return_value=outputs), commands):
             plan = self.get_stage_plan("checker")
             self.assertEqual(self.start_stage_plan(plan), 202)
             self.wait_until_idle()
@@ -723,7 +729,7 @@ class JunieConversationTests(SavedRunFixture):
     def test_natural_rebuild_only_uses_explicit_plan_without_checker(self):
         self.config["checker_command"] = None
         mocked, calls = self.mock_commands(("dotnet", 0, b"build ok"))
-        with mocked, patch.object(workflow.junie_cli, "run_interactive") as junie:
+        with mocked, patch.object(junie_cli, "run_interactive") as junie:
             identifier, entry = self.send("手修正したので、ビルドだけ")
             self.assertEqual(entry["stage_request"]["start_stage"], "build")
             self.wait_for(identifier, "done")
@@ -745,7 +751,7 @@ class JunieConversationTests(SavedRunFixture):
         self.assertNotEqual(old["version"], new["version"])
         self.assertFalse(new["repair"])
         mocked, calls = self.mock_commands(("dotnet", 0, b"saved version build"))
-        with mocked, patch.object(workflow.junie_cli, "run_interactive") as junie:
+        with mocked, patch.object(junie_cli, "run_interactive") as junie:
             self.assertEqual(self.request("control", {**action, "plan_version": new["version"]})[0], 202)
             self.wait_until_idle()
             junie.assert_not_called()
@@ -759,7 +765,7 @@ class JunieConversationTests(SavedRunFixture):
         self.assertNotIn("checker_exit_code", record)
         self.assertFalse(workflow.can_resume_run(self.config, record))
         self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
-        with patch.object(workflow, "run_process") as external:
+        with patch.object(execution, "run_process") as external:
             with self.assertRaisesRegex(ValueError, "チェッカーを設定"):
                 workflow.resume_with_junie(self.config, self.run_id)
             external.assert_not_called()
@@ -798,7 +804,7 @@ class JunieConversationTests(SavedRunFixture):
             "チェッカーはもう実行したのですか": "previous finding",
             "Why did the checker fail?": "previous finding",
         }
-        with patch.object(workflow, "run_process") as run, patch.object(self.manager, "enqueue") as enqueue:
+        with patch.object(execution, "run_process") as run, patch.object(self.manager, "enqueue") as enqueue:
             for query, detail in queries.items():
                 with self.subTest(query=query):
                     identifier, _ = self.send(query)
@@ -828,8 +834,8 @@ class JunieConversationTests(SavedRunFixture):
             "What are you doing? Build, too.",
         )
         with (patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected child process")) as subprocess_start,
-              patch.object(workflow, "run_process") as run,
-              patch.object(workflow.junie_cli, "run_interactive") as junie):
+              patch.object(execution, "run_process") as run,
+              patch.object(junie_cli, "run_interactive") as junie):
             for instruction in requests:
                 with self.subTest(instruction=instruction):
                     identifier, receipt = self.send(instruction)
@@ -856,7 +862,7 @@ class JunieConversationTests(SavedRunFixture):
         instruction = "バリデーションを追加して、ビルドしてください。"
         original = self.target.read_bytes()
         mocked, calls = self.mock_commands(("dotnet", 0, b"ok"))
-        with (mocked, patch.object(workflow.junie_cli, "run_interactive") as junie):
+        with (mocked, patch.object(junie_cli, "run_interactive") as junie):
             identifier, _ = self.send(instruction)
             self.wait_for(identifier, "clarification")
             self.send("ビルドだけ")
@@ -975,7 +981,7 @@ class JunieConversationTests(SavedRunFixture):
     def test_full_conversation_allows_cancellation_and_frees_one_slot(self):
         identifier = self.fill_conversation()
         self.restart_server()
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             query, _ = self.send("今何してる？")
             self.wait_for(query, "done")
             cancellation, _ = self.send("キャンセル")
@@ -1001,7 +1007,7 @@ class JunieConversationTests(SavedRunFixture):
         original, _ = self.send("もう一回お願い")
         self.wait_for(original, "clarification")
         replacement = uuid.uuid4().hex
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             with patch.object(self.manager.conversations, "advance", return_value=True):
                 answer, _ = self.send("ビルドだけ")
                 with editor_queue(self.run_path) as queue:
@@ -1128,7 +1134,7 @@ class JunieConversationTests(SavedRunFixture):
             kwargs["stdout"].write(b"new successful build\n")
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work), self.close_workers_before_unpatching():
+        with patch.object(execution, "run_process", side_effect=work), self.close_workers_before_unpatching():
             self.start_build()
             self.assertTrue(running.wait(5))
             edited = "class Saved {}\n"
@@ -1179,8 +1185,8 @@ class JunieConversationTests(SavedRunFixture):
             self.assertTrue(release.wait(5))
             check_cancelled()
 
-        with patch.object(workflow.junie_cli, "require_interactive_cli"), \
-                patch.object(workflow.junie_cli, "run_interactive", side_effect=interrupt) as junie:
+        with patch.object(junie_cli, "require_interactive_cli"), \
+                patch.object(junie_cli, "run_interactive", side_effect=interrupt) as junie:
             self.start_build()
             try:
                 self.assertTrue(running.wait(5))
@@ -1207,8 +1213,8 @@ class JunieConversationTests(SavedRunFixture):
                         self.save_record(record)
                     before = self.record()
                     self.assertFalse(workflow.can_resume_run(self.config, before))
-                    with patch.object(workflow, "run_process") as run, \
-                            patch.object(workflow.junie_cli, "run_interactive") as junie:
+                    with patch.object(execution, "run_process") as run, \
+                            patch.object(junie_cli, "run_interactive") as junie:
                         with self.assertRaises(HTTPError) as rejected:
                             self.start_build()
                         with rejected.exception as response:
@@ -1233,8 +1239,8 @@ class JunieConversationTests(SavedRunFixture):
 
         responses = [("dotnet", 0, b"ok")] if checker is None else [("dotnet", 0, b"ok"), ("checker", 0, b"")]
         mocked, calls = self.mock_commands(*responses)
-        with mocked, patch.object(workflow.junie_cli, "require_interactive_cli"), \
-                patch.object(workflow.junie_cli, "run_interactive", side_effect=complete) as junie:
+        with mocked, patch.object(junie_cli, "require_interactive_cli"), \
+                patch.object(junie_cli, "run_interactive", side_effect=complete) as junie:
             self.start_build()
             self.wait_until_idle()
             junie.assert_called_once()
@@ -1284,7 +1290,7 @@ class JunieConversationTests(SavedRunFixture):
                 check_cancelled()
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work):
+        with patch.object(execution, "run_process", side_effect=work):
             previous, _ = self.send("ビルドして")
             self.assertEqual(self.wait_for(previous, "done")["result_status"], "build_succeeded")
             self.wait_until_idle()
@@ -1336,7 +1342,7 @@ class JunieConversationTests(SavedRunFixture):
                 "id": identifier, "text": "ビルドが終わったら、チェッカーを実行して",
                 "status": "received", "query_intent": "checker_status",
             }]
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             self.manager.conversations.notify(self.run_id)
             self.assertIn("送信し直してください", self.wait_for(identifier, "failed")["message"])
             run.assert_not_called()
@@ -1365,7 +1371,7 @@ class JunieConversationTests(SavedRunFixture):
                 self.assertTrue(release_checker.wait(5))
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work):
+        with patch.object(execution, "run_process", side_effect=work):
             first, _ = self.send("ビルドして")
             try:
                 self.assertTrue(running.wait(5))
@@ -1455,7 +1461,7 @@ class JunieConversationTests(SavedRunFixture):
                 operations.append(current_operation_id())
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work):
+        with patch.object(execution, "run_process", side_effect=work):
             threads = []
             try:
                 for run_id, path, _, event in blockers:
@@ -1497,7 +1503,7 @@ class JunieConversationTests(SavedRunFixture):
                 self.wait_for(second, "waiting")
                 if cancel:
                     self.request("control", {"action": "cancel-queued", "revision": 0, "run_id": self.run_id})
-                with patch.object(workflow, "run_process", side_effect=lambda command, **_: subprocess.CompletedProcess(command, 0)) as run:
+                with patch.object(execution, "run_process", side_effect=lambda command, **_: subprocess.CompletedProcess(command, 0)) as run:
                     self.restart_server()
                     with self.manager.condition:
                         self.manager.conversations.start()
@@ -1525,7 +1531,7 @@ class JunieConversationTests(SavedRunFixture):
                 self.assertTrue(release.wait(5))
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work):
+        with patch.object(execution, "run_process", side_effect=work):
             first, _ = self.send("ビルドして")
             try:
                 self.assertTrue(building.wait(5))
@@ -1557,7 +1563,7 @@ class JunieConversationTests(SavedRunFixture):
             self.manager.enqueue(self.manager.get(self.run_id), {"action": "conversation", "conversation_id": identifier})
             self.manager.persist()
         self.restart_server()
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             self.manager.start_pending()
             self.assertIn("終了を確認", self.wait_for(identifier, "failed")["message"])
             run.assert_not_called()
@@ -1574,7 +1580,7 @@ class JunieConversationTests(SavedRunFixture):
             kwargs["stdout"].write(b"ok\n")
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work):
+        with patch.object(execution, "run_process", side_effect=work):
             self.start_build()
             try:
                 self.assertTrue(running.wait(5))
@@ -1609,7 +1615,7 @@ class JunieConversationTests(SavedRunFixture):
     def test_newer_saved_edit_invalidates_a_waiting_rebuild(self):
         self.manager.limit = 0
         self.save_edit("class First {}\n")
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             identifier, _ = self.send("保存した版でビルドして")
             self.wait_for(identifier, "waiting")
             self.save_edit("class Second {}\n")
@@ -1647,7 +1653,7 @@ class JunieConversationTests(SavedRunFixture):
                     self.assertTrue(release_build.wait(8))
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=work):
+        with patch.object(execution, "run_process", side_effect=work):
             other, _ = self.send("ビルドして", run_id=sibling)
             try:
                 self.assertTrue(sibling_started.wait(5))
@@ -1695,14 +1701,14 @@ class JunieConversationTests(SavedRunFixture):
         running, release = Event(), Event()
         save_failed = Event()
         original = self.target.read_bytes()
-        write_record = workflow.write_run_record
+        write_record = run_records.write_run_record
 
         def fail_stop(command, completion, token, targets, **kwargs):
             targets[0].write_text("class Unconfirmed {}\n", encoding="utf-8")
             completion.write_text(token, encoding="utf-8")
             running.set()
             self.assertTrue(release.wait(8))
-            raise workflow.junie_cli.JunieStopError("Junieの終了を確認できませんでした。")
+            raise junie_cli.JunieStopError("Junieの終了を確認できませんでした。")
 
         def save_record(path, record, **kwargs):
             if fail_diagnostic_save and "終了を確認できません" in record.get("error", ""):
@@ -1710,10 +1716,10 @@ class JunieConversationTests(SavedRunFixture):
                 raise PermissionError("fixture: run.json could not be replaced")
             return write_record(path, record, **kwargs)
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=fail_stop),
-              patch.object(workflow, "write_run_record", side_effect=save_record),
-              patch.object(workflow, "run_process") as run):
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=fail_stop),
+              patch.object(run_records, "write_run_record", side_effect=save_record),
+              patch.object(execution, "run_process") as run):
             repair, _ = self.send("この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度")
             try:
                 if not running.wait(5):
@@ -1763,16 +1769,16 @@ class JunieConversationTests(SavedRunFixture):
             if not release.wait(8):
                 raise TimeoutError("fixture did not release repair")
             if unconfirmed:
-                raise workflow.junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
-            raise workflow.junie_cli.JunieSessionError(command, 1, "fixture: repair failed after confirmed exit")
+                raise junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
+            raise junie_cli.JunieSessionError(command, 1, "fixture: repair failed after confirmed exit")
 
         def close_prompts(queue, success):
             raise PermissionError("fixture: editor cleanup I/O failed")
 
-        with (patch.object(workflow, "run_process", side_effect=external),
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=repair) as junie,
-              patch.object(workflow, "finish_prompts", side_effect=close_prompts)):
+        with (patch.object(execution, "run_process", side_effect=external),
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=repair) as junie,
+              patch.object(editor_queue_store, "finish_prompts", side_effect=close_prompts)):
             self.start_build()
             try:
                 self.assertTrue(entered.wait(5), self.record())
@@ -1837,7 +1843,7 @@ class JunieConversationTests(SavedRunFixture):
             entered.set()
             if not release_stop.wait(8):
                 raise TimeoutError("fixture did not release Run A")
-            raise workflow.junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
+            raise junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
 
         def external(command, *, cwd, **kwargs):
             with self.manager.condition:
@@ -1851,9 +1857,9 @@ class JunieConversationTests(SavedRunFixture):
                     raise TimeoutError("fixture did not release the first build")
             return subprocess.CompletedProcess(command, 0)
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=repair) as junie,
-              patch.object(workflow, "run_process", side_effect=external),
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=repair) as junie,
+              patch.object(execution, "run_process", side_effect=external),
               patch.object(Path, "replace", replace_record)):
             self.send("この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度")
             try:
@@ -1960,15 +1966,15 @@ class JunieConversationTests(SavedRunFixture):
             entered.set()
             if not release.wait(8):
                 raise TimeoutError("fixture did not release repair")
-            raise workflow.junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
+            raise junie_cli.JunieStopError("fixture: Junie termination unconfirmed")
 
         def external(command, *, cwd, **kwargs):
             calls.append((Path(cwd), command[0]))
             return subprocess.CompletedProcess(command, 0)
 
-        with (patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=repair) as junie,
-              patch.object(workflow, "run_process", side_effect=external),
+        with (patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=repair) as junie,
+              patch.object(execution, "run_process", side_effect=external),
               patch.object(Path, "replace", replace_record)):
             self.send("この指摘は旧 PHP と同じ既定値にして、チェッカーをもう一度")
             try:
@@ -2046,7 +2052,7 @@ class JunieConversationTests(SavedRunFixture):
         diagnostic = b"Example.cs(1,1): error CS1002: Current build diagnostic\n"
         mocked, calls = self.mock_commands(("dotnet", 1, diagnostic), ("dotnet", 0, b"ok\n"))
         self.save_edit("class Corrected {}\n")
-        with mocked, patch.object(workflow.junie_cli, "require_interactive_cli"), patch.object(workflow, "_repair_target") as repair:
+        with mocked, patch.object(junie_cli, "require_interactive_cli"), patch.object(workflow, "_repair_target") as repair:
             identifier, _ = self.send("保存した版でビルドして。まだエラーがあれば直して")
             self.assertIn("ビルド成功", self.wait_for(identifier, "done")["message"])
             self.assertIn("Current build diagnostic", repair.call_args.args[5])
@@ -2086,7 +2092,7 @@ class JunieConversationTests(SavedRunFixture):
             self.assertTrue(release.wait(5))
             return subprocess.CompletedProcess(command, 1)
 
-        with patch.object(workflow, "run_process", side_effect=wait_build):
+        with patch.object(execution, "run_process", side_effect=wait_build):
             self.start_build()
             try:
                 self.assertTrue(running.wait(5))
@@ -2149,7 +2155,7 @@ class JunieConversationTests(SavedRunFixture):
 
         with (
             patch.object(workflow, "_run_script_phase", side_effect=after_build),
-            patch.object(workflow, "run_process", side_effect=work),
+            patch.object(execution, "run_process", side_effect=work),
             patch.object(Path, "replace", replace_record),
         ):
             self.start_build()
@@ -2174,7 +2180,7 @@ class JunieConversationTests(SavedRunFixture):
             queue["edits"]["Example.cs"] = {
                 "id": "saved", "status": "queued", "base": "class Original {}\n", "content": "class Operator {}\n",
             }
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             identifier, _ = self.send("保存した版でビルドして")
             self.assertIn("Example.cs", self.wait_for(identifier, "failed")["message"])
             run.assert_not_called()
@@ -2183,7 +2189,7 @@ class JunieConversationTests(SavedRunFixture):
 
     def test_cancelling_queued_verification_cannot_enqueue_it_again(self):
         self.manager.limit = 0
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             identifier, _ = self.send("チェッカーをもう一度")
             self.wait_for(identifier, "waiting")
             self.request("control", {"action": "cancel-queued", "revision": 0, "run_id": self.run_id})
@@ -2221,7 +2227,7 @@ class JunieConversationTests(SavedRunFixture):
     def test_failed_conversation_queue_cancellation_leaves_job_waiting(self):
         self.manager.limit = 0
         action = {"action": "cancel-queued", "revision": 0, "run_id": self.run_id}
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             identifier, _ = self.send("ビルドして")
             self.wait_for(identifier, "waiting")
             saved = self.manager.queue_path.read_bytes()
@@ -2262,7 +2268,7 @@ class JunieConversationTests(SavedRunFixture):
             "target_hashes": {"Example.cs": hashlib.sha256(self.target.read_bytes()).hexdigest()},
         }})
         self.save_edit("class Draft {}\n")
-        with patch.object(workflow, "run_process") as run:
+        with patch.object(execution, "run_process") as run:
             identifier, _ = self.send("残りは触らず、今の差分だけ確認して")
             self.assertEqual(self.wait_for(identifier, "done")["review_targets"], ["Example.cs"])
             run.assert_not_called()

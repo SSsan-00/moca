@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import json
 import re
 import shlex
@@ -188,3 +189,12 @@ def format_error(
 
     collect(exc)
     return _redact(render(exc), values)
+
+
+class RunInterrupted(KeyboardInterrupt):
+    """中断後の案内に使うRun IDを保持する。"""
+
+    def __init__(self, run_id: str) -> None:
+        """再開対象のRun IDを例外に関連付ける。"""
+        super().__init__(run_id)
+        self.run_id = run_id

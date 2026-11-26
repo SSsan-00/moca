@@ -14,6 +14,14 @@ from urllib.request import Request, urlopen
 from fixtures import SavedRunFixture
 from migration_harness.context import source_context
 from migration_harness import workflow
+from migration_harness import config as harness_config
+from migration_harness.context import capsules as capsule_files, migration_materials
+from migration_harness.junie import junie_cli, migration_session
+from migration_harness.rules import detail_selection
+from migration_harness.runs import (
+    editor_queue as editor_queue_store, reference_refresh, resume_plan, run_records, target_snapshots,
+    worktree_targets as target_files,
+)
 from migration_harness.web import dashboard
 from migration_harness.runs.worktree_targets import target_hash
 
@@ -42,11 +50,11 @@ class ReferenceRefreshTests(unittest.TestCase):
         before = {self.target.as_posix(): target_hash(self.worktree / self.target)}
         self.record = {"target": self.target.as_posix(), "status": "interrupted", "completed_capsules": 1,
                        "target_hashes": before.copy(), "build_exit_code": 0, "checker_exit_code": 0,
-                       "capsule_checkpoints": {"1": workflow._save_capsule_checkpoint(
+                       "capsule_checkpoints": {"1": target_snapshots.save_capsule_checkpoint(
                            self.run, self.worktree, self.targets, before)}}
         self.addCleanup(patch.stopall)
-        patch.object(workflow, "target_paths", return_value=self.targets).start()
-        patch.object(workflow, "load_capsule_manifest", return_value=(self.capsule, {})).start()
+        patch.object(harness_config, "target_paths", return_value=self.targets).start()
+        patch.object(capsule_files, "load_capsule_manifest", return_value=(self.capsule, {})).start()
 
     def put(self, relative, value, *, root=None):
         path = (root or self.worktree) / relative
@@ -54,7 +62,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         path.write_bytes(codecs.BOM_UTF8 + value.encode("utf-8"))
 
     def refresh(self):
-        workflow._refresh_target_context_on_resume({}, {}, self.run, self.worktree, self.record,
+        reference_refresh.refresh_target_context_on_resume({}, {}, self.run, self.worktree, self.record,
                                                    migration_complete=False)
 
     def propose(self, *args):
@@ -85,18 +93,18 @@ class ReferenceRefreshTests(unittest.TestCase):
                 self.assertNotIn(marker, guidelines.read_text(encoding="utf-8"))
             completion.write_text(token, encoding="utf-8")
 
-        with (patch.object(workflow, "_review_detail_applicability", return_value=frozenset()),
-              patch.object(workflow, "_stage_source_excerpts", return_value=[]),
-              patch.object(workflow.junie_cli, "build_command", return_value=[]),
-              patch.object(workflow, "_run_budgeted_junie", side_effect=finish) as launch):
-            workflow._propose_reference_refresh(
+        with (patch.object(detail_selection, "review_detail_applicability", return_value=frozenset()),
+              patch.object(migration_materials, "stage_source_excerpts", return_value=[]),
+              patch.object(junie_cli, "build_command", return_value=[]),
+              patch.object(migration_session, "run_budgeted_junie", side_effect=finish) as launch):
+            reference_refresh._propose_reference_refresh(
                 {"junie_max_steps": 10}, self.run, self.capsule, manifest, self.worktree, self.targets,
                 self.record, pending, {self.target.as_posix(): self.agent / self.target})
         launch.assert_called_once()
 
     def test_unmodified_reference_skips_junie_even_if_timestamp_changed(self):
         (self.worktree / self.ref).touch()
-        with patch.object(workflow, "_propose_reference_refresh") as propose:
+        with patch.object(reference_refresh, "_propose_reference_refresh") as propose:
             self.refresh()
         propose.assert_not_called()
         self.assertIn("build_exit_code", self.record)
@@ -104,7 +112,7 @@ class ReferenceRefreshTests(unittest.TestCase):
     def test_changed_reference_merges_unrelated_edits_and_preserves_versions(self):
         self.put(self.ref, "new reference")
         self.put(self.target, self.base_text.replace("old label", "operator label"))
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as propose:
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as propose:
             self.refresh()
             self.refresh()
         self.assertEqual(propose.call_count, 1)
@@ -112,7 +120,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.assertEqual(text, self.base_text.replace("old label", "operator label")
                          .replace("old reference behavior", "new reference behavior"))
         op = self.record["reference_refresh_history"][0]
-        preserved = workflow._verified_target_snapshot(self.run, op["adoption"]["backup"])
+        preserved = target_snapshots.verified_snapshot_files(self.run, op["adoption"]["backup"])
         self.assertIn("operator label", preserved["Page.cs"].read_text(encoding="utf-8-sig"))
         self.assertEqual(self.record["completed_capsules"], 1)
         self.assertNotIn("checker_exit_code", self.record)
@@ -124,7 +132,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.put(self.ref, "new reference")
         hand = self.base_text.replace("old reference behavior", "operator behavior")
         self.put(self.target, hand)
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose):
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose):
             with self.assertRaisesRegex(ValueError, "手修正と競合.*Page.cs"):
                 self.refresh()
         self.assertEqual((self.worktree / self.target).read_text(encoding="utf-8-sig"), hand)
@@ -135,19 +143,19 @@ class ReferenceRefreshTests(unittest.TestCase):
 
     def test_overlap_already_recorded_in_a_checkpoint_is_protected(self):
         self.put(self.ref, "new reference")
-        with workflow.editor_queue(self.run) as queue:
-            workflow.record_operator_edit(queue, "Page.cs", "previous operator wording\n", "old reference behavior\n")
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose):
+        with editor_queue_store.editor_queue(self.run) as queue:
+            editor_queue_store.record_operator_edit(queue, "Page.cs", "previous operator wording\n", "old reference behavior\n")
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose):
             with self.assertRaisesRegex(ValueError, "手修正と競合.*Page.cs"):
                 self.refresh()
         self.assertEqual((self.worktree / self.target).read_text(encoding="utf-8-sig"), self.base_text)
 
     def test_legacy_joined_eof_diff_cannot_silently_discard_an_unlocated_edit(self):
         self.put(self.ref, "new reference")
-        with workflow.editor_queue(self.run) as queue:
+        with editor_queue_store.editor_queue(self.run) as queue:
             queue["operator_edits"] = {"Page.cs": ["--- \n+++ \n@@ -1 +1 @@\n-previous+old reference behavior"]}
         before = (self.worktree / self.target).read_bytes()
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose),
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose),
               self.assertRaisesRegex(ValueError, "手修正と競合")):
             self.refresh()
         self.assertEqual((self.worktree / self.target).read_bytes(), before)
@@ -155,7 +163,7 @@ class ReferenceRefreshTests(unittest.TestCase):
     def test_later_reference_change_checks_conflict_after_previous_merge_kept_hand_edit(self):
         self.put(self.ref, "revision B")
         self.put(self.target, self.base_text.replace("old label", "operator label"))
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose):
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose):
             self.refresh()
         merged = (self.worktree / self.target).read_text(encoding="utf-8-sig")
         self.put(self.target, merged.replace("new reference behavior", "operator behavior"))
@@ -168,7 +176,7 @@ class ReferenceRefreshTests(unittest.TestCase):
             self.put(self.target, pure, root=proposal)
             return proposal
 
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=propose_again) as model:
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose_again) as model:
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.refresh()
         model.assert_called_once()
@@ -177,7 +185,7 @@ class ReferenceRefreshTests(unittest.TestCase):
     def test_unrecorded_junie_draft_is_still_not_overwritten(self):
         self.put(self.ref, "revision B")
         self.put(self.target, "unsaved Junie draft", root=self.agent)
-        with patch.object(workflow, "_propose_reference_refresh") as model:
+        with patch.object(reference_refresh, "_propose_reference_refresh") as model:
             with self.assertRaisesRegex(ValueError, "保存されていない Junie"):
                 self.refresh()
         model.assert_not_called()
@@ -197,7 +205,7 @@ class ReferenceRefreshTests(unittest.TestCase):
             self.put(self.target, self.base_text.replace("old reference behavior", revision), root=output)
             return output
 
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=propose):
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose):
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.refresh()
             previous = self.record["reference_refresh"]["snapshot"]
@@ -214,7 +222,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.put(self.ref, "revision B")
         changed = self.base_text.replace("old reference behavior", "operator behavior")
         self.put(self.target, changed)
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as propose:
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as propose:
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.refresh()
             self.put(self.ref, "old reference")
@@ -225,7 +233,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.assertNotIn("checker_exit_code", self.record)
 
     def test_recovery_finishes_durable_adoption_and_checks_latest_references(self):
-        original_apply = workflow.apply_agent_targets
+        original_apply = target_files.apply_agent_targets
         observed = []
 
         def propose(*_):
@@ -237,13 +245,13 @@ class ReferenceRefreshTests(unittest.TestCase):
             return output
 
         self.put(self.ref, "revision B")
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=propose):
-            with patch.object(workflow, "apply_agent_targets", side_effect=OSError("simulated interruption")):
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose):
+            with patch.object(target_files, "apply_agent_targets", side_effect=OSError("simulated interruption")):
                 with self.assertRaisesRegex(OSError, "simulated interruption"):
                     self.refresh()
             self.assertIn("adoption", self.record["reference_refresh"])
             self.put(self.ref, "revision C")
-            with patch.object(workflow, "apply_agent_targets", wraps=original_apply) as apply:
+            with patch.object(target_files, "apply_agent_targets", wraps=original_apply) as apply:
                 self.refresh()
             self.assertEqual(apply.call_count, 2)
         self.assertEqual(observed, ["revision B", "revision C"])
@@ -253,16 +261,16 @@ class ReferenceRefreshTests(unittest.TestCase):
     def test_stopped_draft_is_retained_but_restarted_from_saved_output(self):
         before = self.record["target_hashes"].copy()
         self.put(self.target, "unfinished old-reference draft", root=self.agent)
-        draft = workflow._save_target_snapshot(
+        draft = target_snapshots.save_target_snapshot(
             self.run, {"Page.cs": self.agent / self.target}, before, workspace_unchanged=True,
         )
         self.record["stopped_migration_draft"] = draft
         self.put(self.ref, "new reference")
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose):
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose):
             self.refresh()
         history = self.record["reference_refresh_history"][0]
         self.assertEqual(history["archived_draft"], draft)
-        self.assertIn("unfinished", workflow._verified_target_snapshot(self.run, draft)["Page.cs"].read_text(
+        self.assertIn("unfinished", target_snapshots.verified_snapshot_files(self.run, draft)["Page.cs"].read_text(
             encoding="utf-8-sig"))
         self.assertNotIn("stopped_migration_draft", self.record)
         self.assertIn("new reference behavior", (self.worktree / self.target).read_text(encoding="utf-8-sig"))
@@ -283,10 +291,10 @@ class ReferenceRefreshTests(unittest.TestCase):
                                 encoding="utf-8-sig")
             completion.write_text(token, encoding="utf-8")
 
-        with patch.object(workflow, "load_capsule_manifest", return_value=(self.capsule, {"parts": [], "rule_files": []})), \
-             patch.object(workflow.junie_cli, "build_command", return_value=[]), \
-             patch.object(workflow, "_run_budgeted_junie", side_effect=run_model) as model:
-            workflow._refresh_target_context_on_resume({"junie_max_steps": 10}, {}, self.run, self.worktree, self.record,
+        with patch.object(capsule_files, "load_capsule_manifest", return_value=(self.capsule, {"parts": [], "rule_files": []})), \
+             patch.object(junie_cli, "build_command", return_value=[]), \
+             patch.object(migration_session, "run_budgeted_junie", side_effect=run_model) as model:
+            reference_refresh.refresh_target_context_on_resume({"junie_max_steps": 10}, {}, self.run, self.worktree, self.record,
                                                        migration_complete=False)
         model.assert_called_once()
         self.assertIn("operator label", (self.worktree / self.target).read_text(encoding="utf-8-sig"))
@@ -295,7 +303,7 @@ class ReferenceRefreshTests(unittest.TestCase):
         moved = Path("refs/Moved.cs")
         (self.worktree / self.ref).rename(self.worktree / moved)
         self.put(Path("Other.cs"), "not a reference")
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose):
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose):
             self.refresh()
         self.assertFalse((self.agent / self.ref).exists())
         self.assertTrue((self.agent / moved).is_file())
@@ -307,10 +315,10 @@ class ReferenceRefreshTests(unittest.TestCase):
         self.put(self.ref, "new reference")
         self.record["status"] = "checker_succeeded"
         result = {"run_id": "example"}
-        with patch.object(workflow, "load_saved_run", return_value=(self.run, self.worktree, self.record, {})), \
+        with patch.object(run_records, "load_saved_run", return_value=(self.run, self.worktree, self.record, {})), \
              patch.object(workflow, "_load_resume_context", return_value=(result, True, False, False)), \
-             patch.object(workflow, "can_resume_run", return_value=True), \
-             patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose), \
+             patch.object(resume_plan, "can_resume_run", return_value=True), \
+             patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose), \
              patch.object(workflow, "_verify_worktree", return_value={"status": "checker_succeeded"}) as verify:
             result = workflow._resume_with_junie({"checker_command": ["checker"]}, "example")
         verify.assert_called_once()
@@ -335,21 +343,21 @@ class RecordedEditsResumeTests(SavedRunFixture):
         reference.write_text("reference A", encoding="utf-8")
         source_context.stage_target_context(self.worktree, (target,), capsule, agent,
                                             policy={"roots": [], "folders": ["refs"]})
-        with workflow.editor_queue(self.run_path) as queue:
-            workflow.record_operator_edit(queue, target.name, original, edited)
+        with editor_queue_store.editor_queue(self.run_path) as queue:
+            editor_queue_store.record_operator_edit(queue, target.name, original, edited)
         before = checkpoint.replace("\n", "\r\n").encode("utf-8-sig")
         for path in (self.target, agent / target):
             path.write_bytes(before)
         hashes = {target.name: target_hash(self.target)}
         record = self.record()
-        record.update(target_hashes=hashes, capsule_checkpoints={"1": workflow._save_capsule_checkpoint(
+        record.update(target_hashes=hashes, capsule_checkpoints={"1": target_snapshots.save_capsule_checkpoint(
             self.run_path, self.worktree, (target,), hashes)})
         self.save_record(record)
         reference.write_text("reference B", encoding="utf-8")
         proposed = self.run_path / "proposal"
         proposed.mkdir()
         (proposed / target).write_text(proposal, encoding="utf-8-sig")
-        with (patch.object(workflow, "_propose_reference_refresh", return_value=proposed),
+        with (patch.object(reference_refresh, "_propose_reference_refresh", return_value=proposed),
               patch.object(workflow, "_verify_worktree", return_value={"status": "verified"}) as verify):
             if conflict:
                 with self.assertRaisesRegex(ValueError, "手修正と競合"):
@@ -420,7 +428,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                 (root / path).write_bytes(text.encode("utf-8-sig"))
         hashes = {path.as_posix(): target_hash(self.worktree / path) for path in self.targets}
         record = self.record()
-        record.update(targets=list(hashes), target_hashes=hashes, capsule_checkpoints={"1": workflow._save_capsule_checkpoint(
+        record.update(targets=list(hashes), target_hashes=hashes, capsule_checkpoints={"1": target_snapshots.save_capsule_checkpoint(
             self.run_path, self.worktree, self.targets, hashes,
         )})
         if not complete:
@@ -432,11 +440,11 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             record.update(status="interrupted", current_capsule=2, context_capsules=2)
         (self.worktree / self.targets[0]).write_bytes(self.human.encode("utf-8-sig"))
-        with workflow.editor_queue(self.run_path) as queue:
-            workflow.record_operator_edit(queue, "Example.cs", self.base, self.human)
+        with editor_queue_store.editor_queue(self.run_path) as queue:
+            editor_queue_store.record_operator_edit(queue, "Example.cs", self.base, self.human)
         if stopped:
             (self.agent / self.targets[0]).write_bytes(b"unfinished migration draft")
-            record["stopped_migration_draft"] = workflow._save_target_snapshot(
+            record["stopped_migration_draft"] = target_snapshots.save_target_snapshot(
                 self.run_path, {path.as_posix(): self.agent / path for path in self.targets},
                 {path.as_posix(): target_hash(self.worktree / path) for path in self.targets},
                 workspace_unchanged=True,
@@ -499,7 +507,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
     def reference_and_queued_edit(self, *, during_proposal, overlap, first_failure=None):
         self.saved_targets()
         self.target.write_bytes(self.base.encode("utf-8-sig"))
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             queue["operator_edits"].clear()
         human = self.base.replace("reference A", "operator behavior") if overlap else self.base.replace(
             "old label", "saved human label",
@@ -531,9 +539,9 @@ class ReferenceConflictEditorTests(SavedRunFixture):
 
         if not during_proposal:
             self.save_editor("Example.cs", human)
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose) as model,
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=migrate) as continuation,
               patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify):
             if first_failure:
                 pattern = "見直し中に参考資料が更新" if first_failure == "new reference" else "simulated interruption"
@@ -554,7 +562,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                 self.assertEqual(view["edit"]["content"], human)
                 self.assertEqual(view["edit"]["status"], "conflict")
                 pending = self.record()["reference_refresh"]["conflict"]
-                proposed = workflow._verified_target_snapshot(self.run_path, pending["generated"])
+                proposed = target_snapshots.verified_snapshot_files(self.run_path, pending["generated"])
                 self.assertIn("model choice", proposed["Example.cs"].read_text(encoding="utf-8-sig"))
                 continuation.assert_not_called()
                 self.save_editor("Example.cs", final, resolve=True)
@@ -566,7 +574,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.assertEqual(verify.call_count, 2)
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), final)
         self.assertEqual(len(self.record()["reference_refresh_history"]), 1)
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
             self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
 
@@ -593,7 +601,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         second_base = "work copy\n1\n2\n3\nold second label\n"
         self.saved_targets(complete=complete_without_edit, multi=fail_second, second_base=second_base)
         self.target.write_bytes(self.base.encode("utf-8-sig"))
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             queue["operator_edits"].clear()
         first_edit = self.base
         if not complete_without_edit:
@@ -651,9 +659,9 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                                                     encoding="utf-8-sig")
             return proposal
 
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose) as model,
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=migrate) as continuation,
               patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify):
             first_save = "1" * 32
             planned = self.interrupted_adoption(fail_second=fail_second, canonical_failure=canonical_failure,
@@ -683,7 +691,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.assertNotIn("reference_refresh", record)
         self.assertNotIn("target_apply_pending", record)
         self.assertEqual(len(record["reference_refresh_history"]), 1)
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
             if resave:
                 self.assertNotIn("after", queue["save_requests"][first_save])
@@ -731,7 +739,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.check_resuming_interrupted_adoption(resave=True, legacy=True)
 
     def test_completed_run_queues_the_first_save_while_reference_adoption_is_pending(self):
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
               patch.object(workflow, "_verify_worktree", return_value={"status": "verified"}) as verify):
             planned = self.interrupted_adoption(complete_without_edit=True)
             self.assertEqual(self.open_editor()()[1]["content"], self.base)
@@ -742,7 +750,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                              planned.replace("old label", "late human edit"))
         model.assert_called_once()
         verify.assert_called_once()
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
             self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
 
@@ -752,9 +760,9 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             completion.write_text(token, encoding="utf-8")
             return 0
 
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=migrate) as continuation,
               patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result) as verify):
             planned = self.interrupted_adoption()
             editor = self.open_editor()
@@ -779,13 +787,13 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         model.assert_called_once()
         continuation.assert_called_once()
         verify.assert_called_once()
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
             self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 2)
 
     def test_recovery_with_only_partial_writes_stops_before_replacing_targets_if_reference_changes(self):
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
-              patch.object(workflow.junie_cli, "run_interactive") as continuation):
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(junie_cli, "run_interactive") as continuation):
             planned = self.interrupted_adoption()
             saved = self.save_editor("Example.cs", planned.replace("\n2\n", "\nnew edit\n"))["edit"]
             before = self.target.read_bytes()
@@ -794,14 +802,14 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                 self.resume_fixture()
             self.assertEqual(self.target.read_bytes(), before)
             self.assertIn("target_apply_pending", self.record())
-            with workflow.editor_queue(self.run_path) as queue:
+            with editor_queue_store.editor_queue(self.run_path) as queue:
                 self.assertEqual(queue["edits"]["Example.cs"], saved)
             model.assert_called_once()
             continuation.assert_not_called()
 
     def test_recovery_leaves_unrecognized_external_changes_and_new_edits_untouched(self):
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
-              patch.object(workflow.junie_cli, "run_interactive") as continuation):
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(junie_cli, "run_interactive") as continuation):
             planned = self.interrupted_adoption()
             saved = self.save_editor("Example.cs", planned.replace("\n2\n", "\nnew edit\n"))["edit"]
             for path, diagnostic in ((self.target, "移行先が変更"), (self.agent / "Example.cs", "下書きが変更")):
@@ -812,7 +820,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                         self.resume_fixture()
                     self.assertEqual(path.read_bytes(), b"outside change")
                     self.assertIn("target_apply_pending", self.record())
-                    with workflow.editor_queue(self.run_path) as queue:
+                    with editor_queue_store.editor_queue(self.run_path) as queue:
                         self.assertEqual(queue["edits"]["Example.cs"], saved)
                         self.assertEqual(queue["operator_edits"], {})
                     path.write_bytes(before)
@@ -826,7 +834,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         def propose(*args):
             pinned = source_context.target_context_snapshot(self.capsule) / "files" / "refs/Library.cs"
             observed.append(pinned.read_text(encoding="utf-8"))
-            with workflow.editor_queue(self.run_path) as queue:
+            with editor_queue_store.editor_queue(self.run_path) as queue:
                 if len(observed) > 1:
                     if not overlap_latest:
                         self.assertEqual(queue["prompts"][0]["status"], "queued")
@@ -847,16 +855,16 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             completion.write_text(token, encoding="utf-8")
             return 0
 
-        writer = workflow.write_run_record
+        writer = run_records.write_run_record
 
         def lose_run_history(path, record, **kwargs):
             if record.get("reference_refresh_history"):
                 raise OSError("fixture run journal write failed")
             return writer(path, record, **kwargs)
 
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose),
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose),
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=migrate) as continuation,
               patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result)):
             planned = self.interrupted_adoption()
             if overlap_latest:
@@ -867,16 +875,16 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                 expected = next_draft.replace("model choice", "model choice C")
             saved = self.save_editor("Example.cs", next_draft)["edit"]
             if not overlap_latest:
-                with workflow.editor_queue(self.run_path) as queue:
+                with editor_queue_store.editor_queue(self.run_path) as queue:
                     queue["prompts"].append({"id": "late", "text": message, "status": "queued"})
-            with (patch.object(workflow, "write_run_record", side_effect=lose_run_history),
+            with (patch.object(run_records, "write_run_record", side_effect=lose_run_history),
                   self.assertRaisesRegex(OSError, "fixture run journal write failed")):
                 self.resume_fixture()
             continuation.assert_not_called()
             self.assertNotIn("reference_refresh_history", self.record())
             self.assertIn("adoption", self.record()["reference_refresh"])
             self.assertEqual(self.target.read_text(encoding="utf-8-sig"), planned)
-            with workflow.editor_queue(self.run_path) as queue:
+            with editor_queue_store.editor_queue(self.run_path) as queue:
                 self.assertEqual(queue["edits"]["Example.cs"], saved)
                 self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 1)
                 if not overlap_latest:
@@ -895,7 +903,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         continuation.assert_called_once()
         self.assertEqual(observed, ["reference B", "reference C"])
         self.assertEqual(len(self.record()["reference_refresh_history"]), 2)
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
             self.assertEqual([item["status"] for item in queue["prompts"]], [] if overlap_latest else ["sent"])
             self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 2)
@@ -912,7 +920,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.saved_targets()
         self.target.write_bytes(self.base.encode("utf-8-sig"))
         message = "Verify the unrelated manual label."
-        use_queue = workflow.editor_queue
+        use_queue = editor_queue_store.editor_queue
         with use_queue(self.run_path) as queue:
             queue["operator_edits"].clear()
             queue["prompts"].append({"id": "unrelated", "text": message, "status": "queued"})
@@ -942,10 +950,10 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             completion.write_text(token, encoding="utf-8")
             return 0
 
-        with (patch.object(workflow, "editor_queue", side_effect=queue_with_late_save),
-              patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+        with (patch.object(editor_queue_store, "editor_queue", side_effect=queue_with_late_save),
+              patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose) as model,
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=migrate) as continuation,
               patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result)):
             with self.assertRaisesRegex(ValueError, "成果物は上書きしていません。もう一度再開"):
                 self.resume_fixture()
@@ -973,9 +981,9 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             completion.write_text(token, encoding="utf-8")
             return 0
 
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
-              patch.object(workflow.junie_cli, "require_interactive_cli"),
-              patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate) as continuation,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
+              patch.object(junie_cli, "require_interactive_cli"),
+              patch.object(junie_cli, "run_interactive", side_effect=migrate) as continuation,
               patch.object(workflow, "_verify_worktree", side_effect=lambda config, unit, result, record: result)):
             for _ in range(2):
                 with self.assertRaisesRegex(ValueError, "手修正と競合"):
@@ -986,27 +994,27 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         model.assert_called_once()
         continuation.assert_called_once()
         history = self.record()["reference_refresh_history"][0]
-        old = workflow._verified_target_snapshot(self.run_path, history["adoption"]["backup"])
+        old = target_snapshots.verified_snapshot_files(self.run_path, history["adoption"]["backup"])
         self.assertEqual(old["Example.cs"].read_text(encoding="utf-8-sig"), self.human)
         self.assertEqual(history["archived_draft"], stopped)
-        self.assertEqual(workflow._verified_target_snapshot(self.run_path, stopped)["Example.cs"].read_bytes(),
+        self.assertEqual(target_snapshots.verified_snapshot_files(self.run_path, stopped)["Example.cs"].read_bytes(),
                          b"unfinished migration draft")
         self.assertEqual((self.capsule / "target-context/files/refs/Library.cs").read_text(encoding="utf-8"), "reference A")
         self.assertEqual((self.agent / "refs/Library.cs").read_text(encoding="utf-8"), "reference B")
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.resolved)
         self.assertEqual((self.agent / "Example.cs").read_text(encoding="utf-8-sig"), self.resolved)
-        with workflow.editor_queue(self.run_path) as queue:
+        with editor_queue_store.editor_queue(self.run_path) as queue:
             self.assertEqual(queue["edits"], {})
             self.assertEqual(len(queue["operator_edits"]["Example.cs"]), 2)
 
     def test_completed_multiple_targets_resume_after_failed_adoption_without_repeating_model(self):
         self.saved_targets(complete=True, multi=True)
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
               patch.object(workflow, "_verify_worktree", return_value={"status": "verified"}) as verify):
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.resume_fixture()
             self.save_resolution()
-            with patch.object(workflow, "apply_agent_targets", side_effect=OSError("simulated failure")):
+            with patch.object(target_files, "apply_agent_targets", side_effect=OSError("simulated failure")):
                 with self.assertRaisesRegex(OSError, "simulated failure"):
                     self.resume_fixture()
             self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
@@ -1044,7 +1052,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                 self.assertEqual((root / second_name).read_text(encoding="utf-8-sig"), expected)
             return {"status": "verified"}
 
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=propose) as model,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=propose) as model,
               patch.object(workflow, "_verify_worktree", side_effect=verify_targets) as verify):
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.resume_fixture()
@@ -1059,13 +1067,13 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                         self.resume_fixture()
                 self.assertEqual(tuple(path.read_bytes() for path in paths), before)
                 self.assertEqual(self.record()["reference_refresh"], pending)
-                with workflow.editor_queue(self.run_path) as queue:
+                with editor_queue_store.editor_queue(self.run_path) as queue:
                     self.assertEqual(queue["edits"], saved)
                 verify.assert_not_called()
             else:
                 self.assertEqual(self.resume_fixture()["status"], "verified")
                 self.assertNotIn("reference_refresh", self.record())
-                with workflow.editor_queue(self.run_path) as queue:
+                with editor_queue_store.editor_queue(self.run_path) as queue:
                     self.assertEqual(queue["edits"], {})
                     self.assertEqual(len(queue["operator_edits"][second_name]), 1)
                 verify.assert_called_once()
@@ -1082,15 +1090,15 @@ class ReferenceConflictEditorTests(SavedRunFixture):
 
     def test_unrelated_pending_instruction_and_edit_stay_queued(self):
         self.saved_targets()
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model:
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model:
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.resume_fixture()
             saved = self.save_resolution()
-            with workflow.editor_queue(self.run_path) as queue:
+            with editor_queue_store.editor_queue(self.run_path) as queue:
                 queue["prompts"].append({"id": "fixture", "text": "Check an unrelated item", "status": "queued"})
             with self.assertRaisesRegex(ValueError, "未送信の指示"):
                 self.resume_fixture()
-            with workflow.editor_queue(self.run_path) as queue:
+            with editor_queue_store.editor_queue(self.run_path) as queue:
                 self.assertEqual(queue["edits"]["Example.cs"], saved["edit"])
                 self.assertEqual(queue["prompts"], [{"id": "fixture", "text": "Check an unrelated item", "status": "queued"}])
         model.assert_called_once()
@@ -1098,29 +1106,29 @@ class ReferenceConflictEditorTests(SavedRunFixture):
 
     def test_reference_changed_after_staging_is_checked_before_adoption(self):
         self.saved_targets(complete=True)
-        stage = workflow._record_reference_conflict_resolution
+        stage = reference_refresh._record_reference_conflict_resolution
 
         def stage_then_replace_reference(*args):
             stage(*args)
             self.reference.write_text("reference C", encoding="utf-8")
 
-        with (patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model,
+        with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
               patch.object(workflow, "_verify_worktree") as verify):
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.resume_fixture()
             saved = self.save_resolution()
-            with (patch.object(workflow, "_record_reference_conflict_resolution", side_effect=stage_then_replace_reference),
+            with (patch.object(reference_refresh, "_record_reference_conflict_resolution", side_effect=stage_then_replace_reference),
                   self.assertRaisesRegex(ValueError, "反映を再開する前に参考資料が更新")):
                 self.resume_fixture()
             self.assertEqual(self.target.read_text(encoding="utf-8-sig"), self.human)
-            with workflow.editor_queue(self.run_path) as queue:
+            with editor_queue_store.editor_queue(self.run_path) as queue:
                 self.assertEqual(queue["edits"]["Example.cs"], saved["edit"])
             model.assert_called_once()
             verify.assert_not_called()
 
     def test_editor_save_error_and_request_for_another_run_do_not_adopt(self):
         self.saved_targets()
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model:
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model:
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.resume_fixture()
             editor = self.open_editor()
@@ -1144,7 +1152,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
 
     def test_new_reference_or_target_version_leaves_saved_resolution_untouched(self):
         self.saved_targets()
-        with patch.object(workflow, "_propose_reference_refresh", side_effect=self.propose) as model:
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model:
             with self.assertRaisesRegex(ValueError, "手修正と競合"):
                 self.resume_fixture()
             saved = self.save_resolution()
@@ -1155,7 +1163,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
                     with self.assertRaisesRegex(ValueError, "版が競合時と異なります"):
                         self.resume_fixture()
                     self.assertEqual(path.read_bytes(), b"different version")
-                    with workflow.editor_queue(self.run_path) as queue:
+                    with editor_queue_store.editor_queue(self.run_path) as queue:
                         self.assertEqual(queue["edits"]["Example.cs"], saved["edit"])
                     path.write_bytes(before)
         model.assert_called_once()

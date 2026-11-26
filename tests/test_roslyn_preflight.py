@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness.junie import junie_cli
 from migration_harness.execution import OperationCancelled
 from migration_harness.verification import roslyn_syntax
 
@@ -120,7 +121,7 @@ class RoslynPreflightTests(SavedRunFixture):
             repairs.append(None)
             self.target.write_text(VALID * (len(repairs) + 1), encoding="utf-8")
 
-        with patch.object(workflow, "syntax_diagnostics", side_effect=report):
+        with patch.object(roslyn_syntax, "syntax_diagnostics", side_effect=report):
             result, commands, attempts = self.run_verification(repair=repair, build=False)
         self.assertEqual((len(commands), attempts), (0, 2))
         self.assertEqual(result["roslyn_preflight"]["reason"], "repair_budget")
@@ -142,7 +143,7 @@ class RoslynPreflightTests(SavedRunFixture):
 
     def test_junie_session_failure_stops_without_spending_attempt_and_explicit_resume_retries(self):
         self.target.write_text(INVALID, encoding="utf-8")
-        failure = workflow.junie_cli.JunieSessionError(["junie"], 1, "synthetic provider unavailable")
+        failure = junie_cli.JunieSessionError(["junie"], 1, "synthetic provider unavailable")
         result, calls, attempts = self.run_verification(repair=failure, build=False)
         self.assertEqual((len(calls), attempts), (0, 1))
         self.assertEqual(result["roslyn_preflight"]["reason"], "junie_unavailable")

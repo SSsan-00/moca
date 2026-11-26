@@ -10,6 +10,13 @@ from unittest.mock import patch
 
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.context import context_handoff, migration_materials
+from migration_harness.junie import migration_session
+from migration_harness.runs import (
+    migration_capsules, operator_feedback, run_records, worktree_targets as target_files,
+)
+from migration_harness.verification import checker_output, grounded_evidence, script_handoff
 from fixtures import HarnessCase, SavedRunFixture, prepare_fixture
 
 
@@ -22,11 +29,11 @@ class TaskGuidelinesTests(unittest.TestCase):
                 agent.mkdir()
                 (root / "run.json").write_text(json.dumps({"completed_capsules": 1}), encoding="utf-8")
                 with (
-                    patch.object(workflow, "handoff_prompt", return_value=""),
-                    patch.object(workflow, "junie_usage_recorder", return_value=None),
-                    patch.object(workflow, "_run_migration_junie") as launch,
+                    patch.object(context_handoff, "handoff_prompt", return_value=""),
+                    patch.object(run_records, "junie_usage_recorder", return_value=None),
+                    patch.object(migration_capsules, "_run_migration_junie") as launch,
                 ):
-                    workflow._run_editor_followup(
+                    migration_capsules._run_editor_followup(
                         agent, root, (Path("Page.cs"),), {"completed_capsules": 1},
                         root / "run.json", {"junie_max_steps": None}, instruction,
                     )
@@ -59,28 +66,28 @@ class TaskGuidelinesTests(unittest.TestCase):
                 manifest["parts"].append({"index": index, "path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()})
             (capsule / "boundary.md").write_text("     3 | 'future boundary';\n")
             saved = agent / ".migration-materials"
-            workflow._stage_source_excerpts(capsule, manifest, agent, through_capsule=1)
+            migration_materials.stage_source_excerpts(capsule, manifest, agent, through_capsule=1)
             self.assertEqual([p.name for p in saved.iterdir()], ["source-0001.md"])
             self.assertEqual((saved / "source-0001.md").read_bytes(), contents[0].encode())
             (saved / "source-0001.md").write_text("changed in agent workspace")
             (saved / "source-0003.md").write_text("stale future data")
-            workflow._stage_source_excerpts(capsule, manifest, agent, through_capsule=2)
+            migration_materials.stage_source_excerpts(capsule, manifest, agent, through_capsule=2)
             self.assertEqual(sorted(p.name for p in saved.iterdir()), ["source-0001.md", "source-0002.md"])
             self.assertEqual(b"".join(p.read_bytes() for p in sorted(saved.iterdir())), "".join(contents[:2]).encode())
-            workflow._stage_source_excerpts(capsule, manifest, agent)
+            migration_materials.stage_source_excerpts(capsule, manifest, agent)
             self.assertEqual(len(list(saved.iterdir())), 3)
             with patch.object(Path, "write_bytes", autospec=True) as write:
-                workflow._stage_source_excerpts(capsule, manifest, agent)
+                migration_materials.stage_source_excerpts(capsule, manifest, agent)
                 write.assert_not_called()
             (capsule / "1.md").write_text("corrupted original")
             with self.assertRaisesRegex(ValueError, "saved verification source changed"):
-                workflow._stage_source_excerpts(capsule, manifest, agent, through_capsule=2)
+                migration_materials.stage_source_excerpts(capsule, manifest, agent, through_capsule=2)
 
     def test_progress_instructions_preserve_mixed_newlines(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             instruction = "手修正を維持してください。\r\n値を変更してください。\n"
-            name = workflow._stage_operator_prompts(root, "newlines", instruction)
+            name = operator_feedback.stage_operator_prompts(root, "newlines", instruction)
             self.assertEqual((root / name).read_bytes(), (instruction + "\n").encode("utf-8"))
 
     def test_complete_inputs_keep_unicode_newlines_rules_and_short_windows_arguments(self):
@@ -98,7 +105,7 @@ class TaskGuidelinesTests(unittest.TestCase):
             }
             for name, value in values.items():
                 (root / name).write_bytes(value.encode("utf-8"))
-            output, prompt = workflow._task_guidelines(root, list(map(Path, values)))
+            output, prompt = migration_session.task_guidelines(root, list(map(Path, values)))
             body = output.read_bytes()
             self.assertTrue(body.startswith(mandatory))
             self.assertEqual(json.loads(body.split(b"\n\n")[-1]), values)
@@ -119,11 +126,11 @@ class TaskGuidelinesTests(unittest.TestCase):
             small.write_text("FIRST", encoding="utf-8")
             large.write_text("LAST", encoding="utf-8")
             inputs = [Path(small.name), Path(large.name)]
-            bundle, _ = workflow._task_guidelines(root, inputs)
+            bundle, _ = migration_session.task_guidelines(root, inputs)
             for contents in ("日本語" * 3000, '"' * 13000):
                 # The byte budget also covers UTF-8 and JSON escaping, not only character count.
                 large.write_text(contents, encoding="utf-8")
-                guidelines, supplied = workflow._task_guidelines(root, inputs)
+                guidelines, supplied = migration_session.task_guidelines(root, inputs)
                 self.assertIsNone(guidelines)
                 self.assertEqual(supplied, "")
                 self.assertFalse(bundle.exists())
@@ -131,16 +138,16 @@ class TaskGuidelinesTests(unittest.TestCase):
                 self.assertEqual(small.read_text(encoding="utf-8"), "FIRST")
             mandatory = root / ".migration-materials/guidelines.md"
             mandatory.write_text("Keep required rules", encoding="utf-8")
-            self.assertEqual(workflow._task_guidelines(root, inputs), (mandatory, ""))
+            self.assertEqual(migration_session.task_guidelines(root, inputs), (mandatory, ""))
 
     def test_new_launch_replaces_inputs_and_rejects_symlinks(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.md"
             source.write_text("old segment", encoding="utf-8")
-            workflow._task_guidelines(root, [Path(source.name)])
+            migration_session.task_guidelines(root, [Path(source.name)])
             source.write_text("current segment", encoding="utf-8")
-            output, _ = workflow._task_guidelines(root, [Path(source.name)])
+            output, _ = migration_session.task_guidelines(root, [Path(source.name)])
             self.assertNotIn("old segment", output.read_text(encoding="utf-8"))
             other = root / "reference.md"
             try:
@@ -148,7 +155,7 @@ class TaskGuidelinesTests(unittest.TestCase):
             except OSError:
                 self.skipTest("symlinks unavailable")
             with self.assertRaisesRegex(ValueError, "symlink"):
-                workflow._task_guidelines(root, [Path(other.name)])
+                migration_session.task_guidelines(root, [Path(other.name)])
 
 
 class PreparationScriptHandoffTests(HarnessCase):
@@ -169,9 +176,9 @@ class PreparationScriptHandoffTests(HarnessCase):
                     result = prepare_fixture(config, "sample")
                 run_path = Path(result["run_path"])
                 record = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
-                context = workflow.script_handoff_context(
+                context = script_handoff.script_handoff_context(
                     run_path, record, config["scripts"],
-                    workflow._script_decision_versions(Path(result["worktree_path"]), record),
+                    target_files.recorded_target_hashes(Path(result["worktree_path"]), record),
                 )
                 self.assertEqual("CalculateShipping" in context, not modified)
                 self.assertNotIn("Check CalculateShipping", context)
@@ -193,7 +200,7 @@ class CycleRecoveryTests(SavedRunFixture):
             kwargs["stdout"].write(b"assertion failed\n" if failed else b"build passed\n")
             return subprocess.CompletedProcess(command, int(failed))
 
-        with patch.object(workflow, "run_process", side_effect=process), self.assertRaises(workflow.RunScriptError):
+        with patch.object(execution, "run_process", side_effect=process), self.assertRaises(workflow.RunScriptError):
             workflow.resume_with_junie(self.config, self.run_id)
         self.assertEqual(calls, [["dotnet", "build"], ["run-tests"]])
         self.assertEqual(self.record()["status"], "script_failed")
@@ -293,7 +300,7 @@ class CycleRecoveryTests(SavedRunFixture):
             self.target.write_text("class Fixed {}", encoding="utf-8")
 
         commands = []
-        actual = workflow.run_process
+        actual = execution.run_process
 
         def process(command, **kwargs):
             commands.append(command[0])
@@ -303,7 +310,7 @@ class CycleRecoveryTests(SavedRunFixture):
 
         responses = ['{"verdict":"problem","evidence_lines":[1]}', '{"verdict":"passed","evidence_lines":[1]}']
         with (
-            patch.object(workflow, "run_process", side_effect=process),
+            patch.object(execution, "run_process", side_effect=process),
             patch.object(workflow, "_repair_target", side_effect=repair) as repair_call,
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=responses),
@@ -330,7 +337,7 @@ class CycleRecoveryTests(SavedRunFixture):
         self.assertEqual(counter.read_text(encoding="utf-8"), "x")
         saved = self.record()
         self.assertEqual(saved["script_advisories"][-1]["applied"], "handed_off")
-        context = workflow.script_handoff_context(self.run_path, saved, self.config["scripts"], {"Example.cs": None})
+        context = script_handoff.script_handoff_context(self.run_path, saved, self.config["scripts"], {"Example.cs": None})
         self.assertIn("CalculateShipping", context)
         self.assertNotIn("Inspect CalculateShipping before migration", context)
 
@@ -349,7 +356,7 @@ class CycleRecoveryTests(SavedRunFixture):
             self.target.write_text("class Fixed {}", encoding="utf-8")
 
         commands = []
-        actual = workflow.run_process
+        actual = execution.run_process
 
         def process(command, **kwargs):
             commands.append(command[0])
@@ -359,9 +366,9 @@ class CycleRecoveryTests(SavedRunFixture):
 
         responses = ['{"verdict":"problem","evidence_lines":[1]}', '{"verdict":"passed","evidence_lines":[1]}']
         with (
-            patch.object(workflow, "run_process", side_effect=process),
+            patch.object(execution, "run_process", side_effect=process),
             patch.object(workflow, "_repair_target", side_effect=repair) as repair_call,
-            patch.object(workflow, "grounded_diagnostic",
+            patch.object(grounded_evidence, "grounded_diagnostic",
                          return_value={"status": "grounded", "citations": [{"target":"Example.cs","source_id":"source"}]}),
             patch.object(junie_cli, "require_interactive_cli"),
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=responses),
@@ -445,7 +452,7 @@ class CycleRecoveryTests(SavedRunFixture):
         diagnostic = self.second + b"Static check failed: 1 findings.\n"
         log = self.run_path / "checker-before-repair-1.log"
         log.write_bytes(diagnostic)
-        findings, _ = workflow.checker_findings(log, self.worktree)
+        findings, _ = checker_output.checker_findings(log, self.worktree)
         self.save_record({**self.record(), "repair_history": [{
             "findings": [findings[0].finding_id, hashlib.sha256(" ".join(diagnostic.decode().split()).encode()).hexdigest()],
             "raw_checker_output": True,
