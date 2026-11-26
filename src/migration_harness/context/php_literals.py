@@ -1,4 +1,4 @@
-"""Read-only helpers for Junie's extraction of plain PHP literal statements.
+"""Read-only helpers for migrating PHP literals and simple C# identifiers.
 
 This is not a PHP parser: identify executable statements and control flow first.
 Dynamic strings and encoding-dependent byte escapes require source inspection.
@@ -14,6 +14,36 @@ import re
 
 # An escaped quote belongs to the token; a lazy quote-to-quote regex loses data.
 STRING_LITERAL = r"""(?:'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*")"""
+
+
+_CSHARP_RESERVED = frozenset("""
+abstract as base bool break byte case catch char checked class const continue decimal default delegate
+do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int
+interface internal is lock long namespace new null object operator out override params private protected
+public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw
+true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while
+__arglist __makeref __reftype __refvalue
+""".split())
+
+
+def csharp_identifier(name: str, *, internal_base: str | None = None, occupied: Iterable[str] = ()) -> str:
+    """Spell one simple identifier, not source text. Exclude this declaration from occupied names."""
+    if not re.fullmatch(r"@?[A-Za-z_][A-Za-z_0-9]*", name):
+        raise ValueError("expected one simple C# identifier without a PHP $, not an expression or key")
+    bare = name.removeprefix("@")
+    used = {other.removeprefix("@") for other in occupied}
+    if name.startswith("@") or bare not in _CSHARP_RESERVED or internal_base is None:
+        if bare in used:
+            raise ValueError("this name is already bound; inspect the declaration and its callers")
+        return "@" + bare if bare in _CSHARP_RESERVED else name
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", internal_base) or internal_base in _CSHARP_RESERVED:
+        raise ValueError("choose an unreserved internal name that describes the declaration")
+    candidate = internal_base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{internal_base}{suffix}"
+        suffix += 1
+    return candidate
 
 
 def csharp_literal(value: str | int | bool | None) -> str:

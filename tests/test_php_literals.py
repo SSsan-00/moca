@@ -20,6 +20,21 @@ class PhpLiteralTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 php_literals.csharp_literal(value)
 
+    def test_keyword_name_preserves_contract_or_allocates_an_unused_local(self):
+        name = php_literals.csharp_identifier
+        self.assertEqual(name("class"), "@class")
+        self.assertEqual(name("event", internal_base="eventName", occupied=["@eventName", "eventName2"]), "eventName3")
+        self.assertEqual(name("@class", internal_base="className"), "@class")
+        for unchanged in ("record", "Class", "@await", "eventName"):
+            self.assertEqual(name(unchanged, internal_base="other"), unchanged)
+        with self.assertRaises(ValueError):
+            name("event", occupied=["@event"])
+        for invalid in ("$class", "Model.event", '"event"', "@@class", ":event"):
+            with self.assertRaises(ValueError):
+                name(invalid)
+        with self.assertRaises(ValueError):
+            name("event", internal_base="switch")
+
     cases = [
         ('"edge-15001-\\"<&>/\\\\日本"', 'edge-15001-"<&>/\\日本'),
         (r"'don\'t \\ \n \" $value'", "don't \\ \\n \\\" $value"),
