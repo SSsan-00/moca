@@ -230,12 +230,13 @@
       --editor-min-width: 220px;
       --junie-min-width: 230px;
       --editor-divider-width: 14px;
-      display: grid; height: 100%; min-height: 360px; padding: 2px;
+      display: grid; min-height: max(360px, 100%); padding: 2px;
       grid-template-columns: clamp(var(--editor-min-width), var(--editor-width, 65%), calc(100% - var(--junie-min-width) - var(--editor-divider-width)))
         var(--editor-divider-width) minmax(var(--junie-min-width), 1fr);
-      grid-template-rows: minmax(0, 1fr);
+      grid-template-rows: minmax(auto, 1fr);
     }
     .editor-layout .panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    #editor-pane { min-height: min-content; }
     .editor-layout[data-status-only="true"]:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
     .editor-layout[data-status-only="true"] #editor-prompt-example { display: none; }
     .editor-splitter { display: grid; place-items: center; border-radius: 5px; cursor: col-resize; touch-action: none; user-select: none; }
@@ -248,7 +249,7 @@
     #editor-php-source { width: min(100%, 30ch); min-height: 34px; padding: 6px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
     .editor-muted { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .editor-notice { margin: 10px 10px 0; padding: 8px 10px; border: 1px solid var(--amber-line); border-radius: 8px; background: var(--amber-soft); color: var(--amber-ink); }
-    .editor-source { position: relative; flex: 1; min-height: 0; border-block: 1px solid var(--line); }
+    .editor-source { position: relative; flex: 1; min-height: 9rem; border-block: 1px solid var(--line); }
     .editor-source > div { position: absolute; inset: 0; }
     .editor-diagnostics { flex: none; border-top: 1px solid var(--line); font-size: 12px; }
     .editor-diagnostics summary { cursor: pointer; padding: 6px 12px; font-weight: 650; }
