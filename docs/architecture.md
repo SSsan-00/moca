@@ -154,7 +154,7 @@ flowchart TD
     User["利用者"]
     CLI["cli.py<br/>引数・設定"]
     UI["ブラウザー<br/>dashboard.js / 設定フォーム / Monaco"]
-    HTTP["dashboard.py<br/>HTTP / SSE"]
+    HTTP["dashboard_http.py<br/>HTTP / SSE"]
     Manager["run_manager.py<br/>実行枠・ワーカー"]
     Flow["workflow.py<br/>準備・移行<br/>検証・再開"]
     Input["アプリルート<br/>設定済み資料"]
@@ -189,6 +189,8 @@ flowchart TD
 | `<run_root>/<Run ID>/agent-workspace/` | Junie に渡す移行先のコピー、固定資料、境界抜粋、作業用ファイルを置きます。 |
 | `<worktree_root>/<Run ID>/` | detached worktree。ハーネスが移行先を反映し、フック、ビルド、チェッカーがこのアプリを参照します。 |
 
+工程の入口は [workflow.py](../src/migration_harness/workflow.py) に残し、[移行資料](../src/migration_harness/context/migration_materials.py)・[ルール選別](../src/migration_harness/rules/detail_selection.py)・[カプセル実行と採用](../src/migration_harness/runs/migration_capsules.py)・[参照更新](../src/migration_harness/runs/reference_refresh.py)・[台帳](../src/migration_harness/runs/migration_ledger.py)をそれぞれの担当へ分けます。検証では [pipeline.py](../src/migration_harness/verification/pipeline.py) が工程を調整し、[ビルド](../src/migration_harness/verification/build_cycle.py)、[チェッカー](../src/migration_harness/verification/checker_cycle.py)、[修正](../src/migration_harness/verification/repairs.py)、[工程スクリプト](../src/migration_harness/runs/stage_scripts.py) は別の担当です。CLIと画面は同じ保存・再開契約を使います。
+
 `run_root` と `worktree_root` はアプリルートの外に置き、互いに包含しない構成です。TOML から見たプロジェクトパスと、移行入力・移行先の基準の違いは [config.py](../src/migration_harness/config.py) の `load_config` に集約されています。設定の解釈はプロジェクトのパス、実行ツール、移行単位の順です。旧形式の共通資料は全移行単位から集めてから適用します。設定画面は `settings_form.py` でフォームの値を TOML の型に変換し、空欄で継承に戻す場合と、空配列を明示する場合を区別します。 Junie は起動ユーザーの OS 権限で動き、モデルサービスへ移行コンテキストが送られます。作業領域内に限定する指示と書き戻し前の照合が、ハーネス側のファイル反映の境界です。実行するフックやチェッカーの動作はその設定に従います。
 
 ## 2. 起動からワークフローへの入口
@@ -214,10 +216,10 @@ sequenceDiagram
 ```
 
 - Windows の `moca.cmd` は隣接する仮想環境の `php-to-csharp-harness.exe` と `harness.local.toml` を使います。Python のエントリーポイントは `migration_harness.cli:main` です。サーバーの起動後に既定のブラウザーで発行した URL を開きます。初回の `dashboard` は指定 TOML がなくても設定画面を開けます。保存操作で内容を検証し、読み込み時の版と照合して置き換えます。保存済み Run の選択と再開は画面から行います。 [moca.cmd](../moca.cmd) · [cli.py](../src/migration_harness/cli.py) · [dashboard.py](../src/migration_harness/web/dashboard.py)
-- サーバーは `127.0.0.1` の空きポートにバインドし、ランダムな URL 接頭辞を使います。GET は Host と接頭辞、POST は Host と Origin を照合します。`GET …/events` は Run 別の連番付き SSE を配信し、再接続時は `Last-Event-ID` より後の直近保持分（最大 100 件）を返します。 [dashboard.py](../src/migration_harness/web/dashboard.py)
+- サーバーは `127.0.0.1` の空きポートにバインドし、ランダムな URL 接頭辞を使います。GET は Host と接頭辞、POST は Host と Origin を照合します。`GET …/events` は Run 別の連番付き SSE を配信し、再接続時は `Last-Event-ID` より後の直近保持分（最大 100 件）を返します。 [dashboard_http.py](../src/migration_harness/web/dashboard_http.py)
 - `RunManager` が操作 ID を付けて FIFO キューに登録し、最大 5 件を別スレッドで実行します。同じ移行単位の実行中・待機中の重複を拒否します。`<run_root>/dashboard-queue.json` から未起動のジョブを復元し、起動済みの工程は繰り返さず保存状態を表示します。Junieの終了未確認が解消されるまでは同じRunの会話依頼を保留し、その理由を再起動後も復元します。ワーカーが使う設定は実行枠へ入る際にコピーします。 [run_manager.py](../src/migration_harness/runs/run_manager.py) · [junie_conversation.py](../src/migration_harness/junie/junie_conversation.py)
 
-ダッシュボードの `Dashboard.server()` はループバックに接続し、`_dashboard_handler()` が GET の配信と POST の共通検証を担当します。POST は本文の形式と操作ごとのサイズを確認し、対象 Run を確定した後に設定、編集・会話、追加指示、比較、実行制御へ振り分けます。
+ダッシュボードの `Dashboard.server()` がサーバーを構成し、`DashboardHandler` が GET の配信と POST の共通検証を担当します。POST は本文の形式と操作ごとのサイズを確認し、対象 Run を確定してから [設定](../src/migration_harness/web/dashboard_settings.py)、[編集・診断・会話](../src/migration_harness/web/dashboard_editor.py)、[比較](../src/migration_harness/web/dashboard_comparison.py)、[実行・復旧](../src/migration_harness/web/dashboard_runs.py)に振り分けます。[editor_view.py](../src/migration_harness/runs/editor_view.py) の版照合、差分、プロンプトの時間表示にはHTTPの入出力を持たせません。
 
 設定フォームの表示、入力差分、モデル候補、プレビューと保存は `dashboard_settings.js` が担当します。デモはデモ用のアダプターを、本番は `dashboard.js` の HTTP アダプターを設定フォームへ渡します。ブラウザで表示するのはプロジェクトの概要、移行単位、参照の起点と追加フォルダー、ルール／参考実装などです。呼び出し容量や参照の除外・再帰・容量制限は TOML で編集します。
 
@@ -302,7 +304,9 @@ sequenceDiagram
 | アンカー生成 | `--task` 対応を確認して優先使用し、未対応なら対話CLIへ切り替えます。 |
 | 通信失敗と停止 | モデル通信に失敗すると、同じ作業領域と完了トークンで 1 秒、3 秒の間隔を置いて最大 2 回再試行します。停止境界ではプロセス群の終了を確認します。終了を確認できない場合は `JunieStopError` で止まり、利用者による残存プロセスの確認が必要です。 |
 
-実装は [junie_cli.py](../src/migration_harness/junie/junie_cli.py)、子プロセスや Windows の Job Object は [junie_process.py](../src/migration_harness/junie/junie_process.py) と [windows_job.py](../src/migration_harness/windows_job.py) を参照してください。
+[junie_cli.py](../src/migration_harness/junie/junie_cli.py) が実行モード選択・再試行と、起動からプロセス群の終了確認、使用量回収、端末復元までの順序を管理します。引数と Windows ランチャーの起動は [junie_launch.py](../src/migration_harness/junie/junie_launch.py)、プロセス群の所有は [junie_process.py](../src/migration_harness/junie/junie_process.py) と [windows_job.py](../src/migration_harness/windows_job.py) が担当します。
+
+[acp_session.py](../src/migration_harness/junie/acp_session.py) は ACP の入出力・許可・追加指示・モデル設定を扱います。ACP の応答が終わっただけでは、ファイルへの反映や子プロセスの終了は確定しません。[session_events.py](../src/migration_harness/junie/session_events.py) は今回の起動と照合できたイベントの追記だけを読み、[usage.py](../src/migration_harness/junie/usage.py) が利用量と、取得または推定できた費用を集計します。
 
 `migration-complete-<token>.txt` の内容と全移行先の存在を照合してから完了数を増やします。終了コードは診断情報として記録します。トークン未発行や停止時も、対象外変更や版の照合を通過した下書きは保存される場合があります。終了確認済みで対象外を変更していない停止下書きには、原文と版を照合した任意メモを紐づけられます。再開で版が合う場合も未確認の手がかりとしてだけ渡し、進捗に数えません。オペレーターへの質問を保存する経路では、回答を待つチェックポイントに入ります。 [workflow.py](../src/migration_harness/workflow.py)
 

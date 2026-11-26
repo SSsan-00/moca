@@ -9,13 +9,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from migration_harness.junie import junie_cli
+from migration_harness.junie import junie_cli, junie_launch
 
 
 def main() -> None:
     if sys.platform != "win32":
         raise SystemExit("Run this smoke check on Windows with Junie installed")
-    installed = Path(junie_cli._resolve_executable("junie"))
+    installed = Path(junie_launch._resolve_executable("junie"))
     if installed.suffix.lower() != ".bat":
         raise AssertionError(f"Expected the official BAT launcher, got {installed}")
     print(f"Official Junie launcher: {installed}", flush=True)
@@ -31,7 +31,7 @@ def main() -> None:
                 "PATH": str(root) + os.pathsep + os.environ["PATH"],
                 "JUNIE_SHARE_ANONYMOUS_STATISTICS": "false",
             }):
-                resolved = Path(junie_cli._resolve_executable("junie"))
+                resolved = Path(junie_launch._resolve_executable("junie"))
                 assert resolved == launcher, (resolved, launcher)
                 for flag in ("--version", "--help"):
                     command = junie_cli.build_command(

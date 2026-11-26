@@ -15,12 +15,14 @@ from urllib.parse import urlsplit
 
 from browser_run import run_browser
 
-from migration_harness import workflow
-from migration_harness.config import target_paths
+from migration_harness.config import load_config, target_paths
+from migration_harness.runs import (
+    editor_queue as editor_queue_store, reference_refresh, target_snapshots, verification_edits,
+)
 from migration_harness.context.source_context import stage_target_context
 from migration_harness.junie.junie_conversation import saved_edits, target_versions
 from migration_harness.runs.editor_queue import editor_queue
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_settings
 from migration_harness.junie.junie_notifications import RunNotice
 from migration_harness.junie.junie_thoughts import FILENAME as JUNIE_LOG_NAME
 from ui_dependencies import node_executable, require_ui_dependency
@@ -79,7 +81,7 @@ targets = ["Example.cs", "Pages/Index.cshtml", "Pages/Index.cshtml.cs", "wwwroot
 [units.target_context]
 max_bytes = 9007199254740993 # preserve this value
 """, encoding="utf-8")
-            config = dashboard.load_config(path)
+            config = load_config(path)
             run_id = str(uuid.uuid4())
             run = root / "runs" / run_id
             worktree = root / "trees" / run_id
@@ -138,7 +140,7 @@ max_bytes = 9007199254740993 # preserve this value
                     with editor_queue(run) as queue:
                         request = {"edits": saved_edits(queue), "edit_revision": queue["edit_revision"],
                                    "targets": target_versions(worktree, unit)}
-                    workflow._apply_verification_edits(run, worktree, unit, request)
+                    verification_edits.apply_verification_edits(run, worktree, unit, request)
                     view.publish({**view.state, "ready": True})
                 elif handler.path == fixture_root + "fixture-editor-merge":
                     record_path = run / "run.json"
@@ -147,7 +149,7 @@ max_bytes = 9007199254740993 # preserve this value
                     targets = target_paths(unit)
                     saved["target_hashes"] = target_versions(worktree, unit)
                     with editor_queue(run, recover=(worktree, targets)) as queue:
-                        adopted = workflow._apply_editor_edits(
+                        adopted = editor_queue_store.apply_editor_edits(
                             queue, run / "agent-workspace", worktree, targets, saved, record_path,
                         )
                     view.publish({**view.state, "ready": True})
@@ -180,7 +182,7 @@ max_bytes = 9007199254740993 # preserve this value
                     stage_target_context(worktree, targets, capsule, agent, policy={"roots": [], "folders": ["refs"]})
                     (capsule / "manifest.json").write_text('{"parts": [{"index": 1}]}', encoding="utf-8")
                     saved["target_hashes"] = target_versions(worktree, unit)
-                    saved["capsule_checkpoints"] = {"1": workflow._save_capsule_checkpoint(
+                    saved["capsule_checkpoints"] = {"1": target_snapshots.save_capsule_checkpoint(
                         run, worktree, targets, saved["target_hashes"],
                     )}
                     record_path.write_text(json.dumps(saved), encoding="utf-8")
@@ -190,8 +192,8 @@ max_bytes = 9007199254740993 # preserve this value
                 elif handler.path == fixture_root + "fixture-editor-refresh-reference":
                     saved = json.loads((run / "run.json").read_bytes())
                     proposal = run / "reference-proposal-fixture"
-                    with patch.object(workflow, "_propose_reference_refresh", return_value=proposal):
-                        workflow._refresh_target_context_on_resume(
+                    with patch.object(reference_refresh, "_propose_reference_refresh", return_value=proposal):
+                        reference_refresh.refresh_target_context_on_resume(
                             config, config["units"][0], run, worktree, saved, migration_complete=True,
                         )
                     view.observe(saved)
@@ -250,7 +252,7 @@ max_bytes = 9007199254740993 # preserve this value
                     {"id": "fixture-lite", "name": "Fixture Lite", "efforts": ["none"]},
                     {"id": "fixture-unknown", "name": "Fixture Unknown"},
                 ]
-                with patch.object(dashboard, "list_models", return_value=catalog):
+                with patch.object(dashboard_settings, "list_models", return_value=catalog):
                     checks = (
                         (helper.with_name("editor_semantic_browser_driver.mjs"), "editor-browser",
                          [url, run_id, str(path)], 90),

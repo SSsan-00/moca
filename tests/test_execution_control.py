@@ -10,6 +10,9 @@ from unittest.mock import patch
 from fixtures import HarnessCase, prepare_fixture
 from migration_harness.runs import run_records
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.junie import junie_cli
+from migration_harness.verification import build_cycle
 from migration_harness.web.dashboard import Dashboard
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope, run_process
 from migration_harness.runs.timings import freeze_timings, update_timings
@@ -104,7 +107,7 @@ class ExecutionIntegrationTests(HarnessCase):
         config = {**self.settings, "checker_command": ["checker"]}
         clock = 100
         updates = []
-        run_command = workflow.run_process
+        run_command = execution.run_process
 
         def observe(record):
             updates.append((record["status"], record.get("active_stage")))
@@ -128,10 +131,10 @@ class ExecutionIntegrationTests(HarnessCase):
         with (
             patch.object(run_records, "update_timings",
                          side_effect=lambda record, **kwargs: update_timings(record, now=clock, **kwargs)),
-            patch.object(workflow, "monotonic", side_effect=lambda: clock),
-            patch.object(workflow.junie_cli, "require_interactive_cli"),
-            patch.object(workflow.junie_cli, "run_interactive", side_effect=migrate),
-            patch.object(workflow, "run_process", side_effect=execute),
+            patch.object(build_cycle, "monotonic", side_effect=lambda: clock),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=migrate),
+            patch.object(execution, "run_process", side_effect=execute),
         ):
             result = workflow.run_with_junie(config, "sample")
 
@@ -234,7 +237,7 @@ class ExecutionIntegrationTests(HarnessCase):
 
         with (
             control_scope(control), self.assertRaises(workflow.RunInterrupted),
-            patch.object(workflow, "run_process", side_effect=stop_running_build),
+            patch.object(execution, "run_process", side_effect=stop_running_build),
         ):
             workflow.resume_with_junie(self.settings, result["run_id"])
         stopped = json.loads(record_path.read_bytes())
@@ -242,8 +245,8 @@ class ExecutionIntegrationTests(HarnessCase):
         self.assertEqual(stopped.get("repair_history", []), [])
         self.assertEqual(len(stopped["build_attempt_seconds"]), 1)
         with (
-            patch.object(workflow, "monotonic", side_effect=(10, 12)),
-            patch.object(workflow, "run_process", return_value=subprocess.CompletedProcess(["dotnet"], 0)),
+            patch.object(build_cycle, "monotonic", side_effect=(10, 12)),
+            patch.object(execution, "run_process", return_value=subprocess.CompletedProcess(["dotnet"], 0)),
         ):
             resumed = workflow.resume_with_junie(self.settings, result["run_id"])
         self.assertEqual(resumed["status"], "build_succeeded")

@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.runs import stage_scripts, worktree_targets as target_files
 
 
 PASSED = '{"verdict":"passed","evidence_lines":[1]}'
@@ -25,7 +27,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
 
     @contextmanager
     def commands(self, *advisories, lock_output=False):
-        run = workflow.run_process
+        run = execution.run_process
         verifications = []
         with ExitStack() as stack:
             def child(command, **kwargs):
@@ -40,7 +42,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
                     msvcrt.locking(locked.fileno(), msvcrt.LK_NBLCK, self.log.stat().st_size)
                 return process
 
-            stack.enter_context(patch.object(workflow, "run_process", side_effect=child))
+            stack.enter_context(patch.object(execution, "run_process", side_effect=child))
             judge = stack.enter_context(patch(
                 "migration_harness.verification.checker_advisory.run_text_advisory", side_effect=advisories,
             ))
@@ -50,7 +52,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
         return workflow.resume_with_junie(self.config, self.run_id)
 
     def run_phase(self):
-        workflow._run_script_phase(self.config, self.phase, self.worktree, self.run_path, self.record(), once=True)
+        stage_scripts.run_script_phase(self.config, self.phase, self.worktree, self.run_path, self.record(), once=True)
 
     def pending_output(self):
         record = self.record()
@@ -71,7 +73,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
             raise KeyboardInterrupt
 
         with self.commands() as (commands, judge):
-            with patch.object(workflow, "_script_output_sha256", side_effect=interrupt):
+            with patch.object(stage_scripts, "_script_output_sha256", side_effect=interrupt):
                 with self.assertRaises(workflow.RunScriptError) as error:
                     self.resume()
             self.assertTrue(error.exception.interrupted)
@@ -110,7 +112,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
     def test_interrupted_target_snapshot_is_not_recovered_by_hashing_later(self):
         self.configure_hook()
         with self.commands() as (commands, judge):
-            with patch.object(workflow, "_script_decision_versions", side_effect=KeyboardInterrupt):
+            with patch.object(target_files, "recorded_target_hashes", side_effect=KeyboardInterrupt):
                 with self.assertRaises(workflow.RunScriptError) as error:
                     self.resume()
             self.assertTrue(error.exception.interrupted)
@@ -128,7 +130,7 @@ class OnceScriptReceiptTests(SavedRunFixture):
             with self.subTest(phase=phase):
                 self.configure_hook(phase)
                 with self.commands() as (commands, judge):
-                    with patch.object(workflow, "_script_output_sha256", side_effect=KeyboardInterrupt):
+                    with patch.object(stage_scripts, "_script_output_sha256", side_effect=KeyboardInterrupt):
                         with self.assertRaises(workflow.RunScriptError):
                             self.run_phase()
                     with self.assertRaisesRegex(workflow.RunScriptError, "no verifiable full-range hash"):

@@ -18,7 +18,7 @@ from migration_harness.context.capsules import load_capsule_manifest, prepare_co
 from migration_harness.rules.rule_materials import render_guidelines
 from migration_harness.files import sha256_file
 from migration_harness.junie.reply_text import unwrap_json_fence
-from migration_harness.web.dashboard import _save_settings
+from migration_harness.web.dashboard_settings import save_settings_file
 from migration_harness.rules.rule_workspace import RuleWorkspace, _diff
 from migration_harness.rules.rule_chat import RuleChat, decode_reply
 
@@ -130,7 +130,7 @@ end_line = 1
 
     def send(self, data, action, **fields):
         return self.workspace.action({"id": data["id"], "revision": data["revision"], "action": action, **fields},
-                                     lambda content, version, verify_origins: _save_settings(
+                                     lambda content, version, verify_origins: save_settings_file(
                                          self.config_path, content, version, verify_origins=verify_origins))
 
     def apply(self, draft):
@@ -498,7 +498,7 @@ end_line = 1
             original.write_bytes(b"new obligation")
             return normalized
 
-        with patch("migration_harness.web.dashboard.load_config", side_effect=change_original):
+        with patch("migration_harness.web.dashboard_settings.load_config", side_effect=change_original):
             with self.assertRaisesRegex(ValueError, "登録元"):
                 self.send(draft, "apply", confirmed=True, preview=draft["preview"]["token"])
         self.assertEqual(self.config_path.read_bytes(), before)
@@ -553,7 +553,7 @@ end_line = 1
         recovered = self.app / "recovered.md"
         recovered.write_bytes(registered.read_bytes())
         content = before.decode().replace(registered.as_posix(), recovered.as_posix())
-        _save_settings(self.config_path, content, second["base"])
+        save_settings_file(self.config_path, content, second["base"])
         fresh = self.workspace.start()
         self.assertIn("new published obligation", self.workspace.file_text(fresh["id"], "rule-0001.md")["text"])
 
@@ -564,7 +564,7 @@ end_line = 1
         def shifted_root(candidate):
             return {**load_config(candidate), "project_root": str(self.root / "another-worktree")}
 
-        with patch("migration_harness.web.dashboard.load_config", side_effect=shifted_root):
+        with patch("migration_harness.web.dashboard_settings.load_config", side_effect=shifted_root):
             with self.assertRaisesRegex(ValueError, "設定画面で"):
                 self.send(ready, "apply", confirmed=True, preview=ready["preview"]["token"])
         self.assertEqual(self.config_path.read_bytes(), before)
@@ -659,7 +659,7 @@ end_line = 1
         from threading import Event
         from unittest.mock import Mock
 
-        from migration_harness.junie import junie_cli
+        from migration_harness.junie import acp_session
 
         chat = RuleChat.__new__(RuleChat)
         chat.response = []
@@ -684,7 +684,7 @@ end_line = 1
         ):
             self.assertEqual(chat.wait(ready=True, cancelled=Event(), publish=lambda *_: None), "")
         self.assertEqual(chat.session_id, "slow-connection")
-        self.assertGreater(chat._connection_timeout(), junie_cli.ACP_TIMEOUT)
+        self.assertGreater(chat._connection_timeout(), acp_session.ACP_TIMEOUT)
 
     def test_chat_proposals_are_not_written_until_accepted(self):
         proposed = "前\u2028中\u2029後\u0085末\r\n"

@@ -94,8 +94,8 @@ class DetailLogSettingsTests(HarnessCase):
                 acp.flush_progress.side_effect = flush
                 with (patch.object(junie_cli, "junie_dashboard_control", return_value=dashboard),
                       patch.object(junie_cli, "_launch_session_process", return_value=process),
-                      patch.object(junie_cli, "_AcpSession", return_value=acp),
-                      patch.object(junie_cli, "_JunieSessionEvents", return_value=events),
+                      patch.object(junie_cli, "AcpSession", return_value=acp),
+                      patch.object(junie_cli, "SessionEvents", return_value=events),
                       patch.object(junie_cli, "_close_junie", return_value=0)):
                     self.assertEqual(junie_cli.run_interactive(
                         ["junie", "--prompt", "task"], run_dir / "complete", "token", (),
@@ -123,7 +123,7 @@ class DetailLogSettingsTests(HarnessCase):
             events.read_new_events.return_value = False
             with (control_scope(control),
                   patch.object(junie_cli, "_launch_session_process", return_value=process),
-                  patch.object(junie_cli, "_JunieSessionEvents", return_value=events),
+                  patch.object(junie_cli, "SessionEvents", return_value=events),
                   patch.object(junie_cli, "_close_junie", return_value=0)):
                 junie_cli.run_interactive(["junie", "--task", "作業"], run / "done", "token-to-mask", (),
                                           accept_result=accept_result, report_usage=lambda _: None)
@@ -133,7 +133,7 @@ class DetailLogSettingsTests(HarnessCase):
                 accept_result.assert_called_once_with(result)
 
     def test_acp_visible_progress_is_recorded_without_thought_chunks(self):
-        from migration_harness.junie.junie_cli import _AcpSession
+        from migration_harness.junie.acp_session import AcpSession
         from migration_harness.junie.junie_thoughts import FILENAME, JunieThoughts, read_junie_thoughts
 
         run_dir = self.path.parent / "fixture"
@@ -141,7 +141,7 @@ class DetailLogSettingsTests(HarnessCase):
         log = JunieThoughts.__new__(JunieThoughts)
         log.target = run_dir / FILENAME
         log.token = "completion-secret"
-        acp = _AcpSession.__new__(_AcpSession)
+        acp = AcpSession.__new__(AcpSession)
         acp.session_id = "current"
         acp.progress_sink = log.append_progress
         acp.progress_text = ""

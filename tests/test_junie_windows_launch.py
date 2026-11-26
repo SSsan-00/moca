@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from migration_harness.context import php_literals
-from migration_harness.junie import junie_cli
+from migration_harness.junie import junie_cli, junie_launch, session_events
 from migration_harness.errors import format_error
 
 
@@ -49,8 +49,8 @@ class JunieLaunchTests(unittest.TestCase):
         executable = os.path.abspath("Junie Tools/junie.exe")
         command = ["junie", "--project", "space & (project)", "--prompt", 'say "hello"\n%PATH% & echo no']
         with (
-            patch.object(junie_cli.shutil, "which", return_value=executable) as lookup,
-            patch.object(junie_cli.subprocess, "Popen") as launch,
+            patch.object(junie_launch.shutil, "which", return_value=executable) as lookup,
+            patch.object(junie_launch.subprocess, "Popen") as launch,
         ):
             self.assertIs(junie_cli._launch_process(command), launch.return_value)
         lookup.assert_called_once_with("junie")
@@ -86,9 +86,9 @@ class JunieLaunchTests(unittest.TestCase):
         restored = Mock()
         with (
             patch.object(junie_cli, "_save_terminal_mode", return_value=restored),
-            patch.object(junie_cli, "_JunieSessionEvents"),
-            patch.object(junie_cli.shutil, "which", return_value=None),
-            patch.object(junie_cli.subprocess, "Popen") as launch,
+            patch.object(junie_cli, "SessionEvents"),
+            patch.object(junie_launch.shutil, "which", return_value=None),
+            patch.object(junie_launch.subprocess, "Popen") as launch,
             patch.object(junie_cli.time, "sleep") as delay,
             self.assertRaises(junie_cli.JunieLaunchError) as failed,
         ):
@@ -114,8 +114,8 @@ class JunieLaunchTests(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {"UNRELATED_PRIVATE_ENV": "unrelated-secret"}),
-            patch.object(junie_cli.shutil, "which", return_value=executable),
-            patch.object(junie_cli.subprocess, "Popen", side_effect=fail),
+            patch.object(junie_launch.shutil, "which", return_value=executable),
+            patch.object(junie_launch.subprocess, "Popen", side_effect=fail),
             self.assertRaises(junie_cli.JunieLaunchError) as failed,
         ):
             junie_cli._launch_process(command)
@@ -134,7 +134,7 @@ class JunieLaunchTests(unittest.TestCase):
         command[0] = executable
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows", "JUNIE_PROMPT": "old", "JUNIE_PROJECT": "old"}):
             before = dict(os.environ)
-            line, interpreter, environment = junie_cli._windows_batch_command(command)
+            line, interpreter, environment = junie_launch._windows_batch_command(command)
             self.assertEqual(dict(os.environ), before)
         self.assertEqual(interpreter, r"C:\Windows\System32\cmd.exe")
         self.assertIn(' /d /v:off /s /c ""%PHP_TO_CSHARP_JUNIE_LAUNCHER%"', line)
@@ -156,9 +156,9 @@ class JunieLaunchTests(unittest.TestCase):
             executable = r"C:\Junie Tools\Junie" + extension
             with (
                 self.subTest(extension=extension),
-                patch.object(junie_cli, "_resolve_executable", return_value=executable),
+                patch.object(junie_launch, "_resolve_executable", return_value=executable),
                 patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
-                patch.object(junie_cli.subprocess, "Popen") as launch,
+                patch.object(junie_launch.subprocess, "Popen") as launch,
             ):
                 junie_cli._launch_process(["junie", "--prompt", "hello"])
                 self.assertIsInstance(launch.call_args.args[0], str)
@@ -168,7 +168,7 @@ class JunieLaunchTests(unittest.TestCase):
 
     def test_windows_equals_options_and_root_project_preserve_values(self):
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
-            _, _, environment = junie_cli._windows_batch_command([
+            _, _, environment = junie_launch._windows_batch_command([
                 r"C:\Junie.CMD", "--project=C:\\", '--prompt=a "b"\nc', '--ide-guidelines=C:\\資料 & rules.md',
             ])
         self.assertEqual(environment["JUNIE_PROJECT"], "C:\\")
@@ -178,7 +178,7 @@ class JunieLaunchTests(unittest.TestCase):
     def test_windows_batch_transports_task_text_in_environment(self):
         prompt = '対応行を提案してください。\n"quoted" & %PATH%'
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
-            line, _, environment = junie_cli._windows_batch_command([
+            line, _, environment = junie_launch._windows_batch_command([
                 r"C:\Junie.CMD", "--task", prompt,
             ])
         self.assertEqual(environment["JUNIE_TASK"], prompt)
@@ -199,13 +199,13 @@ class JunieLaunchTests(unittest.TestCase):
         with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
             for arguments, message in cases:
                 with self.subTest(arguments=arguments[:1], message=message), self.assertRaisesRegex(ValueError, message):
-                    junie_cli._windows_batch_command([r"C:\Junie.BAT", *arguments])
+                    junie_launch._windows_batch_command([r"C:\Junie.BAT", *arguments])
 
     def test_missing_cmd_is_actionable_and_prevents_launch(self):
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch.object(junie_cli, "_resolve_executable", return_value=r"C:\Junie.BAT"),
-            patch.object(junie_cli.subprocess, "Popen") as launch,
+            patch.object(junie_launch, "_resolve_executable", return_value=r"C:\Junie.BAT"),
+            patch.object(junie_launch.subprocess, "Popen") as launch,
             self.assertRaisesRegex(junie_cli.JunieLaunchError, "SystemRoot/COMSPEC"),
         ):
             junie_cli._launch_process(["junie", "--prompt", "hello"])
@@ -220,7 +220,7 @@ class JunieLaunchTests(unittest.TestCase):
         restored, report = Mock(), Mock()
         with (
             patch.object(junie_cli, "_save_terminal_mode", return_value=restored),
-            patch.object(junie_cli, "_JunieSessionEvents", return_value=events),
+            patch.object(junie_cli, "SessionEvents", return_value=events),
             patch.object(junie_cli, "_launch_process", return_value=process),
         ):
             self.assertEqual(junie_cli._run_session(["junie"], Path("complete"), "token", (), report_usage=report), 7)
@@ -234,7 +234,7 @@ class JunieLaunchTests(unittest.TestCase):
         restored = Mock()
         with (
             patch.object(junie_cli, "_save_terminal_mode", return_value=restored),
-            patch.object(junie_cli, "_JunieSessionEvents"),
+            patch.object(junie_cli, "SessionEvents"),
             patch.object(junie_cli, "_launch_process", return_value=process),
             patch.object(junie_cli, "_close_junie") as close,
             self.assertRaises(KeyboardInterrupt),
@@ -272,7 +272,7 @@ class JunieLaunchTests(unittest.TestCase):
             with (
                 patch.object(junie_cli, "_save_terminal_mode", return_value=restored),
                 patch.object(junie_cli, "_launch_process", side_effect=start),
-                patch.object(junie_cli, "_resolve_executable", return_value="/tools/junie"),
+                patch.object(junie_launch, "_resolve_executable", return_value="/tools/junie"),
                 patch.object(junie_cli.time, "sleep") as delay,
                 self.assertRaises(junie_cli.JunieSessionError) as failed,
             ):
@@ -290,7 +290,7 @@ class JunieLaunchTests(unittest.TestCase):
         with TemporaryDirectory() as directory, patch.dict(os.environ, {"JUNIE_HOME": directory}, clear=True):
             logs = Path(directory) / "logs"
             logs.mkdir()
-            events = junie_cli._JunieSessionEvents("token")
+            events = session_events.SessionEvents("token")
             log = logs / "log-test-pid-123.log"
             log.write_text("2026-11-16 01:02:03.100 [main] ERROR failure\n\tat Cli.kt:100\n",
                            encoding="utf-8")
@@ -310,7 +310,7 @@ class JunieLaunchTests(unittest.TestCase):
             logs = Path(directory) / "logs"
             logs.mkdir()
             (logs / "log-old-pid-123.log").write_text("2026-11-16 01:00:00 [main] ERROR old private content\n")
-            events = junie_cli._JunieSessionEvents("token")
+            events = session_events.SessionEvents("token")
             other = logs / "log-new-pid-456.log"
             other.write_text("2026-11-16 01:00:01 [main] ERROR other private content\n")
             report = events.startup_diagnostics(123, ["junie"])
@@ -352,7 +352,7 @@ class JunieLaunchTests(unittest.TestCase):
             with (
                 patch.object(junie_cli, "_save_terminal_mode", return_value=Mock()),
                 patch.object(junie_cli, "_launch_process", side_effect=start),
-                patch.object(junie_cli, "_resolve_executable", return_value="/tools/junie"),
+                patch.object(junie_launch, "_resolve_executable", return_value="/tools/junie"),
                 self.assertRaises(junie_cli.JunieSessionError) as failed,
             ):
                 junie_cli.run_interactive(command, Path(directory) / "complete", "token", ())
@@ -368,7 +368,7 @@ class JunieLaunchTests(unittest.TestCase):
         with TemporaryDirectory() as directory, patch.dict(os.environ, {"JUNIE_HOME": directory}):
             logs = Path(directory) / "logs"
             logs.mkdir()
-            events = junie_cli._JunieSessionEvents("token")
+            events = session_events.SessionEvents("token")
             log = logs / "log-new-pid-456.log"
             for cwd, pid, declared_log in (
                 (directory, 456, log),
@@ -441,7 +441,7 @@ class WindowsBatchIntegrationTests(unittest.TestCase):
                     "JUNIE_MODEL": "opus", "JUNIE_EFFORT": "low",
                     "PHP_TO_CSHARP_TEST_PYTHON": sys.executable,
                     "PHP_TO_CSHARP_TEST_CAPTURE": str(capture), "PHP_TO_CSHARP_TEST_RESULT": str(result),
-                }), patch.object(junie_cli.os, "getcwd", return_value=str(root)):
+                }), patch.object(junie_launch.os, "getcwd", return_value=str(root)):
                     process = junie_cli._launch_process(command)
                     try:
                         self.assertEqual(process.wait(timeout=20), 7)

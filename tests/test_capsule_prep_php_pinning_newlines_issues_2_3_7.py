@@ -14,6 +14,9 @@ from fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
 from migration_harness.context import capsules
 from migration_harness.context.context_evidence import find_feature, read_context
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.context import migration_materials
+from migration_harness.runs import migration_draft, worktree_targets as target_files
 from migration_harness.junie import junie_cli
 from migration_harness.web import review_anchors
 from migration_harness.config import load_config
@@ -103,7 +106,7 @@ class CapsulePreparationTests(HarnessCase):
             redirect_stdout(io.StringIO()),
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(junie_cli, "run_interactive", side_effect=junie) as agent,
-            patch.object(workflow.subprocess, "run", side_effect=build_or_run_git),
+            patch.object(subprocess, "run", side_effect=build_or_run_git),
             stub_syntax_diagnostics(),
         ):
             workflow.run_with_junie(load_config(path), "メニュー")
@@ -177,7 +180,7 @@ class CapsulePreparationTests(HarnessCase):
             self.assertEqual([entry["end_line"] for entry in references], [2, 2, 2, 3])
             agent = self.root / f"agent-{unit_id}"
             agent.mkdir()
-            prompt = workflow._stage_migration_materials(capsule, manifest, agent, repair=True)
+            prompt = migration_materials.stage_migration_materials(capsule, manifest, agent, repair=True)
             self.assertTrue((agent / ".migration-materials/guidelines.md").is_file())
             self.assertIn("references.json", prompt)
             staged = self.read_json(agent / ".migration-materials" / "references.json")
@@ -228,7 +231,7 @@ class CapsulePreparationTests(HarnessCase):
         config["scripts"]["before_migration"].append(["@copy-migration-draft", str(draft), "Target.cs"])
         config["scripts"]["after_build"].append([sys.executable, "-c", "raise SystemExit(7)"])
         config["checker_command"] = [sys.executable, "-c", "pass"]
-        original_run_process = workflow.run_process
+        original_run_process = execution.run_process
         calls = []
 
         def run_process(args, **kwargs):
@@ -248,7 +251,7 @@ class CapsulePreparationTests(HarnessCase):
         with (
             patch.object(junie_cli, "require_interactive_cli"),
             patch.object(junie_cli, "run_interactive", side_effect=migrate),
-            patch.object(workflow, "run_process", side_effect=run_process),
+            patch.object(execution, "run_process", side_effect=run_process),
             redirect_stdout(io.StringIO()),
         ):
             with self.assertRaises(workflow.RunScriptError) as failure:
@@ -329,8 +332,8 @@ class CapsulePreparationTests(HarnessCase):
                 self.assertIn("This capsule was interrupted", command[-1])
                 junie_cli.launch_input_observer.get()(command[-1])
                 entry, = self.read_json(record_path)["last_context_plan"]["targets"]
-                self.assertEqual(workflow.target_hash(target), entry["staged_sha256"])
-                self.assertEqual(workflow.target_hash(previous), entry["recorded_sha256"])
+                self.assertEqual(target_files.target_hash(target), entry["staged_sha256"])
+                self.assertEqual(target_files.target_hash(previous), entry["recorded_sha256"])
                 self.assertNotEqual(entry["staged_sha256"], entry["recorded_sha256"])
             completion.write_text(token, encoding="ascii")
             return 0
@@ -395,7 +398,7 @@ class CapsulePreparationTests(HarnessCase):
                 completion.write_text(token, encoding="ascii")
                 return 0
 
-            with patch.object(workflow, "_restore_snapshot_targets", side_effect=OSError("fixture interruption")):
+            with patch.object(migration_draft, "restore_snapshot_targets", side_effect=OSError("fixture interruption")):
                 with self.assertRaisesRegex(OSError, "fixture interruption"):
                     workflow.resume_with_junie(config, run_id, verification_request={**rewind, "id": "replay"})
             self.assertEqual(worktree_target.read_bytes(), latest)

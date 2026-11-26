@@ -25,6 +25,22 @@ REQUIRED_UI = {
 }
 
 
+REQUIRED_RUN_MODELS = {
+    "test_run_state_model_traces.RunStateModelTraceTests.test_apply_plan_survives_interruption_and_rejects_manual_edit",
+    *("test_run_state_models.RunStateModelsTests." + name for name in (
+        "test_run_slot_safety_and_recovery",
+        "test_verification_evidence_for_required_and_optional_checker",
+        "test_partial_adoption_and_hook_recovery",
+        "test_shortest_counterexample_for_duplicate_start",
+        "test_shortest_counterexample_for_fenced_adoption",
+        "test_shortest_counterexample_for_missing_exit_fence",
+        "test_shortest_counterexample_for_stale_success",
+        "test_restart_cannot_discard_an_unfinalized_hook_attempt",
+        "test_incomplete_search_is_a_failure",
+    )),
+}
+
+
 class RegressionResult(unittest.TextTestResult):
 
     def __init__(self, *args, **kwargs):
@@ -97,7 +113,10 @@ def main():
     missing_ui = REQUIRED_UI - result.passed if args.require_ui else set()
     if missing_ui:
         print("Required UI tests did not pass: " + ", ".join(sorted(missing_ui)))
-    return 0 if result.wasSuccessful() and not missing_ui else 1
+    missing_models = REQUIRED_RUN_MODELS - result.passed if args.shard != "conversation-editor" else set()
+    if missing_models:
+        print("Required Run state checks did not pass: " + ", ".join(sorted(missing_models)))
+    return 0 if result.wasSuccessful() and not (missing_ui or missing_models) else 1
 
 
 if __name__ == "__main__":

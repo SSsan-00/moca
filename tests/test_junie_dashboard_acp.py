@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from migration_harness.junie import junie_cli
+from migration_harness.junie import acp_session, junie_cli
 from migration_harness.web.dashboard import Dashboard
 from migration_harness.execution import OperationCancelled, control_scope
 
@@ -20,18 +20,18 @@ class JunieDashboardAcpTests(unittest.TestCase):
                       "params": {"sessionId": "chat", "text": "表の更新"}}
         frame = json.dumps(permission, ensure_ascii=False).encode("cp932")
         with self.assertRaises(ValueError):
-            junie_cli._acp_message(frame)
+            acp_session._acp_message(frame)
         display = {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "chat",
                    "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "表"}}}}
         with self.assertRaises(ValueError):
-            junie_cli._acp_message(codecs.BOM_UTF8 + json.dumps(display, ensure_ascii=False).encode("cp932"))
+            acp_session._acp_message(codecs.BOM_UTF8 + json.dumps(display, ensure_ascii=False).encode("cp932"))
         with self.assertRaises(ValueError):
-            junie_cli._acp_message(b'{"text":"\x81"}')
+            acp_session._acp_message(b'{"text":"\x81"}')
 
     def test_steering_budget_measures_final_text_and_requeues_blocked_input(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
-        from migration_harness import workflow
+        from migration_harness.junie import migration_session
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -45,14 +45,14 @@ class JunieDashboardAcpTests(unittest.TestCase):
             )
             record_path = root / "run.json"
             record = {}
-            with patch.object(junie_cli, "run_interactive", side_effect=lambda: junie_cli._AcpSession.steer(session)):
-                workflow._run_budgeted_junie({}, record_path, record, "migration", None, root, [])
+            with patch.object(junie_cli, "run_interactive", side_effect=lambda: acp_session.AcpSession.steer(session)):
+                migration_session.run_budgeted_junie({}, record_path, record, "migration", None, root, [])
                 sent = request.call_args.kwargs["prompt"][0]["text"]
                 self.assertEqual(record["last_junie_steering_input"]["bytes"], len(sent.encode("utf-8")))
                 self.assertFalse(record["last_junie_steering_input"]["blocked"])
                 session.steering_waiting = None
                 request.reset_mock()
-                workflow._run_budgeted_junie({"junie_input_limits": {"max_input_bytes": 1}},
+                migration_session.run_budgeted_junie({"junie_input_limits": {"max_input_bytes": 1}},
                                             record_path, record, "migration", None, root, [])
                 self.assertTrue(record["last_junie_steering_input"]["blocked"])
                 request.assert_not_called()
@@ -63,7 +63,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
 
         for outcome in ({"result": {}}, {"error": {"code": -32601}}, {"error": {"code": -32602}}):
             with self.subTest(outcome=outcome):
-                session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+                session = acp_session.AcpSession.__new__(acp_session.AcpSession)
                 effort = "none" if "result" in outcome else None
                 session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model="junie-lite", effort=effort)
                 session.request = Mock()
@@ -97,7 +97,7 @@ class JunieDashboardAcpTests(unittest.TestCase):
             ("junie-lite", None, {"configOptions": [{"id": "selector", "category": "model"}]}),
         ):
             with self.subTest(model=model, effort=effort, metadata=metadata):
-                session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+                session = acp_session.AcpSession.__new__(acp_session.AcpSession)
                 session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model=model, effort=effort)
                 session.request = Mock()
                 session._advance_prompt(2, {"result": {"sessionId": "test", **metadata}})

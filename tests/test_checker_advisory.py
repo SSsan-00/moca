@@ -11,7 +11,8 @@ from unittest.mock import Mock, patch
 
 from migration_harness.verification import checker_advisory as advisory
 from migration_harness.junie import junie_cli
-from migration_harness import workflow
+from migration_harness.runs import stage_scripts
+from migration_harness.verification import checker_advisory, checker_cycle
 
 
 FAKE_ACP = r"""
@@ -212,7 +213,7 @@ class CheckerAdvisoryTests(unittest.TestCase):
                         )
 
                     with patch.object(junie_cli, "_launch_process", side_effect=launch):
-                        checked = workflow._review_free_checker_output(
+                        checked = checker_cycle.review_free_checker_output(
                             config, {"run_path": str(run)}, {"checker_exit_code": 0, **saved},
                         )["checker_advisory"]
                     self.assertEqual(commands, [["--model", model] + (["--effort", effort] if effort else [])])
@@ -229,8 +230,8 @@ class CheckerAdvisoryTests(unittest.TestCase):
             config = {"junie_model": "current-model", "junie_effort": "high"}
             item = {"phase": "before_prepare", "command_number": 1, "exit_code": 0,
                     "log": "before_prepare.log", "byte_offset": 0, "byte_length": 8}
-            with patch.object(workflow, "output_advisory", return_value={"status": "reported"}) as review:
-                workflow._review_script_output(config, run, {}, item, apply_decisions=False)
+            with patch.object(checker_advisory, "output_advisory", return_value={"status": "reported"}) as review:
+                stage_scripts.review_script_output(config, run, {}, item, apply_decisions=False)
             self.assertEqual({"model": "current-model", "effort": "high"}, review.call_args.kwargs["model_options"])
 
     def test_reply_is_exact_schema_with_real_ordered_unique_lines(self):

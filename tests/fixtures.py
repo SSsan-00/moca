@@ -9,18 +9,21 @@ from unittest.mock import patch
 from pathlib import Path
 
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.runs import migration_workspace, run_records
+from migration_harness.verification import roslyn_syntax
 from migration_harness.config import load_config
 
 
 def prepare_fixture(config, unit_id):
     run_id = str(uuid.uuid4())
-    with workflow.execution_lock(config, run_id), workflow.execution_lock(config, "prepare", wait=True):
-        return workflow._prepare_run(config, unit_id, run_id)
+    with run_records.execution_lock(config, run_id), run_records.execution_lock(config, "prepare", wait=True):
+        return migration_workspace.prepare_run(config, unit_id, run_id)
 
 
 def stub_syntax_diagnostics():
     """Keep mocked build scenarios with placeholder source independent of the installed SDK."""
-    return patch.object(workflow, "syntax_diagnostics", side_effect=lambda *_: {
+    return patch.object(roslyn_syntax, "syntax_diagnostics", side_effect=lambda *_: {
         "status": "clear", "reason": "ok", "seconds": 0.0,
     })
 
@@ -155,7 +158,7 @@ class SavedRunFixture(unittest.TestCase):
             kwargs["stdout"].write(log)
             return subprocess.CompletedProcess(command, returncode)
 
-        return patch.object(workflow, "run_process", side_effect=run), calls
+        return patch.object(execution, "run_process", side_effect=run), calls
 
     def resume(self, *responses):
         """外部ツールを差し替えて通常の再開経路を実行する。"""

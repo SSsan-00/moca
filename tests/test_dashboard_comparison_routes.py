@@ -18,6 +18,7 @@ from fixtures import HarnessCase, prepare_fixture
 from migration_harness.web import dashboard
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
+from migration_harness.runs import run_records
 from migration_harness.config import load_config
 from migration_harness.web.diff_viewer import review_html
 
@@ -88,7 +89,7 @@ class DashboardComparisonRoutesTests(HarnessCase):
 
         def skip_external_build(_config, _unit, result, record):
             record["status"] = "build_succeeded"
-            workflow.write_run_record(record_path, record)
+            run_records.write_run_record(record_path, record)
             return result
 
         with (

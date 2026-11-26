@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from fixtures import stub_syntax_diagnostics
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.runs import run_records, stopped_repair
 from migration_harness.config import target_paths
 from migration_harness.execution import OperationCancelled
 from migration_harness.junie import junie_cli
@@ -60,7 +62,7 @@ def stopped_repair_run(config, template, source_tree, phase):
         files[0].write_bytes(body)
         raise OperationCancelled("synthetic operator stop")
 
-    with (patch.object(workflow, "run_process", side_effect=command), stub_syntax_diagnostics(),
+    with (patch.object(execution, "run_process", side_effect=command), stub_syntax_diagnostics(),
           patch.object(junie_cli, "require_interactive_cli"),
           patch.object(junie_cli, "run_interactive", side_effect=stop) as edit):
         try:
@@ -76,15 +78,15 @@ def stopped_repair_run(config, template, source_tree, phase):
     snapshot = saved["repair_pending"]["draft"]["snapshot"]
     assert (run / snapshot / "0.draft").read_bytes() == body
     assert (worktree / targets[0]).read_bytes() == original
-    assert workflow.plan_stopped_repair(run_config, run_id)["snapshot"] == snapshot
+    assert stopped_repair.plan_stopped_repair(run_config, run_id)["snapshot"] == snapshot
     return saved
 
 
 def resume_after_external_edit(config, run_id):
-    run_path, worktree, _, unit = workflow.load_saved_run(config, run_id)
+    run_path, worktree, _, unit = run_records.load_saved_run(config, run_id)
     target = worktree / target_paths(unit)[0]
     target.write_bytes(b"class EditedAfterSelection {}\n")
-    with (patch.object(workflow, "run_process") as command,
+    with (patch.object(execution, "run_process") as command,
           patch.object(junie_cli, "run_interactive") as junie):
         result = workflow.resume_with_junie(dict(config, checker_command=["fixture-checker"]), run_id)
         command.assert_not_called()
@@ -94,10 +96,10 @@ def resume_after_external_edit(config, run_id):
     return json.loads((run_path / "run.json").read_bytes())
 
 def resume_with_blocked_keyword(config, run_id):
-    run_path, worktree, _, unit = workflow.load_saved_run(config, run_id)
+    run_path, worktree, _, unit = run_records.load_saved_run(config, run_id)
     targets = [worktree / target for target in target_paths(unit)]
     original = [target.read_bytes() for target in targets]
-    with (patch.object(workflow, "run_process") as command,
+    with (patch.object(execution, "run_process") as command,
           patch.object(junie_cli, "run_interactive") as junie):
         result = workflow.resume_with_junie(dict(config, checker_command=["fixture-checker"]), run_id)
         command.assert_not_called()

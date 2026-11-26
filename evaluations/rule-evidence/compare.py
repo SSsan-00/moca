@@ -7,7 +7,10 @@ import sys
 import time
 import uuid
 
-from migration_harness import workflow
+from migration_harness.context.capsules import load_capsule_manifest
+from migration_harness.rules.detail_selection import _MalformedDetailReviewReply, review_detail_applicability
+from migration_harness.runs.migration_workspace import prepare_run
+from migration_harness.runs.run_records import execution_lock, load_saved_run
 from migration_harness.config import load_config, target_paths
 from migration_harness.execution import ExecutionControl, control_scope
 from migration_harness.context.source_context import stage_target_context
@@ -93,23 +96,23 @@ target = "Page.cs"
 ''', encoding="utf-8")
     config = load_config(cfg)
     run_id = str(uuid.uuid4())
-    with workflow.execution_lock(config, run_id), workflow.execution_lock(config, "prepare", wait=True):
-        prepared = workflow._prepare_run(config, "sample", run_id)
-    run, worktree, record, unit = workflow.load_saved_run(config, prepared["run_id"])
-    capsule, manifest = workflow.load_capsule_manifest(run)
+    with execution_lock(config, run_id), execution_lock(config, "prepare", wait=True):
+        prepared = prepare_run(config, "sample", run_id)
+    run, worktree, record, unit = load_saved_run(config, prepared["run_id"])
+    capsule, manifest = load_capsule_manifest(run)
     pinned = run / "agent-workspace"
     pinned.mkdir()
     targets = target_paths(unit)
     stage_target_context(worktree, targets, capsule, pinned, policy=unit.get("target_context"))
     selection_at = time.monotonic()
-    selected = workflow._review_detail_applicability(
+    selected = review_detail_applicability(
         run, capsule, manifest, targets, record, 25, model="gpt-6-luna", effort="medium", config=config, pinned_context=pinned,
     )
     selection_seconds = time.monotonic() - selection_at
     saved = json.loads((run / "run.json").read_bytes())
     usage_before = saved.get("token_usage", [])
     reuse_at = time.monotonic()
-    reuse = workflow._review_detail_applicability(
+    reuse = review_detail_applicability(
         run, capsule, manifest, targets, saved, 25, model="gpt-6-luna", effort="medium", config=config, pinned_context=pinned,
     )
     reuse_ms = (time.monotonic() - reuse_at) * 1000
@@ -146,7 +149,7 @@ with control_scope(ExecutionControl(lambda e: print("RETRY", e["message"], flush
     for name in sys.argv[3:] or ("true", "false", "not-ready"):
         try:
             result = case(*cases[name])
-        except workflow._MalformedDetailReviewReply:
+        except _MalformedDetailReviewReply:
             result = {"quality_ok": False, "error": "malformed_rule_review_response_after_retry"}
         results.append({**result, "case": name})
         output.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

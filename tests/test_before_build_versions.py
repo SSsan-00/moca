@@ -6,6 +6,9 @@ from unittest.mock import patch
 
 from fixtures import SavedRunFixture
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.junie import junie_cli
+from migration_harness.verification import repairs
 
 
 PASSED = '{"verdict":"passed","evidence_lines":[1]}'
@@ -87,7 +90,7 @@ class BeforeBuildVersionTests(SavedRunFixture):
 
     @contextmanager
     def commands(self, verdicts, repair=None):
-        run_process = workflow.run_process
+        run_process = execution.run_process
         builds = []
 
         def process(command, **kwargs):
@@ -99,11 +102,11 @@ class BeforeBuildVersionTests(SavedRunFixture):
             return subprocess.CompletedProcess(command, 0)
 
         with (
-            patch.object(workflow, "run_process", side_effect=process),
+            patch.object(execution, "run_process", side_effect=process),
             patch("migration_harness.verification.checker_advisory.run_text_advisory", side_effect=verdicts),
-            patch.object(workflow.junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "require_interactive_cli"),
             patch.object(
-                workflow, "_attempt_repair", side_effect=repair or AssertionError("unexpected automatic repair")
+                repairs, "attempt_repair", side_effect=repair or AssertionError("unexpected automatic repair")
             ) as repair_attempt,
         ):
             yield builds, repair_attempt

@@ -13,9 +13,10 @@ from threading import Event, Thread
 from ..config import target_paths
 from ..errors import format_error
 from ..files import safe_target
-from ..runs.editor_queue import EDITOR_TARGET_SUFFIXES, editor_prompt_selection, editor_queue, editor_text
+from ..runs.editor_queue import saved_edits, EDITOR_TARGET_SUFFIXES, editor_prompt_selection, editor_queue, editor_text
 from ..runs.run_records import load_saved_run, run_model_options, validate_run_id
-from ..runs.worktree_targets import review_target_hash
+from ..runs.worktree_targets import target_versions, review_target_hash
+from ..verification.diagnostic_log import review_log
 from ..verification.checker_advisory import AdvisoryReplyTooLarge, AdvisoryTransportLimit, run_text_advisory
 from .junie_cli import JunieStopError
 
@@ -188,14 +189,6 @@ def _intent(text, phase):
     return "junie"
 
 
-def target_versions(worktree, unit):
-    return {path.as_posix(): review_target_hash(worktree, path) for path in target_paths(unit)}
-
-
-def saved_edits(queue):
-    return {name: edit["id"] for name, edit in queue["edits"].items()}
-
-
 def _finish(entry, status, message):
     entry.update(status=status, message=message)
     entry["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -248,9 +241,7 @@ def invalidate_queued_steering(queue):
 
 
 def _diagnostic(run_path, kind):
-    from ..workflow import _review_log
-
-    text, truncated = _review_log(run_path, f"{kind}.log")
+    text, truncated = review_log(run_path, f"{kind}.log")
     return {"kind": kind, "text": text[-8_000:], "truncated": truncated or len(text) > 8_000} if text else None
 
 
@@ -356,7 +347,7 @@ class JunieConversations:
     def _submit_saved(self, run_id, run_path, worktree, unit, queue, identifier, text,
                       options, stage_plan, stage_error, selection):
         """キューとRunManagerのロック内で照合し、対象版を記録して指示を受け付ける。"""
-        from ..web.dashboard import _prompt_timing
+        from ..runs.editor_view import prompt_timing
 
         history = queue.setdefault("conversation", [])
         if (existing := _existing_receipt(history, identifier, text, selection)) is not None:
@@ -430,7 +421,7 @@ class JunieConversations:
         if ("query_intent" not in entry and not request and not _clarification(history)
                 and intent == "junie" and record["status"] in {"junie_running", "editor_checkpoint", "editor_followup"}
                 and not state.get("ready")):
-            timing = _prompt_timing(self.manager.config, state, run_path, record,
+            timing = prompt_timing(self.manager.config, state, run_path, record,
                                     pending_edits=bool(queue["edits"]),
                                     live=bool(view.control and view.control.junie_steering))
             if timing in {"checkpoint", "immediate"}:
@@ -626,7 +617,7 @@ class JunieConversations:
                     _finish(waiting, "failed", UNCONFIRMED_BUILD)
 
     def _advance_waiting_entry(self, config, run_path, worktree, unit, queue, history, view, state, record, job):
-        from ..web.dashboard import _prompt_timing
+        from ..runs.editor_view import prompt_timing
 
         phase = record["status"]
         entry = next((item for item in history if item["status"] == "waiting"), None)
@@ -650,7 +641,7 @@ class JunieConversations:
             if entry["edit_revision"] != queue.get("edit_revision"):
                 _finish(entry, "failed", "保存版が更新されました。エディタで確認して指示を送信し直してください。")
                 return True
-            timing = _prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
+            timing = prompt_timing(config, state, run_path, record, pending_edits=bool(queue["edits"]),
                                     live=bool(view.control and view.control.junie_steering))
             if timing is None:
                 entry["message"] = "現在の工程が終わってから、Junie に渡せるか確認します。"

@@ -3,7 +3,7 @@ from pathlib import Path
 from queue import Queue
 from unittest.mock import Mock, patch
 
-from migration_harness.junie import junie_cli
+from migration_harness.junie import acp_session, junie_cli
 from migration_harness.rules.rule_chat import RuleChat
 
 
@@ -35,8 +35,8 @@ def respond_new(session, options):
 class JunieAcpEffortTests(unittest.TestCase):
     def test_slow_provider_startup_has_its_own_bounded_deadline(self):
         clock = Mock(return_value=100.0)
-        with patch.object(junie_cli.time, "monotonic", clock), patch.object(junie_cli, "Thread"):
-            session = junie_cli._AcpSession(
+        with patch.object(acp_session.time, "monotonic", clock), patch.object(acp_session, "Thread"):
+            session = acp_session.AcpSession(
                 Mock(), ["junie", "--prompt", "synthetic prompt"], Path.cwd(), Mock(),
                 Path("completion.json"), "run-token", None,
             )
@@ -53,7 +53,7 @@ class JunieAcpEffortTests(unittest.TestCase):
             self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
 
             clock.return_value = 100.0
-            stalled = junie_cli._AcpSession(Mock(), ["junie"], Path.cwd(), Mock(), Path("completion.json"),
+            stalled = acp_session.AcpSession(Mock(), ["junie"], Path.cwd(), Mock(), Path("completion.json"),
                                            "run-token", None)
             clock.return_value = 189.0
             self.assertFalse(stalled.advance())
@@ -63,9 +63,9 @@ class JunieAcpEffortTests(unittest.TestCase):
                 stalled.advance()
 
     def test_migration_waits_for_effort_ack_before_prompt(self):
-        session = make_session(junie_cli._AcpSession)
+        session = make_session(acp_session.AcpSession)
         respond_new(session, config("low"))
-        request_id = junie_cli._ACP_SET_EFFORT_REQUEST
+        request_id = acp_session.ACP_SET_EFFORT_REQUEST
         session.request.assert_called_once_with(request_id, "session/set_config_option",
                                                 sessionId="session", configId="reasoning", value="medium")
         self.assertFalse(session.session_ready)
@@ -78,7 +78,7 @@ class JunieAcpEffortTests(unittest.TestCase):
         respond_new(session, config("low"))
         with self.assertRaises(RuntimeError):
             session.begin("test")
-        session._receive_message({"id": junie_cli._ACP_SET_EFFORT_REQUEST,
+        session._receive_message({"id": acp_session.ACP_SET_EFFORT_REQUEST,
                                   "result": {"configOptions": config("medium")}})
         self.assertTrue(session.session_ready)
         self.assertEqual(session.request.call_count, 1)
@@ -88,14 +88,14 @@ class JunieAcpEffortTests(unittest.TestCase):
     def test_already_matching_or_unset_does_not_change_configuration(self):
         for effort, options in (("medium", config("medium")), (None, config("low"))):
             with self.subTest(effort=effort):
-                session = make_session(junie_cli._AcpSession, effort=effort)
+                session = make_session(acp_session.AcpSession, effort=effort)
                 respond_new(session, options)
                 self.assertTrue(session.session_ready)
                 self.assertEqual(session.request.call_count, 1)
                 self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
 
     def test_missing_selector_stops_before_prompt_without_guessing_default(self):
-        session = make_session(junie_cli._AcpSession)
+        session = make_session(acp_session.AcpSession)
         with self.assertRaises(junie_cli.JunieSessionError):
             respond_new(session, [])
         session.request.assert_not_called()
@@ -107,8 +107,8 @@ class JunieAcpEffortTests(unittest.TestCase):
             with self.subTest(first=first):
                 session = make_session(RuleChat)
                 respond_new(session, config("low"))
-                start = junie_cli._ACP_SET_EFFORT_REQUEST
-                retry = junie_cli._ACP_RETRY_EFFORT_REQUEST
+                start = acp_session.ACP_SET_EFFORT_REQUEST
+                retry = acp_session.ACP_RETRY_EFFORT_REQUEST
                 session._receive_message({"id": start, **first})
                 session.request.assert_called_with(retry, "session/set_config_option",
                                                    sessionId="session", configId="reasoning", value="medium")
@@ -123,7 +123,7 @@ class JunieAcpEffortTests(unittest.TestCase):
                 self.assertEqual(session.request.call_count, 3)
 
     def test_wait_timeout_retries_once_and_keeps_migration_unsent(self):
-        session = make_session(junie_cli._AcpSession)
+        session = make_session(acp_session.AcpSession)
         session._check_writes = Mock()
         session.pending = None
         session.prompt_finished = False
@@ -133,7 +133,7 @@ class JunieAcpEffortTests(unittest.TestCase):
         session.startup_deadline = 0
         self.assertFalse(session.advance())
         self.assertEqual(session.request.call_args.args,
-                         (junie_cli._ACP_RETRY_EFFORT_REQUEST, "session/set_config_option"))
+                         (acp_session.ACP_RETRY_EFFORT_REQUEST, "session/set_config_option"))
         session.startup_deadline = 0
         with self.assertRaises(junie_cli.JunieSessionError):
             session.advance()
@@ -143,28 +143,28 @@ class JunieAcpEffortTests(unittest.TestCase):
     def test_unsupported_request_stops_without_resending(self):
         for code in (-32601, -32602):
             with self.subTest(code=code):
-                session = make_session(junie_cli._AcpSession)
+                session = make_session(acp_session.AcpSession)
                 respond_new(session, config("low"))
                 with self.assertRaises(junie_cli.JunieSessionError):
-                    session._receive_message({"id": junie_cli._ACP_SET_EFFORT_REQUEST, "error": {"code": code}})
+                    session._receive_message({"id": acp_session.ACP_SET_EFFORT_REQUEST, "error": {"code": code}})
                 self.assertFalse(session.session_ready)
                 self.assertEqual(session.request.call_count, 1)
 
     def test_unapplied_retry_never_sends_a_prompt(self):
         for reply in ({"result": {"configOptions": config("low")}}, {"result": {}}, {"result": None}):
             with self.subTest(reply=reply):
-                session = make_session(junie_cli._AcpSession)
+                session = make_session(acp_session.AcpSession)
                 respond_new(session, config("low"))
-                session._receive_message({"id": junie_cli._ACP_SET_EFFORT_REQUEST, **reply})
+                session._receive_message({"id": acp_session.ACP_SET_EFFORT_REQUEST, **reply})
                 with self.assertRaises(junie_cli.JunieSessionError):
-                    session._receive_message({"id": junie_cli._ACP_RETRY_EFFORT_REQUEST, **reply})
+                    session._receive_message({"id": acp_session.ACP_RETRY_EFFORT_REQUEST, **reply})
                 self.assertFalse(session.session_ready)
                 self.assertEqual(session.request.call_count, 2)
 
     def test_only_lite_none_can_run_without_a_selector(self):
         for effort, passed in (("none", True), ("low", False)):
             with self.subTest(effort=effort):
-                session = make_session(junie_cli._AcpSession, model="junie-lite", effort=effort)
+                session = make_session(acp_session.AcpSession, model="junie-lite", effort=effort)
                 if passed:
                     respond_new(session, [])
                     self.assertTrue(session.session_ready)

@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from migration_harness import execution
-from migration_harness.junie import junie_cli
+from migration_harness.junie import junie_cli, junie_launch, session_events
 
 
 def line(entry):
@@ -89,7 +89,7 @@ def benchmark_event_reads(polls=12, rows=4096):
         old.parent.mkdir(parents=True)
         old.write_bytes(history)
         with count_event_bytes() as total:
-            events = junie_cli._JunieSessionEvents("this-launch")
+            events = session_events.SessionEvents("this-launch")
             for _ in range(polls):
                 events.read_new_events()
         existing_bytes = total[0]
@@ -124,7 +124,7 @@ class JunieEventTests(unittest.TestCase):
     def test_approval_wait_reports_fixed_instruction_without_request_content(self):
         entry = agent("ViewFilesBlockUpdatedEvent", approvalRequest={"path": "PRIVATE"})
         entry["event"]["state"] = "INPUT_REQUIRED"
-        self.assertEqual(junie_cli._event_activity(entry),
+        self.assertEqual(session_events._event_activity(entry),
                          "Junieが操作の確認を待っています。起動した端末で確認してください。")
 
     def setUp(self):
@@ -152,21 +152,21 @@ class JunieEventTests(unittest.TestCase):
         del usage["taskId"]
         old = self.write("old", task(), usage)
         old.with_name("summary.json").write_bytes(line({"projectDir": str(project)}))
-        events = junie_cli._JunieSessionEvents("this-launch", headless_project=project)
+        events = session_events.SessionEvents("this-launch", headless_project=project)
         self.append(old, usage)
         unrelated = self.write("unrelated", task(), usage)
         unrelated.with_name("summary.json").write_bytes(line({"projectDir": str(self.root / "elsewhere")}))
         ours = self.write("ours", task(), usage)
 
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertIsNone(events.path)
         ours.with_name("summary.json").write_bytes(line({"projectDir": str(project)}))
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertEqual(events.path, ours)
         self.assertEqual(events.usage, [18, 4, 5, 3, 1])
 
     def test_only_fixed_metadata_is_reported_and_repeated_status_is_coalesced(self):
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         private = "PRIVATE thoughts prompt command arguments /private/path"
         self.write("ours", prompt(), task(),
                    agent("AgentThoughtBlockUpdatedEvent", text=private),
@@ -180,8 +180,8 @@ class JunieEventTests(unittest.TestCase):
                    response(), response())
         stdout = io.StringIO()
         with redirect_stdout(stdout):
-            self.assertFalse(events.read_new_events())
-            self.assertFalse(events.read_new_events())
+            self.assertIs(events.read_new_events(), False)
+            self.assertIs(events.read_new_events(), False)
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual([entry["message"] for entry in self.messages], [
             "Junieのセッションに更新がありました。", "Junieからファイルの読み取りの報告が届きました。",
@@ -193,10 +193,10 @@ class JunieEventTests(unittest.TestCase):
         self.assertEqual(events.usage, [36, 8, 10, 6, 2])
 
     def test_other_sessions_tasks_and_non_string_prompts_cannot_match(self):
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         self.write("other", prompt("different-launch"), task(), response())
         self.write("invalid", {"kind": "UserPromptEvent", "prompt": {"this-launch": True}}, task(), response())
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertIsNone(events.path)
         self.assertIsNone(events.last_event_at)
         self.assertEqual(self.messages, [])
@@ -213,7 +213,7 @@ class JunieEventTests(unittest.TestCase):
             event["event"]["state"] = state
             return event
 
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         self.write("other", prompt("other-launch"), task(), result("other session"))
         current = self.write("ours", prompt(), task(), result("other task", task_id="other"),
                              result("partial", state="IN_PROGRESS"), result("cancelled", cancelled=True),
@@ -228,7 +228,7 @@ class JunieEventTests(unittest.TestCase):
     def test_existing_history_is_skipped_but_matching_append_is_counted(self):
         current = self.write("existing", prompt(), task(), response())
         with count_event_bytes() as total:
-            events = junie_cli._JunieSessionEvents("this-launch")
+            events = session_events.SessionEvents("this-launch")
             events.read_new_events()
         self.assertEqual(total[0], 0)
         self.append(current, prompt(), task(), response())
@@ -238,7 +238,7 @@ class JunieEventTests(unittest.TestCase):
 
     def test_partial_history_at_launch_is_not_mistaken_for_current_event(self):
         current = self.write("existing", raw=line(prompt())[:-2])
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         self.append(current, raw=b"}\n" + line(task()) + line(response()))
         events.read_new_events()
         self.assertIsNone(events.path)
@@ -248,7 +248,7 @@ class JunieEventTests(unittest.TestCase):
         self.assertEqual(events.usage, [18, 4, 5, 3, 1])
 
     def test_partial_lines_invalid_records_and_appends_are_read_once(self):
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         current = self.write("ours", prompt(), task(), raw=b"not json\n[]\n\xff\n")
         raw = line({**response(), "extra": "日本語"})
         split = raw.index("日".encode("utf-8")) + 1
@@ -270,7 +270,7 @@ class JunieEventTests(unittest.TestCase):
         self.assertEqual(events.usage, [18, 4, 5, 3, 1])
 
     def test_later_matching_prompt_and_follow_up_tasks_keep_session_usage(self):
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         current = self.write("reused", prompt("different-launch"), task(), response())
         events.read_new_events()
         self.append(current, prompt(), task(), response())
@@ -287,7 +287,7 @@ class JunieEventTests(unittest.TestCase):
     def test_replaced_or_truncated_logs_require_fresh_token_match(self):
         for replace in (False, True):
             with self.subTest(replace=replace):
-                events = junie_cli._JunieSessionEvents("this-launch")
+                events = session_events.SessionEvents("this-launch")
                 current = self.write(f"current-{replace}", prompt(), task(), response(),
                                      agent("AgentThoughtBlockUpdatedEvent", text="x" * 1024))
                 events.read_new_events()
@@ -304,7 +304,7 @@ class JunieEventTests(unittest.TestCase):
                 self.assertEqual(events.usage, [36, 8, 10, 6, 2])
 
     def test_usage_validation_and_connection_failure_keep_their_contract(self):
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         failure = agent("AgentFailureEvent", errorCode="ConnectionFailed", agent={"kind": "MainAgent"})
         failure["event"]["state"] = "FAILED"
         current = self.write("ours", prompt(), task(),
@@ -316,12 +316,12 @@ class JunieEventTests(unittest.TestCase):
                              ]), response(), failure, response())
         self.assertTrue(events.read_new_events())
         self.assertEqual(events.usage, [18, 4, 5, 3, 1])
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertEqual(events.usage, [36, 8, 10, 6, 2])
         self.assertEqual(events.path, current)
 
     def test_cancel_mid_scan_retains_unread_usage_for_final_flush(self):
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         current = self.write("ours", prompt(), task(), response(), response())
         original = json.loads
 
@@ -331,7 +331,7 @@ class JunieEventTests(unittest.TestCase):
                 self.control.cancelled.set()
             return entry
 
-        with patch.object(junie_cli.json, "loads", side_effect=parse), self.assertRaises(execution.OperationCancelled):
+        with patch.object(session_events.json, "loads", side_effect=parse), self.assertRaises(execution.OperationCancelled):
             events.read_new_events()
         self.assertLess(events.cursors[current].offset, current.stat().st_size)
         self.assertEqual(events.usage, [0] * 5)
@@ -339,13 +339,13 @@ class JunieEventTests(unittest.TestCase):
         self.assertEqual(events.usage, [36, 8, 10, 6, 2])
 
     def test_malformed_and_other_task_records_do_not_reset_activity_clock(self):
-        events = junie_cli._JunieSessionEvents("this-launch")
+        events = session_events.SessionEvents("this-launch")
         current = self.write("ours", prompt(), task())
-        with patch.object(junie_cli.time, "monotonic", return_value=1):
+        with patch.object(session_events.time, "monotonic", return_value=1):
             events.read_new_events()
         self.messages.clear()
         self.append(current, {}, {"kind": []}, {"kind": ""}, response("other-task"))
-        with patch.object(junie_cli.time, "monotonic", return_value=10):
+        with patch.object(session_events.time, "monotonic", return_value=10):
             events.read_new_events()
         self.assertEqual(events.last_event_at, 1)
         self.assertEqual(self.messages, [])
@@ -375,7 +375,7 @@ class JunieControlTests(unittest.TestCase):
 
     def test_cancel_before_launch_never_starts_process(self):
         self.control.cancelled.set()
-        with patch.object(junie_cli.subprocess, "Popen") as launch:
+        with patch.object(junie_launch.subprocess, "Popen") as launch:
             with self.assertRaises(execution.OperationCancelled):
                 self.run_session()
             with self.assertRaises(execution.OperationCancelled):
@@ -453,6 +453,42 @@ class JunieControlTests(unittest.TestCase):
         closer.assert_called_once_with(process)
         self.restored.assert_called_once_with()
         self.assertEqual(usage, [[0] * 5, [18, 4, 5, 3, 1]])
+
+    def test_usage_save_failure_does_not_report_the_delta_twice_or_skip_cleanup(self):
+        process = Mock(returncode=None)
+        process.poll.side_effect = lambda: process.returncode
+        calls = []
+        error = OSError("usage save failed")
+
+        def wait(timeout):
+            path = self.root / "sessions" / "ours" / "events.jsonl"
+            path.parent.mkdir(parents=True)
+            metadata = response()
+            metadata["event"]["agentEvent"]["modelUsage"][0]["cost"] = 0.01
+            path.write_bytes(line(prompt()) + line(task()) + line(metadata))
+            raise subprocess.TimeoutExpired("junie", timeout)
+
+        def report(delta):
+            if any(delta):
+                calls.append(("usage", list(delta), delta.cost_known, delta.cost_usd))
+                raise error
+
+        def close(child):
+            self.assertIs(child, process)
+            calls.append("stop")
+            process.returncode = -15
+            return -15
+
+        process.wait.side_effect = wait
+        self.restored.side_effect = lambda: calls.append("restore")
+        observer = junie_cli.session_closed_observer.set(lambda: calls.append("closed"))
+        self.addCleanup(junie_cli.session_closed_observer.reset, observer)
+        with (patch.object(junie_cli, "_launch_process", return_value=process),
+              patch.object(junie_cli, "_close_junie", side_effect=close),
+              self.assertRaises(OSError) as failed):
+            self.run_session(report_usage=report)
+        self.assertIs(failed.exception, error)
+        self.assertEqual(calls, [("usage", [18, 4, 5, 3, 1], 1, 0.01), "stop", "closed", "restore"])
 
     def test_cleanup_failure_is_reported_without_claiming_a_successful_stop(self):
         process = Mock()

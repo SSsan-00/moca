@@ -17,10 +17,12 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase, prepare_fixture
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_runs, dashboard_settings
 from migration_harness.junie import junie_cli
 from migration_harness.runs import run_manager
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.runs import migration_workspace
 from migration_harness.execution import check_cancelled, report_activity
 from migration_harness.runs.run_manager import RunManager
 from migration_harness.runs.run_records import execution_lock, load_saved_run, write_run_record
@@ -38,7 +40,7 @@ class ParallelDashboardTests(HarnessCase):
         self.release = [Event() for _ in range(7)]
         self.guard = Lock()
         self.active = self.maximum = 0
-        command = workflow.run_process
+        command = execution.run_process
 
         def migrate(_command, completion, token, targets, **kwargs):
             index = int(targets[0].stem.removeprefix("Page"))
@@ -62,7 +64,7 @@ class ParallelDashboardTests(HarnessCase):
             return subprocess.CompletedProcess(args, 0) if args[0] == "dotnet" else command(args, **kwargs)
 
         for target, name, replacement in ((junie_cli, "require_interactive_cli", lambda: None),
-                                          (junie_cli, "run_interactive", migrate), (workflow, "run_process", process)):
+                                          (junie_cli, "run_interactive", migrate), (execution, "run_process", process)):
             mocked = patch.object(target, name, side_effect=replacement)
             mocked.start()
             self.addCleanup(mocked.stop)
@@ -123,7 +125,7 @@ class ParallelDashboardTests(HarnessCase):
                     return {"version": "a" * 64} if mode == "read" else None
 
                 name = "plan_stopped_repair" if mode == "read" else "resolve_stopped_repair"
-                with patch.object(dashboard, name, side_effect=slow), ThreadPoolExecutor(max_workers=1) as pool:
+                with patch.object(dashboard_runs, name, side_effect=slow), ThreadPoolExecutor(max_workers=1) as pool:
                     if mode == "read":
                         future = pool.submit(get, f"recovery-plan?run_id={run_id}&kind=draft", run_id)
                     else:
@@ -298,7 +300,7 @@ class ParallelDashboardTests(HarnessCase):
         self.settings["scripts"] = {"before_prepare": [[sys.executable, "-c", "raise SystemExit(3)"]]}
         hook = self.manager.submit({"action": "run", "unit_id": "unit-1"})["run_id"]
         self.wait_until(lambda: not self.manager.busy)
-        with patch.object(workflow, "_validate_inputs", side_effect=KeyboardInterrupt):
+        with patch.object(migration_workspace, "_validate_inputs", side_effect=KeyboardInterrupt):
             self.settings.pop("scripts")
             stopped = self.manager.submit({"action": "run", "unit_id": "unit-2"})["run_id"]
             self.wait_until(lambda: not self.manager.busy)
@@ -391,7 +393,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertFalse((Path(self.settings["run_root"]) / run_id).exists())
 
         started, release = Event(), Event()
-        validate = workflow._validate_inputs
+        validate = migration_workspace._validate_inputs
 
         def wait_for_input(root, unit):
             if unit["id"] == "unit-0":
@@ -399,7 +401,7 @@ class ParallelDashboardTests(HarnessCase):
                 self.assertTrue(release.wait(5))
             return validate(root, unit)
 
-        with patch.object(workflow, "_validate_inputs", side_effect=wait_for_input):
+        with patch.object(migration_workspace, "_validate_inputs", side_effect=wait_for_input):
             self.release[0].set()
             self.release[1].set()
             self.manager.limit = 1
@@ -628,7 +630,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_failed_settings_replace_keeps_old_scope_and_new_queue_untouched(self):
         post, _ = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         previous = copy.deepcopy(self.settings)
         old_id = str(uuid.uuid4())
         old_view = self.manager.new_view(old_id, "unit-0")
@@ -673,7 +675,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_settings_preflight_failure_leaves_saved_toml_and_old_owner(self):
         post, _ = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         previous = copy.deepcopy(self.settings)
         root = self.root / "new-runs"
         proposed = {**self.settings, "run_root": str(root)}
@@ -729,7 +731,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertEqual(self.settings, {"config_path": str(path)})
         status, saved = post("settings", request)
         self.assertEqual(status, 200)
-        self.assertEqual(dashboard._read_settings(path)[1], saved["version"])
+        self.assertEqual(dashboard_settings.read_settings(path)[1], saved["version"])
         self.assertEqual(self.manager.root, self.settings["run_root"])
         with self.assertRaises(RuntimeError), execution_lock(self.settings, "dashboard"):
             pass
@@ -737,7 +739,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_settings_worktree_switch_keeps_owner_and_restores_waiting_job_after_commit(self):
         post, _ = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         owner, root, queue = self.manager.owner, self.manager.root, self.manager.queue_path
         self.manager.limit = 0
         old_id = str(uuid.uuid4())
@@ -784,7 +786,7 @@ class ParallelDashboardTests(HarnessCase):
     def test_rules_do_not_mix_externally_changed_project_with_live_settings(self):
         post, get = self.open_http_dashboard()
         path = Path(self.settings["config_path"])
-        original, version = dashboard._read_settings(path)
+        original, version = dashboard_settings.read_settings(path)
         (self.project / "original.md").write_bytes(b"PROJECT_A_RULE\n")
         project_b = self.root / "app-b"
         project_b.mkdir()
@@ -829,7 +831,7 @@ class ParallelDashboardTests(HarnessCase):
         self.assertEqual([draft["id"] for draft in get("rule-workspace")["drafts"]],
                          [old_draft["id"]])
 
-        self.assertEqual(save(toml_b, dashboard._read_settings(path)[1])[0], 200)
+        self.assertEqual(save(toml_b, dashboard_settings.read_settings(path)[1])[0], 200)
         self.assertEqual(Path(self.settings["project_root"]), project_b)
         new_draft = rule("start")[1]
         source = f'rule-workspace?id={new_draft["id"]}&source=rule-0001.md'

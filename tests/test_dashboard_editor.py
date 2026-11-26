@@ -13,21 +13,46 @@ from pathlib import Path
 from select import select
 from threading import Thread
 from types import SimpleNamespace
+from unittest import TestCase
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from fixtures import HarnessCase, prepare_fixture
-from migration_harness.web import dashboard
+from migration_harness.web import dashboard, dashboard_editor
 from migration_harness.runs import editor_queue, run_records, worktree_targets
+from migration_harness.runs.editor_view import update_history_delta
 from migration_harness.junie import junie_cli
 from migration_harness import workflow
+from migration_harness import errors, execution
+from migration_harness.runs import editor_queue as editor_queue_store
+from migration_harness.verification import repairs
 from migration_harness.config import load_config
 from migration_harness.execution import control_scope
 from migration_harness.verification import build_receipt
 
 BASE = "class Page\n{\n    int First = 1;\n    int Middle = 0;\n    int Last = 1;\n}\n"
+
+
+class EditorHistoryTests(TestCase):
+    def test_delta_removes_vanished_entries_but_never_uses_another_runs_version(self):
+        versions = {}
+        first = {"run_id": "A", "prompts": [{"id": "p", "text": "old"}], "conversation": [{"id": "c"}]}
+        update_history_delta(first, None, versions)
+        latest = {"run_id": "A", "prompts": [{"id": "p", "text": "new"}], "conversation": []}
+        update_history_delta(latest, first["history_version"], versions)
+        self.assertEqual(latest["history_delta"], {
+            "prompts": {"changed": [{"id": "p", "text": "new"}], "removed": []},
+            "conversation": {"changed": [], "removed": ["c"]},
+        })
+
+        other = {"run_id": "B", "prompts": [{"id": "p", "text": "old"}], "conversation": [{"id": "c"}]}
+        update_history_delta(other, first["history_version"], versions)
+        self.assertNotEqual(other["history_version"], first["history_version"])
+        self.assertNotIn("history_delta", other)
+        self.assertEqual(other["prompts"], first["prompts"])
+        self.assertEqual(other["conversation"], first["conversation"])
 
 
 class DashboardEditorTests(HarnessCase):
@@ -101,7 +126,7 @@ class DashboardEditorTests(HarnessCase):
                 self.assertEqual(command, ["fixture-checker"])
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(workflow, "run_process", side_effect=process) as execute, redirect_stdout(io.StringIO()):
+        with patch.object(execution, "run_process", side_effect=process) as execute, redirect_stdout(io.StringIO()):
             self.assertEqual(workflow.resume_with_junie(self.settings, run_id)["status"], "checker_succeeded")
         self.assertEqual(execute.call_count, 2)
         self.view.ready(self.settings, run_records.load_saved_run(self.settings, run_id)[2])
@@ -146,7 +171,7 @@ class DashboardEditorTests(HarnessCase):
         self.assertEqual(raised.exception.code, 409)
         self.assertIn("再ビルド", raised.exception.read().decode("utf-8"))
         raised.exception.close()
-        with patch.object(workflow, "run_process") as execute, self.assertRaises(ValueError):
+        with patch.object(execution, "run_process") as execute, self.assertRaises(ValueError):
             workflow.resume_with_junie(self.settings, run_id, verification_request={**old_plan, "id": "old-checker"})
         execute.assert_not_called()
         with editor_queue.editor_queue(run_path) as queue:
@@ -267,14 +292,14 @@ class DashboardEditorTests(HarnessCase):
     def test_operation_starting_during_save_keeps_the_edit_without_changing_running_inputs(self):
         result = self.finished_run()
         state = self.request()
-        read_target = dashboard.editor_target
+        read_target = dashboard_editor.editor_target
 
         def start_operation(*args):
             value = read_target(*args)
             self.view.begin_operation()
             return value
 
-        with patch.object(dashboard, "editor_target", side_effect=start_operation):
+        with patch.object(dashboard_editor, "editor_target", side_effect=start_operation):
             saved = self.queue_edit(state, BASE.replace("Last = 1", "Last = 4"))
         self.assertEqual(saved["edit"]["content"], BASE.replace("Last = 1", "Last = 4"))
         self.assertEqual(saved["save_timing"], "resume")
@@ -366,7 +391,7 @@ class DashboardEditorTests(HarnessCase):
                 with control_scope(control), \
                         patch.object(junie_cli, "require_interactive_cli"), \
                         patch.object(junie_cli, "_launch_process", side_effect=launch_agent), \
-                        patch.object(workflow, "run_process", side_effect=build), \
+                        patch.object(execution, "run_process", side_effect=build), \
                         patch.dict("os.environ", {"JUNIE_HOME": str(self.root / "junie-home")}):
                     if cancelled:
                         with self.assertRaises(workflow.RunInterrupted):
@@ -416,13 +441,13 @@ class DashboardEditorTests(HarnessCase):
                 with patch.object(junie_cli, "require_interactive_cli"), \
                         patch.object(junie_cli, "run_interactive", side_effect=junie):
                     if scenario == "completed":
-                        workflow._attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
+                        repairs.attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
                                                  run_path, "diagnostic", record, {"kind": "build"})
                         self.assertEqual(len(calls), 2)
                         self.assertIn("Last = 42", (worktree / "Page.cs").read_text(encoding="utf-8-sig"))
                     else:
-                        with self.assertRaises(workflow.CheckerRepairBlocked) as blocked:
-                            workflow._attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
+                        with self.assertRaises(errors.CheckerRepairBlocked) as blocked:
+                            repairs.attempt_repair(self.settings, (Path("Page.cs"),), (Path("Page.cs"),), worktree,
                                                      run_path, "diagnostic", record, {"kind": "build"})
                         self.assertEqual(blocked.exception.reason, "operator_conflict" if scenario == "conflict" else "handoff_unsafe")
                         self.assertEqual(len(calls), 1)
@@ -445,7 +470,7 @@ class DashboardEditorTests(HarnessCase):
                 self.view.begin_operation()
                 calls, builds = [], []
                 instruction = "Keep Last = 42 when continuing."
-                merge = workflow._apply_editor_edits
+                merge = editor_queue_store.apply_editor_edits
 
                 def edit_handoff(*args):
                     applied = merge(*args)
@@ -499,8 +524,8 @@ class DashboardEditorTests(HarnessCase):
                 with (
                     patch.object(junie_cli, "require_interactive_cli"),
                     patch.object(junie_cli, "run_interactive", side_effect=junie),
-                    patch.object(workflow, "_apply_editor_edits", side_effect=edit_handoff),
-                    patch.object(workflow, "run_process", side_effect=build), redirect_stdout(io.StringIO()),
+                    patch.object(editor_queue_store, "apply_editor_edits", side_effect=edit_handoff),
+                    patch.object(execution, "run_process", side_effect=build), redirect_stdout(io.StringIO()),
                 ):
                     result = workflow.resume_with_junie(self.settings, run_id)
 
@@ -537,7 +562,7 @@ class DashboardEditorTests(HarnessCase):
         run_path, worktree, _, _ = run_records.load_saved_run(self.settings, result["run_id"])
         self.view.begin_operation()
         calls, builds = [], []
-        charge = workflow._charge_repair
+        charge = repairs._charge_repair
 
         def finish_repair(record):
             charge(record)
@@ -566,8 +591,8 @@ class DashboardEditorTests(HarnessCase):
 
         with patch.object(junie_cli, "require_interactive_cli"), \
                 patch.object(junie_cli, "run_interactive", side_effect=junie), \
-                patch.object(workflow, "_charge_repair", side_effect=finish_repair), \
-                patch.object(workflow, "run_process", side_effect=build):
+                patch.object(repairs, "_charge_repair", side_effect=finish_repair), \
+                patch.object(execution, "run_process", side_effect=build):
             completed = workflow.resume_with_junie(self.settings, result["run_id"])
         self.assertEqual(completed["status"], "build_succeeded", completed.get("error"))
         self.assertEqual(len(calls), 2)
@@ -761,7 +786,7 @@ class DashboardEditorTests(HarnessCase):
         self.assertEqual(len(first["edit"]["base"]), len(original))
         versions = {name: first[name] for name in ("view_version", "content_version", "edit_version", "history_version")}
         route = "editor?" + urlencode({"run_id": result["run_id"], "target": "Page.cs", **versions})
-        with patch.object(dashboard, "editor_target") as read, patch.object(dashboard, "editor_queue") as queue:
+        with patch.object(dashboard_editor, "editor_target") as read, patch.object(dashboard_editor, "editor_queue") as queue:
             for _ in range(3):
                 self.assertEqual(self.request(route), {"unchanged": True})
             read.assert_not_called()

@@ -5,10 +5,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
-from migration_harness.junie import junie_cli
+from migration_harness.junie import acp_session, junie_cli
 from migration_harness.runs import run_records
 from migration_harness.runs.editor_queue import add_prompt, editor_queue
 from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.context import migration_materials
+from migration_harness.junie import migration_session
+from migration_harness.verification import build_cycle, repairs
 from migration_harness.web.diff_viewer import capture_workspace
 
 
@@ -60,7 +64,7 @@ class MultipleTargetsTest(HarnessCase):
             self.assertIn("Never add an explicit route to a bare @page", args[-1])
             self.assertIn("fully qualified type in @model", args[-1])
             self.assertIn("Razor encodes that expression once", args[-1])
-            self.assertIn(workflow._CSHARP_IDENTIFIERS, args[-1])
+            self.assertIn(migration_materials.CSHARP_IDENTIFIERS, args[-1])
             self.assertIn("The harness validates UTF-8 and adds the BOM", args[-1])
             self.assertIn("do not run encoding or BOM checks or create a hex dump", args[-1])
             self.assertNotIn("Put temporary extraction scripts", args[-1])
@@ -178,11 +182,11 @@ class MultipleTargetsTest(HarnessCase):
 
     # 中断時の編集が残り、再開後に両方のファイルを比較できることを検証する。
     def test_partial_edits_are_kept_and_both_targets_are_compared(self):
-        from migration_harness.junie import junie_cli
+        from migration_harness.junie import acp_session, junie_cli
 
         def cancelled_while_editing(args, *rest, **kwargs):
             self.assertIn("reread the target and make a fresh, smaller patch", args[-1])
-            session = junie_cli._AcpSession.__new__(junie_cli._AcpSession)
+            session = acp_session.AcpSession.__new__(acp_session.AcpSession)
             session.steering_waiting = None
             session.steering_new_turn = False
             self.assertTrue(session._advance_prompt(3, {"result": {"stopReason": "cancelled"}}))
@@ -232,16 +236,16 @@ class MultipleTargetsTest(HarnessCase):
         material = agent / ".migration-materials/rule.txt"
         material.parent.mkdir()
         material.write_text("original")
-        before = workflow._unlisted_workspace_files(agent, set())
+        before = migration_session.unlisted_workspace_files(agent, set())
         material.write_text("changed")
-        self.assertNotEqual(workflow._unlisted_workspace_files(agent, set()), before)
+        self.assertNotEqual(migration_session.unlisted_workspace_files(agent, set()), before)
         link = agent / ".migration-scratch/link"
         try:
             link.symlink_to(material)
         except OSError:
             self.skipTest("symlinks unavailable on this host")
         with self.assertRaisesRegex(ValueError, "must not be symbolic links"):
-            workflow._unlisted_workspace_files(agent, set())
+            migration_session.unlisted_workspace_files(agent, set())
 
     # 途中の反映を復旧したうえで、カプセルの完了を改めて判定することを検証する。
     def test_recovers_partial_application_without_counting_the_capsule(self):
@@ -318,22 +322,22 @@ class MultipleTargetsTest(HarnessCase):
     def test_razor_model_error_repairs_only_the_matching_source_page(self):
         model, page = map(Path, self.targets)
         project = self.worktree / "App.csproj"
-        generator = self.worktree / "obj" / "Debug" / workflow._RAZOR_GENERATOR
+        generator = self.worktree / "obj" / "Debug" / build_cycle._RAZOR_GENERATOR
         diagnostic = f"(2,8): error CS0246: Missing PageModel [{project}]\n"
         actual = f"{self.worktree / page}{diagnostic}"
         duplicate = f"{generator / 'Page_cshtml.g.cs'}{diagnostic}"
         unrelated = f"{generator / 'Other_cshtml.g.cs'}{diagnostic}"
         record = {"build_exit_code": 1, "repair_history": []}
-        with patch.object(junie_cli, "require_interactive_cli"), patch.object(workflow, "_attempt_repair") as repair:
+        with patch.object(junie_cli, "require_interactive_cli"), patch.object(repairs, "attempt_repair") as repair:
             log = self.run_path / "build.log"
             for contents in (duplicate, unrelated + actual):
                 log.write_text(contents, encoding="utf-8")
-                self.assertFalse(workflow._repair_build_failure(
+                self.assertFalse(build_cycle.repair_build_failure(
                     self.settings, (model, page), self.worktree, self.run_path, record,
                 ))
             repair.assert_not_called()
             log.write_text(duplicate + actual, encoding="utf-8")
-            self.assertTrue(workflow._repair_build_failure(
+            self.assertTrue(build_cycle.repair_build_failure(
                 self.settings, (model, page), self.worktree, self.run_path, record,
             ))
             repair.assert_called_once()
@@ -342,7 +346,7 @@ class MultipleTargetsTest(HarnessCase):
 
     def test_razor_symbolic_paths_require_an_unambiguous_matching_diagnostic(self):
         project = self.worktree / "App.csproj"
-        generator = self.worktree / "obj" / "Debug" / workflow._RAZOR_GENERATOR
+        generator = self.worktree / "obj" / "Debug" / build_cycle._RAZOR_GENERATOR
         diagnostic = f"(2,8): error CS0246: Missing PageModel [{project}]\n"
         record = {"build_exit_code": 1, "repair_history": []}
         log = self.run_path / "build.log"
@@ -357,9 +361,9 @@ class MultipleTargetsTest(HarnessCase):
             generated = f"{generator / generated_name}{diagnostic}"
             log.write_text(source + generated, encoding="utf-8")
             with self.subTest(page=page), patch.object(junie_cli, "require_interactive_cli"), patch.object(
-                workflow, "_attempt_repair",
+                repairs, "attempt_repair",
             ) as repair:
-                repair_build = workflow._repair_build_failure
+                repair_build = build_cycle.repair_build_failure
                 self.assertTrue(repair_build(self.settings, targets, self.worktree, self.run_path, record))
                 self.assertEqual(repair.call_args.args[2], (page,))
                 repair.reset_mock()
@@ -381,7 +385,7 @@ class MultipleTargetsTest(HarnessCase):
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
         model, page = self.worktree / model_name, self.worktree / page_name
         agent = self.run_path / "agent-workspace"
-        run_process = workflow.run_process
+        run_process = execution.run_process
 
         def run_checker(command, **kwargs):
             """ビューが未修正のときだけ、そのファイルに指摘を出す。"""
@@ -411,7 +415,7 @@ class MultipleTargetsTest(HarnessCase):
                     self.assertIn("extract the exact ordered data mechanically", command[-1])
                     self.assertIn("fully qualified type in @model", command[-1])
                     self.assertIn("Razor encodes that expression once", command[-1])
-                    self.assertIn(workflow._CSHARP_IDENTIFIERS, command[-1])
+                    self.assertIn(migration_materials.CSHARP_IDENTIFIERS, command[-1])
                     self.assertIn("The harness validates UTF-8 and adds the BOM", command[-1])
                     self.assertEqual(target.read_bytes(), b"latest view before repair")
                     self.assertEqual((agent / model_name).read_bytes(), b"latest model with NewName")
@@ -423,7 +427,7 @@ class MultipleTargetsTest(HarnessCase):
                     completion.write_text(token, encoding="ascii")
                     return 0
 
-                with patch.object(workflow, "run_process", side_effect=run_checker):
+                with patch.object(execution, "run_process", side_effect=run_checker):
                     result = self.resume(repair)
                 if case == "success":
                     self.assertEqual(result["status"], "checker_succeeded")
@@ -450,7 +454,7 @@ class MultipleTargetsTest(HarnessCase):
         run_records.write_run_record(self.record_path, record)
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
 
-        run_process = workflow.run_process
+        run_process = execution.run_process
 
         def check(command, **kwargs):
             if command[0] == "git":
@@ -473,7 +477,7 @@ class MultipleTargetsTest(HarnessCase):
             completion.write_text(token)
             return 0
 
-        with patch.object(workflow, "run_process", side_effect=check):
+        with patch.object(execution, "run_process", side_effect=check):
             with self.assertRaises(workflow.RunInterrupted):
                 self.resume(interrupt)
             self.assertNotEqual((self.worktree / page).read_text(encoding="utf-8-sig"), "draft")
@@ -488,7 +492,7 @@ class MultipleTargetsTest(HarnessCase):
         record.update(status="checker_needs_review", build_exit_code=0, completed_capsules=1)
         run_records.write_run_record(self.record_path, record)
         self.settings.update(checker_command=["fixture-checker"], max_repair_attempts=1)
-        run_process = workflow.run_process
+        run_process = execution.run_process
 
         def check(command, **kwargs):
             if command[0] == "git":
@@ -502,7 +506,7 @@ class MultipleTargetsTest(HarnessCase):
             junie_cli.JunieLaunchError(["junie"], str(self.worktree), None, FileNotFoundError("missing launcher")),
             junie_cli.JunieSessionError(["junie"], 0, "JLine returned dumb"),
         ]
-        with patch.object(workflow, "run_process", side_effect=check):
+        with patch.object(execution, "run_process", side_effect=check):
             for failure in failures:
                 with self.subTest(error=type(failure).__name__):
                     def fail(*args, **kwargs):
