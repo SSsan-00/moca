@@ -11,6 +11,7 @@ from typing import Any
 from . import build_receipt, checker_output, grounded_evidence, repairs
 from .. import execution
 from ..command_paths import expand_command_paths
+from ..config import target_paths
 from ..errors import CheckerRepairBlocked, RunInterrupted, format_error
 from ..execution import ConfiguredProcessIncomplete, check_cancelled, print_progress, report_activity
 from ..files import safe_target
@@ -310,13 +311,13 @@ def _review_checker(
     if recorded_hashes:
         command = configured_verification_checker(config, verification)
         scripts = verification_scripts(config, command)
-        versions = target_versions(worktree, unit)
+        versions = verification["target_hashes"]
         if (
             not command or verification["configured_checker_command"] != command or verification["checker_command"] != command
             or verification["build_project"] != config["build_project"] or verification["scripts"] != scripts
             or verification.get("scripts_passed") is not True
             or verification.get("inputs_changed_during_verification") is not False
-            or None in versions.values() or verification["target_hashes"] != versions
+            or versions.keys() != {path.as_posix() for path in target_paths(unit)}
             or None in verification["input_files"].values()
             or verification["input_files"] != verification_files(config, worktree, unit["target"], command, scripts)
         ):
@@ -324,11 +325,13 @@ def _review_checker(
                 raise ValueError("the reviewed file changed or was missing, or verification conditions changed; "
                                  "resume to get current findings")
             recorded_hashes = {}
-    hashes = {
-        path: recorded_hashes.get(path)
-        for path in {finding.path for finding in findings}
-        if review_target_hash(worktree, Path(path)) == recorded_hashes.get(path)
-    }
+    hashes = {}
+    if recorded_hashes:
+        for path in {finding.path for finding in findings}:
+            digest = recorded_hashes.get(path)
+            if (digest and (path not in versions or versions[path] == digest)
+                    and review_target_hash(worktree, Path(path)) == digest):
+                hashes[path] = digest
     accepted = accepted_findings(record, findings, hashes)
     if finding_id is not None:
         matches = [finding for finding in findings if finding_id in (finding.finding_id, finding.finding_id[:12])]

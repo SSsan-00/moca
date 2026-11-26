@@ -185,6 +185,13 @@ class SavedRunFixture(unittest.TestCase):
     def remove_fixture_target_context(self):
         shutil.rmtree(self.run_path / "capsule" / "target-context")
 
+    def set_fixture_targets(self, targets, **changes):
+        targets = list(targets)
+        self.config["units"][0]["targets"] = targets
+        self.set_saved_target_context(targets)
+        hashes = {name: sha256_file(path) if (path := self.worktree / name).is_file() else None for name in targets}
+        self.save_record({**self.record(), "targets": targets, "target_hashes": hashes, **changes})
+
     def set_saved_target_context(self, targets):
         snapshot = self.run_path / "capsule" / "target-context"
         snapshot.mkdir(parents=True, exist_ok=True)

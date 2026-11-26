@@ -84,11 +84,7 @@ class BeforeBuildVersionTests(SavedRunFixture):
         target = self.worktree / "Generated.cs"
         target.write_text("class Original {}", encoding="utf-8")
         targets = [self.target.name, target.name]
-        self.config["units"][0]["targets"] = targets
-        self.set_saved_target_context(targets)
-        self.save_record({**self.record(), "targets": targets,
-                          "target_hashes": {name: hashlib.sha256((self.worktree / name).read_bytes()).hexdigest()
-                                            for name in targets}})
+        self.set_fixture_targets(targets)
         return target
 
     @contextmanager

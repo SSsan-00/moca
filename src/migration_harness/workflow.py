@@ -232,7 +232,7 @@ def _resume_with_junie(
         if verification_request["intent"] == "checker_repair":
             if status not in {"checker_needs_review", "checker_failed"}:
                 raise ValueError("チェッカー指摘が更新されました。最新の結果を確認してください。")
-            if len(history) >= config["max_repair_attempts"]:
+            if len(record.get("repair_history", [])) >= config["max_repair_attempts"]:
                 raise ValueError("この Run の修正回数が上限に達しました。残った指摘はエディタで修正してください。")
         verification_request["build_targets"] = apply_verification_edits(run_path, worktree_path, unit, verification_request)
         if stage in {"build", BUILD_THROUGH_STAGE}:

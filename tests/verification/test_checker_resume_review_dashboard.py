@@ -166,9 +166,7 @@ class MigrationFailureRecoveryTests(SavedRunFixture):
         second = self.worktree / "Second.cs"
         second.write_bytes(b"class SecondOriginal {}")
         names = (self.target.name, second.name)
-        self.config["units"][0]["targets"] = list(names)
-        self.save_record({**self.record(), "targets": list(names), "status": "prepared",
-                          "completed_capsules": 0, "current_capsule": 1})
+        self.set_fixture_targets(names, status="prepared", completed_capsules=0, current_capsule=1)
         original = self.target.read_bytes()
         agent = self.run_path / "agent-workspace"
 
@@ -299,8 +297,7 @@ class FollowupDraftRecoveryTests(SavedRunFixture):
         self.second = self.worktree / "Second.cs"
         self.second.write_bytes(b"class SecondOriginal {}\n")
         names = [self.target.name, self.second.name]
-        self.config["units"][0]["targets"] = names
-        self.save_record({**self.record(), "targets": names})
+        self.set_fixture_targets(names)
         self.original = self.target.read_bytes()
         self.second_original = self.second.read_bytes()
         self.agent = self.run_path / "agent-workspace"
@@ -748,8 +745,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         secondary = self.worktree / "View.cshtml"
         secondary.write_text("<p>View</p>", encoding="utf-8")
         targets = [self.target.name, secondary.name]
-        self.config["units"][0]["targets"] = targets
-        self.save_record({**self.record(), "targets": targets})
+        self.set_fixture_targets(targets)
         path = self.run_path / "capsule" / "manifest.json"
         manifest = json.loads(path.read_bytes())
         ranges = manifest["parts"][0]["sources"]
@@ -933,10 +929,9 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
     def test_stop_preserves_missing_and_partial_repair_targets_and_detects_manual_conflict(self):
         names = ["Example.cs", "Second.cs"]
-        self.config["units"][0]["targets"] = names
         self.config["max_repair_attempts"] = 1
         (self.worktree / names[1]).write_text("class SecondOriginal {}\n", encoding="utf-8")
-        self.save_record({**self.record(), "targets": names})
+        self.set_fixture_targets(names)
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
         partial = b"class Partial {\xff"
@@ -1087,11 +1082,10 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
     def test_selected_repair_recovers_before_verifying_changed_diagnostics(self):
         names = ("Example.cs", "Second.cs", "Third.cs")
-        self.config["units"][0]["targets"] = list(names)
         self.config["max_repair_attempts"] = 1
         for name in names[1:]:
             (self.worktree / name).write_bytes(b"class Original {}\n")
-        self.save_record({**self.record(), "targets": list(names)})
+        self.set_fixture_targets(names)
         original_record = self.record()
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
@@ -1190,9 +1184,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         second = self.worktree / "Second.cs"
         second.write_bytes(b"class Original {}\n")
         names = (self.target.name, second.name)
-        self.config["units"][0]["targets"] = list(names)
         self.config["max_repair_attempts"] = 1
-        self.save_record({**self.record(), "targets": list(names)})
+        self.set_fixture_targets(names)
         (self.run_path / "agent-workspace").mkdir()
 
         def interrupt(_command, _completion, _token, targets, **kwargs):
@@ -1477,6 +1470,18 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertEqual(result["status"], "checker_needs_review")
         self.assertIn("previous checker finding", result["error"])
         self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
+
+    def test_explicit_checker_repair_stops_at_the_saved_limit_without_changing_record(self):
+        self.config["max_repair_attempts"] = 1
+        self.save_record({**self.record(), "repair_history": [{"findings": [sha256(b"fixture").hexdigest()]}]})
+        before = self.record_path.read_bytes()
+        request = {"id": "repair-at-limit", "intent": "checker_repair", "text": "Check the saved result."}
+        with patch.object(execution, "run_process") as command, patch.object(junie_cli, "run_interactive") as junie:
+            with self.assertRaisesRegex(ValueError, "修正回数が上限"):
+                workflow.resume_with_junie(self.config, self.run_id, verification_request=request)
+            command.assert_not_called()
+            junie.assert_not_called()
+        self.assertEqual(self.record_path.read_bytes(), before)
 
     def test_checker_repair_limit_records_the_review_reason(self):
         self.config["max_repair_attempts"] = 1
