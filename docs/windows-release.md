@@ -49,4 +49,15 @@ git status --short
    ```
 
    開発側のビルド環境に `pyproject.toml` の `setuptools>=68` とwheelビルドを行えるpipを用意し、利用者の端末には追加しない。出力したwheelは新規仮想環境へインストールし、`php-to-csharp-harness --help`、静的アセット、設定例、ローカル起動を確認する。ソース版も別環境で `.\moca` の起動を確認する。ビルド環境・wheelまたはソースパッケージのSHA-256・試験結果を記録する。
+   ソース配布を選ぶ場合は、手元の設定・Runを含めず、Gitに登録済みの固定版だけを `git archive --format=zip` で出力する。例:
+
+   ```powershell
+   $commit = git rev-parse HEAD
+   $short = $commit.Substring(0, 12)
+   $archive = Join-Path $output "moca-$short.zip"
+   git archive --format=zip "--prefix=moca-$short/" "--output=$archive" $commit
+   Get-FileHash -LiteralPath $archive -Algorithm SHA256
+   ```
+
+   基準 `91074035aa512b57e2b661e3c6aee5d49e44fc03` のソースZIPは Git 2.50.0（macOS補助環境）で同一プレフィックス `moca-9107403/` を使って2回作成し、双方の SHA-256 は `83f0c48d65c5c529ce1269b5c08c9a2ab3d4f154e3231e11f182b9301d18a0ed`。起動用スクリプト・設定例・デモ・ライセンス・静的アセットの素材を確認し、ローカル設定・Run保存データを含まないことを確認した。wheel生成・新規環境へのインストールは別の確認で、この結果には含まない。
 4. 公開は所有者の承認後。GitHub上で確認済みコミットにタグを付け、版とSHAが一致する成果物・ハッシュ・手順のみを公開する。秘密情報・設定・業務データ・未確認の成果物を添付しない。この文書や耐久試験から自動公開しない。
