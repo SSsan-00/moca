@@ -36,7 +36,7 @@ class RunCostTests(unittest.TestCase):
             self.assertEqual(run_records._exchange_rate(), {
                 "status": "available", "rate": 150.5, "date": "2026-11-24", "source": "Frankfurter",
             })
-        request.assert_called_once()
+        request.assert_called_once_with("https://api.frankfurter.dev/v2/rate/usd/jpy", timeout=3)
         with patch.object(run_records, "urlopen", side_effect=OSError("offline")):
             self.assertEqual(run_records._exchange_rate(), {"status": "unavailable"})
 

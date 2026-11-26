@@ -8,7 +8,7 @@ import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 from threading import Thread
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -35,6 +35,29 @@ _RAZOR_EXCLUDED = (
     "Features/node_modules/Index.cshtml", "jspm_packages/Index.cshtml", "bower_components/Index.cshtml",
     "Properties/PublishProfiles/Index.cshtml", "Properties/ServiceDependencies/Index.cshtml",
 )
+
+
+class DiagnosticProcessEnvironmentTests(unittest.TestCase):
+    def test_local_roslyn_invocations_disable_sdk_telemetry_without_changing_parent_defaults(self):
+        parent = {"DOTNET_CLI_TELEMETRY_OPTOUT": "0", "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE": "false"}
+        environment = {**parent, "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE": "true",
+                       "DOTNET_NOLOGO": "1"}
+        command = ["dotnet", "fixture.dll"]
+        worker = Mock()
+        with (
+            patch.object(roslyn_syntax, "os", Mock(environ=parent)),
+            patch.object(roslyn_syntax, "run_process") as checked,
+            patch.object(roslyn_syntax.subprocess, "run") as direct,
+        ):
+            roslyn_syntax._checked_process(command, Path("."), 1)
+            roslyn_syntax._run_editor(command, "--editor", b"{}", 1)
+            roslyn_syntax._run_editor(command, "--editor", b"{}", 1, worker=worker)
+        checked.assert_called_once()
+        direct.assert_called_once()
+        self.assertEqual(checked.call_args.kwargs["env"], environment)
+        self.assertEqual(direct.call_args.kwargs["env"], environment)
+        worker.run.assert_called_once_with(command, b"{}", 1, environment=environment)
+        self.assertEqual(parent, {"DOTNET_CLI_TELEMETRY_OPTOUT": "0", "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE": "false"})
 
 
 class EditorProjectDiagnosticHttpTests(HarnessCase):
