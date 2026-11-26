@@ -54,6 +54,8 @@ git status --short
    ```powershell
    $commit = git rev-parse HEAD
    $short = $commit.Substring(0, 12)
+   $output = Join-Path $env:TEMP ('moca-source-' + [guid]::NewGuid().ToString('N'))
+   New-Item -ItemType Directory -Path $output | Out-Null
    $archive = Join-Path $output "moca-$short.zip"
    git archive --format=zip "--prefix=moca-$short/" "--output=$archive" $commit
    Get-FileHash -LiteralPath $archive -Algorithm SHA256
