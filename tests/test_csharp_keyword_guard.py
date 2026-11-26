@@ -322,6 +322,8 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         for before, after in (
             ("Call(() => { int @event = 1; }, NoOp);", "Call(NoOp, () => { int @event = 1; });"),
             (f"Call({callback}); Call(NoOp);", f"Call(NoOp); Call({callback});"),
+            (f'Call("first", {callback}); Call("second", NoOp);',
+             f'Call("second", {callback}); Call("first", NoOp);'),
             (f"Call({callback});", f"Other({callback});"),
             (f"first?.Call({callback});", f"second?.Call({callback});"),
             (f"Call({callback});", f"Call({ordinary}); Call({callback});"),
@@ -334,6 +336,8 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         self.apply_pair("Page.cs", page(before), page("Prepare(); " + before.replace(
             "int @event = 1;", "int @event = 3; api.@class();")))
         self.apply_pair("Page.cs", page(before), page(f"Call(second: {ordinary}, first: {callback});"))
+        tagged = f'Call("first", {callback});'
+        self.apply_pair("Page.cs", page(tagged), page(tagged + ' Call("second", NoOp);'))
         chain = f"items.Select(x => x+1).Call({callback});"
         self.apply_pair("Page.cs", page(chain), page(chain.replace("x+1", "x+2")))
 

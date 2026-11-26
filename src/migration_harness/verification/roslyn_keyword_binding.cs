@@ -68,14 +68,24 @@ internal static partial class Program
         var owner = callback.Ancestors().First(IsCallbackOwner);
         var sites = owner.DescendantNodes(node => node == owner || !IsCallbackOwner(node))
             .Where(node => node is AnonymousFunctionExpressionSyntax or BaseArgumentListSyntax).ToArray();
-        // Count calls with method groups or other arguments too: a callback can move into one of those slots.
-        var calls = new Dictionary<BaseArgumentListSyntax, string>();
+        var callbacks = sites.OfType<AnonymousFunctionExpressionSyntax>().ToArray();
+        var needed = callbacks.SelectMany(cb => cb.Ancestors().TakeWhile(node => node != owner))
+            .OfType<ArgumentSyntax>().ToHashSet();
+        var positions = new Dictionary<ArgumentSyntax, string>();
         foreach (var group in sites.OfType<BaseArgumentListSyntax>().GroupBy(list => CallbackSite(list, owner)))
         {
-            var ordinal = 0;
-            foreach (var list in group) calls.Add(list, $"{ordinal++}/{group.Count()}");
+            var arguments = group.SelectMany(list => list.Arguments).ToLookup(ArgumentRole);
+            foreach (var role in arguments.Where(role => role.Any(needed.Contains)))
+            {
+                // Include calls whose slot contains a method group, not just calls already containing a lambda.
+                foreach (var peers in role.GroupBy(OtherArguments))
+                {
+                    var ordinal = 0;
+                    foreach (var arg in peers) positions[arg] = $"{ordinal++}/{peers.Count()}:{peers.Key}";
+                }
+            }
         }
-        foreach (var group in sites.OfType<AnonymousFunctionExpressionSyntax>().GroupBy(node => CallbackSite(node, owner, calls)))
+        foreach (var group in callbacks.GroupBy(node => CallbackSite(node, owner, positions)))
         {
             var ordinal = 0;
             foreach (var node in group) cache[node] = ($"callback:{ordinal++}/{group.Count()}:{group.Key}", null);
@@ -83,7 +93,7 @@ internal static partial class Program
     }
 
     private static string CallbackSite(SyntaxNode node, SyntaxNode owner,
-        IReadOnlyDictionary<BaseArgumentListSyntax, string>? calls = null)
+        IReadOnlyDictionary<ArgumentSyntax, string>? positions = null)
     {
         var path = new List<string> { node.Kind().ToString() };
         for (var child = node; child.Parent is { } parent && parent != owner; child = parent)
@@ -91,19 +101,26 @@ internal static partial class Program
             if (parent is ParenthesizedExpressionSyntax) continue;
             var slot = (parent, child) switch
             {
-                (BaseArgumentListSyntax list, ArgumentSyntax arg) => arg.NameColon is { } name
-                    ? "named:" + name.Name.Identifier.ValueText : "position:" + list.Arguments.IndexOf(arg),
+                (BaseArgumentListSyntax, ArgumentSyntax arg) => ArgumentRole(arg),
                 (InvocationExpressionSyntax call, ArgumentListSyntax) => CallbackHeader(call.Expression),
                 (ConditionalAccessExpressionSyntax access, _) when child == access.WhenNotNull => CallbackHeader(access.Expression),
                 (ObjectCreationExpressionSyntax creation, ArgumentListSyntax) => KeywordHeader(creation.Type),
                 (AssignmentExpressionSyntax assignment, _) when child == assignment.Right => CallbackHeader(assignment.Left),
                 _ => parent.ChildNodes().TakeWhile(sibling => sibling != child).Count().ToString(),
             };
-            if (calls is not null && parent is BaseArgumentListSyntax args) slot += ":" + calls[args];
+            if (positions is not null && child is ArgumentSyntax argSlot && parent is BaseArgumentListSyntax)
+                slot += ":" + positions[argSlot];
             path.Add(parent.RawKind + ":" + slot);
         }
         return JsonSerializer.Serialize(path);
     }
+
+    private static string ArgumentRole(ArgumentSyntax arg) => arg.NameColon is { } name
+        ? "name:" + name.Name.Identifier.ValueText : "slot:" + ((BaseArgumentListSyntax)arg.Parent!).Arguments.IndexOf(arg);
+
+    private static string OtherArguments(ArgumentSyntax current) => JsonSerializer.Serialize(
+        ((BaseArgumentListSyntax)current.Parent!).Arguments.Where(arg => arg != current)
+            .Select(arg => ArgumentRole(arg) + ":" + CallbackHeader(arg.Expression)).Order(StringComparer.Ordinal));
 
     private static string CallbackHeader(SyntaxNode node) =>
         KeywordTokens(node.DescendantTokens(child => child is not AnonymousFunctionExpressionSyntax));
