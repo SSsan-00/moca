@@ -813,8 +813,8 @@ def _stage_migration_materials(
 # 以下はJunieへ渡す共通指示。実行による検証はハーネス側の工程に任せる。
 _CSHARP_IDENTIFIERS = (
     "Rename only a declaration from PHP or draft C# whose identifier would be an illegal C# keyword in its "
-    "actual usage. Choose a meaningful non-keyword name unused in its scope; never introduce an @-escaped "
-    "identifier to solve the conflict. Change only references bound to that declaration, including later "
+    "actual usage. Choose a meaningful non-keyword name unused in its scope. Do not escape the keyword with @ "
+    "or Unicode to solve the conflict. Change only references bound to that declaration, including later "
     "capsules and the paired Razor file. Keep ordinary names, independently declared same-spelled symbols, "
     "existing valid escapes and legal contextual names exactly as they are; do not rename for style or to "
     "free a preferred name. For example, if eventName is occupied, keep it and pick a different name for event. "

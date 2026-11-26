@@ -1,5 +1,6 @@
 import codecs
 import json
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -56,12 +57,12 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         return {path: path.read_bytes() for root in (self.worktree, self.agent) for name in _BEFORE
                 if (path := root / name).is_file()}
 
-    def assert_rejected(self, name, line=2):
+    def assert_rejected(self, name, line=2, spelling="@event"):
         files = self.files()
         pending = self.record()["repair_pending"]
         result = self.resume()
         self.assertNotEqual(result["status"], "checker_succeeded")
-        self.assertRegex(result["error"].splitlines()[0], fr"{name}:{line}:.*@event")
+        self.assertRegex(result["error"].splitlines()[0], fr"{re.escape(name)}:{line}:.*{re.escape(spelling)}")
         self.assertIn("作業ツリーを選び直す", result["error"])
         self.assertEqual(self.files(), files)
         self.assertEqual(self.record()["repair_pending"], pending)
@@ -144,6 +145,19 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         conditional = b"class Original {\n#if NET9_0\n    int @event = 1;\n#endif\n}\n"
         self.choose_draft({**_AFTER, "Example.cs": conditional})
         self.assert_rejected("Example.cs", line=3)
+
+    def test_unicode_tuple_in_stopped_draft_does_not_change_any_target(self):
+        spelling = r"@cl\u0061ss"
+        draft = (
+            "class Original {\n#if NET9_0\n"
+            f"    (int {spelling}, int Value) Pair;\n"
+            "#endif\n}\n"
+        ).encode()
+        self.choose_draft({**_AFTER, "Example.cs": draft})
+        self.assert_rejected("Example.cs", line=3, spelling=spelling)
+        self.choose({**dict.fromkeys(_AFTER, "draft"), "Example.cs": "worktree"})
+        self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
+        self.assertEqual(self.target.read_bytes(), _BEFORE["Example.cs"])
 
     def test_external_override_event_forms_can_be_adopted_from_a_stopped_draft(self):
         proposed = {

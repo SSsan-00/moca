@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -16,8 +15,6 @@ internal static partial class Program
     private sealed record OpenBranch(int Directive, int Start, (ExpressionSyntax Expression, bool Expected)[] Previous,
                                      ExpressionSyntax? Condition);
 
-    private static readonly Regex KeywordSpelling = new(@"@[a-zA-Z_][a-zA-Z_0-9]*");
-
     private static (List<SyntaxNode> Roots, int? Unchecked) KeywordConditionRoots(SourceText source)
     {
         var initial = CSharpSyntaxTree.ParseText(source, Options).GetRoot();
@@ -26,8 +23,10 @@ internal static partial class Program
         var directives = initial.DescendantTrivia().Select(trivia => trivia.GetStructure())
             .OfType<DirectiveTriviaSyntax>().ToArray();
         if (!directives.Any(d => d is IfDirectiveTriviaSyntax)) return (roots, null);
-        var candidates = KeywordSpelling.Matches(source.ToString()).Where(m =>
-            SyntaxFacts.GetKeywordKind(m.Value[1..]) != SyntaxKind.None).Select(m => m.Index).ToArray();
+        var candidates = initial.DescendantTokens().Concat(initial.DescendantTrivia().Where(IsUnparsedTrivia)
+            .SelectMany(trivia => SyntaxFactory.ParseTokens(trivia.ToFullString(),
+                initialTokenPosition: trivia.FullSpan.Start, options: Options)))
+            .Where(IsEscapedReservedKeyword).Select(token => token.SpanStart).Distinct().Order().ToArray();
         if (candidates.Length == 0) return (roots, null);
         if (directives.Length > 512) return (roots, candidates[0]);
         var pending = candidates.Where(pos => IsUnparsed(initial, pos)).ToHashSet();
@@ -64,7 +63,9 @@ internal static partial class Program
         return (roots, pending.Count == 0 ? null : pending.Min());
     }
 
-    private static bool IsUnparsed(SyntaxNode root, int position) => root.FindTrivia(position).Kind() is
+    private static bool IsUnparsed(SyntaxNode root, int position) => IsUnparsedTrivia(root.FindTrivia(position));
+
+    private static bool IsUnparsedTrivia(SyntaxTrivia trivia) => trivia.Kind() is
         SyntaxKind.DisabledTextTrivia or SyntaxKind.SkippedTokensTrivia;
 
     private static IEnumerable<Branch> ConditionalBranches(IEnumerable<DirectiveTriviaSyntax> directives)

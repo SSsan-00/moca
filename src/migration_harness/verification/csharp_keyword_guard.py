@@ -4,13 +4,28 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import unicodedata
 
 from ..context.php_literals import _CSHARP_RESERVED
 from ..files import safe_target
 from .roslyn_syntax import _prepare_tool, _run_editor
 
 _ESCAPE = re.compile(r"@([A-Za-z_][A-Za-z_0-9]*)")
+_UNICODE_ESCAPE = re.compile(r"\\(?:u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})")
 _DIFF_TOKEN = re.compile(r"@\w+|\w+|\S")
+
+
+def _could_contain_keyword_escape(text):
+    if any(match[1] in _CSHARP_RESERVED for match in _ESCAPE.finditer(text)):
+        return True
+    if "\\" in text:
+        for match in _UNICODE_ESCAPE.finditer(text):
+            codepoint = int(match[0][2:], 16)
+            if codepoint <= 0x10FFFF:
+                char = chr(codepoint)
+                if "a" <= char <= "z" or char == "_" or unicodedata.category(char) == "Cf":
+                    return True
+    return not text.isascii() and any(unicodedata.category(char) == "Cf" for char in set(text))
 
 
 def _read_version(path, expected):
@@ -23,19 +38,21 @@ def _read_version(path, expected):
 def _positions(findings):
     rows = {}
     for item in findings:
-        rows.setdefault(item["line"], []).append((item["column"], item["text"]))
-    return rows
+        rows.setdefault(item["line"], []).append((item["column"], item["text"], item["value"], item["kind"]))
+    return {row: sorted(items) for row, items in rows.items()}
 
 
 def _diff_tokens(lines, start, end, positions):
     tokens, declarations = [], {}
     for row in range(start, end):
-        for token in _DIFF_TOKEN.finditer(lines[row]):
-            spelling = token[0]
-            declared = (token.start(), spelling) in positions.get(row, ())
-            if declared:
-                declarations[len(tokens)] = (row, spelling)
-            tokens.append((spelling, declared))
+        offset = 0
+        line = lines[row]
+        for column, spelling, value, kind in positions.get(row, ()):
+            tokens.extend((token[0], None) for token in _DIFF_TOKEN.finditer(line, offset, column))
+            declarations[len(tokens)] = (row, spelling)
+            tokens.append((value, kind))
+            offset = column + len(spelling)
+        tokens.extend((token[0], None) for token in _DIFF_TOKEN.finditer(line, offset))
     return tokens, declarations
 
 
@@ -57,7 +74,7 @@ def _new_escapes(before, after, old_matches, new_matches):
             continue
         if not any(row in existing for row in range(old_start, old_end)):
             for row in new_rows:
-                for _, spelling in proposed.get(row, ()):
+                for _, spelling, _, _ in proposed.get(row, ()):
                     yield row, spelling
             continue
         # Edited lines may retain a declaration even when their original line is gone.
@@ -95,7 +112,7 @@ def reject_keyword_changes(pending, *, before_path, after_path):
         if Path(name).suffix.lower() not in {".cs", ".cshtml"}:
             continue
         after = _read_version(after_path(name), versions["after"])
-        if any(match[1] in _CSHARP_RESERVED for match in _ESCAPE.finditer(after)):
+        if _could_contain_keyword_escape(after):
             before = _read_version(before_path(name), versions["before"])
             candidates.append((name, before, after))
     if not candidates:
@@ -110,8 +127,8 @@ def reject_keyword_changes(pending, *, before_path, after_path):
     for (name, before, after), previous, proposed in zip(candidates, reports[::2], reports[1::2], strict=True):
         if line := proposed["uncheckedLine"] or (previous["uncheckedLine"] if proposed["declarations"] else None):
             raise ValueError(f"{name}:{line}: 条件付きコンパイル内の予約語を確認できないため反映を止めました。"
-                             "条件分岐を確認し、変更対象の宣言は@を付けずに改名してから再開してください。")
+                             "条件分岐を確認し、変更対象の宣言をエスケープせずに改名してから再開してください。")
         if problem := next(_new_escapes(before, after, previous["declarations"], proposed["declarations"]), None):
             row, spelling = problem
             raise ValueError(f"{name}:{row + 1}: 新しく追加した宣言 {spelling} は反映できません。"
-                             "@を付けず、宣言と参照を意味のある未使用名に揃えてから再開してください。")
+                             "エスケープせず、宣言と参照を意味のある未使用名に揃えてから再開してください。")
