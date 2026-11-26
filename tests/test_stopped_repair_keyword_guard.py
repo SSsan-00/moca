@@ -61,7 +61,7 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         pending = self.record()["repair_pending"]
         result = self.resume()
         self.assertNotEqual(result["status"], "checker_succeeded")
-        self.assertRegex(result["error"], fr"{name}:2:.*@event")
+        self.assertRegex(result["error"].splitlines()[0], fr"{name}:2:.*@event")
         self.assertIn("作業ツリーを選び直す", result["error"])
         self.assertEqual(self.files(), files)
         self.assertEqual(self.record()["repair_pending"], pending)
@@ -96,6 +96,14 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         self.target.write_bytes(codecs.BOM_UTF8 + invalid)
         self.assert_rejected("Example.cs")
         self.assertEqual(workflow.plan_stopped_repair(self.config, self.run_id)["snapshot"], stopped["snapshot"])
+        for choice in ("draft", "worktree"):
+            with self.subTest(choice=choice), self.assertRaisesRegex(ValueError, r"Example.cs:2:.*@event"):
+                self.choose({**dict.fromkeys(_AFTER, "draft"), "Example.cs": choice})
+        manual = invalid.replace(b"@event", b"EventValue")
+        self.target.write_bytes(manual)
+        self.choose({**dict.fromkeys(_AFTER, "draft"), "Example.cs": "worktree"})
+        self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
+        self.assertEqual(self.target.read_bytes(), manual)
 
     def test_already_restored_legacy_selection_is_checked_before_verification(self):
         invalid = b"class Original {\n    int @event = 1;\n}\n"

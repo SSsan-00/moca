@@ -2670,6 +2670,7 @@ def resolve_stopped_repair(config, run_id, version, choices):
                 raise ValueError("復元対象すべてに draft または worktree を指定してください。")
             if None in plan["worktree"].values():
                 raise ValueError("作業ツリーの欠損を手動で復元してから計画し直してください。")
+            _check_reselected_repair(run_path, record, plan, choices)
             sources = {name: snapshot[name] if choices[name] == "draft" else current[name] for name in snapshot}
             agent_backup = _save_target_snapshot(run_path, agent, plan["worktree"], workspace_unchanged=True)
             worktree_backup = _save_target_snapshot(
@@ -2790,6 +2791,24 @@ def _check_repair_adoption(run_path, record, draft, sources, adopted):
             "stopped_draft_keyword",
             f"停止時の下書きを復元できません: {exc} 進捗画面で作業ツリーを選び直すか、手修正を保存して計画し直してください。",
         ) from exc
+
+
+def _check_reselected_repair(run_path, record, plan, choices):
+    attempt = record["repair_pending"]
+    if "restore_from" not in attempt and not attempt.get("selection"):
+        return
+    previous = attempt["draft"]
+    # An earlier release could have written this exact draft before stopping. Selecting it
+    # again must not turn it into a manual edit or make it the baseline for its own check.
+    candidates = [name for name in previous["targets"] if plan["worktree"][name] != previous["base"][name]
+                  and (choices[name] == "worktree" or plan["draft"][name] == previous["targets"][name])]
+    if not candidates:
+        return
+    snapshot = _verified_target_snapshot(run_path, previous)
+    with TemporaryDirectory(dir=run_path) as staging:
+        sources, adopted, _ = _stage_repair_adoption(staging, {name: snapshot[name] for name in candidates}, previous)
+        still_applied = {name: digest for name, digest in adopted.items() if digest == plan["worktree"][name]}
+        _check_repair_adoption(run_path, record, previous, sources, still_applied)
 
 
 def _recover_selected_repair(run_path, worktree, targets, record):
@@ -3850,9 +3869,10 @@ def _run_verification(
         if not explicit_build:
             _recover_selected_repair(run_path, worktree, targets, record)
     except CheckerRepairBlocked as exc:
-        record.update(error=format_error(exc), checker_review_reason=exc.reason)
+        error = str(exc) if exc.reason == "stopped_draft_keyword" else format_error(exc)
+        record.update(error=error, checker_review_reason=exc.reason)
         write_run_record(record_path, record)
-        return {**result, "status": record["status"], "error": record["error"]}
+        return {**result, "status": record["status"], "error": error}
     _resume_verification_script(config, run_path, worktree, record, targets, explicit_build=bool(explicit_build))
     _run_script_phase(config, "after_migration", worktree, run_path, record, once=True)
     mode = request["intent"].removeprefix("stop_") if request else None
