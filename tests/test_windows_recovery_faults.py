@@ -47,7 +47,7 @@ def child(root, command, cut=""):
         process = subprocess.Popen(
             [sys.executable, "-u", str(Path(__file__).resolve()), "--fault-worker", str(root), command, cut],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, encoding="utf-8",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "MOCA_FAULT_FIXTURE_ROOT": str(root)},
         )
         messages = Queue()
 
@@ -58,7 +58,6 @@ def child(root, command, cut=""):
             messages.put(("exit", None))
 
         reader = Thread(target=read_events, daemon=True)
-        reader.start()
 
         class Handshake:
             def __init__(self):
@@ -97,12 +96,14 @@ def child(root, command, cut=""):
                 return payload
 
         try:
+            reader.start()
             yield Handshake()
         finally:
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=10)
-            reader.join(timeout=5)
+            if reader.ident is not None:
+                reader.join(timeout=5)
             process.stdin.close()
             process.stdout.close()
 
@@ -437,6 +438,8 @@ if __name__ == "__main__":
     if len(sys.argv) != 5 or sys.argv[1] != "--fault-worker":
         raise SystemExit("Use unittest to start the isolated workers")
     root, command, cut = sys.argv[2:]
+    if root != os.environ.get("MOCA_FAULT_FIXTURE_ROOT"):
+        raise SystemExit("A test-owned temporary fixture is required")
     {"json": json_worker, "adoption": adoption_worker, "queue": queue_worker, "hook": hook_worker}[command](
         Path(root).resolve(strict=True), cut
     )

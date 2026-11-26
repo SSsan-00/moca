@@ -52,6 +52,17 @@ REQUIRED_RUN_MODELS = {
 }
 
 
+REQUIRED_WINDOWS_RECOVERY = {
+    *("test_windows_recovery_faults.WindowsRecoveryFaultTests." + name for name in (
+        "test_atomic_json_survives_termination_before_and_after_replace",
+        "test_real_windows_sharing_violation_retries_or_leaves_old_record",
+        "test_two_target_adoption_restarts_at_each_durable_cut",
+        "test_queue_restart_only_launches_waiting_operations",
+    )),
+    "test_windows_recovery_faults.WindowsHookCrashTests.test_unknown_once_hook_survives_process_death_without_implicit_replay",
+}
+
+
 class RegressionResult(unittest.TextTestResult):
 
     def __init__(self, *args, **kwargs):
@@ -127,7 +138,10 @@ def main():
     missing_models = REQUIRED_RUN_MODELS - result.passed if args.shard != "conversation-editor" else set()
     if missing_models:
         print("Required Run state checks did not pass: " + ", ".join(sorted(missing_models)))
-    return 0 if result.wasSuccessful() and not (missing_ui or missing_models) else 1
+    missing_recovery = REQUIRED_WINDOWS_RECOVERY - result.passed if args.shard != "conversation-editor" else set()
+    if missing_recovery:
+        print("Required Windows recovery checks did not pass: " + ", ".join(sorted(missing_recovery)))
+    return 0 if result.wasSuccessful() and not (missing_ui or missing_models or missing_recovery) else 1
 
 
 if __name__ == "__main__":
