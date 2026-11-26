@@ -16,8 +16,12 @@ from ..runs.worktree_targets import target_hash
 from .context_evidence import boundary_hints
 
 
+_MAX_BUFFERED_CONTEXT_BYTES = 1024 * 1024
+
+
 def stage_source_excerpts(
     capsule: Path, manifest: dict[str, Any], agent_root: Path, *, through_capsule: int | None = None,
+    verified_context: bytes | None = None,
 ) -> dict[Path, str]:
     """処理済みの原文を照合用に残す。将来の区間や境界資料は混ぜない。"""
     directory = safe_target(agent_root, Path(".migration-materials/source-0001.md")).parent
@@ -38,14 +42,18 @@ def stage_source_excerpts(
             raise ValueError("saved verification source is missing or outside the capsule directory")
         destination = safe_target(agent_root, Path(".migration-materials") / f"source-{part['index']:04d}.md")
         existing = target_hash(destination)
-        if part.get("segment_sha256") and part.get("sha256") and existing == part["segment_sha256"]:
-            if harness_files.sha256_file(source) != part["sha256"]:
-                raise ValueError(f"capsule {part['index']}: saved verification source changed")
+        expected = part.get("sha256")
+        data = verified_context if part["index"] == through_capsule else None
+        reusable = part.get("segment_sha256") and expected and existing == part["segment_sha256"]
+        if data is None:
+            data = None if reusable else source.read_bytes()
+            if expected:
+                actual = harness_files.sha256_file(source) if data is None else hashlib.sha256(data).hexdigest()
+                if actual != expected:
+                    raise ValueError(f"capsule {part['index']}: saved verification source changed")
+        if reusable:
             verified[destination.relative_to(agent_root)] = existing
             continue
-        data = source.read_bytes()
-        if part.get("sha256") and hashlib.sha256(data).hexdigest() != part["sha256"]:
-            raise ValueError(f"capsule {part['index']}: saved verification source changed")
         original = data.decode("utf-8")[manifest.get("segment_offset", 0):].encode("utf-8")
         digest = hashlib.sha256(original).hexdigest()
         if part.get("segment_sha256", digest) != digest:
@@ -228,20 +236,49 @@ def razor_instructions(targets: tuple[Path, ...], *, repair: bool = False) -> st
     )
 
 
+def _stage_active_context(capsule, index, source, destination, expected, *, share_verified_bytes):
+    if share_verified_bytes:
+        source = safe_target(capsule, source.relative_to(capsule))
+        try:
+            size = source.stat().st_size
+        except FileNotFoundError:
+            raise ValueError(f"capsule {index}: saved context changed or is missing") from None
+        if size <= _MAX_BUFFERED_CONTEXT_BYTES:
+            check_cancelled()
+            with source.open("rb") as stream:
+                data = stream.read(size + 1)
+            if len(data) <= size:
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise ValueError(f"capsule {index}: saved context changed or is missing")
+                destination.write_bytes(data)
+                return data
+    if expected and target_hash(source) != expected:
+        raise ValueError(f"capsule {index}: saved context changed or is missing")
+    shutil.copyfile(source, destination)
+    return None
+
+
 def stage_migration_capsule(unit, capsule, manifest, agent_root, relative_targets, index,
                              context_path, capsule_count, material_instructions, *,
                              resume_first_capsule, expected_capsule_hashes):
     """保存カプセルを照合し、対象範囲と完了記録の指示を準備する。"""
-    agent_context = agent_root / ".migration-context.md"
     part = manifest["parts"][index - 1]
     expected = expected_capsule_hashes[index - 1] if expected_capsule_hashes is not None else part.get("sha256")
-    if expected and target_hash(Path(context_path)) != expected:
-        raise ValueError(f"capsule {index}: saved context changed or is missing")
-    shutil.copyfile(context_path, safe_target(agent_root, Path(agent_context.name)))
+    multiple = len(manifest["parts"]) > 1
+    source = Path(context_path)
+    agent_context = safe_target(agent_root, Path(".migration-context.md"))
+    verified_context = _stage_active_context(
+        capsule, index, source, agent_context, expected,
+        share_verified_bytes=(multiple and bool(expected) and expected == part.get("sha256")
+                              and part["index"] == index and source == Path(part["path"])
+                              and source.is_absolute() and source.is_relative_to(capsule)),
+    )
     source_instruction = ""
     verified_sources = {}
-    if len(manifest["parts"]) > 1:
-        verified_sources = stage_source_excerpts(capsule, manifest, agent_root, through_capsule=index)
+    if multiple:
+        verified_sources = stage_source_excerpts(
+            capsule, manifest, agent_root, through_capsule=index, verified_context=verified_context,
+        )
         source_instruction = (
             "For checking accumulated data, `.migration-materials/source-*.md` contains the exact assigned "
             "excerpts from segment 1 through this segment, in filename order. Use only the assigned source "
