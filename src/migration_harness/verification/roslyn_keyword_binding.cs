@@ -25,7 +25,15 @@ internal static partial class Program
             }
             if (node is VariableDeclarationSyntax variable && variable.Type.Span.Contains(token.Span))
                 path.Add("declared-type:" + JsonSerializer.Serialize(variable.Variables.Select(v => v.Identifier.ValueText)));
-            if (!cache.TryGetValue(node, out var part)) cache[node] = part = KeywordScopePart(node);
+            if (!cache.TryGetValue(node, out var part))
+            {
+                if (node is AnonymousFunctionExpressionSyntax callback)
+                {
+                    IndexKeywordCallbacks(callback, cache);
+                    part = cache[node];
+                }
+                else cache[node] = part = KeywordScopePart(node);
+            }
             if (part.Binding is null) continue;
             if (part.Retainer is not null) blockRetainers.Add((path.Count, part.Retainer));
             path.Add(part.Binding);
@@ -48,6 +56,45 @@ internal static partial class Program
         // An inserted or deleted sibling makes an anonymous scope's ordinal insufficient on its own.
         var content = SHA256.HashData(Encoding.UTF8.GetBytes(KeywordHeader(node)));
         return ($"{ordinal}/{siblings?.Count() ?? 1}:{shape}", $"{ordinal}:scope-content:" + Convert.ToHexString(content));
+    }
+
+    private static bool IsCallbackOwner(SyntaxNode node) => node is BlockSyntax or SwitchSectionSyntax
+        or AnonymousFunctionExpressionSyntax or VariableDeclaratorSyntax or LocalFunctionStatementSyntax
+        or CompilationUnitSyntax or MemberDeclarationSyntax and not GlobalStatementSyntax;
+
+    private static void IndexKeywordCallbacks(AnonymousFunctionExpressionSyntax callback,
+        Dictionary<SyntaxNode, (string? Binding, string? Retainer)> cache)
+    {
+        var owner = callback.Ancestors().First(IsCallbackOwner);
+        var callbacks = owner.DescendantNodes(node => node == owner || !IsCallbackOwner(node))
+            .OfType<AnonymousFunctionExpressionSyntax>();
+        foreach (var group in callbacks.GroupBy(node => CallbackSite(node, owner)))
+        {
+            // Repeated indistinguishable calls must keep both their order and their count.
+            var ordinal = 0;
+            foreach (var node in group)
+                cache[node] = ($"callback:{ordinal++}/{group.Count()}:{group.Key}", null);
+        }
+    }
+
+    private static string CallbackSite(AnonymousFunctionExpressionSyntax callback, SyntaxNode owner)
+    {
+        var path = new List<string> { callback.Kind().ToString() };
+        for (SyntaxNode child = callback; child.Parent is { } parent && parent != owner; child = parent)
+        {
+            if (parent is ParenthesizedExpressionSyntax) continue;
+            var slot = (parent, child) switch
+            {
+                (BaseArgumentListSyntax list, ArgumentSyntax arg) => arg.NameColon is { } name
+                    ? "named:" + name.Name.Identifier.ValueText : "position:" + list.Arguments.IndexOf(arg),
+                (InvocationExpressionSyntax call, ArgumentListSyntax) => KeywordHeader(call.Expression),
+                (ObjectCreationExpressionSyntax creation, ArgumentListSyntax) => KeywordHeader(creation.Type),
+                (AssignmentExpressionSyntax assignment, _) when child == assignment.Right => KeywordHeader(assignment.Left),
+                _ => parent.ChildNodes().TakeWhile(sibling => sibling != child).Count().ToString(),
+            };
+            path.Add(parent.RawKind + ":" + slot);
+        }
+        return JsonSerializer.Serialize(path);
     }
 
     private static bool IsNamedKeywordMember(SyntaxToken token) => token.Parent switch
@@ -106,7 +153,6 @@ internal static partial class Program
         CatchClauseSyntax handler => "catch:" + KeywordTokens((handler.Declaration?.Type.DescendantTokens() ?? [])
             .Concat(handler.Filter?.DescendantTokens() ?? [])),
         FinallyClauseSyntax => "finally",
-        AnonymousFunctionExpressionSyntax => "anonymous:" + node.RawKind,
         SwitchExpressionArmSyntax arm => "arm:" + KeywordTokens(arm.Pattern.DescendantTokens()
             .Concat(arm.WhenClause?.DescendantTokens() ?? [])),
         QueryExpressionSyntax => "query",

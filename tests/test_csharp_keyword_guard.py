@@ -303,6 +303,37 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         self.apply_pair("Page.cs", before, after)
 
     @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_escaped_locals_cannot_move_between_callback_sites(self):
+        def page(body):
+            return f"class Page {{ void Use() {{ {body} }} }}"
+
+        callback = "() => { { int @event = 1; } }"
+        ordinary = callback.replace("@event", "value")
+        for template in (
+            "Call(FIRST, SECOND);", "Call(first: FIRST, second: SECOND);",
+            "Call(FIRST); Other(SECOND);", "Call(FIRST); Call(SECOND);",
+            "Outer(Inner(FIRST), Inner(SECOND));",
+            "Call(flag ? FIRST : SECOND);",
+        ):
+            with self.subTest(template=template):
+                before = template.replace("FIRST", callback).replace("SECOND", ordinary)
+                after = template.replace("FIRST", ordinary).replace("SECOND", callback)
+                self.apply_pair("Page.cs", page(before), page(after), r"Page.cs:1:.*@event")
+        for before, after in (
+            ("Call(() => { int @event = 1; }, NoOp);", "Call(NoOp, () => { int @event = 1; });"),
+            (f"Call({callback});", f"Other({callback});"),
+            (f"Call({callback});", f"Call({ordinary}); Call({callback});"),
+            (f"Call(first: {callback});", f"Call(second: {callback});"),
+        ):
+            with self.subTest(after=after):
+                self.apply_pair("Page.cs", page(before), page(after), r"Page.cs:1:.*@event")
+        before = f"Call(first: {callback}, second: {ordinary});"
+        self.apply_pair("Page.cs", page(before), page(before.replace("@event", "value")))
+        self.apply_pair("Page.cs", page(before), page("Prepare(); " + before.replace(
+            "int @event = 1;", "int @event = 3; api.@class();")))
+        self.apply_pair("Page.cs", page(before), page(f"Call(second: {ordinary}, first: {callback});"))
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
     def test_existing_razor_namespace_and_conditional_scopes_are_not_interchangeable(self):
         before = "@functions {\nclass A { int @event = 1; }\nclass B {}\n}\n"
         after = "@functions {\nclass A { int normal = 1; }\nclass B { int @event = 1; }\n}\n"
@@ -319,12 +350,21 @@ class CSharpKeywordGuardTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
     def test_another_type_blocks_the_whole_normal_adoption_batch(self):
+        self.check_atomic_rejection(b"class A { int @event = 1; }\nclass B {}",
+                                    b"class A { int oldValue = 1; }\nclass B { int @event = 1; }", 2)
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_another_callback_blocks_the_whole_normal_adoption_batch(self):
+        before = (b"class Page { static void Call(System.Action first, System.Action second) {}\n"
+                  b"static void Use() { Call(\n() => { { int @event = 1; } },\n"
+                  b"() => { { int original = 2; } }); } }")
+        after = before.replace(b"@event", b"normal").replace(b"original = 2", b"@event = 1")
+        self.check_atomic_rejection(before, after, 4)
+
+    def check_atomic_rejection(self, before, after, line):
         versions = {
             "Good.cs": (b"class Good {}", b"class Good { int valid; }"),
-            "Page.cs": (
-                b"class A { int @event = 1; }\nclass B {}",
-                b"class A { int oldValue = 1; }\nclass B { int @event = 1; }",
-            ),
+            "Page.cs": (before, after),
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -336,7 +376,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
                 (agent / name).write_bytes(codecs.BOM_UTF8 + after)
             hashes = {name: sha256_file(worktree / name) for name in versions}
             record = {"targets": list(versions), "target_hashes": hashes.copy()}
-            with self.assertRaisesRegex(ValueError, r"Page.cs:2:.*@event"):
+            with self.assertRaisesRegex(ValueError, fr"Page.cs:{line}:.*@event"):
                 apply_agent_targets(agent, worktree, tuple(map(Path, versions)), hashes, record, root / "run.json")
             self.assertNotIn("target_apply_pending", record)
             for name, (before, after) in versions.items():
