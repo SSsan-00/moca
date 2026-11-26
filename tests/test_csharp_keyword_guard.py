@@ -40,7 +40,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         with patch.object(csharp_keyword_guard, "_prepare_tool", side_effect=OSError("no SDK")):
             self.apply_pair("Page.cs", "class Page {}", "class Page { int @event; }", "予約語の確認を完了できません")
 
-    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 or 10 SDK")
     def test_csharp_declarations_are_blocked_but_contract_references_and_old_names_are_not(self):
         before = 'class Page { int @event = 1; }'
         self.apply_pair("Page.cs", before, 'class Page { int @event = 2; const string Example = "@class"; }')
@@ -56,10 +56,43 @@ class CSharpKeywordGuardTests(unittest.TestCase):
             "Page.cs", "class Page {}", 'class Page : IContract { int IContract.@event => 1; }',
         )
 
-    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 or 10 SDK")
     def test_razor_transitions_and_external_member_references_are_not_keyword_declarations(self):
         before = "@page\n@if (true) { <p>@Model.EventName</p> }\n"
         self.apply_pair("Page.cshtml", before, '@page\n@if (true) { <p>@(Model.@event)</p> }\n@* int @class; *@\n')
         self.apply_pair("Page.cshtml", before, "@page\n@{ int @event = 1; }\n", r"Page.cshtml:2:.*@event")
         self.apply_pair("Page.cshtml", before, "@page\n@functions { public int @event { get; set; } }\n",
                         r"Page.cshtml:2:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 or 10 SDK")
+    def test_normal_razor_control_flow_can_be_adopted(self):
+        before = "@page\n@using System\n@if (true) { <p>old</p> }\n"
+        after = (
+            "@page\n@using System\n@using System.Linq\n@if (true) { <p>new</p> }\n"
+            "@if (Model.Enabled) { <p>enabled</p> }\n"
+            "@foreach (var name in Model.Names) { <p>@name</p> }\n"
+            "@using (Html.BeginForm()) { <p>form</p> }\n"
+            '@{ const string Example = "@event"; /* int @class; */ }\n'
+            "@* int @event; *@\n"
+        )
+        self.apply_pair("Page.cshtml", before, after)
+        self.apply_pair("Page.cshtml", "@page\n", "@page\n@using System\n")
+        self.apply_pair("Page.cshtml", after, after.replace("enabled", "active").replace(
+            "<p>@name</p>", "<span>@name</span>"))
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 or 10 SDK")
+    def test_partial_razor_can_be_repaired_without_losing_original_declarations(self):
+        before = "@page\n@if (true) {\n    int @event = 1;\n"
+        self.apply_pair("Page.cshtml", before, before + "}\n")
+        self.apply_pair("Page.cshtml", before, before.replace("@event", "eventValue") + "}\n")
+        self.apply_pair("Page.cshtml", before, before + "    int @class = 2;\n", r"Page.cshtml:4:.*@class")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 or 10 SDK")
+    def test_razor_reports_original_column_with_unicode(self):
+        self.apply_pair("Page.cshtml", "@page\n",
+                        '@page\n@{ var example = "😀"; int @event = 1; }\n', r"Page.cshtml:2:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 or 10 SDK")
+    def test_unknown_source_location_does_not_allow_escaped_declarations(self):
+        self.apply_pair("Page.cshtml", "@page\n", "@page\n@{\n#line hidden\nint @event = 1;\n}\n",
+                        "予約語の確認を完了できません")

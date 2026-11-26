@@ -81,13 +81,13 @@ def reject_new_keyword_escapes(agent_root: Path, worktree: Path, pending: dict) 
         return
     revisions = [{"Path": name, "Text": text} for name, before, after in candidates for text in (before, after)]
     try:
-        reply = _run_editor(_prepare_tool(), "--escaped-keywords", json.dumps(revisions).encode("utf-8"), 6)
+        reply = _run_editor(_prepare_tool(keyword_guard=True), "--escaped-keywords", json.dumps(revisions).encode("utf-8"), 6)
         findings = json.loads(reply.stdout)
         if reply.returncode or not isinstance(findings, list) or len(findings) != len(revisions):
             raise ValueError("invalid compiler response")
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         names = ", ".join(name for name, _, _ in candidates)
-        raise ValueError(f"C#予約語の確認を完了できません。.NET 9 SDKを確認してください: {names}") from error
+        raise ValueError(f"C#予約語の確認を完了できません。.NET 9/10 SDKとRazorの構文を確認してください: {names}") from error
     for index, (name, before, after) in enumerate(candidates):
         if problem := next(_new_escapes(before, after, *findings[2 * index:2 * index + 2]), None):
             row, spelling = problem
