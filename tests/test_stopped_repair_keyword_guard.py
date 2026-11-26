@@ -56,12 +56,12 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         return {path: path.read_bytes() for root in (self.worktree, self.agent) for name in _BEFORE
                 if (path := root / name).is_file()}
 
-    def assert_rejected(self, name):
+    def assert_rejected(self, name, line=2):
         files = self.files()
         pending = self.record()["repair_pending"]
         result = self.resume()
         self.assertNotEqual(result["status"], "checker_succeeded")
-        self.assertRegex(result["error"].splitlines()[0], fr"{name}:2:.*@event")
+        self.assertRegex(result["error"].splitlines()[0], fr"{name}:{line}:.*@event")
         self.assertIn("作業ツリーを選び直す", result["error"])
         self.assertEqual(self.files(), files)
         self.assertEqual(self.record()["repair_pending"], pending)
@@ -139,3 +139,20 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
         self.assertEqual((self.worktree / "View.cshtml").read_bytes(), codecs.BOM_UTF8 + _AFTER["View.cshtml"])
         self.assertEqual((self.worktree / "View.cshtml.cs").read_bytes(), manual)
+
+    def test_conditional_keywords_in_a_stopped_draft_are_not_adopted(self):
+        conditional = b"class Original {\n#if NET9_0\n    int @event = 1;\n#endif\n}\n"
+        self.choose_draft({**_AFTER, "Example.cs": conditional})
+        self.assert_rejected("Example.cs", line=3)
+
+    def test_external_override_event_forms_can_be_adopted_from_a_stopped_draft(self):
+        proposed = {
+            **_AFTER,
+            "Example.cs": b"class Page : External { public override event System.Action @event; }\n",
+            "View.cshtml.cs": (b"class PageModel : External { public override event System.Action @event "
+                              b"{ add {} remove {} } }\n"),
+        }
+        self.choose_draft(proposed)
+        self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
+        for name, content in proposed.items():
+            self.assertEqual((self.worktree / name).read_bytes(), codecs.BOM_UTF8 + content)

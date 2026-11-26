@@ -11,7 +11,7 @@ _STOP_TIMEOUT = 5
 
 
 class JunieProcess(subprocess.Popen):
-    def __init__(self, command, *, kill_on_close=False, **kwargs):
+    def __init__(self, command, *, kill_on_close=False, retain_job_on_stop_error=False, **kwargs):
         job = WindowsJob(kill_on_close=True) if kill_on_close else WindowsJob()
         try:
             # Assign before the launcher can spawn, including when it is cmd.exe.
@@ -29,11 +29,16 @@ class JunieProcess(subprocess.Popen):
             job.close()
             raise
         self._job = job
+        self._retain_job_on_stop_error = retain_job_on_stop_error
 
     def stop(self):
         deadline = time.monotonic() + _STOP_TIMEOUT
         try:
             self._job.stop(deadline)
-            return self.wait(timeout=max(0, deadline - time.monotonic()))
-        finally:
-            self._job.close()
+            result = self.wait(timeout=max(0, deadline - time.monotonic()))
+        except BaseException:
+            if not self._retain_job_on_stop_error:
+                self._job.close()
+            raise
+        self._job.close()
+        return result

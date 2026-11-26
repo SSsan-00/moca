@@ -20,7 +20,7 @@
 - Junieの終了未確認は、使用量保存など別の後始末エラーの `__cause__` / `__context__` に含まれていても上位へ伝える。ビルド修正・チェッカー修正のどちらでも、修正枠の予約を保持して未完了の試行を履歴へ追加せず、安全を確認した利用者の明示的な再開を待つ。終了未確認の下書きの採用、後続工程、通常の自動再試行は止める。
 - 終了未確認後の保留はRun単位にする。履歴保存が失敗している間は同じRunの依頼を起動せず、回復時もまず失敗記録を保存してから保留を解除する。別Runの処理は不必要に止めない。
 - ジョブの終了時や起動直前に共有キューの保存が失敗した場合、会話スレッドの巡回で再試行する。障害が続く間は間隔を1秒から最大8秒まで広げる。対象Runの会話履歴の保存を待たず、共有キューが回復すれば空き枠にFIFO順で別Runを割り当てる。起動印を保存できなかったジョブは、待機位置と画面の待機状態を保持する。
-- 完了判定は対象版と必要な検証の記録に加え、すべてのPHP範囲に有効な確認または理由付き除外があることを要求する。移行先版が変わったレビューは再確認が必要。
+- 台帳の「検証済み」は、空でない全カプセルが完了し、現在の対象版に対するビルドと設定済みのチェッカー・検証スクリプトが有効な場合に表示する。PHP範囲ごとの確認・除外は完了条件ではなく、各範囲の意味上の正しさは保証しない。チェッカーの指摘を理由付きで承認する操作は別であり、承認が現在の対象版で有効な場合はチェッカーの完了条件を満たせる。
 
 Junie のセッションは `_run_session()` がプロセス、資源、終了確認をまとめて管理します。対話と ACP は完了記録と対象がそろうと早期終了でき、非対話は自然終了を待ちます。ACP の送信期限と追加指示の受理・完了は別に確認されます。終了 observer は子プロセス群の終了確認後に呼び、後始末で残った使用量を回収します。
 
@@ -56,7 +56,7 @@ HTTP エディタは取得時に Run ID と表示版を照合します。同じ�
 | 停止・通常失敗・保存障害の分離 | [test_junie_conversation.py](../tests/test_junie_conversation.py): `test_wrapped_unconfirmed_stop_blocks_build_repair_followup`、`test_wrapped_unconfirmed_stop_blocks_checker_repair_followup`、`test_ordinary_repair_cleanup_failure_allows_waiting_build`、`test_stop_fence_retries_failed_editor_write_and_keeps_other_run_available`、`test_stop_fence_survives_restart_from_saved_block`、`test_stop_fence_survives_restart_from_running_job_when_queue_write_also_fails` |
 | 実子プロセスの終了確認 | [test_junie_process.py](../tests/test_junie_process.py): `test_natural_launcher_exit_confirms_no_late_writes_and_preserves_an_unrelated_process`、`test_connection_retry_starts_only_after_the_previous_child_exits`、`test_unconfirmed_exit_blocks_result_adoption_and_retry`、`test_windows_batch_launcher_owns_descendants_after_it_exits` |
 | 並行Runと同時編集 | [test_parallel_dashboard.py](../tests/test_parallel_dashboard.py): `test_five_workers_queue_stop_isolation_and_resume`、`test_same_target_runs_keep_editor_files_php_and_prompts_separate`。 [test_junie_conversation.py](../tests/test_junie_conversation.py): `test_razor_pair_verifies_both_saved_targets_while_another_run_builds` |
-| 台帳とレビューの版照合 | [test_migration_ledger.py](../tests/test_migration_ledger.py): `test_keeps_review_reason_and_flags_stale_after_edit`、`test_anchor_usage_keeps_reviews_written_by_another_cli`、`test_completion_requires_verification_record_but_no_worktree_fingerprint` |
+| 台帳の完了条件と版照合 | [test_migration_ledger.py](../tests/test_migration_ledger.py): `test_completion_requires_verification_record_but_no_worktree_fingerprint`、`test_expected_file_change_deletion_and_legacy_receipt_require_reverification`、`test_ledger_returns_all_current_operator_notes_separately_without_changing_completion` |
 
 横断ケースはHTTP受付・RunManager・保存と再読込・workflowを通す。Junieや.NETの実サービスは置換する統合テストがあるため、実環境の検証結果とは区別する。外部プロセスの停止は、WindowsのJob Objectでランチャーとその子孫を管理し、実プロセスを使ったテストで確認する。
 

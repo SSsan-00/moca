@@ -736,6 +736,158 @@ end_line = 1
         self.assertIsNone(self.workspace.worker)
         self.assertEqual(self.config_path.read_bytes(), original)
 
+    def test_failed_stop_retains_the_owned_process_until_retry_confirms_exit(self):
+        from migration_harness.junie import junie_cli
+
+        script = """
+import json, sys, time
+from pathlib import Path
+mode = sys.argv[1]
+def send(**message):
+    print(json.dumps(message), flush=True)
+for raw in sys.stdin:
+    request = json.loads(raw)
+    method, key = request.get("method"), request.get("id")
+    if method == "initialize":
+        if mode == "initialize":
+            send(id=key, error={"code": -32603, "message": "fixture initialization failed"})
+        else:
+            send(id=key, result={"protocolVersion": 1})
+    elif method == "session/new":
+        send(id=key, result={"sessionId": "rule-fixture"})
+    elif method == "session/prompt":
+        if mode == "stop":
+            Path("prompt-received").touch()
+        elif mode == "response":
+            send(id=key, result={"stopReason": "refusal"})
+        else:
+            send(method="session/update", params={"sessionId": "rule-fixture", "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text",
+                    "text": '{"message":"fixture answer","unresolved":[]}'}}})
+            send(id=key, result={"stopReason": "end_turn"})
+time.sleep(20)
+"""
+        for mode in ("stop", "initialize", "initial-write", "response"):
+            with self.subTest(mode=mode):
+                original = self.config_path.read_bytes()
+                draft, other = self.workspace.start(), self.workspace.start()
+                workspace = self.workspace.draft(draft["id"]) / "junie"
+                may_stop = Event()
+                launched = []
+                real_stop = junie_cli._close_junie
+                real_request = RuleChat.request
+                real_close = RuleChat.close
+
+                def failure():
+                    raise junie_cli.JunieStopError("fixture owned process did not stop")
+
+                def launch(_command, **options):
+                    self.assertTrue(options.pop("owned") and options["kill_on_close"]
+                                    and options["retain_job_on_stop_error"])
+                    process_type = junie_cli.JunieProcess if os.name == "nt" else subprocess.Popen
+                    if os.name != "nt":
+                        options.pop("kill_on_close")
+                        options.pop("retain_job_on_stop_error")
+                    process = process_type([sys.executable, "-u", "-c", script, mode if not launched else "answer"], **options)
+                    if os.name == "nt":
+                        stop_job = process._job.stop
+                        process._job.stop = lambda deadline: stop_job(deadline) if may_stop.is_set() else failure()
+                    launched.append(process)
+                    return process
+
+                def close_process(process):
+                    if os.name == "nt":
+                        return real_stop(process)
+                    if not may_stop.is_set():
+                        failure()
+                    if process.poll() is None:
+                        process.terminate()
+                    return process.wait(timeout=5)
+
+                def request(chat, key, method, **params):
+                    if mode == "initial-write" and len(launched) == 1 and method == "initialize":
+                        raise OSError("fixture initial ACP write failed")
+                    return real_request(chat, key, method, **params)
+
+                def close_acp(chat):
+                    real_close(chat)
+                    raise OSError("unrelated ACP pipe cleanup error")
+
+                with (patch.object(junie_cli, "_launch_process", side_effect=launch),
+                      patch.object(junie_cli, "_close_junie", side_effect=close_process),
+                      patch.object(RuleChat, "request", request), patch.object(RuleChat, "close", close_acp)):
+                    try:
+                        self.send(draft, "message", text="first turn")
+                        worker = self.workspace.worker
+                        if mode == "stop":
+                            received = workspace / "prompt-received"
+                            deadline = time.monotonic() + 5
+                            while not received.is_file() and time.monotonic() < deadline:
+                                time.sleep(0.02)
+                            self.assertTrue(received.is_file())
+                            self.send(draft, "stop")
+                        if worker is not None:
+                            worker.join(8)
+                        self.assertIsNone(self.workspace.worker)
+                        self.assertIs(self.workspace.chat.process, launched[0])
+                        self.assertIsNone(launched[0].poll())
+                        held = self.workspace.snapshot(draft["id"])
+                        self.assertEqual(held["live"]["status"], "stop_unconfirmed")
+                        self.assertIn("fixture owned process did not stop", held["stop_error"])
+                        self.assertEqual(self.workspace.snapshot()["stop_error"], held["stop_error"])
+                        self.assertEqual(self.workspace.snapshot(other["id"])["stop_error"], held["stop_error"])
+                        for data, intent, fields in (
+                            (held, "message", {"text": "unsafe retry"}),
+                            (held, "model", {"model": "other", "effort": "medium"}),
+                            (held, "apply", {"confirmed": True}),
+                            (held, "archive", {"confirmed": True}),
+                            (other, "message", {"text": "other draft"}),
+                            (held, "retry-stop", {}),
+                        ):
+                            with self.assertRaisesRegex(ValueError, "終了を確認できません"):
+                                self.send(data, intent, **fields)
+                        with self.assertRaisesRegex(ValueError, "終了を確認できません"):
+                            self.workspace.action({"action": "start"}, None)
+                        self.assertEqual(len(launched), 1)
+                        self.assertEqual(self.workspace.snapshot(draft["id"])["messages"], held["messages"])
+                        self.assertEqual(self.config_path.read_bytes(), original)
+                        self.assertIsNone(launched[0].poll())
+
+                        may_stop.set()
+                        resumed = self.send(held, "retry-stop")
+                        self.assertIsNotNone(launched[0].poll())
+                        self.assertNotIn("stop_error", resumed)
+                        self.assertIsNone(self.workspace.chat)
+                        self.send(resumed, "message", text="after confirmed stop")
+                        worker = self.workspace.worker
+                        if worker is not None:
+                            worker.join(8)
+                        self.assertIsNone(self.workspace.worker)
+                        self.assertEqual(len(launched), 2)
+                        self.assertEqual(self.workspace.snapshot(draft["id"])["messages"][-1]["text"], "fixture answer")
+                    finally:
+                        may_stop.set()
+                        self.workspace.close()
+                        for process in launched:
+                            if process.poll() is None:
+                                close_process(process)
+
+    def test_apply_does_not_change_config_when_closing_idle_chat_fails(self):
+        class Chat:
+            def shutdown(self):
+                raise OSError("fixture cleanup failure")
+
+        before = self.config_path.read_bytes()
+        preview = self.send(self.workspace.start(), "preview")
+        self.workspace.active_id = preview["id"]
+        with patch.object(self.workspace, "chat", Chat()):
+            with self.assertRaisesRegex(ValueError, "終了を確認できません"):
+                self.send(preview, "apply", confirmed=True, preview=preview["preview"]["token"])
+            self.assertIn("fixture cleanup failure", self.workspace.snapshot()["stop_error"])
+            self.assertIsInstance(self.workspace.chat, Chat)
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertNotIn("applied", self.workspace.snapshot(preview["id"]))
+
     def test_duplicate_chat_keys_hold_preview_and_apply_until_valid_review(self):
         original = "タイムアウトは30秒\r\nタイムアウトは60秒\r\n".encode("utf-8")
         source = self.app / "original.md"

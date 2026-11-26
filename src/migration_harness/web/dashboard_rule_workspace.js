@@ -8,7 +8,7 @@
     node("demo-note").hidden = false;
     node("archive").hidden = true;
   }
-  let draft, source = "new", busy = false, timer, token, uploadedBytes;
+  let draft, source = "new", busy = false, timer, token, uploadedBytes, stopError;
   let registeredRequest = 0, draftRequest = 0, sourceRequest = 0, editor;
   const selectedSources = new Map();
   const localEdits = new Map();
@@ -19,11 +19,17 @@
   const history = node("history");
   const updateFeed = bindJunieChat(node("chat-feed"), node("chat-latest"), composer, input, send);
   const syncSend = () => {
-    send.disabled = busy || !draft || draft.live?.status === "running" || !input.value.trim();
+    send.disabled = busy || !!stopError || !draft || draft.live?.status === "running" || !input.value.trim();
   };
   let models = [...document.querySelector("#settings-junie-model").options].filter(option => option.value)
     .map(option => ({id: option.value, name: option.text, ...(demo ? {efforts: option.value === "junie-lite" ? ["none"] : ["low", "medium", "high"]} : {})}));
   const status = text => { node("status").textContent = text; };
+  function showStopError(error) {
+    stopError = error;
+    node("stop-error").hidden = !error;
+    node("stop-error").textContent = error || "";
+    node("retry-stop").hidden = !error;
+  }
   function renderDiff(diff) {
     const output = node("text-diff");
     if (!diff) {
@@ -73,12 +79,12 @@
       node("effort").add(previous);
     }
     node("effort").value = effort;
-    const disabled = !draft || busy || draft.live?.status === "running";
+    const disabled = !draft || busy || !!stopError || draft.live?.status === "running";
     node("model").disabled = disabled;
     node("effort").disabled = disabled || !selected || !efforts.length;
     node("model-status").textContent = "";
   }
-  const canEditSource = () => hasDraft() && !busy && draft.live?.status !== "running"
+  const canEditSource = () => hasDraft() && !busy && !stopError && draft.live?.status !== "running"
     && editor?.id === draft.id && editor.source === source;
   const editKey = (id, source) => JSON.stringify([id, source]);
   const unsaved = file => file.pending || file.text !== file.savedText || file.name !== file.savedName || file.bytes !== file.savedBytes;
@@ -95,7 +101,11 @@
     node("name").readOnly = source !== "new" || !!editor?.pending;
     node("discard-source").hidden = !editor || !unsaved(editor);
     node("accept").disabled = !editable || !draft?.proposal;
-    for (const id of ["sources", "drafts", "start"]) node(id).disabled = busy;
+    for (const id of ["sources", "drafts", "retry-stop"]) node(id).disabled = busy;
+    node("start").disabled = busy || !!stopError;
+    for (const id of ["optimize", "save-classification", "preview", "apply"]) {
+      node(id).disabled = busy || !!stopError || draft?.live?.status === "running";
+    }
   }
   const request = async (query, action) => {
     if (demo) return demo(query, action);
@@ -109,6 +119,7 @@
   function display(data) {
     const was = draft?.id;
     draft = data;
+    if (data) showStopError(data.stop_error);
     if (!hasDraft() || was !== data.id) {
       ++sourceRequest;
       editor = null;
@@ -142,9 +153,6 @@
     syncSend();
     node("unresolved").textContent = data.unresolved.join("／");
     node("stop").hidden = !running;
-    for (const id of ["optimize", "save-classification", "preview", "apply"]) {
-      node(id).disabled = running;
-    }
     const preview = data.preview;
     node("review").hidden = !preview;
     token = preview?.token;
@@ -219,7 +227,11 @@
     }
   }
   async function refresh() {
-    const {drafts} = await request({});
+    const {drafts, stop_error} = await request({});
+    showStopError(stop_error);
+    syncEditor();
+    renderModel();
+    syncSend();
     node("drafts").replaceChildren(new Option("選択してください", ""), ...drafts.map(item =>
       new Option(`${item.id.slice(0, 8)}（${item.files}件）`, item.id)));
     node("drafts").value = draft?.applied ? "" : draft?.id || "";
@@ -283,6 +295,12 @@
       const acceptedSource = action === "accept" ? draft?.proposal?.source : undefined;
       const result = await request(null, {action, id: was, revision, ...extra});
       if (result.archives) return showArchives(result.archives);
+      if (action === "retry-stop") {
+        showStopError(result.stop_error);
+        if (result.id) display(result);
+        status("Junieの終了を確認しました。相談を再開できます。");
+        return result;
+      }
       if (action === "edit" && (result.id !== was || result.accepted_edit?.id !== extra.save_id
           || !result.files.some(file => file.source === result.accepted_edit.source)))
         throw Error("下書きの保存を確認できません。もう一度保存してください。");
@@ -306,6 +324,9 @@
         rememberEditor();
       }
       status(error.message);
+      if (["start", "model", "apply"].includes(action)) {
+        try { showStopError((await request({})).stop_error); } catch {}
+      }
     } finally {
       busy = false;
       renderModel();
@@ -440,6 +461,7 @@
         && !window.confirm("提案対象のMarkdownには未保存の変更があります。変更を破棄して提案を採用しますか？")) return;
     return submit("accept");
   });
+  node("retry-stop").addEventListener("click", () => submit("retry-stop"));
   for (const action of ["stop", "preview"]) node(action).addEventListener("click", () => submit(action));
   node("apply").addEventListener("click", () => submit("apply", {preview: token, confirmed: true}));
   node("list-archive").addEventListener("click", async () => {

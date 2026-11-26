@@ -96,28 +96,40 @@ internal static partial class Program
         return 0;
     }
 
-    private static IEnumerable<object> EscapedKeywords(Target target)
+    private static object EscapedKeywords(Target target)
     {
         var original = SourceText.From(target.Text ?? "");
         RazorCSharpDocument? razor = target.Path.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase)
             ? RazorCode(target.Path, original.ToString()) : null;
         var generated = razor is null ? original : GetRazorGeneratedText(razor);
-        var parse = CSharpSyntaxTree.ParseText(generated, Options);
-        foreach (var token in parse.GetRoot().DescendantTokens())
+        var (roots, unparsed) = KeywordConditionRoots(generated);
+        var declarations = new List<object>();
+        var seen = new HashSet<int>();
+        foreach (var token in roots.SelectMany(root => root.DescendantTokens()))
         {
             if (!token.IsKind(SyntaxKind.IdentifierToken) || !token.Text.StartsWith('@')
                 || SyntaxFacts.GetKeywordKind(token.ValueText) == SyntaxKind.None || !IsDeclaration(token)) continue;
             var span = token.Span;
             if (razor is not null && !TryMapRazorSpan(razor, generated, original, span, out span)) continue;
+            if (!seen.Add(span.Start)) continue;
             var position = original.Lines.GetLinePosition(span.Start);
             var prefix = original.ToString(TextSpan.FromBounds(original.Lines[position.Line].Start, span.Start));
-            yield return new { text = token.Text, line = position.Line, column = prefix.EnumerateRunes().Count() };
+            declarations.Add(new { text = token.Text, line = position.Line, column = prefix.EnumerateRunes().Count() });
         }
+        int? uncheckedLine = null;
+        if (unparsed is int start)
+        {
+            var span = new TextSpan(start, 1);
+            uncheckedLine = razor is null || TryMapRazorSpan(razor, generated, original, span, out span)
+                ? original.Lines.GetLinePosition(span.Start).Line + 1 : 1;
+        }
+        return new { declarations, uncheckedLine };
     }
 
     private static bool IsDeclaration(SyntaxToken token) => token.Parent switch
     {
-        VariableDeclaratorSyntax node => token == node.Identifier,
+        VariableDeclaratorSyntax node => token == node.Identifier
+            && !(node.Parent?.Parent is EventFieldDeclarationSyntax field && field.Modifiers.Any(SyntaxKind.OverrideKeyword)),
         ParameterSyntax node => token == node.Identifier,
         PropertyDeclarationSyntax node => token == node.Identifier && node.ExplicitInterfaceSpecifier is null
                                           && !node.Modifiers.Any(SyntaxKind.OverrideKeyword),
