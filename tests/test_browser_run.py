@@ -1,11 +1,13 @@
 import ctypes
+import io
 import re
 import sys
 import unittest
+from contextlib import redirect_stdout
 from ctypes import wintypes
 from pathlib import Path
 
-from browser_run import run_browser
+from browser_run import print_browser_output, run_browser
 from ui_dependencies import node_executable
 
 
@@ -64,3 +66,10 @@ class BrowserRunnerTests(unittest.TestCase):
         script = Path(__file__).with_name("chromium_waits_test.mjs")
         result = run_browser([node_executable(self), "--test", str(script)], timeout=15)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_progress_log_does_not_fail_on_cp1252(self):
+        message = "[browser +2.00s] still waiting in editor: 診断の指摘なし\n"
+        with io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict") as terminal, redirect_stdout(terminal):
+            print_browser_output(message)
+            text = terminal.buffer.getvalue().decode("cp1252").replace("\r\n", "\n")
+        self.assertEqual(text, message.encode("cp1252", errors="backslashreplace").decode("cp1252"))

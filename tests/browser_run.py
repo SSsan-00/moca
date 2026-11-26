@@ -2,12 +2,18 @@ import subprocess
 import tempfile
 import time
 
+from migration_harness.execution import print_progress
 from migration_harness.windows_job import CREATE_SUSPENDED, WindowsJob
 
 
 def _read(stream):
     stream.seek(0)
     return stream.read().decode("utf-8", errors="replace")
+
+
+def print_browser_output(output):
+    if output:
+        print_progress(output.removesuffix("\n"))
 
 
 def run_browser(command, *, timeout):

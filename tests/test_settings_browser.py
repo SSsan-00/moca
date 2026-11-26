@@ -13,7 +13,7 @@ from threading import Thread
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from browser_run import run_browser
+from browser_run import print_browser_output, run_browser
 
 from migration_harness.config import load_config, target_paths
 from migration_harness.runs import (
@@ -272,7 +272,7 @@ max_bytes = 9007199254740993 # preserve this value
                             result = run_browser([*node_args, str(script), chrome, str(root / profile), *arguments],
                                                  timeout=deadline)
                             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                            print(result.stdout, end="", flush=True)
+                            print_browser_output(result.stdout)
                 self.assertEqual(view.actions.qsize(), 1)
                 self.assertEqual(view.actions.get_nowait()["action"], "resume")
             finally:
