@@ -95,6 +95,34 @@ class BuildReceiptCancellationTests(unittest.TestCase):
                 expected.update(json.dumps([name, hashlib.sha256(name.encode()).hexdigest()]).encode())
             self.assertEqual(build_receipt._fingerprint(root, (".git", "alpha/skip")), expected.hexdigest())
 
+    def test_fingerprint_rejects_a_link_even_to_the_same_bytes_inside_the_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            original = root / "original.dll"
+            original.write_bytes(b"same bytes")
+            linked = root / "linked.dll"
+            try:
+                linked.symlink_to(original)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"file symlink unavailable: {exc}")
+            with self.assertRaisesRegex(ValueError, "通常ファイル以外"):
+                build_receipt._fingerprint(root)
+
+    def test_fingerprint_changes_after_same_size_same_mtime_replacement(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            chosen = root / "成果物.dll"
+            chosen.write_bytes(b"old bytes")
+            previous = build_receipt._fingerprint(root)
+            timestamp = chosen.stat()
+            replacement = root / "altered.dll"
+            replacement.write_bytes(b"new bytes")
+            os.utime(replacement, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+            replacement.replace(chosen)
+            self.assertEqual(chosen.stat().st_size, timestamp.st_size)
+            self.assertEqual(chosen.stat().st_mtime_ns, timestamp.st_mtime_ns)
+            self.assertNotEqual(build_receipt._fingerprint(root), previous)
+
 
 class BuildReceiptCompatibilityTests(unittest.TestCase):
     def test_versionless_receipt_preserves_historical_shape_and_requires_both_fingerprints(self):

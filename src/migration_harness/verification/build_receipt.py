@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from stat import S_ISREG
 from time import monotonic
 from xml.etree import ElementTree
 
@@ -35,12 +36,13 @@ def _fingerprint(root: Path, excluded=(), *, label: str | None = None) -> str:
     while pending:
         check()
         parent = pending.pop()
-        relative = parent.relative_to(root)
+        relative = parent.relative_to(root).as_posix()
+        prefix = "" if relative == "." else relative + "/"
         directories, files = [], []
         with os.scandir(parent) as entries:
             for entry in entries:
                 check()
-                if (relative / entry.name).as_posix() in excluded:
+                if excluded and prefix + entry.name in excluded:
                     continue
                 (directories if entry.is_dir() else files).append(entry.name)
         for name in sorted(directories, reverse=True):
@@ -52,9 +54,9 @@ def _fingerprint(root: Path, excluded=(), *, label: str | None = None) -> str:
         for name in sorted(files):
             check()
             path = parent / name
-            if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):
+            if not S_ISREG(path.lstat().st_mode) or not path.resolve().is_relative_to(root):
                 raise ValueError("ビルド入力に通常ファイル以外があります。")
-            row = [path.relative_to(root).as_posix(), sha256_file(path, check=check)]
+            row = [prefix + name, sha256_file(path, check=check)]
             digest.update(json.dumps(row).encode("utf-8"))
     check_cancelled()
     return digest.hexdigest()
