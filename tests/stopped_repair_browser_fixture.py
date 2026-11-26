@@ -37,7 +37,8 @@ def stopped_repair_run(config, template, source_tree, phase):
     record_path = run / "run.json"
     record_path.write_text(json.dumps(record), encoding="utf-8")
     run_config = dict(config, build_project=None, checker_command=["fixture-checker"], max_repair_attempts=1)
-    body = b"class PartlyRepaired {}\n"
+    body = (b"class PartlyRepaired {}\n" if phase == "build"
+            else b"class PartlyRepaired {\n    int @event = 1;\n}\n")
     original = (worktree / targets[0]).read_bytes()
     calls = []
     expected = {"build": ["dotnet"], "checker": ["dotnet", "fixture-checker"]}[phase]
@@ -90,4 +91,17 @@ def resume_after_external_edit(config, run_id):
         junie.assert_not_called()
     assert result["status"] == "build_failed" and "復元計画を取り直して" in result["error"]
     assert target.read_bytes() == b"class EditedAfterSelection {}\n"
+    return json.loads((run_path / "run.json").read_bytes())
+
+def resume_with_blocked_keyword(config, run_id):
+    run_path, worktree, _, unit = workflow.load_saved_run(config, run_id)
+    targets = [worktree / target for target in target_paths(unit)]
+    original = [target.read_bytes() for target in targets]
+    with (patch.object(workflow, "run_process") as command,
+          patch.object(junie_cli, "run_interactive") as junie):
+        result = workflow.resume_with_junie(dict(config, checker_command=["fixture-checker"]), run_id)
+        command.assert_not_called()
+        junie.assert_not_called()
+    assert result["status"] == "checker_needs_review" and f"{targets[0].name}:2:" in result["error"]
+    assert [target.read_bytes() for target in targets] == original
     return json.loads((run_path / "run.json").read_bytes())

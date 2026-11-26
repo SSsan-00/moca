@@ -6,7 +6,7 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
       + "if (!response.ok) throw Error('Repair fixture failed: ' + response.status); return response.json();})");
   }
 
-  async function chooseVersion(choice, expectedWorktree) {
+  async function chooseVersion(choice, expectedWorktree, draft = "class PartlyRepaired {}\n") {
     assert.equal(await evaluate(field("recovery-draft") + ".hidden"), false);
     await evaluate(field("recovery-draft") + ".click()");
     await wait(field("recovery-dialog") + ".open && !!document.querySelector('#recovery-options details')");
@@ -14,7 +14,7 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
     await wait("document.querySelector('#recovery-options details')?.dataset.loaded === 'done'");
     const columns = await evaluate("Array.from(document.querySelectorAll('#recovery-options .recovery-previews > div'), "
       + "el => [el.querySelector('strong').textContent, el.querySelector('pre').textContent])");
-    assert.deepEqual(columns[0], ["停止時の下書き", "class PartlyRepaired {}\n"]);
+    assert.deepEqual(columns[0], ["停止時の下書き", draft]);
     assert.equal(columns[1][0], "現在の作業ツリー");
     if (expectedWorktree !== undefined) assert.equal(columns[1][1], expectedWorktree);
     else assert.notEqual(columns[1][1], columns[0][1]);
@@ -47,8 +47,15 @@ export async function checkStoppedRepairRecovery({evaluate, wait, field, restore
         await chooseVersion("worktree", "class EditedAfterSelection {}\n");
         await chooseVersion("draft", "class EditedAfterSelection {}\n");
       } else {
-        const original = await chooseVersion("worktree");
-        await chooseVersion("draft", original);
+        const draft = "class PartlyRepaired {\n    int @event = 1;\n}\n";
+        const original = await chooseVersion("worktree", undefined, draft);
+        await chooseVersion("draft", original, draft);
+        await send("fixture-stopped-repair-keyword");
+        await wait(field("recovery-reason") + ".textContent.includes('Example.cs:2:') && "
+          + field("recovery-next") + ".textContent.includes('復元する版を選び直すか')");
+        assert.match(await evaluate(field("recovery-reason") + ".textContent"), /@event/);
+        assert.equal(await evaluate(field("recovery-draft") + ".textContent"), "復元する版を選び直す");
+        await chooseVersion("worktree", original, draft);
       }
     }
   } finally {
