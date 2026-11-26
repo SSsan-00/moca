@@ -463,4 +463,4 @@ python -m unittest discover -s tests -p "test_browser_run.py" -v
 
 前半（エディター診断）90秒、後半（設定、ルール整理、実行タブ、デモなど）110秒の既存の親期限は別々に適用します。親で打ち切った場合は捕捉済みの標準出力・標準エラーと後始末までの実時間を記録し、テストが起動したプロセスだけ回収します。Chromium本体の終了通知が遅い場合も、親が所有するプロセス用Job内で終了を検証し、確認できなければ失敗とします。ナビゲーションや画面の検証が失敗した場合は、終了できても合格にしません。#263の当初の110秒超過と、後に報告されたルール下書き選択待ちが同じ原因とは断定しません。
 
-Windows の回帰テストは `conversation-editor`（会話と途中追加指示、HTTP エディタと .NET 9 診断、並行 Run、参考資料の追従）および Node.js・ブラウザーを使うテストを含む `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python バージョンごとの ID 集合、skip 理由、最長ジョブの実測を比較し、ジョブ名を変える場合は `.github/codex/issue.py` も更新します。
+Windows の回帰テストは `conversation-editor`（会話と途中追加指示、HTTP エディタと .NET 9 診断、並行 Run、参考資料の追従）、Node.js の VM 回帰とその他のテストを含む `remaining`、実ブラウザーの `chromium` の3分割を両 Python 版で独立した Windows ランナー上で並行実行します。各テスト ID は一つの分割に入り、必須 UI テストは担当する分割で成功しなければなりません。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python バージョンごとの ID 集合、skip 理由、最長ジョブの実測を比較し、ジョブ名を変える場合は `.github/codex/issue.py` も更新します。

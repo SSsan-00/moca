@@ -7,9 +7,11 @@ import tempfile
 import tomllib
 import unittest
 import uuid
+from collections import deque
 from contextlib import redirect_stdout
 from pathlib import Path
 from threading import Thread
+from time import perf_counter
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
@@ -247,10 +249,25 @@ max_bytes = 9007199254740993 # preserve this value
                     return post(handler)
                 handler.send_body(200, "application/json", b"{}")
 
-            server.RequestHandlerClass.do_POST = allow_fixture_resume
             token = "T" * 32
             server.junie_notifications.links[token] = RunNotice(run_id, "script_failed", "failed")
-            notification_url = f"http://127.0.0.1:{server.server_port}/junie-open/{token}"
+            notification_route = f"/junie-open/{token}"
+            notification_url = f"http://127.0.0.1:{server.server_port}{notification_route}"
+            requests = deque(maxlen=12)
+            labels = {notification_route: "notification", fixture_root: "dashboard"}
+
+            class BrowserFixtureHandler(server.RequestHandlerClass):
+                do_POST = allow_fixture_resume
+
+                def do_GET(self):
+                    label = labels.get(self.path.partition("?")[0])
+                    if label is not None:
+                        requests.append((label, "entered", perf_counter()))
+                    super().do_GET()
+                    if label is not None:
+                        requests.append((label, "returned", perf_counter()))
+
+            server.RequestHandlerClass = BrowserFixtureHandler
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
@@ -269,9 +286,16 @@ max_bytes = 9007199254740993 # preserve this value
                     )
                     for script, profile, arguments, deadline in checks:
                         with self.subTest(scenario=script.stem):
-                            result = run_browser([*node_args, str(script), chrome, str(root / profile), *arguments],
-                                                 timeout=deadline)
-                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            requests.clear()
+                            started = perf_counter()
+                            try:
+                                result = run_browser([*node_args, str(script), chrome, str(root / profile), *arguments],
+                                                     timeout=deadline)
+                                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            except AssertionError as exc:
+                                observed = "; ".join(f"{label} {event} +{at - started:.2f}s"
+                                                     for label, event, at in requests.copy())
+                                raise AssertionError(f"{exc}\nFixture HTTP: {observed or 'no navigation request'}") from None
                             print_browser_output(result.stdout)
                 self.assertEqual(view.actions.qsize(), 1)
                 self.assertEqual(view.actions.get_nowait()["action"], "resume")

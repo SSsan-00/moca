@@ -83,6 +83,17 @@ async function connectPage(debuggerUrl, deadline) {
   });
   await cdp("Runtime.enable", {}, Math.min(10_000, Math.max(1, deadline - performance.now())));
   await cdp("Page.enable", {}, Math.max(1, deadline - performance.now()));
+  // A DevTools connection can open while the initial renderer is still starting.
+  // Require a reply from the initial document before using this target.
+  while (performance.now() < deadline) {
+    const result = await cdp("Runtime.evaluate", {
+      expression: "location.href === 'about:blank' && document.readyState === 'complete'",
+      returnByValue: true,
+    }, Math.min(10_000, Math.max(1, deadline - performance.now())));
+    if (result.result?.value === true) return;
+    await pause(100);
+  }
+  throw new Error("Initial Chromium document did not become ready");
 }
 
 function waitForExit(chrome, timeout) {
@@ -177,28 +188,29 @@ export async function startBrowser(executable, profile) {
   throw new Error(`Chromium did not start:\n${failures.join("\n")}`);
 }
 
-function pageLoaded(connection) {
-  let dispose;
+export async function navigate(method, params) {
+  const connection = socket;
+  const observed = new Set();
+  const navigationEvents = new Set(["Page.frameStartedLoading", "Page.frameNavigated", "Page.loadEventFired"]);
+  let receive, timer, acknowledged = false;
   const loaded = new Promise((resolve, reject) => {
-    const receive = event => {
-      if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
+    receive = event => {
+      const {method} = JSON.parse(event.data);
+      if (navigationEvents.has(method)) observed.add(method);
+      if (method === "Page.loadEventFired") resolve();
     };
-    const timer = setTimeout(() => reject(new Error("Browser page did not finish loading")), 15_000);
-    dispose = () => {
-      clearTimeout(timer);
-      connection.removeEventListener("message", receive);
-    };
+    timer = setTimeout(() => reject(new Error("Browser page did not finish loading")), 15_000);
     connection.addEventListener("message", receive);
   });
-  return {loaded, dispose};
-}
-
-export async function navigate(method, params) {
-  const {loaded, dispose} = pageLoaded(socket);
   try {
-    await Promise.all([loaded, cdp(method, params)]);
+    await Promise.all([loaded, cdp(method, params).then(() => { acknowledged = true; })]);
+  } catch (error) {
+    trace("navigation: command acknowledged=" + acknowledged + "; socket readyState=" + connection.readyState
+      + "; events=" + ([...observed].join(",") || "none"));
+    throw error;
   } finally {
-    dispose();
+    clearTimeout(timer);
+    connection.removeEventListener("message", receive);
   }
 }
 export async function evaluate(expression, userGesture = false) {
