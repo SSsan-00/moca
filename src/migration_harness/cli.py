@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
+from os import environ
 from pathlib import Path
 
 if sys.platform != "win32":
@@ -11,6 +12,41 @@ if sys.platform != "win32":
 
 from migration_harness.config import load_config, target_paths
 from migration_harness.errors import format_error
+
+
+_MOCA_MARK = """    ╱╲      ◣
+   ╱  ╲    ╱█▶  MoCA
+  ╱    ╲──╯ ◤"""
+_MOCA_MARK_ASCII = r"""    /\      |\
+   /  \    /|>  MoCA
+  /    \__/ |/"""
+
+
+def _is_console(stream) -> bool:
+    if stream is None or not stream.isatty():
+        return False
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(stream.fileno()))
+    mode = wintypes.DWORD()
+    return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+
+
+def _show_moca_banner() -> None:
+    try:
+        if not all(_is_console(stream) for stream in (sys.stdin, sys.stdout, sys.stderr)):
+            return
+        banner = _MOCA_MARK
+        try:
+            banner.encode(sys.stderr.encoding or "ascii")
+        except (UnicodeEncodeError, LookupError):
+            banner = _MOCA_MARK_ASCII
+        print(banner, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # 起動中に端末が切断されても、バナーだけで起動を止めない。
+        pass
 
 
 def _parse_args() -> argparse.Namespace:
@@ -59,6 +95,9 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    launched_by_moca = environ.pop("MOCA_LAUNCHER_BANNER", None) == "1"
+    if launched_by_moca and args.command == "dashboard" and args.open_browser:
+        _show_moca_banner()
     try:
         try:
             config = load_config(args.config)

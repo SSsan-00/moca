@@ -14,5 +14,6 @@ if not "%~1"=="" (
   echo Usage: moca
   exit /b 2
 )
+set "MOCA_LAUNCHER_BANNER=1"
 "%HARNESS%" dashboard --config "%CONFIG%" --open-browser
 exit /b %errorlevel%
