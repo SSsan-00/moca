@@ -31,6 +31,8 @@ export function beginPhase(name) {
 }
 export async function eventually(read, label, attempts = 100) {
   const start = performance.now();
+  const stalled = setTimeout(() => trace("still waiting in " + phase + ": " + label), 2_000);
+  stalled.unref();
   try {
     for (let index = 0; index < attempts; index++) {
       polls++;
@@ -38,8 +40,9 @@ export async function eventually(read, label, attempts = 100) {
       if (value) return value;
       await pause(100);
     }
-    throw new Error("Timed out: " + label);
+    throw new Error("Timed out: " + label + " (waited " + seconds(performance.now() - start) + ")");
   } finally {
+    clearTimeout(stalled);
     conditionMs += performance.now() - start;
   }
 }
@@ -198,7 +201,7 @@ export async function evaluate(expression, userGesture = false) {
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
   return result.result.value;
 }
-export const wait = (expression, attempts) => eventually(async () => {
+export const wait = (expression, attempts, label = expression) => eventually(async () => {
   try {
     return await evaluate(expression);
   } catch (error) {
@@ -206,7 +209,7 @@ export const wait = (expression, attempts) => eventually(async () => {
     if (!/Execution context was destroyed|Cannot find context|Inspected target navigated or closed/.test(error.message)) throw error;
     return false;
   }
-}, expression, attempts);
+}, label, attempts);
 
 export function reportBrowserFailure(error) {
   trace("failed " + phase + "; last completed: " + completed);

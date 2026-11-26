@@ -19,6 +19,7 @@ CONVERSATION_EDITOR_MODULES = {
 }
 
 REQUIRED_UI = {
+    "test_browser_run.BrowserRunnerTests.test_rule_draft_waits_and_diagnostics",
     "test_settings_browser.SettingsBrowserTests.test_settings_round_trip_in_chromium",
     "test_editor_run_isolation.EditorRunIsolationTests.test_same_file_in_multiple_runs_with_delayed_responses",
     "test_parallel_demo.ParallelDemoTests.test_five_workers_fifo_resume_and_cancellation",

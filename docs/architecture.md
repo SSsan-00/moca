@@ -449,6 +449,18 @@ Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合�
 
 保存済み Run が必要なテストでは `tests/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。
 
-CI では Windows の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモの3件が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
+CI では Windows の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモ、ブラウザーの画面同期・待機診断が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
+
+Chromiumの段階ログは開始・完了・実時間を記録します。条件待ちが2秒を超えると画面と待機ラベルを出すので、親の期限超過時も直前に何を待っていたかを区別できます。ルール下書きの開始は、ボタンが操作可能なことを確認した同じ評価内で一度だけ押し、新しい下書きと編集欄の準備を待ちます。タイムアウトした場合は選択・ボタン・状態表示を失敗理由に含めますが、操作は再送しません。
+
+Windowsでの再現・診断:
+
+```powershell
+$env:HARNESS_REQUIRE_UI = "1"
+python -m unittest discover -s tests -p "test_settings_browser.py" -v
+python -m unittest discover -s tests -p "test_browser_run.py" -v
+```
+
+前半（エディター診断）90秒、後半（設定、ルール整理、実行タブ、デモなど）110秒の既存の親期限は別々に適用します。親で打ち切った場合は捕捉済みの標準出力・標準エラーと後始末までの実時間を記録し、テストが起動したプロセスだけ回収します。#263の当初の110秒超過と、後に報告されたルール下書き選択待ちが同じ原因とは断定しません。
 
 Windows の回帰テストは `conversation-editor`（会話と途中追加指示、HTTP エディタと .NET 9 診断、並行 Run、参考資料の追従）および Node.js・ブラウザーを使うテストを含む `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python バージョンごとの ID 集合、skip 理由、最長ジョブの実測を比較し、ジョブ名を変える場合は `.github/codex/issue.py` も更新します。

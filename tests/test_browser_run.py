@@ -3,8 +3,10 @@ import re
 import sys
 import unittest
 from ctypes import wintypes
+from pathlib import Path
 
 from browser_run import run_browser
+from ui_dependencies import node_executable
 
 
 _WAIT_OBJECT_0 = 0
@@ -57,3 +59,8 @@ class BrowserRunnerTests(unittest.TestCase):
     def test_success_keeps_stdout(self):
         result = run_browser([sys.executable, "-c", "print('browser finished')"], timeout=5)
         self.assertEqual((result.returncode, result.stdout.strip(), result.stderr), (0, "browser finished", ""))
+
+    def test_rule_draft_waits_and_diagnostics(self):
+        script = Path(__file__).with_name("chromium_waits_test.mjs")
+        result = run_browser([node_executable(self), "--test", str(script)], timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
