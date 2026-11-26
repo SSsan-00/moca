@@ -112,6 +112,29 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
         self.assertIn("rebuild_edited_target", [a.get("applied") for a in self.record()["script_advisories"]])
 
 
+    def test_build_through_still_reviews_current_pending_output_and_can_repair_it(self):
+        self.configure("after_build", first="T001 Example.cs:1 warning: class Original uses deprecated API")
+        self.config["max_repair_attempts"] = 1
+        informational = '{"verdict":"informational","evidence_lines":[1]}'
+        problem = '{"verdict":"problem","evidence_lines":[1]}'
+        passed = '{"verdict":"passed","evidence_lines":[1]}'
+        with (self.controlled_commands([KeyboardInterrupt, informational, problem, passed]) as (builds, judge),
+              patch.object(workflow.junie_cli, "require_interactive_cli"),
+              patch.object(workflow, "_attempt_repair") as repair):
+            with self.assertRaises(workflow.RunScriptError):
+                self.resume_run()
+            plan = workflow.plan_build_resume(self.config, self.run_id, through_completion=True)
+            with self.assertRaisesRegex(workflow.RunScriptError, "needs operator review"):
+                workflow.resume_with_junie(self.config, self.run_id, verification_request={**plan, "id": "review"})
+            self.assertEqual((len(builds), judge.call_count), (1, 2))
+            repair.assert_not_called()
+            plan = workflow.plan_build_resume(self.config, self.run_id, through_completion=True)
+            self.assertEqual(workflow.resume_with_junie(
+                self.config, self.run_id, verification_request={**plan, "id": "repair"},
+            )["status"], "checker_succeeded")
+            repair.assert_called_once()
+            self.assertEqual((len(builds), judge.call_count), (2, 4))
+
     def explicit_build(self):
         plan = workflow.plan_build_resume(self.config, self.run_id)
         return workflow.resume_with_junie(self.config, self.run_id, verification_request={**plan, "id": "operator-build"})

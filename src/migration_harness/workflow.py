@@ -813,8 +813,8 @@ def _stage_migration_materials(
 # 以下はJunieへ渡す共通指示。実行による検証はハーネス側の工程に任せる。
 _CSHARP_IDENTIFIERS = (
     "Rename only a declaration from PHP or draft C# whose identifier would be an illegal C# keyword in its "
-    "actual usage. Choose a meaningful non-keyword name unused in its scope; never introduce an @-escaped "
-    "identifier to solve the conflict. Change only references bound to that declaration, including later "
+    "actual usage. Choose a meaningful non-keyword name unused in its scope. Do not escape the keyword with @ "
+    "or Unicode to solve the conflict. Change only references bound to that declaration, including later "
     "capsules and the paired Razor file. Keep ordinary names, independently declared same-spelled symbols, "
     "existing valid escapes and legal contextual names exactly as they are; do not rename for style or to "
     "free a preferred name. For example, if eventName is occupied, keep it and pick a different name for event. "
@@ -3323,7 +3323,7 @@ def _repair_script_advice(config, run_path, worktree, record, advisory, targets,
     return True
 
 
-def _resume_verification_script(config, run_path, worktree, record, targets, *, explicit_build):
+def _resume_verification_script(config, run_path, worktree, record, targets, *, rebuild_requested, allow_repair):
     pending = record.get("verification_script_pending")
     if pending is None:
         return
@@ -3351,7 +3351,7 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
         target_versions_match = pending.get("target_versions_match")
         unverified_target = pending.get("target_basis") != _verification_target_basis(phase) or target_versions_match is not True
         target_changed = pending["target_versions"] != hashes
-        if not explicit_build:
+        if not rebuild_requested:
             if target_versions_match is False:
                 raise ValueError("The target changed during the saved script; inspect the original log, then explicitly rebuild.")
             if unverified_target:
@@ -3359,11 +3359,11 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
             if target_changed:
                 raise ValueError("The target changed. Inspect the saved script response, then explicitly rebuild the edited target.")
         history = record.setdefault("script_advisories", [])
-        reviewed_failure = explicit_build and item["exit_code"] != 0 and any(
+        reviewed_failure = rebuild_requested and item["exit_code"] != 0 and any(
             advisory.get("status") == "reported" and all(advisory.get(key) == value for key, value in item.items())
             for advisory in history
         )
-        if explicit_build and (unverified_target or target_changed or reviewed_failure):
+        if rebuild_requested and (unverified_target or target_changed or reviewed_failure):
             reason = "rebuild_unverified_target" if unverified_target else (
                 "rebuild_edited_target" if target_changed else "rebuild_after_script_failure"
             )
@@ -3374,7 +3374,7 @@ def _resume_verification_script(config, run_path, worktree, record, targets, *, 
                 item["applied"] = "review_required"
                 raise ValueError("The target changed while reviewing the saved script response")
             if not (item["exit_code"] == 0 and item.get("applied") == "continued"):
-                if explicit_build or not _repair_script_advice(config, run_path, worktree, record, item, targets, hashes):
+                if not allow_repair or not _repair_script_advice(config, run_path, worktree, record, item, targets, hashes):
                     raise ValueError("The saved script response needs operator review; the command was not repeated")
         record.pop("verification_script_pending")
         write_run_record(path, record)
@@ -3511,10 +3511,12 @@ def _run_verification(
     *, request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """毎回ビルドを先に実行し、指摘の状態に応じて修正かレビューに進む。"""
-    explicit_build = request and request.get("start_stage") == "build"
-    automatic = not request or request.get("start_stage") == BUILD_THROUGH_STAGE
+    start_stage = request.get("start_stage") if request else None
+    build_only = start_stage == "build"
+    rebuild_requested = build_only or start_stage == BUILD_THROUGH_STAGE
+    automatic = not request or start_stage == BUILD_THROUGH_STAGE
     manual_request = None if automatic else request
-    if not explicit_build:
+    if not build_only:
         _require_saved_checker(config, record)
     run_path = Path(result["run_path"])
     worktree = Path(result["worktree_path"])
@@ -3523,14 +3525,16 @@ def _run_verification(
     finish_pending_targets(run_path / "agent-workspace", worktree, targets, record, record_path)
     original_versions = record.get("target_hashes", {}).copy()
     try:
-        if not explicit_build:
+        if not build_only:
             recover_selected_repair(run_path, worktree, targets, record)
     except CheckerRepairBlocked as exc:
         error = str(exc) if exc.reason == "stopped_draft_keyword" else format_error(exc)
         record.update(error=error, checker_review_reason=exc.reason)
         write_run_record(record_path, record)
         return {**result, "status": record["status"], "error": error}
-    _resume_verification_script(config, run_path, worktree, record, targets, explicit_build=bool(explicit_build))
+    _resume_verification_script(
+        config, run_path, worktree, record, targets, rebuild_requested=rebuild_requested, allow_repair=not build_only,
+    )
     _run_script_phase(config, "after_migration", worktree, run_path, record, once=True)
     mode = request["intent"].removeprefix("stop_") if request else None
     configured_checker = config["checker_command"]
@@ -3616,7 +3620,7 @@ def _run_verification(
             if artifacts := build_artifacts(worktree, inputs):
                 record["checker_build"] = {"inputs": inputs, "artifacts": artifacts}
         if command is None:
-            if not explicit_build:
+            if not build_only:
                 try:
                     require_repair_targets(record, ())
                 except CheckerRepairBlocked as exc:

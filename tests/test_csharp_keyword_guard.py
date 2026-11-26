@@ -1,3 +1,4 @@
+import re
 import shutil
 import tempfile
 import unittest
@@ -35,6 +36,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
     def test_keyword_free_targets_do_not_start_roslyn(self):
         with patch.object(csharp_keyword_guard, "_prepare_tool", side_effect=AssertionError("no analyzer")):
             self.apply_pair("Page.cs", "class Page {}", "class Page { string EventName; }")
+            self.apply_pair("Page.cs", "class Page {}", r'class Page { string @eventName = "日本語\u3042"; }')
 
     def test_unavailable_analyzer_does_not_mark_generated_output_as_verified(self):
         with patch.object(csharp_keyword_guard, "_prepare_tool", side_effect=OSError("no SDK")):
@@ -149,3 +151,61 @@ class CSharpKeywordGuardTests(unittest.TestCase):
                        "public System.Action @event;"):
             with self.subTest(member=member):
                 self.apply_pair("Page.cs", before, f"class Page : Base {{ {member} }}", r"Page.cs:1:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_new_tuple_alias_namespace_and_label_names_are_rejected(self):
+        for content in (
+            "class Page { (int @event, int Value) Pair; }",
+            "using @event = System.Int32; class Page { @event Value; }",
+            "namespace @event { class Page {} }",
+            "namespace Outer.@event; class Page {}",
+            "class Page { void Use() { @event: return; } }",
+        ):
+            with self.subTest(content=content):
+                self.apply_pair("Page.cs", "class Page {}", content, r"Page.cs:1:.*@event")
+        self.apply_pair("Page.cs", "class Page {}", "using Alias = External.@event; class Page { void Use() { Api.Call(@event: 1); } }")
+        self.apply_pair("Page.cs", "class Page { int @event; }", "class Page { (int @event, int Value) Pair; }",
+                        r"Page.cs:1:.*@event")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_unicode_keyword_variants_are_reported_at_the_original_span(self):
+        for spelling in (r"@cl\u0061ss", r"cl\u0061ss", r"@\U00000063lass", "@cl\u200cass"):
+            with self.subTest(spelling=spelling):
+                self.apply_pair("Page.cs", "class Page {}", f'class Page {{ string S = "😀"; int {spelling}; }}',
+                                fr"Page.cs:1:.*{re.escape(spelling)}")
+        self.apply_pair("Page.cshtml", "@page\n", '@page\n@{ var text = "😀"; int @cl\\u0061ss; }\n',
+                        r"Page.cshtml:2:.*@cl\\u0061ss")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_razor_namespace_and_using_directives_map_the_original_unicode_name(self):
+        original = "@page\n<p>Old</p>\n"
+        name = "ev\u200cent"
+        for directive in (f"@namespace {name}", f"@namespace Outer.{name}.Inner",
+                          f"@using {name} = System.Int32"):
+            with self.subTest(directive=directive):
+                after = f"@page\n@* {directive} *@\n{directive}\n<p>New</p>\n"
+                self.apply_pair("Page.cshtml", original, after, fr"Page.cshtml:3:.*{re.escape(name)}")
+                self.apply_pair("Page.cshtml", after, after.replace("<p>New</p>", "<p>Edited</p>"))
+                self.apply_pair("Page.cshtml", original, f"@page\n@* {directive} *@\n<p>Unchanged name</p>\n")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_edited_lines_preserve_an_old_keyword_name_across_unicode_spellings(self):
+        before = r'class Page { string S = "😀"; int @cl\u0061ss = 1; }'
+        after = r'class Page { string S = "new"; int @class = 2; }'
+        self.apply_pair("Page.cs", before, after)
+        self.apply_pair("Page.cs", before, r'class Page { string S = "new"; int @cl\u0061ss = 2; }')
+        self.apply_pair("Page.cs", before, after[:-2] + r" void Method() { int @cl\u0061ss; } }",
+                        r"Page.cs:1:.*@cl\\u0061ss")
+        self.apply_pair("Page.cs", "class Page {}", r'class Page { string S = "@cl\u0061ss"; /* int @cl\u0061ss; */ }')
+        self.apply_pair("Page.cs", "class Page {}", r"class Page : External { public override int @cl\u0061ss => 1; }")
+        self.apply_pair("Page.cs", "class Page {}", r"class Page { void Use() { api.@cl\u0061ss(); } }")
+
+    @unittest.skipUnless(shutil.which("dotnet"), "requires .NET 9 SDK")
+    def test_unicode_declarations_in_inactive_branches_use_the_same_roslyn_token_rules(self):
+        before = "class Page {}"
+        branches = "class Page {\n#if FEATURE\n" + r"    (int @cl\u0061ss, int Value) Pair;" + "\n#endif\n}"
+        self.apply_pair("Page.cs", before, branches, r"Page.cs:3:.*@cl\\u0061ss")
+        self.apply_pair("Page.cs", before, branches.replace("FEATURE", "false"))
+        self.apply_pair("Page.cs", before, branches.replace("    (int", "    // (int"))
+        expression = " && ".join(f"SYMBOL_{i}" for i in range(20))
+        self.apply_pair("Page.cs", before, branches.replace("FEATURE", expression), r"Page.cs:3:.*条件付きコンパイル")

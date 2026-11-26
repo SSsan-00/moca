@@ -107,14 +107,18 @@ internal static partial class Program
         var seen = new HashSet<int>();
         foreach (var token in roots.SelectMany(root => root.DescendantTokens()))
         {
-            if (!token.IsKind(SyntaxKind.IdentifierToken) || !token.Text.StartsWith('@')
-                || SyntaxFacts.GetKeywordKind(token.ValueText) == SyntaxKind.None || !IsDeclaration(token)) continue;
+            if (!IsEscapedReservedKeyword(token) || !IsDeclaration(token)) continue;
             var span = token.Span;
-            if (razor is not null && !TryMapRazorSpan(razor, generated, original, span, out span)) continue;
+            if (razor is not null && !TryMapRazorSpan(razor, generated, original, span, out span)
+                && !TryMapRazorNamespace(razor.CodeDocument, original, token, out span)) continue;
             if (!seen.Add(span.Start)) continue;
             var position = original.Lines.GetLinePosition(span.Start);
             var prefix = original.ToString(TextSpan.FromBounds(original.Lines[position.Line].Start, span.Start));
-            declarations.Add(new { text = token.Text, line = position.Line, column = prefix.EnumerateRunes().Count() });
+            var kind = token.Parent is IdentifierNameSyntax name
+                ? (IsUsingAlias(name) ? SyntaxKind.UsingDirective : SyntaxKind.NamespaceDeclaration)
+                : token.Parent!.Kind();
+            declarations.Add(new { text = original.ToString(span), value = token.ValueText,
+                kind = kind.ToString(), line = position.Line, column = prefix.EnumerateRunes().Count() });
         }
         int? uncheckedLine = null;
         if (unparsed is int start)
@@ -125,6 +129,9 @@ internal static partial class Program
         }
         return new { declarations, uncheckedLine };
     }
+
+    private static bool IsEscapedReservedKeyword(SyntaxToken token) => token.IsKind(SyntaxKind.IdentifierToken)
+        && SyntaxFacts.GetKeywordKind(token.ValueText) != SyntaxKind.None;
 
     private static bool IsDeclaration(SyntaxToken token) => token.Parent switch
     {
@@ -141,6 +148,9 @@ internal static partial class Program
         BaseTypeDeclarationSyntax node => token == node.Identifier,
         DelegateDeclarationSyntax node => token == node.Identifier,
         EnumMemberDeclarationSyntax node => token == node.Identifier,
+        TupleElementSyntax node => token == node.Identifier,
+        LabeledStatementSyntax node => token == node.Identifier,
+        IdentifierNameSyntax node => IsUsingAlias(node) || NamespaceDeclaration(node) is not null,
         TypeParameterSyntax node => token == node.Identifier,
         SingleVariableDesignationSyntax node => token == node.Identifier,
         ForEachStatementSyntax node => token == node.Identifier,
@@ -152,6 +162,30 @@ internal static partial class Program
         QueryContinuationSyntax node => token == node.Identifier,
         _ => false,
     };
+
+    private static bool IsUsingAlias(IdentifierNameSyntax name) =>
+        name.Parent is NameEqualsSyntax { Parent: UsingDirectiveSyntax } alias && alias.Name == name;
+
+    private static BaseNamespaceDeclarationSyntax? NamespaceDeclaration(IdentifierNameSyntax identifier)
+    {
+        for (SyntaxNode? name = identifier; name is NameSyntax; name = name.Parent)
+            if (name.Parent is BaseNamespaceDeclarationSyntax declaration && declaration.Name == name) return declaration;
+        return null;
+    }
+
+    // Razor does not include its generated namespace declaration in SourceMappings.
+    private static bool TryMapRazorNamespace(RazorCodeDocument doc, SourceText original, SyntaxToken token, out TextSpan span)
+    {
+        span = default;
+        if (token.Parent is not IdentifierNameSyntax identifier || NamespaceDeclaration(identifier) is not { } declaration
+            || !doc.TryComputeNamespace(false, out var name, out var source) || source is not { } from
+            || !string.Equals(from.FilePath, doc.Source.FilePath, StringComparison.OrdinalIgnoreCase)
+            || from.AbsoluteIndex < 0 || from.Length != declaration.Name.Span.Length
+            || from.AbsoluteIndex > original.Length - from.Length || name != declaration.Name.ToString()
+            || name != original.ToString(new TextSpan(from.AbsoluteIndex, from.Length))) return false;
+        span = new TextSpan(from.AbsoluteIndex + token.SpanStart - declaration.Name.SpanStart, token.Span.Length);
+        return true;
+    }
 
     private static SourceText GetRazorGeneratedText(RazorCSharpDocument razor) => RazorGeneratedText?.GetValue(razor) switch
     {
