@@ -65,6 +65,24 @@ REQUIRED_WINDOWS_RECOVERY = {
 }
 
 
+REQUIRED_STATIC_EVIDENCE = {
+    "test_dashboard_comparison_routes.DashboardComparisonRoutesTests.test_static_evidence_is_explicit_run_bound_and_read_only",
+    *("test_static_migration_evidence.StaticMigrationEvidenceTests." + name for name in (
+        "test_real_roslyn_distinguishes_omission_rename_split_merge_and_unresolved",
+        "test_stale_spans_incomplete_syntax_and_required_razor_absence_remain_unverified",
+        "test_existing_approved_mapping_coordinates_do_not_survive_a_target_byte_edit",
+        "test_unconfigured_targets_invalid_plans_or_active_runs_do_not_scan_targets",
+        "test_legacy_or_corrupt_pins_still_list_the_entire_source_assignment",
+    )),
+    *("test_roslyn_static_evidence.RoslynStaticEvidenceTests." + name for name in (
+        "test_csharp_explicit_facts_use_source_locations_not_comments_or_calls",
+        "test_razor_uses_original_lines_and_does_not_use_scaffolding_to_prove_absence",
+        "test_invalid_conditional_unsupported_and_empty_inputs_are_incomplete",
+        "test_cutoffs_cannot_certify_absence",
+    )),
+}
+
+
 class RegressionResult(unittest.TextTestResult):
 
     def __init__(self, *args, **kwargs):
@@ -143,7 +161,10 @@ def main():
     missing_recovery = REQUIRED_WINDOWS_RECOVERY - result.passed if args.shard != "conversation-editor" else set()
     if missing_recovery:
         print("Required Windows recovery checks did not pass: " + ", ".join(sorted(missing_recovery)))
-    return 0 if result.wasSuccessful() and not (missing_ui or missing_models or missing_recovery) else 1
+    missing_evidence = REQUIRED_STATIC_EVIDENCE - result.passed if args.shard != "conversation-editor" else set()
+    if missing_evidence:
+        print("Required static migration evidence checks did not pass: " + ", ".join(sorted(missing_evidence)))
+    return 0 if result.wasSuccessful() and not (missing_ui or missing_models or missing_recovery or missing_evidence) else 1
 
 
 if __name__ == "__main__":

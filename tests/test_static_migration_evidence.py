@@ -112,7 +112,7 @@ static_evidence = "evidence.json"
             self.claim("razor.php", "require", targets=[{"path": "View.cshtml"}], fact={"kind": "method", "value": "Right"}),
         )
         key, _, index = self.parts["anchor.php"]["id"].partition(":")
-        self.update_record(migration_mappings={f"{key}:{int(index) - 1}": self.scope("Page.cs", 4) | {"candidate_snapshot": "candidate"}})
+        self.update_record(migration_mappings={f"{key}:{int(index) - 1}": self.scope("Page.cs", 4) | {"candidate_snapshot": "candidate", "anchors": 1}})
         before = self.record_path.read_bytes()
         complete = migration_ledger(self.config, self.run_id)["completion"]
         (self.project / "rename.php").write_text("a user has changed the live input", encoding="utf-8")
