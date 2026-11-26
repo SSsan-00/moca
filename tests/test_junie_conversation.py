@@ -21,6 +21,7 @@ from migration_harness.execution import check_cancelled, current_operation_id
 from migration_harness.junie import junie_conversation
 from migration_harness.junie.junie_conversation import _intent
 from migration_harness.runs.run_manager import RunManager
+from migration_harness.verification import checker_advisory
 from fixtures import SavedRunFixture
 from test_checker_advisory import acp_reply
 
@@ -154,12 +155,18 @@ class JunieConversationTests(SavedRunFixture):
     def test_selection_persists_only_complete_utf8_replies_within_its_own_budget(self):
         inputs = {path: path.read_bytes() for path in (self.target, self.record_path, self.build_log, self.checker_log)}
         selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "var x = 1;"}
-        for size, reason, status in ((4095, "end_turn", "done"), (4096, "end_turn", "done"),
-                                     (4097, "end_turn", "done"), (16384, "end_turn", "done"),
-                                     (16385, "end_turn", "failed"), (4097, "cancelled", "failed")):
+        for size, chunks, metadata, reason, status in (
+            (4095, 2, False, "end_turn", "done"), (4096, 2, False, "end_turn", "done"),
+            (4097, 253, False, "end_turn", "done"), (4097, 254, False, "end_turn", "done"),
+            (4097, 254, True, "end_turn", "done"), (16384, 512, True, "end_turn", "done"),
+            (16385, 512, True, "end_turn", "failed"), (4097, 254, False, "cancelled", "failed"),
+            (4097, 254, True, "eof", "failed"),
+        ):
             reply = "あ" * (size // 3) + "x" * (size % 3)
             identifier = uuid.uuid4().hex
-            with self.subTest(size=size, reason=reason), acp_reply(reply, reason):
+            with self.subTest(size=size, chunks=chunks, metadata=metadata, reason=reason), acp_reply(
+                reply, reason, chunks=chunks, metadata=metadata,
+            ):
                 code, _ = self.request("editor", {"kind": "conversation", "run_id": self.run_id, "id": identifier,
                                                   "text": "", "selection": selection})
                 self.assertEqual(code, 202)
@@ -172,8 +179,29 @@ class JunieConversationTests(SavedRunFixture):
                     if size == 16385:
                         self.assertIn("質問を分けて", entry["message"])
                         self.assertIn("16,384", entry["message"])
+                    elif reason == "eof":
+                        self.assertIn("ended before a complete reply", entry["message"])
+                    else:
+                        self.assertIn("did not complete normally", entry["message"])
         for path, original in inputs.items():
             self.assertEqual(path.read_bytes(), original, path.name)
+
+    def test_selection_reports_transport_limits_separately_from_eof_and_answer_size(self):
+        selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "var x = 1;"}
+        reply = "ここが選択範囲です。" * 8
+        for limit, size, chunks, message in (
+            ("FRAME_LIMIT", 256, 2, "1フレーム"), ("STREAM_LIMIT", 1024, 32, "累積通信量"),
+        ):
+            identifier = uuid.uuid4().hex
+            with self.subTest(limit=limit), patch.object(checker_advisory, limit, size), acp_reply(reply, chunks=chunks):
+                code, _ = self.request("editor", {"kind": "conversation", "run_id": self.run_id, "id": identifier,
+                                                  "text": "", "selection": selection})
+                self.assertEqual(code, 202)
+                error = self.wait_for(identifier, "failed")["message"]
+                self.assertIn(message, error)
+                self.assertIn(f"{size:,}バイト", error)
+                self.assertIn("質問を分けて", error)
+                self.assertNotIn("ここが", error)
 
     def test_selection_with_a_comment_answers_without_running_build_or_migration(self):
         selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": "// 停止"}

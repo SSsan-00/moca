@@ -1,4 +1,4 @@
-import {beginPhase, evaluate, finishBrowser, navigate, reportBrowserFailure, startBrowser, wait}
+import {beginPhase, cdp, evaluate, finishBrowser, navigate, reportBrowserFailure, startBrowser, wait}
   from "./chromium_browser.mjs";
 import {checkEditorSemantics} from "./editor_semantic_browser.mjs";
 
@@ -8,6 +8,7 @@ const chrome = await startBrowser(executable, profile);
 let success = false;
 try {
   beginPhase("live editor navigation");
+  await cdp("Emulation.setDeviceMetricsOverride", {width: 720, height: 480, deviceScaleFactor: 1, mobile: false});
   await navigate("Page.navigate", {url});
   await wait("document.documentElement.dataset.liveReady === 'true' && snapshot.run_id === " + JSON.stringify(run));
   await evaluate("document.getElementById('tab-editor').click()");

@@ -1034,6 +1034,37 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         saved_bytes = [(self.run_path / item["snapshot"] / "0.draft").read_bytes() for item in backups]
         self.assertIn(b"class AgentManual {}", saved_bytes)
         self.assertIn(manual, saved_bytes)
+        newest = self.record()["repair_pending"]["draft"]
+        self.assertNotEqual(newest["snapshot"], plan["snapshot"])
+        self.assertEqual(workflow.plan_stopped_repair(self.config, self.run_id)["snapshot"], newest["snapshot"])
+
+    def test_legacy_selection_never_labels_an_ambiguous_archive_as_the_stopped_draft(self):
+        name = self.target.name
+        agent = self.run_path / "agent-workspace"
+        agent.mkdir()
+        (agent / name).write_bytes(b"class Stopped {}\n")
+        stopped = workflow._snapshot_stopped_repair(
+            self.run_path, agent, (Path(name),), {name: sha256(self.target.read_bytes()).hexdigest()},
+            workspace_unchanged=True,
+        )
+        self.save_record({**self.record(), "repair_pending": {"draft": stopped, "details": {}}})
+
+        def save_as_legacy(choice):
+            plan = workflow.plan_stopped_repair(self.config, self.run_id)
+            workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], {name: choice})
+            record = self.record()
+            selected = record["repair_pending"]["draft"]
+            del selected["stopped_snapshot"]
+            (self.run_path / selected["snapshot"] / "draft.json").write_text(json.dumps(selected), encoding="utf-8")
+            self.save_record(record)
+
+        save_as_legacy("worktree")
+        self.assertEqual(workflow.plan_stopped_repair(self.config, self.run_id)["snapshot"], stopped["snapshot"])
+        save_as_legacy("draft")
+        with self.assertRaisesRegex(ValueError, "元の停止下書きを特定できません"):
+            workflow.plan_stopped_repair(self.config, self.run_id)
+        self.assertEqual(self.resume(self.build, ("fixture-checker", 0, b""))["status"], "checker_succeeded")
+        self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class Stopped {}\n")
 
     def test_selected_repair_recovers_before_verifying_changed_diagnostics(self):
         names = ("Example.cs", "Second.cs", "Third.cs")
@@ -1071,8 +1102,14 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
                 self.target.write_bytes(b"class Manual {}\n")
                 plan = workflow.plan_stopped_repair(self.config, self.run_id)
                 workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], {
-                    names[0]: "worktree", names[1]: "draft",
+                    names[0]: "draft", names[1]: "worktree",
                 })
+                choices = {names[0]: "worktree", names[1]: "draft"}
+                with self.assertRaisesRegex(ValueError, "更新"):
+                    workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
+                next_plan = workflow.plan_stopped_repair(self.config, self.run_id)
+                self.assertEqual(next_plan["snapshot"], stopped["snapshot"])
+                workflow.resolve_stopped_repair(self.config, self.run_id, next_plan["version"], choices)
 
                 selected = self.record()["repair_pending"]["draft"]
                 saved_file = self.run_path / selected["snapshot"] / "1.draft"

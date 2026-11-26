@@ -5,7 +5,7 @@ import path from "node:path";
 export async function checkEditorSemantics({evaluate, wait, sourceEditor, config, run}) {
   const status = "document.getElementById('editor-diagnostic-status').textContent";
   const note = "document.getElementById('editor-diagnostic-note').textContent";
-  const markers = "monaco.editor.getModelMarkers({owner:'syntax'})";
+  const markers = "monaco.editor.getModelMarkers({owner:'syntax', resource:" + sourceEditor + ".getModel().uri})";
   const list = "document.getElementById('editor-diagnostic-list').textContent";
   const source = () => evaluate(sourceEditor + ".getValue()");
   const set = text => evaluate(sourceEditor + ".setValue(" + JSON.stringify(text) + ")");
@@ -55,7 +55,20 @@ export async function checkEditorSemantics({evaluate, wait, sourceEditor, config
   await assertMarker("CS1061", 3, "<p>😀 @Model.".length + 1);
   const details = "document.getElementById('editor-diagnostics')";
   await evaluate(details + ".open = true");
-  await wait("!!document.querySelector('#editor-code .squiggly-error')");
+  await wait(`(editor => {
+    const host = document.getElementById("editor-code");
+    const panel = document.getElementById("editor-pane").getBoundingClientRect();
+    const diagnostics = document.getElementById("editor-diagnostics").getBoundingClientRect();
+    const squiggle = host.querySelector(".squiggly-error");
+    if (!squiggle || editor.getLayoutInfo().height !== host.clientHeight) return false;
+    const code = host.getBoundingClientRect();
+    const bounds = squiggle.getBoundingClientRect();
+    return diagnostics.height > 0 && diagnostics.bottom <= panel.bottom && code.bottom <= diagnostics.top
+      && bounds.width > 0 && bounds.height > 0 && bounds.top >= code.top && bounds.bottom <= code.bottom
+      && getComputedStyle(squiggle).backgroundImage !== "none"
+      && editor.getVisibleRanges().some(range => range.startLineNumber <= 3 && range.endLineNumber >= 3);
+  })(${sourceEditor})`);
+  console.log("Browser editor: Razor error underline stays visible with diagnostics expanded in a short window");
   await evaluate("document.querySelector('#editor-diagnostic-list button').click()");
   assert.deepEqual(await evaluate(sourceEditor + ".getPosition()"), {lineNumber: 3, column: "<p>😀 @Model.".length + 1});
 

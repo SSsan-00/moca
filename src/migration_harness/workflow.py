@@ -2509,7 +2509,7 @@ def _save_stopped_migration(record_path, record, agent_root, targets, *, workspa
     record.update(updated)
 
 
-def _save_target_snapshot(run_path, sources, before, *, workspace_unchanged):
+def _save_target_snapshot(run_path, sources, before, *, workspace_unchanged, stopped_snapshot=None):
     """移行、区間チェックポイント、修正で復元する生バイトと欠損を保存する。"""
     name = f"stopped-repair-{uuid.uuid4().hex}"
     root = run_path / name
@@ -2526,6 +2526,8 @@ def _save_target_snapshot(run_path, sources, before, *, workspace_unchanged):
         "snapshot": name, "base": before.copy(), "targets": hashes,
         "workspace_unchanged": workspace_unchanged,
     }
+    if stopped_snapshot is not None:
+        draft["stopped_snapshot"] = stopped_snapshot
     (root / "draft.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
     return draft
 
@@ -2554,9 +2556,27 @@ def _verified_target_snapshot(run_path, draft):
     return files
 
 
+def _stopped_repair_source(run_path, record, attempt):
+    active = attempt.get("draft", {})
+    if "restore_from" not in attempt and "selection" not in attempt:
+        return active
+    _verified_target_snapshot(run_path, active)
+    history = record.get("stopped_repair_recovery", [])
+    if source_id := active.get("stopped_snapshot"):
+        source = next((item for item in history if item["snapshot"] == source_id), None)
+    else:
+        # 旧形式は選択ごとに直前の下書き・Junie版・作業版の順で3件を保存した。
+        # 選択が複数あり得る履歴には停止の境界がなく、元の版を推測しない。
+        source = history[-3] if 3 <= len(history) < 6 else None
+    if not source or source["targets"].keys() != active["targets"].keys():
+        raise ValueError("元の停止下書きを特定できません。Run の復旧履歴を確認してください。")
+    return source
+
+
 def _stopped_repair_plan(run_path, worktree, unit, record, queue):
     """現在の作業版と下書きを照合し、復元対象を選ぶための計画を作る。"""
-    draft = record.get("repair_pending", {}).get("draft", {})
+    attempt = record.get("repair_pending", {})
+    draft = _stopped_repair_source(run_path, record, attempt)
     if not draft.get("snapshot") or not draft.get("workspace_unchanged"):
         raise ValueError("復元できる停止時の下書きがありません。Run の記録を確認してください。")
     if record.get("target_apply_pending") or queue["edits"] or any(
@@ -2579,6 +2599,8 @@ def _stopped_repair_plan(run_path, worktree, unit, record, queue):
         "agent": {name: target_hash(path) for name, path in agent_files.items()},
         "edit_revision": queue.get("edit_revision"),
     }
+    if draft["snapshot"] != attempt["draft"]["snapshot"]:
+        plan["selected_snapshot"] = attempt["draft"]["snapshot"]
     plan["version"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()
     return plan, current, agent_files, snapshot_files
 
@@ -2630,7 +2652,8 @@ def resolve_stopped_repair(config, run_id, version, choices):
             if None in plan["worktree"].values():
                 raise ValueError("作業ツリーの欠損を手動で復元してから計画し直してください。")
             sources = {name: snapshot[name] if choices[name] == "draft" else current[name] for name in snapshot}
-            selected = _save_target_snapshot(run_path, sources, plan["worktree"], workspace_unchanged=True)
+            selected = _save_target_snapshot(run_path, sources, plan["worktree"], workspace_unchanged=True,
+                                             stopped_snapshot=plan["snapshot"])
             agent_backup = _save_target_snapshot(run_path, agent, plan["worktree"], workspace_unchanged=True)
             worktree_backup = _save_target_snapshot(
                 run_path, {name: current[name] for name in snapshot}, plan["worktree"], workspace_unchanged=True,
