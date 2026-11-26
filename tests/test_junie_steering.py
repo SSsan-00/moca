@@ -259,7 +259,9 @@ class JunieSteeringTests(unittest.TestCase):
             with editor_queue(root) as queue:
                 add_prompt(queue, {"text": "保存した編集を維持してください。"})
                 queue["prompts"][0]["status"] = "steering"
-                queue["edits"]["Page.cs"] = {"status": "queued"}
+                queue["edits"]["Page.cs"] = {
+                    "id": "manual-edit", "base": "class Original {}\n", "content": "class Manual {}\n", "status": "queued",
+                }
             prompts = LivePrompts(root)
             prompts.recover()
             self.assertEqual(prompts.take(), ([], ""))

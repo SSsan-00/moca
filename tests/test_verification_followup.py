@@ -12,7 +12,9 @@ class VerificationFollowupTests(SavedRunFixture):
         record = self.record()
         before = self.target.read_text(encoding="utf-8")
         with editor_queue(self.run_path) as queue:
-            queue["edits"][self.target.name] = {"base": before, "draft": "class Edited {}\n"}
+            queue["edits"][self.target.name] = {
+                "id": "manual-edit", "base": before, "content": "class Edited {}\n", "status": "queued",
+            }
             add_prompt(queue, {"text": "Keep the operator edit."})
 
         with (
