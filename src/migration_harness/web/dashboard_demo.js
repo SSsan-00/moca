@@ -75,6 +75,7 @@ window.harnessDemoTransport = (() => {
 
   function resumePlan(run, stage) {
     if (!run?.ready || !run.worktree_path) throw Error("停止・中断した実行を選び直してください。");
+    if (interruptedScript(run)) throw Error("実行結果が不明なスクリプトを、進捗画面で先に確認してください。");
     const completed = run.completed_capsules === run.context_capsules;
     if (stage === "migration" && completed) throw Error("未完了の移行がないため、開始工程を選び直してください。");
     if (stage === "build-through" && !completed) throw Error("移行が完了してからビルド工程を選んでください。");
@@ -93,6 +94,9 @@ window.harnessDemoTransport = (() => {
       accepted.add(run.run_id);
       runs.select(run.run_id);
     } else if (controls.has(action)) {
+      if (action === "resume-run" && run && interruptedScript(run)) {
+        throw Error("実行結果が不明なスクリプトを、進捗画面で先に確認してください。");
+      }
       if (body.start_stage && (action !== "resume-run" || body.plan_version !== resumePlan(run, body.start_stage).version)) {
         throw Error("保存版が更新されました。再開計画を確認し直してください。");
       }
