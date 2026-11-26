@@ -6,6 +6,10 @@
   const file = {source: "orders", name: "orders.md", text: original, usage: "required", description: ""};
   const drafts = new Map();
   let sequence = 0;
+  let pendingTurn;
+  let stopError;
+  let showUnconfirmedStop = true;
+  const snapshot = draft => structuredClone(stopError ? {...draft, stop_error: stopError} : draft);
 
   function diffFile(before, after, name) {
     if (before === after) return "";
@@ -32,7 +36,6 @@
         else result.push(["+", b[j++]]);
       }
     } else {
-      // shortcut: very large demo edits are shown as one replaced block; use a scalable diff if needed.
       grouped = true;
       for (const line of a) result.push(["-", line]);
       for (const line of b) result.push(["+", line]);
@@ -43,22 +46,57 @@
       + result.map(([prefix, line]) => prefix + line + (line.endsWith("\n") ? "" : "\n\\ No newline at end of file\n")).join("");
   }
 
+  function beginTurn(draft, instruction) {
+    const newSession = !draft.messages.some(message => message.role === "junie");
+    draft.messages.push({role: "operator", text: instruction || "注文取消のルールを整理して"});
+    delete draft.proposal;
+    draft.live = {status: "running", text: "（デモ）サンプルの回答を準備しています。"};
+    const timer = setTimeout(() => {
+      pendingTurn = undefined;
+      draft.messages.push({role: "junie", text: "（サンプル応答）通常の取消禁止と、決済前の例外を分ける案です。例外を適用する条件と、理由の記録は残します。"});
+      draft.proposal = {source: draft.files[0].source, text: addition};
+      draft.live = {status: "ready", new_session: newSession};
+      draft.revision++;
+    }, 3000);
+    pendingTurn = {draft, timer};
+  }
+
   window.harnessRuleWorkspaceDemo = (query, action) => {
     if (!action && query?.registered === "1") return {registered: {name: file.name, text: file.text}};
     if (!action && !query?.id) {
-      return {drafts: [...drafts.values()].filter(draft => !draft.applied)
-        .map(draft => ({id: draft.id, files: draft.files.length}))};
+      const available = [...drafts.values()].filter(draft => !draft.applied)
+        .map(draft => ({id: draft.id, files: draft.files.length}));
+      return {drafts: available, stop_error: stopError};
+    }
+    if (action?.action === "retry-stop") {
+      if (!stopError) throw Error("再確認が必要なデモのセッションはありません。");
+      stopError = undefined;
+      const draft = drafts.get(action.id);
+      return draft ? snapshot(draft) : {};
     }
     if (action?.action === "start") {
+      if (stopError || pendingTurn) throw Error(stopError || "先に相談を停止してください。");
       const id = "demo-" + String(++sequence).padStart(3, "0");
       const draft = {id, revision: 0, applied: false, files: [{...file}], messages: [], unresolved: []};
       drafts.set(id, draft);
-      return structuredClone(draft);
+      return snapshot(draft);
     }
     const draft = drafts.get(action?.id ?? query?.id);
     if (!draft || draft.applied) throw Error("デモの下書きがありません。");
     const entry = draft.files.find(item => item.source === (action?.source ?? query?.source));
-    if (!action) return query.source ? {text: entry.text, revision: draft.revision} : structuredClone(draft);
+    if (!action) return query.source ? {text: entry.text, revision: draft.revision} : snapshot(draft);
+    if (action.action === "stop") {
+      if (pendingTurn?.draft !== draft) throw Error("停止するデモの相談がありません。");
+      clearTimeout(pendingTurn.timer);
+      pendingTurn = undefined;
+      draft.live = null;
+      if (showUnconfirmedStop) {
+        showUnconfirmedStop = false;
+        stopError = "（デモ）Junieの終了を確認できません。終了を再確認してから相談を再開してください。";
+      }
+      return snapshot(draft);
+    }
+    if (stopError || pendingTurn) throw Error(stopError || "相談が終わってから操作してください。");
 
     let acceptedEdit;
     switch (action.action) {
@@ -81,9 +119,7 @@
         break;
       case "message":
       case "optimize":
-        draft.messages.push({role: "operator", text: action.text || "注文取消のルールを整理して"});
-        draft.messages.push({role: "junie", text: "（サンプル応答）通常の取消禁止と、決済前の例外を分ける案です。例外を適用する条件と、理由の記録は残します。"});
-        draft.proposal = {source: draft.files[0].source, text: addition};
+        beginTurn(draft, action.text);
         break;
       case "accept":
         if (draft.proposal) {
@@ -120,6 +156,6 @@
     }
     if (!["preview", "apply"].includes(action.action)) draft.preview = null;
     draft.revision++;
-    return structuredClone(acceptedEdit ? {...draft, accepted_edit: acceptedEdit} : draft);
+    return snapshot(acceptedEdit ? {...draft, accepted_edit: acceptedEdit} : draft);
   };
 })();

@@ -63,5 +63,11 @@ const queued = data => data.runs.filter(run => run.queued).sort((a, b) => a.queu
     tick();
   }
   assert.deepEqual([...new Set(states)], ["checking", "checker_succeeded"]);
+  const script = (await demo.read()).runs.find(run => run.run_id === "demo-script-recovery");
+  await demo.execute("recover-script", {run_id: script.run_id});
+  assert.equal((await demo.read()).runs.find(run => run.run_id === script.run_id).status, "script_running");
+  tick();
+  const retried = (await demo.read()).runs.find(run => run.run_id === script.run_id);
+  assert.deepEqual([retried.status, retried.ready, retried.completed_capsules], ["interrupted", true, script.completed_capsules]);
   console.log("Demo: five workers, FIFO resume, cancellation, and completion passed.");
 })().catch(error => { console.error(error); process.exitCode = 1; });

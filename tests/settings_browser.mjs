@@ -1182,6 +1182,12 @@ try {
   // All sample runs were stopped or cancelled before the settings test.
   await evaluate("window.confirm = () => true");
   await openDemoRun("run-2026-11-14-001");
+  await click("tab-runs");
+  const runRows = "Array.from(document.querySelectorAll('#run-rows tr'), row => row.dataset.runId)";
+  const originalRunIds = await evaluate(runRows);
+  for (const id of ["run-2026-11-14-001", "demo-customer", "demo-repair-recovery", "demo-script-recovery"]) {
+    assert(originalRunIds.includes(id), "demo Run is present: " + id);
+  }
   await removeDemoRun("run-2026-11-14-001");
   await pause(3100);
   assert(!(await evaluate(selectedDemo)).includes("run-2026-11-14-001"), "the demo timer must not resurrect a deleted Run");
@@ -1189,8 +1195,9 @@ try {
   await removeDemoRun("demo-customer");
   await openDemoRun("demo-search");
   await click("tab-runs");
-  const remaining = await evaluate("Array.from(document.querySelectorAll('#run-rows tr'), row => row.dataset.runId)");
-  assert.equal(remaining.length, 6);
+  const remaining = await evaluate(runRows);
+  assert.deepEqual([...remaining].sort(), originalRunIds.filter(id => !["run-2026-11-14-001", "demo-customer"].includes(id)).sort(),
+    "only the two requested Runs were deleted");
   await removeDemoRun("demo-partners");
   assert((await evaluate(selectedDemo)).includes("demo-search"), "deleting another Run must keep the current selection");
   for (const id of ["demo-search", ...remaining.filter(id => !["demo-search", "demo-partners"].includes(id))]) await removeDemoRun(id);

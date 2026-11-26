@@ -44,27 +44,42 @@ def _new_escapes(before, after, old_matches, new_matches):
         return
     old_lines, new_lines = before.split("\n"), after.split("\n")
     existing, proposed = _positions(old_matches), _positions(new_matches)
-    for tag, a, b, c, d in SequenceMatcher(None, old_lines, new_lines).get_opcodes():
-        if not any(row in proposed for row in range(c, d)):
+    for tag, old_start, old_end, new_start, new_end in SequenceMatcher(None, old_lines, new_lines).get_opcodes():
+        new_rows = range(new_start, new_end)
+        if not any(row in proposed for row in new_rows):
             continue
         if tag == "equal":
-            for row in range(c, d):
+            for row in new_rows:
+                old_row = old_start + row - new_start
                 for position in proposed.get(row, ()):
-                    if position not in existing.get(a + row - c, ()):
+                    if position not in existing.get(old_row, ()):
                         yield row, position[1]
             continue
-        if not any(row in existing for row in range(a, b)):
-            for row in range(c, d):
+        if not any(row in existing for row in range(old_start, old_end)):
+            for row in new_rows:
                 for _, spelling in proposed.get(row, ()):
                     yield row, spelling
             continue
-        # Edits on the same line or formatting over several lines can preserve a declaration.
-        old_tokens, _ = _diff_tokens(old_lines, a, b, existing)
-        new_tokens, declarations = _diff_tokens(new_lines, c, d, proposed)
+        # Edited lines may retain a declaration even when their original line is gone.
+        old_tokens, _ = _diff_tokens(old_lines, old_start, old_end, existing)
+        new_tokens, declarations = _diff_tokens(new_lines, new_start, new_end, proposed)
         for _, start, size in SequenceMatcher(None, old_tokens, new_tokens).get_matching_blocks():
             for index in range(start, start + size):
                 declarations.pop(index, None)
         yield from declarations.values()
+
+
+def _parse_scan_results(reply, revision_count):
+    reports = json.loads(reply.stdout)
+    if reply.returncode or not isinstance(reports, list) or len(reports) != revision_count:
+        raise ValueError("invalid compiler response")
+    for report in reports:
+        if not isinstance(report, dict) or not isinstance(report.get("declarations"), list) or "uncheckedLine" not in report:
+            raise ValueError("invalid compiler response")
+        line = report["uncheckedLine"]
+        if line is not None and (type(line) is not int or line < 1):
+            raise ValueError("invalid compiler response")
+    return reports
 
 
 def reject_new_keyword_escapes(agent_root: Path, worktree: Path, pending: dict) -> None:
@@ -88,19 +103,11 @@ def reject_keyword_changes(pending, *, before_path, after_path):
     revisions = [{"Path": name, "Text": text} for name, before, after in candidates for text in (before, after)]
     try:
         reply = _run_editor(_prepare_tool(), "--escaped-keywords", json.dumps(revisions).encode("utf-8"), 6)
-        findings = json.loads(reply.stdout)
-        if (reply.returncode or not isinstance(findings, list) or len(findings) != len(revisions)
-                or any(not isinstance(scan, dict) or not isinstance(scan.get("declarations"), list)
-                       or "uncheckedLine" not in scan or (
-                           scan["uncheckedLine"] is not None
-                           and (type(scan["uncheckedLine"]) is not int or scan["uncheckedLine"] < 1))
-                       for scan in findings)):
-            raise ValueError("invalid compiler response")
+        reports = _parse_scan_results(reply, len(revisions))
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         names = ", ".join(name for name, _, _ in candidates)
         raise ValueError(f"C#予約語の確認を完了できません。.NET 9 SDKを確認してください: {names}") from error
-    for index, (name, before, after) in enumerate(candidates):
-        previous, proposed = findings[2 * index:2 * index + 2]
+    for (name, before, after), previous, proposed in zip(candidates, reports[::2], reports[1::2], strict=True):
         if line := proposed["uncheckedLine"] or (previous["uncheckedLine"] if proposed["declarations"] else None):
             raise ValueError(f"{name}:{line}: 条件付きコンパイル内の予約語を確認できないため反映を止めました。"
                              "条件分岐を確認し、変更対象の宣言は@を付けずに改名してから再開してください。")

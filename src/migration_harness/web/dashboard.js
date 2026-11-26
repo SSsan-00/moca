@@ -115,14 +115,6 @@ activity.replaceChildren();
 ledger.replaceChildren();
 element(".work-summary .metric-label").textContent = "カプセル総数";
 element(".work-summary .metric:nth-child(2) .metric-label").textContent = "移行済み";
-reviewNoteLabel.textContent = "判断理由（必須）";
-note.placeholder = "例：共通関数へ委譲していることを差分で確認済み";
-note.required = true;
-note.maxLength = 2000;
-element("#review-demo-context").hidden = true;
-element("#review-later").hidden = true;
-accept.textContent = "問題なしとして記録";
-resume.textContent = "同じ実行を再開";
 const findings = document.createElement("select");
 findings.className = "workspace-select";
 findings.setAttribute("aria-label", "レビューする指摘");
@@ -1080,6 +1072,8 @@ const checkerReviewGuidance = {
   unexpected_changes: ["Junie が修正対象外のファイルを変更したため、修正の反映を止めました。",
     "詳細ログを確認し、修正対象と変更内容を指定して「指示を送って再開」を選んでください。"],
   repair_interrupted: ["Junie の修正が途中で停止しました。"],
+  stopped_draft_keyword: ["停止時の下書きに C# の予約語を使った識別子があるため、復元を止めました。",
+    "「復旧の確認」で復元する版を選び直すか、作業ツリーを手修正してから計画を取り直してください。"],
   free_output_advisory: ["形式未対応のチェッカー出力です。Junie の判定は参考情報で、合格や修正を意味しません。",
     "チェッカー出力と参考判定を確認し、修正が必要なら明示的に指示してください。"],
   free_output_advisory_interrupted: ["チェッカー出力の参考判定を中止しました。チェッカー出力を確認してください。"],
@@ -1202,7 +1196,19 @@ const recoveryDialog = element("#recovery-dialog");
 const recoveryOptions = element("#recovery-options");
 const recoveryDialogStatus = element("#recovery-dialog-status");
 const recoverySubmit = element("#recovery-submit");
-let recoveryPlan;
+const recoveryDraftButton = element("#recovery-draft");
+const reviewRecoveryDraft = element("#review-recovery-draft");
+let recoveryOpening;
+
+function isCurrentRecovery(opening) {
+  return recoveryOpening === opening && recoveryDialog.open && snapshot.ready
+    && opening.runId === snapshot.run_id;
+}
+
+function closeRecoveryPlan() {
+  recoveryOpening = undefined;
+  if (recoveryDialog.open) recoveryDialog.close();
+}
 
 function recoveryPreviewColumn(label, value) {
   const column = document.createElement("div");
@@ -1214,7 +1220,8 @@ function recoveryPreviewColumn(label, value) {
   return column;
 }
 
-function renderRecoveryDraft(plan) {
+function renderRecoveryDraft(opening) {
+  const {runId, plan} = opening;
   for (const [index, target] of Object.keys(plan.draft).entries()) {
     const item = document.createElement("section");
     item.className = "recovery-file";
@@ -1239,18 +1246,20 @@ function renderRecoveryDraft(plan) {
     summary.textContent = "内容を比較";
     details.append(summary, preview);
     details.addEventListener("toggle", async () => {
-      if (!details.open || details.dataset.loaded || recoveryPlan !== plan) return;
+      if (!details.open || details.dataset.loaded || !isCurrentRecovery(opening)) return;
       details.dataset.loaded = "loading";
       preview.textContent = "読み込み中…";
       try {
-        const query = new URLSearchParams({run_id: plan.run_id, version: plan.version, target});
+        const query = new URLSearchParams({run_id: runId, version: plan.version, target});
         const response = await runFetch(`recovery-file?${query}`, {cache: "no-store"});
         if (!response.ok) throw await responseError(response);
         const contents = await response.json();
+        if (!isCurrentRecovery(opening)) return;
         preview.replaceChildren(recoveryPreviewColumn("停止時の下書き", contents.draft),
           recoveryPreviewColumn("現在の作業ツリー", contents.worktree));
         details.dataset.loaded = "done";
       } catch (error) {
+        if (!isCurrentRecovery(opening)) return;
         preview.textContent = error.message;
         delete details.dataset.loaded;
       }
@@ -1262,7 +1271,9 @@ function renderRecoveryDraft(plan) {
 
 async function openRecoveryPlan(kind) {
   const runId = snapshot.run_id;
-  recoveryPlan = undefined;
+  if (!runId || !snapshot.ready) return;
+  const opening = {runId, kind};
+  recoveryOpening = opening;
   recoveryOptions.replaceChildren();
   recoveryDialogStatus.textContent = "復旧情報を読み込んでいます…";
   element("#recovery-dialog-title").textContent = kind === "draft" ? "復元する版を選ぶ" : "スクリプトの再試行";
@@ -1274,13 +1285,13 @@ async function openRecoveryPlan(kind) {
     const response = await runFetch(`recovery-plan?${query}`, {cache: "no-store"});
     if (!response.ok) throw await responseError(response);
     const plan = await response.json();
-    if (!recoveryDialog.open || snapshot.run_id !== runId) return;
-    recoveryPlan = {...plan, run_id: runId, kind};
+    if (!isCurrentRecovery(opening)) return;
+    opening.plan = plan;
     recoveryDialogStatus.textContent = "";
     if (kind === "draft") {
       element("#recovery-dialog-intro").textContent = "ファイルごとに再開時に使う版を選択してください。保存だけではファイルは変更されません。";
       recoverySubmit.textContent = "選択を保存";
-      renderRecoveryDraft(recoveryPlan);
+      renderRecoveryDraft(opening);
       recoverySubmit.disabled = false;
     } else {
       element("#recovery-dialog-intro").textContent = `${scriptPhases[plan.phase] || plan.phase} #${plan.number} · ${plan.log}。${plan.warning}`;
@@ -1296,22 +1307,27 @@ async function openRecoveryPlan(kind) {
       if (!plan.can_retry) recoveryDialogStatus.textContent = "現在の状態では再試行できません。実行結果と設定を確認してください。";
     }
   } catch (error) {
-    if (recoveryDialog.open && snapshot.run_id === runId) recoveryDialogStatus.textContent = error.message;
+    if (isCurrentRecovery(opening)) recoveryDialogStatus.textContent = error.message;
   }
 }
 
-element("#recovery-draft").addEventListener("click", () => openRecoveryPlan("draft"));
+recoveryDraftButton.addEventListener("click", () => openRecoveryPlan("draft"));
+reviewRecoveryDraft.addEventListener("click", () => {
+  dialog.close();
+  openRecoveryPlan("draft");
+});
 element("#recovery-script").addEventListener("click", () => openRecoveryPlan("script"));
 for (const selector of ["#recovery-dialog-close", "#recovery-cancel"]) {
-  element(selector).addEventListener("click", () => recoveryDialog.close());
+  element(selector).addEventListener("click", closeRecoveryPlan);
 }
-recoveryDialog.addEventListener("close", () => { recoveryPlan = undefined; });
+recoveryDialog.addEventListener("cancel", () => { recoveryOpening = undefined; });
 element("#recovery-form").addEventListener("submit", async event => {
   event.preventDefault();
-  const plan = recoveryPlan;
-  if (!plan || plan.run_id !== snapshot.run_id || !snapshot.ready) return;
-  const payload = {run_id: plan.run_id, kind: plan.kind, version: plan.version};
-  if (plan.kind === "draft") {
+  const opening = recoveryOpening;
+  if (!opening?.plan || !isCurrentRecovery(opening) || recoverySubmit.disabled) return;
+  const {runId, kind, plan} = opening;
+  const payload = {run_id: runId, kind, version: plan.version};
+  if (kind === "draft") {
     payload.choices = Object.fromEntries([...recoveryOptions.querySelectorAll('input[type="radio"]:checked')]
       .map(input => [input.dataset.target, input.value]));
   } else payload.confirmed = recoveryOptions.querySelector('input[name="confirmed"]').checked;
@@ -1321,13 +1337,13 @@ element("#recovery-form").addEventListener("submit", async event => {
     const response = await runFetch("recovery-plan", {method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload)});
     if (!response.ok) throw await responseError(response);
-    if (recoveryPlan !== plan) return;
-    recoveryDialog.close();
-    if (plan.kind === "draft" || staticDemo) renderRecovery(snapshot, true);
+    if (!isCurrentRecovery(opening)) return;
+    closeRecoveryPlan();
+    if (kind === "draft" || staticDemo) renderRecovery(snapshot, true);
   } catch (error) {
-    if (recoveryPlan === plan) recoveryDialogStatus.textContent = error.message;
+    if (isCurrentRecovery(opening)) recoveryDialogStatus.textContent = error.message;
   } finally {
-    if (recoveryPlan === plan) recoverySubmit.disabled = false;
+    if (isCurrentRecovery(opening)) recoverySubmit.disabled = false;
   }
 });
 
@@ -1341,7 +1357,7 @@ function renderRecovery(data, force = false) {
   const changedRun = !recoveryKey || !key || JSON.parse(recoveryKey)[0] !== data.run_id;
   recoveryKey = key;
   const request = ++recoveryRequest;
-  if (changedRun) panel.hidden = true;
+  if (changedRun) panel.hidden = reviewRecoveryDraft.hidden = true;
   if (!key) return;
 
   dashboardIO.fetch(`recovery?run_id=${encodeURIComponent(data.run_id)}`, {cache: "no-store"})
@@ -1352,14 +1368,17 @@ function renderRecovery(data, force = false) {
     .then(info => {
       if (request !== recoveryRequest || snapshot.run_id !== info.run_id || !snapshot.ready) return;
       panel.hidden = !info.available;
+      const canRestoreDraft = info.available && info.draft === "repair" && !info.needs_process_check;
+      reviewRecoveryDraft.hidden = recoveryDraftButton.hidden = !canRestoreDraft;
       if (!info.available) return;
       const completed = info.completed ?? "記録なし";
       const total = info.total ?? "記録なし";
       const saved = info.saved_targets ? "採用版の記録あり" : "採用版の記録なし";
       const draft = info.draft === "migration" ? "移行下書きあり"
         : info.draft === "repair" ? "修正下書きあり" : "下書きの記録なし";
+      const stage = statusNames[info.stage] || scriptPhases[info.stage] || info.stage;
       element("#recovery-checkpoint").textContent =
-        `保存済み区間: ${completed} / ${total} · 工程: ${statusNames[info.stage] || info.stage} · ${saved} · ${draft}`;
+        `保存済み区間: ${completed} / ${total} · 工程: ${stage} · ${saved} · ${draft}`;
       element("#recovery-reason").textContent = (data.message || data.error || "").split("\n", 1)[0].slice(0, 400);
       element("#recovery-pending").textContent =
         `未反映: 編集 ${info.pending_edits} 件、指示 ${info.pending_prompts} 件`;
@@ -1380,13 +1399,12 @@ function renderRecovery(data, force = false) {
       }
       if (info.unknown_script) {
         const script = info.unknown_script;
-        next = `実行結果不明: ${script.phase} #${script.number}。${script.log} と残存プロセスを確認してから再試行してください。自動では再実行しません。`;
+        next = `実行結果不明: ${scriptPhases[script.phase] || script.phase} #${script.number}。${script.log} と残存プロセスを確認してから再試行してください。自動では再実行しません。`;
       }
       element("#recovery-next").textContent = next;
       element("#recovery-editor").hidden = !snapshot.worktree_path;
-      const draftButton = element("#recovery-draft");
-      draftButton.hidden = info.draft !== "repair" || info.needs_process_check;
-      draftButton.textContent = info.draft_selected || info.draft_keyword_blocked ? "復元する版を選び直す" : "復元する版を選ぶ";
+      reviewRecoveryDraft.textContent = recoveryDraftButton.textContent = info.draft_selected || info.draft_keyword_blocked
+        ? "復元する版を選び直す" : "復元する版を選ぶ";
       element("#recovery-script").hidden = !info.unknown_script;
     })
     .catch(() => {
@@ -1403,6 +1421,7 @@ element("#recovery-editor")?.addEventListener("click", () => {
 
 function render() {
   const data = snapshot;
+  if (recoveryDialog.open && (!recoveryOpening || !isCurrentRecovery(recoveryOpening))) closeRecoveryPlan();
   renderTokens();
   document.documentElement.toggleAttribute("data-viewer-enabled", !!(data.worktree_path && data.diff_viewer_enabled));
   const showReview = checkerReviewStatuses.has(data.status)
@@ -1885,7 +1904,7 @@ element("#build-review-form").addEventListener("submit", async event => {
     if (current()) showControlError("build-response", error);
   }
 });
-for (const selector of ["#review-close", "#review-later"]) element(selector).addEventListener("click", () => dialog.close());
+element("#review-close").addEventListener("click", () => dialog.close());
 let stream;
 let streamGeneration = 0;
 // 古いSSEを閉じ、新しいRunの最初のイベントまで操作を保留する。
@@ -1897,9 +1916,11 @@ function connectRun(runId = "", {removed = false} = {}) {
   stream?.close();
   connected = false;
   selectedRunId = runId;
+  closeRecoveryPlan();
   recoveryKey = undefined;
   ++recoveryRequest;
   element("#recovery-summary").hidden = true;
+  reviewRecoveryDraft.hidden = true;
   document.dispatchEvent(new Event("harnessrunselect"));
   syncActions();
   const url = new URL(location.href);

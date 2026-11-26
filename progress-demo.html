@@ -716,11 +716,6 @@
     :is(.review-close, .review-action, .settings-remove, .editor-selection-remove):focus-visible { outline: 3px solid #7da5df; outline-offset: 2px; }
     .review-intro { margin: 12px 0 16px; color: var(--muted); font-size: 13px; }
     .review-finding { padding: 15px; border: 1px solid var(--amber-line); border-radius: 11px; background: var(--amber-soft); }
-    .review-finding-top { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
-    .review-rule-id, .review-severity { display: inline-flex; align-items: center; min-height: 23px; padding: 0 8px; border-radius: 6px; font-size: 10px; font-weight: 750; }
-    .review-rule-id { background: var(--paper); color: var(--ink); font-family: var(--mono); }
-    .review-severity { background: #d58b1b20; color: var(--amber); }
-    .review-finding h3 { margin: 10px 0 5px; font-size: 14px; }
     .review-finding > p { margin: 0; color: var(--amber-ink); font-size: 12px; }
     #checker-open-editor { margin-top: 12px; }
     .review-location { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 14px 0 10px; }
@@ -1205,7 +1200,7 @@
           <button type="button" class="button" id="rules-start">新しい下書き</button>
           <label>下書きを開く <select id="rules-drafts"><option value="">選択してください</option></select></label>
         </div>
-        <p id="rules-demo-note" hidden>デモ：Junieの返答はサンプルです。操作しても実際のファイルやTOMLは変更されません。</p>
+        <p id="rules-demo-note" hidden>デモ：Junieの返答はサンプルです。返信前に停止すると、終了を再確認する操作も試せます。実際のファイルやTOMLは変更されません。</p>
         <p id="rules-stop-error" role="alert" hidden></p>
         <button type="button" class="button" id="rules-retry-stop" hidden>終了を再確認</button>
         <p id="rules-status" role="status" aria-live="polite"></p>
@@ -1517,36 +1512,21 @@
           <p><strong>次にすること</strong><br><span id="checker-review-next">チェッカー出力を確認し、修正してほしい内容を「Junie への追加指示」に入力してください。</span></p>
         </div>
         <section class="review-finding" aria-label="チェッカーの指摘内容">
-          <div class="review-finding-top"><span class="review-rule-id">RULE RZ-017</span><span class="review-severity">警告 · 判断待ち</span></div>
-          <h3>共通化対象の状態変換がページ内に残っている可能性</h3>
-          <p>ページ固有でない変換処理は、共通の .cs 関数へ切り出すルールです。チェッカーはページ内での実装を検出しました。</p>
-          <div class="review-location">
-            <div><small>移行元</small><code>php/orders.php · get_status_label()</code></div>
-            <div><small>指摘箇所</small><code>Pages/Orders/Index.cshtml.cs</code><small>チェッカー報告 · 2行目</small></div>
-          </div>
-          <pre class="review-code"><code>ViewData["StatusText"] = GetStatusText(row.Status);</code></pre>
-          <p class="review-caveat">行番号はずれる場合があります。シンボル名とコード内容も合わせて確認してください。</p>
           <button class="review-action" id="checker-open-editor" type="button">エディタで修正</button>
         </section>
         <details class="review-context" id="checker-output-section" open>
           <summary>チェッカー出力</summary>
-          <pre class="review-code" id="checker-review-output" tabindex="0" aria-label="チェッカー出力">検査結果: 確認が必要です。
-  注文の状態変換がページ内に残っています。</pre>
+          <pre class="review-code" id="checker-review-output" tabindex="0" aria-label="チェッカー出力"></pre>
           <p id="checker-output-status" role="status"></p>
           <p><a id="checker-output-download" download="checker.log" hidden>出力をダウンロード</a></p>
         </details>
         <details class="review-context" id="checker-review-details">
           <summary>詳細ログ</summary>
-          <pre class="review-code" id="checker-review-technical" tabindex="0" aria-label="詳細ログ">チェッカーの終了コード 1
-  RZ-017: a previous checker finding is still present</pre>
+          <pre class="review-code" id="checker-review-technical" tabindex="0" aria-label="詳細ログ"></pre>
         </details>
-        <details class="review-context" id="review-demo-context">
-          <summary>この指摘を判断する材料</summary>
-          <p><strong>適用ルール:</strong> 複数ページで使う状態変換は共通関数にまとめる。<br><strong>確認点:</strong> <code>OrderStatusMap.ToLabel</code>の実装が共通 .cs にあり、変換処理が重複していないか確認する。</p>
-        </details>
-        <div data-live-only>
+        <div>
           <label class="review-note-label" for="review-note">判断理由（必須）</label>
-        <textarea class="review-note" id="review-note" placeholder="例：変換処理は OrderStatusMap.ToLabel に集約済み"></textarea>
+          <textarea class="review-note" id="review-note" required maxlength="2000" placeholder="例：共通関数へ委譲していることを差分で確認済み"></textarea>
         </div>
       </div>
       <footer class="checker-review-footer">
@@ -1562,7 +1542,6 @@
         <p class="review-caveat" id="checker-instruction-status" role="status"></p>
         <p class="review-caveat demo-comparison-status" id="review-anchor-status" role="status" data-demo-only></p>
         <div class="review-actions">
-          <button class="review-action" id="review-later" type="button">あとで確認</button>
           <div class="comparison-control">
             <button class="review-action" id="open-diff-viewer" type="button" data-compare>比較ツールを開く</button>
             <details class="comparison-options">
@@ -1571,7 +1550,8 @@
             </details>
           </div>
           <button class="review-action" id="review-accept" type="button">問題なしとして記録</button>
-          <button class="review-action" id="review-fix" type="button">Junieに修正を依頼</button>
+          <button class="review-action" id="review-recovery-draft" type="button" hidden>復元する版を選ぶ</button>
+          <button class="review-action" id="review-fix" type="button">同じ実行を再開</button>
         </div>
       </footer>
     </div>
@@ -2541,11 +2521,11 @@ function bindJunieLog(getRun, subscribe, {demo = false} = {}) {
 })();
 </script>
 <div id="static-demo" hidden></div>
-<script defer src="./src/migration_harness/web/dashboard_runs_demo.js"></script>
+<script defer src="./src/migration_harness/web/dashboard_runs_demo.js?v=2"></script>
 <script defer src="./src/migration_harness/web/dashboard_settings_demo.js"></script>
 <script defer src="./src/migration_harness/web/dashboard_editor_demo.js?polish=1"></script>
-<script defer src="./src/migration_harness/web/dashboard_rule_workspace_demo.js?polish=1"></script>
-<script defer src="./src/migration_harness/web/dashboard_demo.js?polish=4"></script>
+<script defer src="./src/migration_harness/web/dashboard_rule_workspace_demo.js?polish=2"></script>
+<script defer src="./src/migration_harness/web/dashboard_demo.js?polish=5"></script>
 <script defer src="./src/migration_harness/web/dashboard.js?polish=4"></script>
 <script defer src="./src/migration_harness/web/dashboard_editor.js?polish=2"></script>
 <script defer src="./src/migration_harness/web/dashboard_rule_workspace.js?polish=1"></script>

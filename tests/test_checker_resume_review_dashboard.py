@@ -23,7 +23,7 @@ from migration_harness.verification import build_receipt
 from migration_harness import cli, workflow
 from migration_harness.web import dashboard
 from migration_harness.junie import junie_cli
-from migration_harness.runs import run_records
+from migration_harness.runs import run_records, stopped_repair
 from migration_harness.runs.editor_queue import add_prompt, editor_queue, record_operator_edit
 from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope
 from migration_harness.web.settings_form import build_settings_draft
@@ -994,7 +994,7 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         with self.assertRaisesRegex(ValueError, "snapshot"):
             workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
         active.write_bytes(partial)
-        with patch.object(workflow, "write_run_record", side_effect=OSError("injected plan save failure")):
+        with patch.object(stopped_repair, "write_run_record", side_effect=OSError("injected plan save failure")):
             with self.assertRaisesRegex(OSError, "save failure"):
                 workflow.resolve_stopped_repair(self.config, self.run_id, plan["version"], choices)
         self.assertEqual(self.record()["repair_pending"]["draft"]["snapshot"], plan["snapshot"])

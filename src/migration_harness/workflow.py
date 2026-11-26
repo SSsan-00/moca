@@ -28,7 +28,6 @@ from .junie import junie_cli
 from .junie.acp_permissions import PinnedReferenceReads
 from .junie.reply_text import DuplicateJsonKey, load_unique_json, unwrap_json_fence
 from .verification.build_receipt import build_artifacts, build_inputs
-from .verification.csharp_keyword_guard import reject_keyword_changes
 from .verification.roslyn_syntax import syntax_diagnostics
 from .verification.verification_files import configured_verification_checker, verification_files, verification_scripts
 from .context import php_literals
@@ -75,7 +74,7 @@ from .runs.editor_queue import (
     stage_editor_adoption,
 )
 from .runs.reference_edits import recorded_reference_edit_overlap
-from .errors import format_error
+from .errors import CheckerRepairBlocked, format_error
 from .execution import (
     ConfiguredProcessIncomplete,
     build_process_scope,
@@ -110,6 +109,20 @@ from .context.source_context import (
     stage_target_context,
     target_context_inventory,
     target_context_snapshot,
+)
+from .runs.stopped_repair import (
+    plan_stopped_repair,
+    preview_stopped_repair,
+    recover_selected_repair,
+    require_repair_targets,
+    resolve_stopped_repair,
+)
+from .runs.target_snapshots import (
+    restore_snapshot_files as _restore_snapshot_files,
+    save_capsule_checkpoint as _save_capsule_checkpoint,
+    save_target_snapshot as _save_target_snapshot,
+    save_workspace_snapshot as _snapshot_stopped_repair,
+    verified_snapshot_files as _verified_target_snapshot,
 )
 from .runs.timings import freeze_timings
 from .runs.worktree_targets import (
@@ -2211,15 +2224,6 @@ def _build_worktree(
     }
 
 
-class CheckerRepairBlocked(ValueError):
-    """画面で案内する理由と、診断用の原文を保持する。"""
-
-    def __init__(self, reason: str, message: str) -> None:
-        """自動修正を止めた理由を保持する。"""
-        super().__init__(message)
-        self.reason = reason
-
-
 def _checker_repair_reason(error: BaseException) -> str:
     if isinstance(error, CheckerRepairBlocked):
         return error.reason
@@ -2493,12 +2497,6 @@ def _remember_repair_draft(record, draft):
         record.setdefault("stopped_repair_recovery", []).append(draft)
 
 
-def _snapshot_stopped_repair(run_path, agent_root, repair_targets, before, *, workspace_unchanged):
-    """停止時の生バイトと欠損状態を、再同期の対象外に保存する。"""
-    sources = {path.as_posix(): safe_target(agent_root, path) for path in repair_targets}
-    return _save_target_snapshot(run_path, sources, before, workspace_unchanged=workspace_unchanged)
-
-
 def _archive_stopped_migration(record):
     if draft := record.pop("stopped_migration_draft", None):
         record.setdefault("stopped_migration_history", []).append(draft)
@@ -2526,208 +2524,6 @@ def _save_stopped_migration(record_path, record, agent_root, targets, *, workspa
     record.update(updated)
 
 
-def _save_target_snapshot(run_path, sources, before, *, workspace_unchanged, stopped_snapshot=None, base_snapshot=None):
-    """移行、区間チェックポイント、修正で復元する生バイトと欠損を保存する。"""
-    name = f"stopped-repair-{uuid.uuid4().hex}"
-    root = run_path / name
-    root.mkdir(mode=0o700)
-    hashes = {}
-    for index, (name_in_run, source) in enumerate(sources.items()):
-        if source.is_file():
-            copy = root / f"{index}.draft"
-            shutil.copyfile(source, copy)
-            hashes[name_in_run] = sha256_file(copy)
-        else:
-            hashes[name_in_run] = None
-    draft = {
-        "snapshot": name, "base": before.copy(), "targets": hashes,
-        "workspace_unchanged": workspace_unchanged,
-    }
-    if stopped_snapshot is not None:
-        draft["stopped_snapshot"] = stopped_snapshot
-    if base_snapshot is not None:
-        draft["base_snapshot"] = base_snapshot
-    (root / "draft.json").write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
-    return draft
-
-
-def _save_capsule_checkpoint(run_path, worktree, targets, hashes):
-    sources = {path.as_posix(): safe_target(worktree, path) for path in targets}
-    checkpoint = _save_target_snapshot(run_path, sources, hashes, workspace_unchanged=True)
-    if checkpoint["targets"] != hashes:
-        raise ValueError("保存中に移行先が更新されました。")
-    return checkpoint
-
-
-def _verified_target_snapshot(run_path, draft):
-    """保存形式と対象のハッシュを照合し、復元に使うファイルを返す。"""
-    snapshot = draft.get("snapshot", "")
-    if not re.fullmatch(r"stopped-repair-[0-9a-f]{32}", snapshot):
-        raise ValueError("停止時の snapshot の名前が無効です。")
-    manifest = safe_target(run_path, Path(snapshot) / "draft.json")
-    draft_files = {key: value for key, value in draft.items() if key not in {"junie_memos", "junie_memo_warning"}}
-    if not manifest.is_file() or json.loads(manifest.read_bytes()) != draft_files:
-        raise ValueError("停止時の snapshot の記録が一致しません。")
-    files = {name: safe_target(run_path, Path(snapshot) / f"{index}.draft")
-             for index, name in enumerate(draft["targets"])}
-    if any(target_hash(path) != draft["targets"][name] for name, path in files.items()):
-        raise ValueError("停止時の snapshot の内容が一致しません。")
-    return files
-
-
-def _stopped_repair_source(run_path, record, attempt):
-    active = attempt.get("draft", {})
-    if "restore_from" not in attempt and "selection" not in attempt:
-        return active
-    _verified_target_snapshot(run_path, active)
-    history = record.get("stopped_repair_recovery", [])
-    if source_id := active.get("stopped_snapshot"):
-        source = next((item for item in history if item["snapshot"] == source_id), None)
-    else:
-        # 旧形式は選択ごとに直前の下書き・Junie版・作業版の順で3件を保存した。
-        # 選択が複数あり得る履歴には停止の境界がなく、元の版を推測しない。
-        source = history[-3] if 3 <= len(history) < 6 else None
-    if not source or source["targets"].keys() != active["targets"].keys():
-        raise ValueError("元の停止下書きを特定できません。Run の復旧履歴を確認してください。")
-    return source
-
-
-def _stopped_repair_plan(run_path, worktree, unit, record, queue):
-    """現在の作業版と下書きを照合し、復元対象を選ぶための計画を作る。"""
-    attempt = record.get("repair_pending", {})
-    draft = _stopped_repair_source(run_path, record, attempt)
-    if not draft.get("snapshot") or not draft.get("workspace_unchanged"):
-        raise ValueError("復元できる停止時の下書きがありません。Run の記録を確認してください。")
-    if record.get("target_apply_pending") or queue["edits"] or any(
-        prompt["status"] != "sent" for prompt in queue["prompts"]
-    ):
-        raise ValueError("未反映の保存操作または Junie 指示があります。")
-    targets = target_paths(unit)
-    names = {path.as_posix() for path in targets}
-    if set(draft["base"]) != names or not draft["targets"] or not draft["targets"].keys() <= names:
-        raise ValueError("停止時の下書きと設定の対象範囲が一致しません。")
-    agent = run_path / "agent-workspace"
-    if agent.is_symlink() or not agent.is_dir() or not agent.resolve().is_relative_to(run_path):
-        raise ValueError("Junie 作業領域を確認してください。")
-    current = {path.as_posix(): safe_target(worktree, path) for path in targets}
-    agent_files = {name: safe_target(agent, Path(name)) for name in draft["targets"]}
-    snapshot_files = _verified_target_snapshot(run_path, draft)
-    plan = {
-        "snapshot": draft["snapshot"], "base": draft["base"], "draft": draft["targets"],
-        "worktree": {name: target_hash(path) for name, path in current.items()},
-        "agent": {name: target_hash(path) for name, path in agent_files.items()},
-        "edit_revision": queue.get("edit_revision"),
-    }
-    if draft["snapshot"] != attempt["draft"]["snapshot"]:
-        plan["selected_snapshot"] = attempt["draft"]["snapshot"]
-    plan["version"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode("utf-8")).hexdigest()
-    return plan, current, agent_files, snapshot_files
-
-
-def plan_stopped_repair(config, run_id):
-    """保全・手修正・Junie作業版の版を読み取り、選択前の状態を返す。"""
-    run_id = str(uuid.UUID(run_id))
-    with execution_lock(config, run_id):
-        run_path, worktree, record, unit = load_saved_run(config, run_id)
-        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
-            plan, _, _, _ = _stopped_repair_plan(run_path, worktree, unit, record, queue)
-    return plan
-
-
-def preview_stopped_repair(config, run_id, version, target):
-    run_id = str(uuid.UUID(run_id))
-    with execution_lock(config, run_id):
-        run_path, worktree, record, unit = load_saved_run(config, run_id)
-        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
-            plan, current, _, saved = _stopped_repair_plan(run_path, worktree, unit, record, queue)
-            if plan["version"] != version or target not in saved:
-                raise ValueError("復旧対象が更新されました。復元計画を取り直してください。")
-
-            def read(file, expected):
-                if expected is None:
-                    return {"text": None, "truncated": False}
-                with file.open("rb") as stream:
-                    data = stream.read(64 * 1024 + 1)
-                if target_hash(file) != expected:
-                    raise ValueError("対象が更新されました。復元計画を取り直してください。")
-                return {"text": data[:64 * 1024].decode("utf-8-sig", errors="replace"),
-                        "truncated": len(data) > 64 * 1024}
-
-            return {"target": target, "draft": read(saved[target], plan["draft"][target]),
-                    "worktree": read(current[target], plan["worktree"][target])}
-
-
-def resolve_stopped_repair(config, run_id, version, choices):
-    """対象ごとの選択を固定し、編集済みの二つの作業領域はその場で変更しない。"""
-    run_id = str(uuid.UUID(run_id))
-    with execution_lock(config, run_id):
-        run_path, worktree, record, unit = load_saved_run(config, run_id)
-        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
-            plan, current, agent, snapshot = _stopped_repair_plan(run_path, worktree, unit, record, queue)
-            if plan["version"] != version:
-                raise ValueError("下書きまたは現行版が更新されました。復元計画を取り直してください。")
-            if choices.keys() != snapshot.keys() or set(choices.values()) - {"draft", "worktree"}:
-                raise ValueError("復元対象すべてに draft または worktree を指定してください。")
-            if None in plan["worktree"].values():
-                raise ValueError("作業ツリーの欠損を手動で復元してから計画し直してください。")
-            _check_reselected_repair(run_path, record, plan, choices)
-            sources = {name: snapshot[name] if choices[name] == "draft" else current[name] for name in snapshot}
-            agent_backup = _save_target_snapshot(run_path, agent, plan["worktree"], workspace_unchanged=True)
-            worktree_backup = _save_target_snapshot(
-                run_path, {name: current[name] for name in snapshot}, plan["worktree"], workspace_unchanged=True,
-            )
-            selected = _save_target_snapshot(run_path, sources, plan["worktree"], workspace_unchanged=True,
-                                             stopped_snapshot=plan["snapshot"], base_snapshot=worktree_backup["snapshot"])
-            if (agent_backup["targets"] != plan["agent"]
-                    or any(worktree_backup["targets"][name] != plan["worktree"][name] for name in snapshot)
-                    or any(selected["targets"][name] != plan[choices[name]][name] for name in choices)
-                    or any(target_hash(path) != plan["worktree"][name] for name, path in current.items())):
-                raise ValueError("保存中に対象が更新されました。復元計画を取り直してください。")
-            attempt = record["repair_pending"]
-            record.setdefault("stopped_repair_recovery", []).extend((attempt["draft"], agent_backup, worktree_backup))
-            attempt["draft"] = selected
-            attempt.pop("selection", None)
-            attempt["restore_from"] = plan["agent"]
-            attempt.pop("stopped_draft_save_failed", None)
-            if record.get("checker_review_reason") == "stopped_draft_keyword":
-                record.pop("checker_review_reason")
-                record.pop("error", None)
-            write_run_record(run_path / "run.json", record)
-
-
-def _restore_snapshot_files(sources, destinations, expected, selected, *, preserve_mode=False):
-    # A retry can see either the original version or the version already restored by this plan.
-    """既に復元済みの対象を識別し、想定した版からだけ残りを反映する。"""
-    hashes = {name: target_hash(file) for name, file in destinations.items()}
-    if any(hashes[name] not in (expected[name], selected.get(name, expected[name])) for name in hashes):
-        raise ValueError("復元対象が更新されました。進捗画面で復元計画を取り直してください。")
-    for name, source in sources.items():
-        destination = destinations[name]
-        digest = selected[name]
-        if hashes[name] == digest:
-            continue
-        if digest is None:
-            if target_hash(destination) != hashes[name]:
-                raise ValueError("復元中に対象が更新されました。")
-            destination.unlink()
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=destination.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-        try:
-            shutil.copyfile(source, temporary)
-            if target_hash(temporary) != digest or target_hash(destination) != hashes[name]:
-                raise ValueError("復元中に対象が更新されました。")
-            if hashes[name] is None:
-                os.link(temporary, destination)
-            else:
-                if preserve_mode:
-                    shutil.copymode(destination, temporary)
-                temporary.replace(destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-
 def _restore_snapshot_targets(run_path, attempt, agent_files, before, record):
     """合意済みの版をJunie作業領域へ復元し、完了した復元計画を消す。"""
     draft = attempt["draft"]
@@ -2743,151 +2539,12 @@ def _restore_snapshot_targets(run_path, attempt, agent_files, before, record):
         raise CheckerRepairBlocked("stopped_draft", f"停止時の下書きを復元できません: {exc}") from exc
 
 
-def _stage_repair_adoption(staging, snapshot, draft):
-    sources, adopted, partial = {}, {}, []
-    for index, (name, source) in enumerate(snapshot.items()):
-        digest = draft["targets"][name]
-        if digest == draft["base"][name]:
-            continue
-        if digest is None:
-            partial.append(name)
-            continue
-        data = source.read_bytes()
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise ValueError("停止時の snapshot の内容が一致しません。")
-        try:
-            data.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            partial.append(name)
-            continue
-        if not data.startswith(codecs.BOM_UTF8):
-            source = Path(staging) / str(index)
-            source.write_bytes(codecs.BOM_UTF8 + data)
-            digest = sha256_file(source)
-        sources[name] = source
-        adopted[name] = digest
-    return sources, adopted, partial
-
-
-def _check_repair_adoption(run_path, record, draft, sources, adopted):
-    if not adopted:
-        return
-    history = record.get("stopped_repair_recovery", ())
-    if snapshot_id := draft.get("base_snapshot"):
-        baseline = next((saved for saved in reversed(history) if saved["snapshot"] == snapshot_id), {})
-    else:
-        # Older plans stored the worktree backup last, immediately before saving the selection.
-        baseline = history[-1] if history else {}
-    expected = draft["base"]
-    if (baseline.get("base") != expected
-            or baseline.get("targets") != {name: expected[name] for name in draft["targets"]}):
-        raise ValueError("復元前の作業ツリー版を確認できません。進捗画面で復元計画を取り直してください。")
-    original = _verified_target_snapshot(run_path, baseline)
-    versions = {name: {"before": expected[name], "after": digest} for name, digest in adopted.items()}
-    try:
-        reject_keyword_changes(versions, before_path=original.__getitem__, after_path=sources.__getitem__)
-    except ValueError as exc:
-        raise CheckerRepairBlocked(
-            "stopped_draft_keyword",
-            f"停止時の下書きを復元できません: {exc} 進捗画面で作業ツリーを選び直すか、手修正を保存して計画し直してください。",
-        ) from exc
-
-
-def _check_reselected_repair(run_path, record, plan, choices):
-    attempt = record["repair_pending"]
-    if "restore_from" not in attempt and not attempt.get("selection"):
-        return
-    previous = attempt["draft"]
-    # An earlier release could have written this exact draft before stopping. Selecting it
-    # again must not turn it into a manual edit or make it the baseline for its own check.
-    candidates = [name for name in previous["targets"] if plan["worktree"][name] != previous["base"][name]
-                  and (choices[name] == "worktree" or plan["draft"][name] == previous["targets"][name])]
-    if not candidates:
-        return
-    snapshot = _verified_target_snapshot(run_path, previous)
-    with TemporaryDirectory(dir=run_path) as staging:
-        sources, adopted, _ = _stage_repair_adoption(staging, {name: snapshot[name] for name in candidates}, previous)
-        still_applied = {name: digest for name, digest in adopted.items() if digest == plan["worktree"][name]}
-        _check_repair_adoption(run_path, record, previous, sources, still_applied)
-
-
-def _recover_selected_repair(run_path, worktree, targets, record):
-    """保存した下書き選択を再照合し、中断していた復元を再開する。"""
-    attempt = record.get("repair_pending", {})
-    restoring = "restore_from" in attempt
-    selection = attempt.get("selection")
-    if not restoring and not selection:
-        return
-    draft = attempt["draft"]
-    agent_root = run_path / "agent-workspace"
-    try:
-        with editor_queue(run_path) as queue, worktree_source_lock(worktree):
-            if queue["edits"] or any(prompt["status"] != "sent" for prompt in queue["prompts"]):
-                raise ValueError("未反映の保存操作または Junie 指示があります。")
-            names = {path.as_posix() for path in targets}
-            if (draft["base"].keys() != names or not draft["targets"]
-                    or not draft["targets"].keys() <= names or not draft["workspace_unchanged"]
-                    or restoring and attempt["restore_from"].keys() != draft["targets"].keys()):
-                raise ValueError("停止時の下書きと設定の対象範囲が一致しません。")
-            if agent_root.is_symlink() or not agent_root.is_dir() or not agent_root.resolve().is_relative_to(run_path):
-                raise ValueError("Junie 作業領域を確認してください。")
-            snapshot = _verified_target_snapshot(run_path, draft)
-            agent_files = {name: safe_target(agent_root, Path(name)) for name in snapshot}
-            worktree_files = {name: safe_target(worktree, Path(name)) for name in draft["base"]}
-            if not restoring:
-                if (any(target_hash(file) != selection["base"][name] for name, file in worktree_files.items())
-                        or any(target_hash(file) != draft["targets"][name] for name, file in agent_files.items())):
-                    raise ValueError("現行版が更新されました。進捗画面で復元計画を取り直してください。")
-            # 検証可能な選択版を先に反映する。欠損や未完成の文字コードは Junie の入力として保つ。
-            with TemporaryDirectory(dir=run_path) as staging:
-                sources, adopted, partial = _stage_repair_adoption(staging, snapshot, draft)
-                expected = draft["base"]
-                if restoring and any(target_hash(file) not in (expected[name], adopted.get(name, expected[name]))
-                                     for name, file in worktree_files.items()):
-                    raise ValueError("作業ツリーが更新されました。進捗画面で復元計画を取り直してください。")
-                _check_repair_adoption(run_path, record, draft, sources, adopted)
-                if not restoring:
-                    return
-                _restore_snapshot_files(snapshot, agent_files, attempt["restore_from"], draft["targets"])
-                _restore_snapshot_files(sources, worktree_files, expected, adopted, preserve_mode=True)
-            recovered_base = {**expected, **adopted}
-            attempt["selection"] = {"base": recovered_base, "partial": partial}
-            if adopted:
-                record["target_hashes"] = recovered_base
-                record["target_sha256"] = recovered_base[Path(record["target"]).as_posix()]
-            # 途中で失敗しても、保存済み計画からすでに復元したファイルを照合して再試行できる。
-            previous = attempt.pop("restore_from")
-            try:
-                write_run_record(run_path / "run.json", record)
-            except OSError:
-                attempt["restore_from"] = previous
-                attempt.pop("selection")
-                raise
-    except CheckerRepairBlocked:
-        raise
-    except (OSError, ValueError) as exc:
-        raise CheckerRepairBlocked("stopped_draft", f"停止時の下書きを復元できません: {exc}") from exc
-
-
-def _check_selected_repair_targets(record, repair_targets):
-    selection = record.get("repair_pending", {}).get("selection")
-    if selection:
-        unresolved = set(selection["partial"]) - {path.as_posix() for path in repair_targets}
-        if unresolved:
-            raise CheckerRepairBlocked(
-                "stopped_draft",
-                "今回の修正対象外に復元した欠損または UTF-8 にできない下書きがあります。"
-                "進捗画面で作業ツリーを選び直すか、手修正を保存して計画し直してください。"
-                f" 対象: {', '.join(sorted(unresolved))}",
-            )
-
-
 def _repair_target(
     config: dict[str, Any], targets: tuple[Path, ...], repair_targets: tuple[Path, ...],
     worktree: Path, run_path: Path, findings: str, record: dict[str, Any],
 ) -> None:
     """全移行先の現行版を渡し、今回の修正対象だけを作業ツリーに反映する。"""
-    _check_selected_repair_targets(record, repair_targets)
+    require_repair_targets(record, repair_targets)
     attempt = record["repair_pending"]
     if "restore_from" in attempt:
         raise CheckerRepairBlocked("stopped_draft", "保存した復元計画を通常の再開で反映してください。")
@@ -3867,7 +3524,7 @@ def _run_verification(
     original_versions = record.get("target_hashes", {}).copy()
     try:
         if not explicit_build:
-            _recover_selected_repair(run_path, worktree, targets, record)
+            recover_selected_repair(run_path, worktree, targets, record)
     except CheckerRepairBlocked as exc:
         error = str(exc) if exc.reason == "stopped_draft_keyword" else format_error(exc)
         record.update(error=error, checker_review_reason=exc.reason)
@@ -3961,7 +3618,7 @@ def _run_verification(
         if command is None:
             if not explicit_build:
                 try:
-                    _check_selected_repair_targets(record, ())
+                    require_repair_targets(record, ())
                 except CheckerRepairBlocked as exc:
                     record.update(status="build_failed", error=format_error(exc))
                     write_run_record(record_path, record)
@@ -3996,14 +3653,14 @@ def _run_verification(
                     raise CheckerRepairBlocked("verification_inputs_changed", "Migration targets changed after the build; verify again")
                 checked = _apply_checker_pass(run_path, checked, record)
             if checked["status"] == "checker_succeeded":
-                _check_selected_repair_targets(record, ())
+                require_repair_targets(record, ())
                 _finish_repair_attempt(record)
             save_verification()
             remaining = _remaining_checker_findings(record, checked, findings, use_raw_output)
             if remaining is None:
                 return checked
             if not remaining and not use_raw_output:
-                _check_selected_repair_targets(record, ())
+                require_repair_targets(record, ())
                 record["status"] = "checker_accepted"
                 _finish_repair_attempt(record)
                 save_verification()

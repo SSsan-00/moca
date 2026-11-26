@@ -83,7 +83,7 @@ before_build・対象 hash と設定を記録]
 終了コード取得時 after_checker]
         Judge{応答と指摘を判定}
         Verified{検証成功
-ビルドのみ、またはチェッカー成功・有効承認}
+設定済みのビルド・検証が成功<br/>チェッカーの有効承認も可}
         Repairable{対象を特定でき、反復・上限内}
         Repair[Junie が対象移行先を修正
 修正前診断と履歴を保存]
@@ -291,7 +291,7 @@ sequenceDiagram
 ### Junie が読む内容
 
 - 初回の作業領域作成前に `before_migration` と単位別の `draft_imports` を実行します。初回編集前に詳細ルールの説明を全移行範囲と照合し、判定に詳細本文が必要な場合はハッシュを検証して読ませます。全件の ID・適用可否・理由を検証して `detail_applicability` に保存します。毎回必須のルールは本文を渡し、適用対象と移行先が明記された詳細の原文や、参考実装の索引を作業領域に配置します。 [workflow.py](../src/migration_harness/workflow.py) · [rule_materials.py](../src/migration_harness/rules/rule_materials.py)
-- 移行先周辺の参照は、移行先の親、親と同階層の `inc`、その上の階層にある `Libs`・`Extensions` を起点に収集します。フック実行後の worktree から `capsule/target-context/` に初回固定します。通常の再開時だけ、保存済みの収集条件で worktree の参考ファイルを照合します。変更があれば新しい版とルール判定を用いて既存の移行先を見直し、手修正との競合は人に戻します。元PHPの読み直しや、ビルドのみ・チェッカーのみ・区間巻き戻しでの収集し直しは行いません。 [source_context.py](../src/migration_harness/context/source_context.py)
+- 移行先周辺の参照は、移行先の親、親と同階層の `inc`、その上の階層にある `Libs`・`Extensions` を起点に収集します。フック実行後の worktree から `capsule/target-context/` に初回固定します。通常の再開時だけ、保存済みの収集条件で worktree の参考ファイルを照合します。変更があれば新しい版とルール判定を用いて既存の移行先を見直し、手修正との競合は人に戻します。元PHPは準備時の版を維持し、画面でビルド・チェッカーから再開するときは収集し直しません。 [source_context.py](../src/migration_harness/context/source_context.py)
 - カプセルごとに `.migration-context.md`、必要なら `.migration-boundary.md`、分割時は処理中の区間までの担当原文を渡します。境界資料は前後関係の参照用です。最終区間では関数をまたいだ分割箇所も原文と合わせて照合するよう指示します。Junie に指示する検証はソースの静的確認で、ビルドと設定済みの外部チェッカーは後段でハーネスが実行します。 [workflow.py](../src/migration_harness/workflow.py) · [php_literals.py](../src/migration_harness/context/php_literals.py)
 
 ### プロセスと成果物の受け渡し
@@ -306,7 +306,7 @@ sequenceDiagram
 
 `migration-complete-<token>.txt` の内容と全移行先の存在を照合してから完了数を増やします。終了コードは診断情報として記録します。トークン未発行や停止時も、対象外変更や版の照合を通過した下書きは保存される場合があります。終了確認済みで対象外を変更していない停止下書きには、原文と版を照合した任意メモを紐づけられます。再開で版が合う場合も未確認の手がかりとしてだけ渡し、進捗に数えません。オペレーターへの質問を保存する経路では、回答を待つチェックポイントに入ります。 [workflow.py](../src/migration_harness/workflow.py)
 
-`apply_agent_targets` は作業中に worktree が変更されていないかを確認し、Junie 出力を UTF-8 として検証して BOM 付きにそろえます。変更ファイルの旧・新 SHA-256 を `target_apply_pending` に先に保存し、同じディレクトリ内の一時ファイルから 1 ファイルずつ置換します。復旧時に worktree が新ハッシュなら適用済み、旧ハッシュかつ Junie 側が新ハッシュなら再適用できます。それ以外の外部変更があれば停止します。 [worktree_targets.py](../src/migration_harness/runs/worktree_targets.py)
+`apply_agent_targets` は作業中に worktree が変更されていないかを確認し、Junie 出力を UTF-8 として検証して BOM 付きにそろえます。新規の予約語エスケープ付き宣言も確認してから、変更ファイルの旧・新 SHA-256 を `target_apply_pending` に先に保存し、同じディレクトリ内の一時ファイルから 1 ファイルずつ置換します。復旧時に worktree が新ハッシュなら適用済み、旧ハッシュかつ Junie 側が新ハッシュなら再適用できます。それ以外の外部変更があれば停止します。 [worktree_targets.py](../src/migration_harness/runs/worktree_targets.py)
 
 ### ブラウザーからの介入
 
@@ -421,7 +421,7 @@ flowchart TD
 | 設定スクリプトの失敗 | `script_phase`、終了情報、工程ログから失敗したコマンドを確認します。worktree 作成済みなら該当工程を再開できます。 |
 | Junie の中断・編集待ち | `current_capsule`、`completed_capsules`、`operator_question`、`editor.json` と移行先の版を確認します。終了未確認のエラーでは先に残存プロセスの終了を確認します。 |
 | ビルド・チェッカー失敗 | `build.log` または `checker.log`、`repair_history` と理由を確認します。チェッカーを必要とする Run は再開時にもチェッカーの設定が必要です。 |
-| 一部のファイル反映後に停止 | `target_apply_pending` の旧・新ハッシュと現物を照合して、未反映分を復旧します。外部更新によりどちらの版にも一致しない場合は内容の照合が必要です。 |
+| 一部のファイル反映後に停止 | `target_apply_pending` の旧・新ハッシュと現物を照合し、未反映分を復旧します。停止した修正下書きを選択した場合は、復元前の作業ツリー版と予約語宣言を照合してから反映します。外部変更時は対象の版を再確認します。 [target_snapshots.py](../src/migration_harness/runs/target_snapshots.py) · [stopped_repair.py](../src/migration_harness/runs/stopped_repair.py) |
 
 ## 8. 保存データと並行処理の境界
 
@@ -447,4 +447,4 @@ Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合�
 
 CI では Windows の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモの3件が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
 
-Windows の回帰テストは `conversation-editor`（会話、HTTP エディタ、並行 Run、参考資料の追従）および Node.js・ブラウザーを使うテストを含む `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python バージョンごとの ID 集合、skip 理由、最長ジョブの実測を比較し、ジョブ名を変える場合は `.github/codex/issue.py` も更新します。
+Windows の回帰テストは `conversation-editor`（会話と途中追加指示、HTTP エディタと .NET 9 診断、並行 Run、参考資料の追従）および Node.js・ブラウザーを使うテストを含む `remaining` に分けています。新しいテストは自動検出され、各 ID がどちらか一方に入ることを確認します。ジョブの `TEST_TIME` 行はテスト ID と実行時間を表します。手元では `python tests/run_shard.py full --timings` で時間を取得できます。分割を調整するときは Python バージョンごとの ID 集合、skip 理由、最長ジョブの実測を比較し、ジョブ名を変える場合は `.github/codex/issue.py` も更新します。
