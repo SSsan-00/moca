@@ -88,8 +88,36 @@ window.harnessDemoTransport = (() => {
   }
 
   const controls = new Set(["run", "stop", "cancel-queued", "hide-run", "resume-run"]);
+  const validations = new Map();
+  function validate({unit_id, request_id}) {
+    const {units, project} = settings.read().form;
+    const unit = units.find(item => item.id === unit_id);
+    if (!unit || !request_id || validations.has(request_id)) throw Error("移行単位を選び直してください。");
+    const checks = [
+      {phase: "移行元", state: unit.source ? "unchecked" : "error",
+        detail: unit.source ? "デモに設定したパス" : "移行元が未設定です。", path: unit.source},
+      {phase: "移行先", state: unit.targets.length ? "unchecked" : "error",
+        detail: unit.targets.length ? "デモに設定したパス" : "移行先が未設定です。", path: unit.targets.join(" / ")},
+      {phase: "実行環境", state: "unchecked", detail: "Git、Junie、ビルド、チェッカーは起動しません。"},
+    ];
+    return new Promise(resolve => {
+      const finish = result => {
+        clearTimeout(timer);
+        validations.delete(request_id);
+        resolve(result);
+      };
+      const timer = setTimeout(() => finish({simulated: true, unit_id, base_ref: project.base_ref || "HEAD", checks}), 1500);
+      validations.set(request_id, () => finish({cancelled: true}));
+    });
+  }
+
   async function control(body, run) {
     const action = body.action === "resume" ? "resume-run" : body.action;
+    if (action === "dry-run") return validate(body);
+    if (action === "dry-run-cancel") {
+      validations.get(body.request_id)?.();
+      return {};
+    }
     if (action === "accept" && run?.status === "checker_needs_review" && body.finding_id === "format-date" && body.reason?.trim()) {
       accepted.add(run.run_id);
       runs.select(run.run_id);
