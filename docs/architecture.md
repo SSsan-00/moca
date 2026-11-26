@@ -120,14 +120,12 @@ before_build・対象 hash と設定を記録]
     Finished --> AfterMig
     MigStop -.->|resume: 状態・ハッシュ照合後| Part
     VerifyStop -.->|resume: ビルドから再検証| BeforeBuild
-    NotComplete -.->|レビュー記録後に再判定| Snapshot
     Complete --> End[Run の処理完了]
 
     User[利用者
 ダッシュボード]
     User -.->|編集・追加指示・質問回答・停止| Intervention
     User -.->|検証依頼・指摘確認| BeforeBuild
-    User -.->|対応範囲の確認と理由記録| Review
     RunData[("run_root<br/>run.json・manifest・ログ<br/>editor.json・review-snapshots")]
     Agent[("agent-workspace<br/>Junie の下書き・資料")]
     Tree[("worktree_root / Run ID<br/>移行後アプリ")]
@@ -146,7 +144,6 @@ before_build・対象 hash と設定を記録]
     Applied --> RunData
     Checkpoint --> RunData
     Verified --> RunData
-    Review --> RunData
     RunData -.->|保存状態と再開位置| Part
 ```
 
