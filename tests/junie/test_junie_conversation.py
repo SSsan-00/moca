@@ -425,9 +425,7 @@ class JunieConversationTests(SavedRunFixture):
         second = self.worktree / "Second.cs"
         second.write_text("class Accepted {}", encoding="utf-8")
         names = [self.target.name, second.name]
-        self.config["units"][0]["targets"] = names
-        self.save_record({**self.record(), "targets": names, "status": "prepared",
-                          "completed_capsules": 0, "current_capsule": 1})
+        self.set_fixture_targets(names, status="prepared", completed_capsules=0, current_capsule=1)
 
         def interrupted(_command, _completion, _token, targets, **_kwargs):
             targets[0].write_bytes(b"partial\xff")
