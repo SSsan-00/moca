@@ -364,5 +364,10 @@ function bindRunManager({readRuns, execute, canAct, preparationChat = false}) {
   }, 1500);
   refresh();
   return {refresh, sync, get busy() { return data.busy; },
-    setSelected(runId) { selectedRun = runId || ""; render(); }};
+    setSelected(runId) {
+      const next = runId || "";
+      if (next === selectedRun) return;
+      selectedRun = next;
+      render();
+    }};
 }

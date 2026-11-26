@@ -1948,8 +1948,10 @@ function connectRun(runId = "", {removed = false} = {}) {
     };
     stream.onmessage = event => {
       if (generation !== streamGeneration) return;
+      const reconnected = !connected;
       connected = true;
       receiveProgress(event);
+      if (reconnected) syncActions();
       if (!received) {
         received = true;
         document.dispatchEvent(new Event("harnessrunchange"));
