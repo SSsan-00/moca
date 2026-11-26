@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -163,7 +164,7 @@ class BuildReceiptCompatibilityTests(unittest.TestCase):
             scan.assert_not_called()
             artifacts.assert_not_called()
 
-    def test_verified_receipt_is_invalid_after_artifact_bytes_change(self):
+    def test_verified_receipt_fails_closed_after_artifact_changes_or_io_errors(self):
         with TemporaryDirectory() as folder:
             root = Path(folder).resolve()
             worktree = root / "tree"
@@ -198,3 +199,30 @@ class BuildReceiptCompatibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "成果物が変更または削除"):
                     build_receipt.check_build_receipt(config, worktree, json.loads(persisted))
                 self.assertEqual(path.read_bytes(), persisted)
+                assembly.write_bytes(b"fixture output")
+                record = json.loads(persisted)
+                original_scan = os.scandir
+                original_hash = build_receipt.sha256_file
+
+                @contextmanager
+                def remove_after_listing(directory):
+                    with original_scan(directory) as entries:
+                        yield entries
+                    if directory == assembly.parent:
+                        assembly.unlink()
+
+                def unavailable(file, *, check=None):
+                    if file == assembly:
+                        raise PermissionError("synthetic sharing/read failure")
+                    return original_hash(file, check=check)
+
+                for operation in (
+                    patch.object(build_receipt.os, "scandir", side_effect=remove_after_listing),
+                    patch.object(build_receipt, "sha256_file", side_effect=unavailable),
+                ):
+                    with operation, self.assertRaisesRegex(ValueError, "成果物が変更または削除"):
+                        build_receipt.check_build_receipt(config, worktree, record)
+                    self.assertEqual(path.read_bytes(), persisted)
+                    self.assertEqual(record["checker_build"], receipt)
+                    assembly.write_bytes(b"fixture output")
+                self.assertEqual(build_receipt.check_build_receipt(config, worktree, record), receipt)
