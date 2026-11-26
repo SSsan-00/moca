@@ -97,7 +97,7 @@ function waitForExit(chrome, timeout) {
   });
 }
 
-async function closeBrowser(chrome) {
+async function closeBrowser(chrome, parentJobOwnsChildren = false) {
   try {
     if (socket?.readyState === WebSocket.OPEN) {
       // Browser.close may close DevTools before replying. Wait for the process, not a CDP reply.
@@ -110,7 +110,12 @@ async function closeBrowser(chrome) {
     if (!await waitForExit(chrome, 1_500)) {
       trace("Chromium did not exit after close; stopping the test process");
       chrome.kill();
-      if (!await waitForExit(chrome, 1_500)) throw new Error("Chromium did not exit after termination");
+      if (!await waitForExit(chrome, 1_500)) {
+        if (!parentJobOwnsChildren) throw new Error("Chromium did not exit after termination");
+        trace("Chromium still present; the parent Windows Job will verify termination");
+        chrome.stderr.destroy();
+        chrome.unref();
+      }
     }
   } finally {
     socket?.close();
@@ -220,6 +225,6 @@ export async function finishBrowser(chrome, success) {
   if (success) finishPhase();
   phase = null;
   beginPhase("Chromium teardown");
-  await closeBrowser(chrome);
+  await closeBrowser(chrome, process.platform === "win32" && process.env.MOCA_BROWSER_JOB_OWNS_CHILDREN === "1");
   finishPhase();
 }

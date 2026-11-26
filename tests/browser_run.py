@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import time
@@ -24,7 +25,8 @@ def run_browser(command, *, timeout):
         expired = False
         cleanup_error = None
         try:
-            child = subprocess.Popen(command, stdout=output, stderr=errors, creationflags=CREATE_SUSPENDED)
+            env = {**os.environ, "MOCA_BROWSER_JOB_OWNS_CHILDREN": "1"}
+            child = subprocess.Popen(command, stdout=output, stderr=errors, creationflags=CREATE_SUSPENDED, env=env)
             try:
                 job.start(child)
             except BaseException:

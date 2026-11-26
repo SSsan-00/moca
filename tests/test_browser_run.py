@@ -62,6 +62,11 @@ class BrowserRunnerTests(unittest.TestCase):
         result = run_browser([sys.executable, "-c", "print('browser finished')"], timeout=5)
         self.assertEqual((result.returncode, result.stdout.strip(), result.stderr), (0, "browser finished", ""))
 
+    def test_successful_launcher_still_reaps_a_browser_left_to_the_parent_job(self):
+        result = run_browser([sys.executable, "-c", _CHILD], timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_owned_child_stopped(result.stdout)
+
     def test_rule_draft_waits_and_diagnostics(self):
         script = Path(__file__).with_name("chromium_waits_test.mjs")
         result = run_browser([node_executable(self), "--test", str(script)], timeout=15)
