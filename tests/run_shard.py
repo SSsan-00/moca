@@ -65,6 +65,13 @@ REQUIRED_WINDOWS_RECOVERY = {
 }
 
 
+REQUIRED_CONTROL_FLOW = {
+    "test_migration_control_flow.MigrationControlFlowTests.test_pinned_cli_projects_match_change_and_uncertainty_with_real_roslyn",
+    "test_migration_control_flow.MigrationControlFlowTests.test_stale_pin_invalid_path_or_ai_candidate_cannot_pass",
+    "test_migration_control_flow.ModeledInputTests.test_distinguishes_each_order_and_equality_inside_open_intervals",
+}
+
+
 class RegressionResult(unittest.TextTestResult):
 
     def __init__(self, *args, **kwargs):
@@ -143,7 +150,10 @@ def main():
     missing_recovery = REQUIRED_WINDOWS_RECOVERY - result.passed if args.shard != "conversation-editor" else set()
     if missing_recovery:
         print("Required Windows recovery checks did not pass: " + ", ".join(sorted(missing_recovery)))
-    return 0 if result.wasSuccessful() and not (missing_ui or missing_models or missing_recovery) else 1
+    missing_flow = REQUIRED_CONTROL_FLOW - result.passed if args.shard != "conversation-editor" else set()
+    if missing_flow:
+        print("Required static control-flow checks did not pass: " + ", ".join(sorted(missing_flow)))
+    return 0 if result.wasSuccessful() and not (missing_ui or missing_models or missing_recovery or missing_flow) else 1
 
 
 if __name__ == "__main__":

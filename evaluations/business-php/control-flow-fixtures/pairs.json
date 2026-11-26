@@ -1,0 +1,335 @@
+{
+  "version": 1,
+  "pairs": [
+    {
+      "id": "boundary",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "boundary",
+        "start_line": 2,
+        "end_line": 7,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "Boundary",
+        "start_line": 3,
+        "end_line": 8,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "inverted_boolean",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "complement",
+        "start_line": 8,
+        "end_line": 14,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "Preferred",
+        "start_line": 9,
+        "end_line": 14,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32",
+        "bool"
+      ]
+    },
+    {
+      "id": "early_return",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "early",
+        "start_line": 15,
+        "end_line": 20,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "GuardInverted",
+        "start_line": 15,
+        "end_line": 21,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "omitted_branch",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "omission",
+        "start_line": 21,
+        "end_line": 28,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "OmittedBranch",
+        "start_line": 22,
+        "end_line": 27,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "relative_order",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "relations",
+        "start_line": 29,
+        "end_line": 31,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "Distinct",
+        "start_line": 28,
+        "end_line": 30,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32",
+        "int32"
+      ]
+    },
+    {
+      "id": "branch_order",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "elseOrder",
+        "start_line": 32,
+        "end_line": 40,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "WrongOrder",
+        "start_line": 31,
+        "end_line": 39,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "php_truthiness",
+      "origin": "human",
+      "source": {
+        "path": "ambiguity.php",
+        "name": "truthiness",
+        "start_line": 2,
+        "end_line": 7,
+        "sha256": "d8aa3ee504b36d7349d63ea2b1c1d0ce299e37db452f9fcff3ec8cc03aded56b"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "TestTruthiness",
+        "start_line": 40,
+        "end_line": 42,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "php_loose_mixed",
+      "origin": "human",
+      "source": {
+        "path": "ambiguity.php",
+        "name": "mixed",
+        "start_line": 8,
+        "end_line": 10,
+        "sha256": "d8aa3ee504b36d7349d63ea2b1c1d0ce299e37db452f9fcff3ec8cc03aded56b"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "IsFirst",
+        "start_line": 43,
+        "end_line": 45,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32",
+        "bool"
+      ]
+    },
+    {
+      "id": "php_short_circuit_effect",
+      "origin": "human",
+      "source": {
+        "path": "ambiguity.php",
+        "name": "shortCircuit",
+        "start_line": 11,
+        "end_line": 13,
+        "sha256": "d8aa3ee504b36d7349d63ea2b1c1d0ce299e37db452f9fcff3ec8cc03aded56b"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "PureExpression",
+        "start_line": 46,
+        "end_line": 48,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "bool"
+      ]
+    },
+    {
+      "id": "php_loop",
+      "origin": "human",
+      "source": {
+        "path": "ambiguity.php",
+        "name": "looping",
+        "start_line": 14,
+        "end_line": 19,
+        "sha256": "d8aa3ee504b36d7349d63ea2b1c1d0ce299e37db452f9fcff3ec8cc03aded56b"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "CanRepeat",
+        "start_line": 49,
+        "end_line": 51,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "csharp_short_circuit_effect",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "early",
+        "start_line": 15,
+        "end_line": 20,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "CallOnDemand",
+        "start_line": 52,
+        "end_line": 54,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "candidate_with_same_behavior",
+      "origin": "ai",
+      "source": {
+        "path": "decisions.txt",
+        "name": "early",
+        "start_line": 15,
+        "end_line": 20,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "GuardInverted",
+        "start_line": 15,
+        "end_line": 21,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "intentionally_excluded",
+      "origin": "excluded",
+      "source": {
+        "path": "ambiguity.php",
+        "name": "looping",
+        "start_line": 14,
+        "end_line": 19,
+        "sha256": "d8aa3ee504b36d7349d63ea2b1c1d0ce299e37db452f9fcff3ec8cc03aded56b"
+      },
+      "reason": "契約比較の対象に含めない保守処理"
+    },
+    {
+      "id": "equivalent_csharp_switch",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "category",
+        "start_line": 41,
+        "end_line": 46,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "PickCategory",
+        "start_line": 56,
+        "end_line": 64,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "malformed_source",
+      "origin": "human",
+      "source": {
+        "path": "incomplete.inc",
+        "name": "incomplete",
+        "start_line": 2,
+        "end_line": 3,
+        "sha256": "79081be5384c7efabb97b40356b69d2cdc32de86f8541c5569bb9e64c94de212"
+      },
+      "target": {
+        "path": "Selection.cs",
+        "name": "Boundary",
+        "start_line": 3,
+        "end_line": 8,
+        "sha256": "8af73427072e5d6c96228d0016a3461ac3737cb3430d3da5041381f993af820a"
+      },
+      "inputs": [
+        "int32"
+      ]
+    },
+    {
+      "id": "malformed_target",
+      "origin": "human",
+      "source": {
+        "path": "decisions.txt",
+        "name": "boundary",
+        "start_line": 2,
+        "end_line": 7,
+        "sha256": "619d74e65c3ae20076ee477069596de3cd6d789b65ff4f48921f3388eddccc91"
+      },
+      "target": {
+        "path": "Broken.cs",
+        "name": "Parse",
+        "start_line": 1,
+        "end_line": 1,
+        "sha256": "37604db9e13806539a99f0f5558d50ced8fe88cfa6f9a8b20fc39f91697e311f"
+      },
+      "inputs": [
+        "int32"
+      ]
+    }
+  ]
+}

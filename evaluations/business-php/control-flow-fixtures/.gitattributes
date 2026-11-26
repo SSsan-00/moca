@@ -1,0 +1,4 @@
+*.txt text eol=lf
+*.inc text eol=lf
+*.php text eol=lf
+*.cs text eol=lf

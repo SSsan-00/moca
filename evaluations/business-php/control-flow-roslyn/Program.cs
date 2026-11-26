@@ -23,7 +23,7 @@ try
     using var json = JsonDocument.Parse(request.ToString());
     result = Extract(json.RootElement);
 }
-catch (Unverified e) { result = Unavailable(e.Message); }
+catch (Unverified e) { result = Unavailable(e.Message, e.Line); }
 catch (Exception e) when (e is JsonException or DecoderFallbackException)
 {
     result = Unavailable("invalid_request");
@@ -35,11 +35,16 @@ try
 }
 catch (JsonException) { Console.WriteLine(JsonSerializer.Serialize(Unavailable("shape_limit"))); }
 
-static object Unavailable(string reason) => new
+static object Unavailable(string reason, int? line = null)
 {
-    status = "unverified", reason, @params = Array.Empty<string>(), return_type = (string?)null,
-    body = Array.Empty<object>()
-};
+    var result = new Dictionary<string, object?>
+    {
+        ["status"] = "unverified", ["reason"] = reason, ["params"] = Array.Empty<string>(),
+        ["return_type"] = null, ["body"] = Array.Empty<object>()
+    };
+    if (line is { } number) result["diagnostic_line"] = number;
+    return result;
+}
 
 static object Extract(JsonElement request)
 {
@@ -62,10 +67,9 @@ static object Extract(JsonElement request)
     if (root.DescendantTrivia(descendIntoTrivia: true).Any(t =>
         t.IsKind(SyntaxKind.IfDirectiveTrivia) || t.IsKind(SyntaxKind.ErrorDirectiveTrivia)))
         throw new Unverified("project_preprocessor_required");
-    if (tree.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error))
-        throw new Unverified("syntax_error");
-
     int Line(int position) => source.Lines.GetLineFromPosition(position).LineNumber + 1;
+    if (tree.GetDiagnostics().FirstOrDefault(d => d.Severity == DiagnosticSeverity.Error) is { } syntaxError)
+        throw new Unverified("syntax_error", Line(syntaxError.Location.SourceSpan.Start));
     var named = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Where(m => m.Identifier.ValueText == name).ToArray();
     if (named.Length == 0)
         throw new Unverified("method_not_found");
@@ -94,9 +98,10 @@ static object Extract(JsonElement request)
         [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
         new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
     var model = compilation.GetSemanticModel(tree);
-    if (model.GetDeclaredSymbol(method) is not IMethodSymbol symbol
-        || model.GetDiagnostics(method.Span).Any(d => d.Severity == DiagnosticSeverity.Error))
-        throw new Unverified("semantic_error");
+    if (model.GetDeclaredSymbol(method) is not IMethodSymbol symbol)
+        throw new Unverified("semantic_error", first);
+    if (model.GetDiagnostics(method.Span).FirstOrDefault(d => d.Severity == DiagnosticSeverity.Error) is { } semanticError)
+        throw new Unverified("semantic_error", Line(semanticError.Location.SourceSpan.Start));
 
     var encoder = new Encoder(model, symbol, positions, parameterTypes, returnType, Line);
     var body = method.ExpressionBody is { } expression
@@ -124,7 +129,10 @@ static string ScalarType(TypeSyntax? type) => type is PredefinedTypeSyntax prede
     _ => throw new Unverified("unsupported_signature")
 } : throw new Unverified("unsupported_signature");
 
-internal sealed class Unverified(string reason) : Exception(reason);
+internal sealed class Unverified(string reason, int? line = null) : Exception(reason)
+{
+    public int? Line { get; } = line;
+}
 
 internal sealed class Encoder(SemanticModel model, IMethodSymbol method, Dictionary<string, int> positions,
     string[] parameterTypes, string returnType, Func<int, int> line)

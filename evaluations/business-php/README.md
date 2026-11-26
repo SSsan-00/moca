@@ -69,3 +69,32 @@ python evaluations/business-php/collect.py /path/to/results/result.json > result
 Junie 26.11.2（4100.11）、OpenAI BYOKのGPT‑6 Luna（推論レベルmedium）で、PHP 2,000行・資料200件の合成入力を3カプセルに分けた。読み順ヒントなしで詳細198件を判定し、必要10件をすべて採用、不要188件を除外した。起動から採否保存までは389.5秒。PHP、生成アプリ、業務DBは実行していない。
 
 未実装C#は静的チェッカーで458件の指摘を検出して不合格になった。上記の採否試行は、移行成果物のビルドや静的検査の合否を示すものではない。
+
+## 条件分岐を静的に比較する任意の評価（.NET 9）
+
+既存の業務PHP評価とは別に、固定したPHPとC#の関数を明示指定して比較できます。利用者が実行する任意の評価で、移行台帳・ダッシュボード・通常のRun・既存チェッカーの合否には組み込みません。ツールはPython標準ライブラリと **.NET 9 SDK付属のRoslyn** だけで構成し、オフラインで一時フォルダにRoslynヘルパーだけをビルドします。PHP、移行先のプロジェクトや生成アプリ、業務DB、Junieは起動しません。
+
+```powershell
+$fixture = "evaluations/business-php/control-flow-fixtures"
+python evaluations/business-php/compare_control_flow.py --plan "$fixture/pairs.json" --source-root $fixture --target-root $fixture
+$LASTEXITCODE # サンプルは意図的な不一致を含むので 1
+python -m unittest discover -s tests -p "test_*control_flow.py" -v
+```
+
+比較する組み合わせは [pairs.json](control-flow-fixtures/pairs.json) と同じ形式で `version: 1`、`pairs` の各項目に指定します。
+
+- `source` と `target` は比較ルートからの相対パス、関数名 `name`、元ファイルでの開始・終了行（両端を含む）、ファイル全体の `sha256`。Windowsでの取得例は `(Get-FileHash path -Algorithm SHA256).Hash.ToLowerInvariant()` です。ファイルはUTF-8（BOM可）。PHPは拡張子を問わず、関数を正しく特定できるPHP構文が必要です。C#は `.cs` です。
+- `inputs` は対応する引数順の `int32`／`bool` の配列です。引数名や関数名が異なっても比較します。引数順変更・関数の分割・統合は推測しません。呼び出し側が渡すすべての値が実際にこの型であることやPHPの型強制自体は、この評価では検証しません。
+- `origin: "human"` は人が対象範囲と入力契約を確認した組み合わせです。二つのモデルを独立に比較します。`origin: "ai"` は版だけ照合し、レビュー候補のままで合格にしません。`origin: "excluded"` は正しい固定PHPと理由を指定し、`target`／`inputs`は省きます。
+
+JSONは比較結果と両側の範囲・版を出力します。不一致には具体的な入力と、そのとき通った分岐と戻った行・値を含みます。
+
+| 終了コード | 意味 |
+| --- | --- |
+| 0 | 明示された型と対応において、検査できた全組み合わせの戻り値が一致。理由付き対象外があってもよいが、少なくとも1組は確認済み。 |
+| 1 | 裏付けのある不一致あり。他の組み合わせの判定不能等もJSONに残る。 |
+| 2 | 不一致を確定していないが、型・構文・版・範囲が未確認、対象外のみ、または候補に人の確認がない。成功として扱わない。 |
+
+対応するのは同一型での厳密な等値比較（PHPの `===`／`!==`）、boolの否定・AND/OR、整数比較、`if`／`else`／PHPの`elseif`、早期return、定数caseから必ずreturnするC#の限定的な`switch` です。純粋式の短絡を尊重し、戻り値が同じなら条件反転やガード節の組替えを誤検出しません。整数では、全リテラルを境界にして各区間内の変数の大小関係と同値も保持して比較します。
+
+ループ、例外・`try`／`catch`／`finally`、PHPの`switch`、副作用や呼び出し、暗黙の真偽値変換、PHPの緩い比較（`==`／`!=`）、heredoc、動的・未定義変数、コンパイル対象の設定が必要な条件付きC#、構文不良、Razor、照合上限を超えた入力は判定不能です。上限は組合せ64件、引数6個、比較入力24,000通り、PHP 1MiB・選択関数16KiB、C# 2MiB・100万文字、読み取り全体16MiBです。移行先を構文一致率・CFGのノード数で合否判定せず、一般的な意味同値性や未指定範囲の完全性も保証しません。
