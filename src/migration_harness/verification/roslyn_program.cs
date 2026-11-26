@@ -96,6 +96,11 @@ internal static partial class Program
         return 0;
     }
 
+    private sealed record EscapedDeclaration(string text, string value, int line, int column, SortedSet<string> bindings)
+    {
+        public bool named { get; set; } = true;
+    }
+
     private static object EscapedKeywords(Target target)
     {
         var original = SourceText.From(target.Text ?? "");
@@ -103,22 +108,27 @@ internal static partial class Program
             ? RazorCode(target.Path, original.ToString()) : null;
         var generated = razor is null ? original : GetRazorGeneratedText(razor);
         var (roots, unparsed) = KeywordConditionRoots(generated);
-        var declarations = new List<object>();
-        var seen = new HashSet<int>();
+        var declarations = new Dictionary<int, EscapedDeclaration>();
+        var scopeParts = new Dictionary<SyntaxNode, string?>();
         foreach (var token in roots.SelectMany(root => root.DescendantTokens()))
         {
             if (!IsEscapedReservedKeyword(token) || !IsDeclaration(token)) continue;
             var span = token.Span;
             if (razor is not null && !TryMapRazorSpan(razor, generated, original, span, out span)
                 && !TryMapRazorNamespace(razor.CodeDocument, original, token, out span)) continue;
-            if (!seen.Add(span.Start)) continue;
-            var position = original.Lines.GetLinePosition(span.Start);
-            var prefix = original.ToString(TextSpan.FromBounds(original.Lines[position.Line].Start, span.Start));
             var kind = token.Parent is IdentifierNameSyntax name
                 ? (IsUsingAlias(name) ? SyntaxKind.UsingDirective : SyntaxKind.NamespaceDeclaration)
                 : token.Parent!.Kind();
-            declarations.Add(new { text = original.ToString(span), value = token.ValueText,
-                kind = kind.ToString(), line = position.Line, column = prefix.EnumerateRunes().Count() });
+            if (!declarations.TryGetValue(span.Start, out var declaration))
+            {
+                var position = original.Lines.GetLinePosition(span.Start);
+                var prefix = original.ToString(TextSpan.FromBounds(original.Lines[position.Line].Start, span.Start));
+                declaration = new(original.ToString(span), token.ValueText, position.Line, prefix.EnumerateRunes().Count(),
+                    new SortedSet<string>(StringComparer.Ordinal));
+                declarations.Add(span.Start, declaration);
+            }
+            declaration.bindings.Add(KeywordBinding(token, kind, scopeParts));
+            declaration.named &= IsNamedKeywordMember(token);
         }
         int? uncheckedLine = null;
         if (unparsed is int start)
@@ -127,7 +137,7 @@ internal static partial class Program
             uncheckedLine = razor is null || TryMapRazorSpan(razor, generated, original, span, out span)
                 ? original.Lines.GetLinePosition(span.Start).Line + 1 : 1;
         }
-        return new { declarations, uncheckedLine };
+        return new { declarations = declarations.Values, uncheckedLine };
     }
 
     private static bool IsEscapedReservedKeyword(SyntaxToken token) => token.IsKind(SyntaxKind.IdentifierToken)

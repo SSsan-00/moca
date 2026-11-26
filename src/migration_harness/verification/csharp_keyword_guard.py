@@ -1,3 +1,4 @@
+from collections import Counter
 from difflib import SequenceMatcher
 import hashlib
 import json
@@ -51,13 +52,16 @@ def _scan_version(name, source, report):
     for item in declarations:
         if not isinstance(item, dict):
             raise error
-        row, column, spelling, value, kind = (item.get(key) for key in ("line", "column", "text", "value", "kind"))
+        row, column, spelling, value, bindings, named = (
+            item.get(key) for key in ("line", "column", "text", "value", "bindings", "named")
+        )
         if (type(row) is not int or not 0 <= row < len(lines) or type(column) is not int or column < 0
                 or not isinstance(spelling, str) or not spelling or not isinstance(value, str)
-                or value not in _CSHARP_RESERVED or not isinstance(kind, str) or not kind
+                or value not in _CSHARP_RESERVED or not isinstance(bindings, list) or not bindings
+                or any(not isinstance(binding, str) or not binding for binding in bindings) or type(named) is not bool
                 or not lines[row].startswith(spelling, column)):
             raise error
-        rows.setdefault(row, []).append((column, spelling, value, kind))
+        rows.setdefault(row, []).append((column, spelling, value, tuple(sorted(set(bindings))), named))
     for items in rows.values():
         items.sort()
         if any(left[0] + len(left[1]) > right[0] for left, right in zip(items, items[1:])):
@@ -70,21 +74,38 @@ def _diff_tokens(lines, start, end, positions):
     for row in range(start, end):
         offset = 0
         line = lines[row]
-        for column, spelling, value, kind in positions.get(row, ()):
+        for column, spelling, value, bindings, _ in positions.get(row, ()):
             tokens.extend((token[0], None) for token in _DIFF_TOKEN.finditer(line, offset, column))
             declarations[len(tokens)] = (row, spelling)
-            tokens.append((value, kind))
+            tokens.append((value, bindings))
             offset = column + len(spelling)
         tokens.extend((token[0], None) for token in _DIFF_TOKEN.finditer(line, offset))
     return tokens, declarations
 
 
+def _unique_named_members(positions):
+    counts = Counter((value, bindings) for row in positions.values() for _, _, value, bindings, named in row if named)
+    return {key for key, count in counts.items() if count == 1}
+
+
+def _without_retained_members(positions, retained):
+    return {
+        row: remaining for row, declarations in positions.items()
+        if (remaining := [item for item in declarations if not item[4] or (item[2], item[3]) not in retained])
+    }
+
+
 def _new_escapes(old_lines, new_lines, existing, proposed):
     if not proposed:
         return
+    if existing and (retained := _unique_named_members(existing) & _unique_named_members(proposed)):
+        existing = _without_retained_members(existing, retained)
+        proposed = _without_retained_members(proposed, retained)
+        if not proposed:
+            return
     if not existing:
         for row in sorted(proposed):
-            for _, spelling, _, _ in proposed[row]:
+            for _, spelling, _, _, _ in proposed[row]:
                 yield row, spelling
         return
     for tag, old_start, old_end, new_start, new_end in SequenceMatcher(None, old_lines, new_lines).get_opcodes():
@@ -100,7 +121,7 @@ def _new_escapes(old_lines, new_lines, existing, proposed):
             continue
         if not any(row in existing for row in range(old_start, old_end)):
             for row in new_rows:
-                for _, spelling, _, _ in proposed.get(row, ()):
+                for _, spelling, _, _, _ in proposed.get(row, ()):
                     yield row, spelling
             continue
         # Edited lines may retain a declaration even when their original line is gone.

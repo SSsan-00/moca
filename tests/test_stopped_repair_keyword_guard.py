@@ -185,3 +185,8 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
         for name, content in proposed.items():
             self.assertEqual((self.worktree / name).read_bytes(), codecs.BOM_UTF8 + content)
+
+    def test_a_keyword_in_another_type_does_not_adopt_any_stopped_draft_target(self):
+        draft = b"class Original { int oldValue = 1; }\nclass Other { int @class = 1; }\n"
+        self.choose_draft({**_AFTER, "Example.cs": draft})
+        self.assert_rejected("Example.cs", spelling="@class")
