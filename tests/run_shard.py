@@ -11,7 +11,9 @@ from time import perf_counter
 WINDOWS_SHARDS = ("conversation-editor", "remaining")
 CONVERSATION_EDITOR_MODULES = {
     "test_dashboard_editor",
+    "test_editor_semantic_project",
     "test_junie_conversation",
+    "test_junie_steering",
     "test_parallel_dashboard",
     "test_reference_refresh",
 }
