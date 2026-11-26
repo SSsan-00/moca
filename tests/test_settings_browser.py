@@ -180,7 +180,15 @@ max_bytes = 9007199254740993 # preserve this value
                     reference.parent.mkdir()
                     reference.write_bytes(b"reference A")
                     stage_target_context(worktree, targets, capsule, agent, policy={"roots": [], "folders": ["refs"]})
-                    (capsule / "manifest.json").write_text('{"parts": [{"index": 1}]}', encoding="utf-8")
+                    context = capsule / "part-0001" / "context.md"
+                    context.parent.mkdir()
+                    original = (project / "example.php").read_text(encoding="utf-8")
+                    context.write_text(original, encoding="utf-8")
+                    (capsule / "manifest.json").write_text(json.dumps({"parts": [{
+                        "index": 1, "path": str(context), "chars": len(original), "sources": [{
+                            "path": "example.php", "role": "php", "encoding": "utf-8", "start_line": 1, "end_line": 1,
+                        }],
+                    }]}), encoding="utf-8")
                     saved["target_hashes"] = target_versions(worktree, unit)
                     saved["capsule_checkpoints"] = {"1": target_snapshots.save_capsule_checkpoint(
                         run, worktree, targets, saved["target_hashes"],

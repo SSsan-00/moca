@@ -202,8 +202,11 @@ send(id=3,result={"stopReason":"end_turn"})
 
     def test_budgeted_run_counts_only_flushed_pages_and_keeps_last_receipt_without_content(self):
         manifest = self.run_path / "capsule" / "manifest.json"
-        manifest.parent.mkdir()
-        manifest.write_text(json.dumps({"parts": [{"index": 1}], "materials": self.hashes}))
+        context = manifest.parent / "part-0001" / "context.md"
+        context.parent.mkdir(parents=True)
+        context.write_text("context", encoding="utf-8")
+        manifest.write_text(json.dumps({"parts": [{"index": 1, "path": str(context), "chars": 7,
+                                                   "sources": []}], "materials": self.hashes}), encoding="utf-8")
         application = Dashboard()
         application.begin_operation()
         record = {"run_id": self.run_path.name, "status": "ready", "current_capsule": 2}
