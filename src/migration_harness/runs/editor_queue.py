@@ -14,6 +14,7 @@ from typing import Any, Iterator
 
 from . import run_records, worktree_targets as target_files
 from ..files import safe_target
+from ..saved_state import content_hash, nonempty_text, saved_object, versionless_record
 from .migration_draft import save_stopped_migration
 from .run_records import lock_run_record, replace_run_record
 from .worktree_targets import (
@@ -32,7 +33,69 @@ def _read_queue(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
+        if path.name == "editor.json" and path.with_suffix(".json.tmp").exists():
+            raise ValueError(_HISTORY_RECOVERY + " 保存途中の記録だけが残っています。")
         return '{"edits": {}, "prompts": []}'
+    except UnicodeError as error:
+        raise ValueError(f"{path.name} の文字コードが無効です。元の記録は変更していません。") from error
+
+
+_EDITOR_PROMPT_STATES = ("queued", "sending", "sent", "steering", "applying")
+
+
+def _editor_history(text: str, name: str) -> dict[str, Any]:
+    value = saved_object(text, name)
+    if name == "editor.json":
+        _validate_editor_history(value)
+    return value
+
+
+def _validate_editor_history(value: dict[str, Any]) -> None:
+    versionless_record(value, "editor.json")
+    edits, prompts = value.get("edits"), value.get("prompts")
+    if not isinstance(edits, dict) or not isinstance(prompts, list):
+        raise ValueError(_HISTORY_RECOVERY + " 編集または指示の形式が一致しません。")
+    for edit in edits.values():
+        if (not isinstance(edit, dict) or not nonempty_text(edit.get("id"))
+                or not isinstance(edit.get("base"), str) or not isinstance(edit.get("content"), str)
+                or edit.get("status") not in ("queued", "conflict")):
+            raise ValueError(_HISTORY_RECOVERY + " 保留編集が壊れています。")
+    prompt_ids = set()
+    for prompt in prompts:
+        if (not isinstance(prompt, dict) or not nonempty_text(prompt.get("id"))
+                or prompt["id"] in prompt_ids or not isinstance(prompt.get("text"), str)
+                or prompt.get("status") not in _EDITOR_PROMPT_STATES):
+            raise ValueError(_HISTORY_RECOVERY + " 保存した指示が壊れています。")
+        prompt_ids.add(prompt["id"])
+    for field in ("immediate_saves", "immediate_save_requests", "save_requests", "latest_save_requests", "operator_edits"):
+        if field in value and not isinstance(value[field], dict):
+            raise ValueError(_HISTORY_RECOVERY + f" {field} の保存形式が一致しません。")
+    for field in ("immediate_saves", "immediate_save_requests", "save_requests"):
+        for receipt in value.get(field, {}).values():
+            if not _valid_save_receipt(receipt, field):
+                raise ValueError(_HISTORY_RECOVERY + " 保存の受付記録が壊れています。")
+    if any(not isinstance(diffs, list) or any(not isinstance(diff, str) for diff in diffs)
+           for diffs in value.get("operator_edits", {}).values()):
+        raise ValueError(_HISTORY_RECOVERY + " 編集の差分履歴が壊れています。")
+    receipts = value.get("save_requests", {})
+    for target, identifier in value.get("latest_save_requests", {}).items():
+        if not nonempty_text(identifier) or receipts.get(identifier, {}).get("target") != target:
+            raise ValueError(_HISTORY_RECOVERY + " 保存の受付番号が一致しません。")
+
+
+def _valid_save_receipt(receipt: Any, field: str) -> bool:
+    if not isinstance(receipt, dict) or not all(content_hash(receipt.get(key)) for key in ("base", "draft")):
+        return False
+    if field != "immediate_saves" and not nonempty_text(receipt.get("target")):
+        return False
+    if "after" in receipt and not content_hash(receipt["after"]):
+        return False
+    if field == "save_requests":
+        return ("edit_id" in receipt and (receipt["edit_id"] is None or nonempty_text(receipt["edit_id"]))
+                and type(receipt.get("resolve")) is bool and
+                ("queued_edit" not in receipt or nonempty_text(receipt["queued_edit"]))
+                and ("after" in receipt or "queued_edit" in receipt))
+    return "after" in receipt
 
 
 def _digest(data: bytes | None) -> str | None:
@@ -120,7 +183,14 @@ def complete_editor_adoption(queue, worktree, targets, adoption):
 
 def _recover_editor_adoption(path, before, worktree, targets, record):
     adoption = record["adoption"]
-    queue = json.loads(before)
+    if (not isinstance(adoption, dict) or not nonempty_text(adoption.get("id"))
+            or not isinstance(adoption.get("entries"), dict) or not adoption["entries"]
+            or any(not isinstance(entry, dict) or not {"before", "after", "edit_id", "diff"} <= entry.keys()
+                   or not content_hash(entry["before"], missing=True) or not content_hash(entry["after"])
+                   or not nonempty_text(entry["edit_id"]) or not isinstance(entry["diff"], str)
+                   for entry in adoption["entries"].values())):
+        raise ValueError(_HISTORY_RECOVERY + " 反映の復旧記録が壊れています。")
+    queue = _editor_history(before, "editor.json")
     if queue.get("last_editor_adoption") == adoption["id"]:
         return
     if _digest(before.encode("utf-8")) != record["history_before"]:
@@ -198,9 +268,10 @@ def replayed_editor_save(queue, edit, original, content, save_id, intent):
 def _recover_editor_save(run_path, path, before, worktree, targets):
     journal = safe_target(run_path, Path(EDITOR_SAVE_PENDING))
     try:
-        record = json.loads(journal.read_text(encoding="utf-8"))
-        if not isinstance(record, dict):
-            raise ValueError("invalid editor save recovery")
+        record = saved_object(journal.read_text(encoding="utf-8"), EDITOR_SAVE_PENDING)
+        versionless_record(record, EDITOR_SAVE_PENDING)
+        if not content_hash(record.get("history_before")):
+            raise ValueError("invalid editor recovery history version")
     except ValueError as exc:
         raise ValueError(_HISTORY_RECOVERY + " 保存時の復旧記録を読み取れません。") from exc
     if "adoption" in record:
@@ -243,12 +314,13 @@ def editor_queue(
             raise ValueError("エディタの保存先がシンボリックリンクです。")
         try:
             before = _read_queue(path)
+            queue = _editor_history(before, name)
             if name == "editor.json" and editor_save_pending(run_path):
                 if recover is None:
                     raise ValueError(_HISTORY_RECOVERY)
                 _recover_editor_save(run_path, path, before, *recover)
                 before = _read_queue(path)
-            queue = json.loads(before)
+                queue = _editor_history(before, name)
             yield queue
             if queue != json.loads(before):
                 replace_run_record(path, queue)
@@ -437,7 +509,7 @@ def _recover_migration_editor_adoption(run_path, worktree, targets, queue, adopt
     if agent_root.is_symlink() or not agent_root.is_dir() or not agent_root.resolve().is_relative_to(run_path.resolve()):
         raise ValueError("Junie 作業領域がありません。保存済みの手修正を復旧できません。")
     record_path = safe_target(run_path, Path("run.json"))
-    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record = run_records.read_run_record(record_path)
     _finish_migration_editor_adoption(agent_root, worktree, targets, queue, adoption, record, record_path)
     return agent_root
 

@@ -318,7 +318,7 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
     )
     waiting_at_final_checkpoint = status in {"editor_checkpoint", "editor_followup"} and completed_capsules == len(context_paths)
     if (
-        not isinstance(completed_capsules, int)
+        type(completed_capsules) is not int
         or (completed_capsules != len(context_paths) if migration_complete or waiting_at_final_checkpoint
             else not 0 <= completed_capsules < len(context_paths))
     ):
@@ -326,6 +326,12 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
     if not migration_complete and not waiting_at_final_checkpoint and record.get("current_capsule", completed_capsules + 1) != completed_capsules + 1:
         raise ValueError("run record has inconsistent capsule progress; inspect it before resuming")
 
+    if record.get("context_capsules", len(context_paths)) != len(context_paths):
+        raise ValueError("run record and manifest have inconsistent capsule counts")
+    boundary = record.get("source_boundary_review_required")
+    max_context = record.get("max_context_chars")
+    if type(boundary) is not bool or type(max_context) is not int or max_context < 1:
+        raise ValueError("run record is missing valid context preparation settings")
     result = {
         "run_id": run_id,
         "unit_id": unit["id"],
@@ -337,7 +343,7 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
         "context_part_chars": [part["chars"] for part in parts],
         "capsule_path": str(capsule_path),
         "capsule_count": len(context_paths),
-        "source_boundary_review_required": record["source_boundary_review_required"],
-        "max_context_chars": record["max_context_chars"],
+        "source_boundary_review_required": boundary,
+        "max_context_chars": max_context,
     }
     return result, migration_complete, waiting_at_final_checkpoint, script_retry
