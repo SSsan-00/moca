@@ -34,9 +34,6 @@ REPAIRABLE_SCRIPT_PHASES = frozenset({"before_build", "after_build", "before_che
 _RECOVERABLE_ONCE_PHASES = frozenset({"after_prepare", "before_migration", "after_migration"})
 
 
-_LEGACY_SCRIPT_HASH_BYTES = 32_769
-
-
 _SAVED_SCRIPT_OUTPUT_CHANGED = "The saved script output is missing or changed; inspect the logs before starting a new Run"
 
 
@@ -338,8 +335,7 @@ def _record_verification_script_output(run_path, cwd, record, item, expected, be
 
 
 def verify_saved_script_output(run_path, item):
-    legacy_complete = "log_hash_scope" not in item and item["byte_length"] <= _LEGACY_SCRIPT_HASH_BYTES
-    if item.get("log_sha256") is None or (not legacy_complete and item.get("log_hash_scope") != "full_range"):
+    if item.get("log_sha256") is None or item.get("log_hash_scope") != "full_range":
         raise ValueError("The saved script output has no verifiable full-range hash; inspect the logs and start a new Run")
     if _script_output_sha256(run_path, item) != item["log_sha256"]:
         raise ValueError(_SAVED_SCRIPT_OUTPUT_CHANGED)

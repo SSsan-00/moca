@@ -423,12 +423,25 @@ class InterruptedVerificationScriptTests(SavedRunFixture):
             self.assertEqual((len(builds), self.counter.read_text()), (1, "x"))
             judge.assert_not_called()
 
-    def test_old_complete_binary_digest_allows_rebuild_without_decoding_or_sending_old_bytes(self):
+    def test_complete_binary_digest_requires_current_scope_before_explicit_rebuild(self):
         self.configure_raw_failure("b'\\xff'*32769")
         with self.controlled_commands(['{"verdict":"passed","evidence_lines":[1]}']) as (builds, judge):
-            self.stop_on_failure_then_edit()
+            first = self.stop_on_failure_then_edit()
             record = self.record()
-            record["verification_script_pending"].pop("log_hash_scope")
+            old_receipt = {key: value for key, value in first.items() if key != "log_hash_scope"}
+            record["verification_script_pending"] = old_receipt
+            self.save_record(record)
+            log = self.run_path / first["log"]
+            contents = log.read_bytes()
+            with self.assertRaisesRegex(workflow.RunScriptError, "full-range hash"):
+                self.explicit_build()
+            self.assertEqual((len(builds), self.counter.read_text()), (1, "x"))
+            self.assertEqual(self.record()["verification_script_pending"], old_receipt)
+            self.assertEqual(log.read_bytes(), contents)
+            judge.assert_not_called()
+            # Current, full-range evidence still permits a safe explicit rebuild without exposing the binary log.
+            record = self.record()
+            record["verification_script_pending"] = first
             self.save_record(record)
             self.dependency.touch()
             self.assertEqual(self.explicit_build()["status"], "build_succeeded")

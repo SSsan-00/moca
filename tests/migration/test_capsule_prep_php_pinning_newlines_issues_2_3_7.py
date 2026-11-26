@@ -24,7 +24,7 @@ from migration_harness.web.diff_viewer import capture_workspace
 
 
 PHP = {"path": "Source.php", "role": "php", "start_line": 1, "end_line": 2}
-RULES = {"path": "rules.md", "role": "migration_rules", "start_line": 1, "end_line": 1}
+RULES = {"path": "rules.md", "start_line": 1, "end_line": 1}
 CONSTRAINT = {"path": "constraints.md", "role": "target_constraints", "shared": True, "start_line": 1, "end_line": 1}
 
 
@@ -38,21 +38,23 @@ class CapsulePreparationTests(HarnessCase):
         (self.project / "Target.cs").write_bytes(b"class Target {}\n")
         self.commit_project()
 
-    def config_path(self, *inputs):
+    def config_path(self, *inputs, migration_rules=(), references=()):
         """入力の順序や範囲をテストごとに変更できるTOMLを作る。"""
         path = self.root / "harness.toml"
         sections = [
             '[project]\nroot = "app"\nworktree_root = "worktrees"\nrun_root = "runs"\nmax_context_chars = 1000',
             '[[units]]\nid = "example"\ntarget = "Target.cs"',
         ]
-        for item in inputs:
-            fields = [f"{key} = {json.dumps(value)}" for key, value in item.items()]
-            sections.append("\n".join(["[[units.inputs]]", *fields]))
+        for table, entries in (("units.inputs", inputs), ("project.migration_rules", migration_rules),
+                               ("project.references", references)):
+            for item in entries:
+                fields = [f"{key} = {json.dumps(value)}" for key, value in item.items()]
+                sections.append("\n".join([f"[[{table}]]", *fields]))
         path.write_text("\n\n".join(sections), encoding="utf-8")
         return path
 
-    def prepare(self, *inputs):
-        config = load_config(self.config_path(*inputs))
+    def prepare(self, *inputs, **materials):
+        config = load_config(self.config_path(*inputs, **materials))
         result = prepare_fixture(config, "example")
         run_path = Path(result["run_path"])
         return config, result, self.read_json(run_path / "capsule" / "manifest.json")
@@ -147,9 +149,10 @@ class CapsulePreparationTests(HarnessCase):
             path.parent.mkdir(exist_ok=True)
             path.write_bytes(f"first {index}\nlast {index}".encode("ascii"))
 
-        path = self.config_path({**PHP, "end_line": 101}, shared_inputs[1])
+        path = self.config_path({**PHP, "end_line": 101})
         common = [
             '[[project.migration_rules]]\npath = "common.md"\nstart_line = 2\nend_line = 2',
+            '[[project.migration_rules]]\npath = "razor.md"',
             *[
                 "[[project.references]]\n" + "\n".join(
                     f"{key} = {json.dumps(item[key], ensure_ascii=False)}"
@@ -311,7 +314,7 @@ class CapsulePreparationTests(HarnessCase):
         rules.write_bytes(b"REQUIRED_MIGRATION_RULE ````\r\n")
         constraint = self.project / CONSTRAINT["path"]
         constraint.write_bytes(b"REQUIRED_OUTPUT_CONSTRAINT\n")
-        config = load_config(self.config_path({**PHP, "end_line": 3}, CONSTRAINT, RULES))
+        config = load_config(self.config_path({**PHP, "end_line": 3}, CONSTRAINT, migration_rules=[RULES]))
         observed_contexts = []
         completion_markers = []
 
@@ -508,25 +511,26 @@ class CapsulePreparationTests(HarnessCase):
 
     def test_conflicting_php_encoding_for_path_aliases_is_rejected_before_worktree(self):
         self.php.write_bytes(b'<?php\n$text = "\xc2\xa2";\n')
-        reference = {**PHP, "path": "./Source.php", "role": "reference_php", "shared": True, "encoding": "euc-jp"}
-        config = load_config(self.config_path(reference, {**PHP, "encoding": "utf8"}))
+        reference = {**PHP, "path": "./Source.php", "role": "reference_php", "encoding": "euc-jp"}
+        config = load_config(self.config_path({**PHP, "encoding": "utf8"}, references=[reference]))
         with self.assertRaisesRegex(ValueError, r"Source.php: inconsistent.*reference_php.*euc-jp.*php.*utf-8"):
             prepare_fixture(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())
 
     def test_shared_reference_and_migration_use_one_effective_php_encoding(self):
         self.php.write_bytes(b"\xef\xbb\xbf<?php\necho 42;\n")
-        reference = {**PHP, "path": "./Source.php", "role": "reference_php", "shared": True, "encoding": "auto"}
-        config, result, manifest = self.prepare(reference, {**PHP, "encoding": "utf_8_sig"})
+        reference = {**PHP, "path": "./Source.php", "role": "reference_php", "encoding": "auto"}
+        config, result, manifest = self.prepare({**PHP, "encoding": "utf_8_sig"}, references=[reference])
         self.assertEqual([(pin["path"], pin["encoding"]) for pin in manifest["php_sources"]], [("Source.php", "utf-8-sig")])
         self.assertEqual(manifest["parts"][0]["sources"][0]["encoding"], "utf-8-sig")
         _, comparison = capture_workspace(config, result["run_id"])
         self.assertEqual(comparison["workspace"]["leftText"], "<?php\necho 42;\n")
 
     # 移行対象がない設定を移行カプセルとして数えないことを検証する。
-    def test_shared_rules_alone_cannot_create_a_migration_capsule(self):
+    def test_only_shared_materials_cannot_create_a_migration_capsule(self):
         (self.project / RULES["path"]).write_bytes(b"Required rule\n")
-        config = load_config(self.config_path(RULES))
+        (self.project / CONSTRAINT["path"]).write_bytes(b"Required constraint\n")
+        config = load_config(self.config_path(CONSTRAINT, migration_rules=[RULES]))
         with self.assertRaisesRegex(ValueError, "requires at least one input outside shared context"):
             prepare_fixture(config, "example")
         self.assertFalse(Path(config["worktree_root"]).exists())

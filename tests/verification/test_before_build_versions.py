@@ -272,7 +272,15 @@ class BeforeBuildVersionTests(SavedRunFixture):
         self.assertTrue(log.read_bytes().startswith(old_log))
         self.assertNotIn("verification_script_pending", self.record())
 
-    def test_old_saved_receipt_without_target_agreement_requires_explicit_new_build(self):
+    def test_explicit_build_allows_null_repair_pending(self):
+        self.save_record({**self.record(), "repair_pending": None})
+        self.generator_output = self.target
+        with self.commands([]) as (builds, repair):
+            self.assertEqual(self.explicit_build()["status"], "build_succeeded")
+            self.assertEqual(len(builds), 1)
+            repair.assert_not_called()
+
+    def test_saved_receipt_without_target_agreement_requires_explicit_new_build(self):
         target = self.target
         diagnostic = "T001 Example.cs:1 warning: class Original uses deprecated API"
         self.configure_hooks(
@@ -285,7 +293,6 @@ class BeforeBuildVersionTests(SavedRunFixture):
         with self.commands([interruption, PASSED]) as (builds, repair):
             record, receipt = self.interrupted_review_receipt("after_build", 1, interruption, diagnostic)
             receipt.pop("target_versions_match", None)
-            receipt.pop("log_hash_scope", None)
             self.save_record(record)
             with self.assertRaisesRegex(workflow.RunScriptError, "no verified target version"):
                 self.resume_run()

@@ -232,7 +232,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
   const fallbackModels = [...modelSelect.options].slice(1).map(option => ({id: option.value, name: option.text}));
   let modelCatalog = fallbackModels;
   const added = new WeakSet();
-  const invalidTOMLMessage = form => form ? "" : "フォームを表示するには、TOMLの書式を修正してください。";
+  const invalidTOMLMessage = data => data.form ? "" : data.formError ?? "フォームを表示するには、TOMLの書式を修正してください。";
   const emptyChanges = () => ({project: {}, units: {}});
   let settingsVersion;
   let settingsForm;
@@ -568,7 +568,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
         }
         settingsChanges = emptyChanges();
         previewPending = false;
-        workspaceConfigFeedback.textContent = invalidTOMLMessage(draft.form);
+        workspaceConfigFeedback.textContent = invalidTOMLMessage(draft);
       } catch (error) {
         if (revision !== draftRevision) return;
         workspaceConfigFeedback.textContent = error.message;
@@ -600,7 +600,7 @@ function bindHarnessWorkspace({readRuns, readSettings, readModels, previewSettin
       settingsChanges = emptyChanges();
       previewPending = readingTOML = false;
       document.querySelector("#workspace-config-path").textContent = data.path;
-      workspaceConfigFeedback.textContent = invalidTOMLMessage(data.form);
+      workspaceConfigFeedback.textContent = invalidTOMLMessage(data);
     } catch (error) {
       workspaceConfigFeedback.textContent = error.message;
     } finally {

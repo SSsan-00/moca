@@ -88,16 +88,10 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         self.assertEqual((self.worktree / "View.cshtml").read_bytes(), _BEFORE["View.cshtml"])
         self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["complete"])
 
-    def test_legacy_partial_restore_does_not_count_new_declaration_as_existing(self):
+    def test_partial_restore_does_not_count_new_declaration_as_existing(self):
         invalid = b"class Original {\n    int @event = 1;\n}\n"
         stopped = self.choose_draft({**_AFTER, "Example.cs": invalid})
-        saved = self.record()
-        selected = saved["repair_pending"]["draft"]
-        del selected["base_snapshot"]
-        manifest = self.run_path / selected["snapshot"] / "draft.json"
-        manifest.write_text(json.dumps(selected), encoding="utf-8")
-        self.save_record(saved)
-        # Reproduce an older version reaching the first file, then stopping before the others.
+        # Interruption can leave the first file restored but the others unchanged.
         self.target.write_bytes(codecs.BOM_UTF8 + invalid)
         self.assert_rejected("Example.cs")
         self.assertEqual(stopped_repair.plan_stopped_repair(self.config, self.run_id)["snapshot"], stopped["snapshot"])
@@ -110,7 +104,7 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         self.assertEqual(self.resume(*_SUCCESS)["status"], "checker_succeeded")
         self.assertEqual(self.target.read_bytes(), manual)
 
-    def test_already_restored_legacy_selection_is_checked_before_verification(self):
+    def test_already_restored_selection_is_checked_before_verification(self):
         invalid = b"class Original {\n    int @event = 1;\n}\n"
         proposed = {**_AFTER, "Example.cs": invalid}
         self.choose_draft(proposed)

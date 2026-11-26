@@ -52,34 +52,26 @@ def answer_pending(dashboard, manager, action):
 
 
 def notification_settings(raw):
-    keys = {"enabled", "repeat_after_seconds", "interval_seconds", "repeats", "milestone_after_seconds"}
-    if not isinstance(raw, dict) or raw.keys() - keys:
+    keys = {"enabled", "repeat_after_seconds", "milestone_after_seconds"}
+    if not isinstance(raw, dict):
+        raise ValueError("[junie_notifications] has an unknown setting")
+    if {"interval_seconds", "repeats"} & raw.keys():
+        raise ValueError("[junie_notifications] の interval_seconds と repeats は、"
+                         "初回からの秒数を並べた repeat_after_seconds = [300, 600] のように置き換えてください。")
+    if raw.keys() - keys:
         raise ValueError("[junie_notifications] has an unknown setting")
     enabled = raw.get("enabled", True)
     if type(enabled) is not bool:
         raise ValueError("[junie_notifications].enabled must be a boolean")
-    legacy = {"interval_seconds", "repeats"} & raw.keys()
-    if legacy:
-        if "repeat_after_seconds" in raw:
-            raise ValueError("[junie_notifications] cannot mix repeat_after_seconds with interval_seconds or repeats")
-        interval = raw.get("interval_seconds", 300)
-        repeats = raw.get("repeats", 2)
-        if type(interval) is not int or not 1 <= interval <= 86400:
-            raise ValueError("[junie_notifications].interval_seconds must be between 1 and 86400")
-        if type(repeats) is not int or not 0 <= repeats <= 10:
-            raise ValueError("[junie_notifications].repeats must be between 0 and 10")
-        offsets = tuple(interval * i for i in range(1, repeats + 1))
-    else:
-        offsets = raw.get("repeat_after_seconds", [60, 180, 300])
-        if (not isinstance(offsets, list) or len(offsets) > 10
-                or any(type(value) is not int or not 1 <= value <= 86400 for value in offsets)
-                or offsets != sorted(set(offsets))):
-            raise ValueError("[junie_notifications].repeat_after_seconds needs up to 10 increasing, distinct seconds (1–86400)")
-        offsets = tuple(offsets)
+    offsets = raw.get("repeat_after_seconds", [60, 180, 300])
+    if (not isinstance(offsets, list) or len(offsets) > 10
+            or any(type(value) is not int or not 1 <= value <= 86400 for value in offsets)
+            or offsets != sorted(set(offsets))):
+        raise ValueError("[junie_notifications].repeat_after_seconds needs up to 10 increasing, distinct seconds (1–86400)")
     milestone = raw.get("milestone_after_seconds", 0)
     if type(milestone) is not int or not 0 <= milestone <= 86400:
         raise ValueError("[junie_notifications].milestone_after_seconds must be between 0 and 86400")
-    return {"enabled": enabled, "repeat_after_seconds": offsets, "milestone_after_seconds": milestone}
+    return {"enabled": enabled, "repeat_after_seconds": tuple(offsets), "milestone_after_seconds": milestone}
 
 
 @dataclass(frozen=True)

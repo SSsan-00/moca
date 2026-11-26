@@ -121,7 +121,6 @@ targets = ["Pages/Menu.cshtml.cs", "Pages/Menu.cshtml"]
 [junie_notifications]
 # Windows実機のローカル通知。無効でも画面の確認は利用できます。
 enabled = true
-interval_seconds = 300
-repeats = 2
+repeat_after_seconds = [300, 600]
 # 長時間の移行からビルドに進んだときだけ追加通知（0で無効、単位は秒）。
 milestone_after_seconds = 0

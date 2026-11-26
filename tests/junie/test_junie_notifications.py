@@ -204,11 +204,19 @@ class JunieNotificationTests(unittest.TestCase):
         for value in ([1, 1], [3, 1], [False], [0], [86401]):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 notification_settings({"repeat_after_seconds": value})
-        with self.assertRaises(ValueError):
-            notification_settings({"repeat_after_seconds": [1], "repeats": 1})
+
+    def test_old_repeat_settings_require_explicit_offsets(self):
+        for settings in ({"interval_seconds": 300}, {"repeats": 2},
+                         {"repeat_after_seconds": [10], "interval_seconds": 300, "repeats": 2}):
+            with self.subTest(settings=settings), self.assertRaisesRegex(
+                ValueError, r"repeat_after_seconds = \[300, 600\]",
+            ):
+                notification_settings(settings)
+        self.assertEqual(notification_settings({"repeat_after_seconds": [300, 600]})["repeat_after_seconds"],
+                         (300, 600))
 
     def test_configurable_repeat_and_disable(self):
-        self.test_policy = notification_settings({"enabled": False, "interval_seconds": 45, "repeats": 1})
+        self.test_policy = notification_settings({"enabled": False, "repeat_after_seconds": [45]})
         self.notifier.tick()
         self.assertEqual(self.events, [])
         self.test_policy["enabled"] = True
@@ -325,7 +333,7 @@ class JunieNotificationTests(unittest.TestCase):
         self.assertEqual(len(self.events), 2)
 
     def test_settings_reject_unbounded_or_unexpected_values(self):
-        for value in ({"enabled": 1}, {"interval_seconds": 0}, {"interval_seconds": True}, {"repeats": -1},
-                      {"repeats": 11}, {"milestone_after_seconds": True}, {"milestone_after_seconds": -1}, {"unknown": True}):
+        for value in ({"enabled": 1}, {"repeat_after_seconds": 60}, {"repeat_after_seconds": list(range(1, 12))},
+                      {"milestone_after_seconds": True}, {"milestone_after_seconds": -1}, {"unknown": True}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 notification_settings(value)

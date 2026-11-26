@@ -1039,31 +1039,43 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertNotEqual(newest["snapshot"], plan["snapshot"])
         self.assertEqual(stopped_repair.plan_stopped_repair(self.config, self.run_id)["snapshot"], newest["snapshot"])
 
-    def test_legacy_selection_never_labels_an_ambiguous_archive_as_the_stopped_draft(self):
+    def test_restore_selection_requires_explicit_versions_and_preserves_older_files(self):
         name = self.target.name
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
-        (agent / name).write_bytes(b"class Stopped {}\n")
+        draft_path = agent / name
+        draft_path.write_bytes(b"class Stopped {}\n")
         stopped = target_snapshots.save_workspace_snapshot(
             self.run_path, agent, (Path(name),), {name: sha256(self.target.read_bytes()).hexdigest()},
             workspace_unchanged=True,
         )
         self.save_record({**self.record(), "repair_pending": {"draft": stopped, "details": {}}})
 
-        def save_as_legacy(choice):
-            plan = stopped_repair.plan_stopped_repair(self.config, self.run_id)
-            stopped_repair.resolve_stopped_repair(self.config, self.run_id, plan["version"], {name: choice})
-            record = self.record()
-            selected = record["repair_pending"]["draft"]
-            del selected["stopped_snapshot"]
-            (self.run_path / selected["snapshot"] / "draft.json").write_text(json.dumps(selected), encoding="utf-8")
-            self.save_record(record)
+        plan = stopped_repair.plan_stopped_repair(self.config, self.run_id)
+        stopped_repair.resolve_stopped_repair(self.config, self.run_id, plan["version"], {name: "worktree"})
+        plan = stopped_repair.plan_stopped_repair(self.config, self.run_id)
+        self.assertEqual(plan["snapshot"], stopped["snapshot"])
+        stopped_repair.resolve_stopped_repair(self.config, self.run_id, plan["version"], {name: "draft"})
+        current = self.record()
+        saved = current["repair_pending"]["draft"]
+        manifest = self.run_path / saved["snapshot"] / "draft.json"
+        for missing in ("stopped_snapshot", "base_snapshot"):
+            with self.subTest(missing=missing):
+                previous = {key: value for key, value in saved.items() if key != missing}
+                manifest.write_text(json.dumps(previous), encoding="utf-8")
+                self.save_record({**current, "repair_pending": {**current["repair_pending"], "draft": previous}})
+                files = (self.record_path, manifest, self.target, draft_path, self.build_log, self.checker_log)
+                contents = [path.read_bytes() for path in files]
+                with self.assertRaisesRegex(ValueError, "新しい Run に引き継いで"):
+                    stopped_repair.plan_stopped_repair(self.config, self.run_id)
+                with self.assertRaisesRegex(ValueError, "新しい Run に引き継いで"):
+                    stopped_repair.resolve_stopped_repair(self.config, self.run_id, plan["version"], {name: "draft"})
+                with self.assertRaisesRegex(ValueError, "新しい Run に引き継いで"):
+                    workflow.resume_with_junie(self.config, self.run_id)
+                self.assertEqual([path.read_bytes() for path in files], contents)
 
-        save_as_legacy("worktree")
-        self.assertEqual(stopped_repair.plan_stopped_repair(self.config, self.run_id)["snapshot"], stopped["snapshot"])
-        save_as_legacy("draft")
-        with self.assertRaisesRegex(ValueError, "元の停止下書きを特定できません"):
-            stopped_repair.plan_stopped_repair(self.config, self.run_id)
+        manifest.write_text(json.dumps(saved), encoding="utf-8")
+        self.save_record(current)
         self.assertEqual(self.resume(self.build, ("fixture-checker", 0, b""))["status"], "checker_succeeded")
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), "class Stopped {}\n")
 
@@ -2090,26 +2102,23 @@ class SavedDashboardTests(SavedRunFixture):
         self.open_dashboard(inspect)
 
     def test_settings_form_edits_rules_and_reference_pairs_without_changing_other_inputs(self):
-        source = """[[units]]
-id = "メニュー"
-source = "menu.php"
-target = "Menu.cs"
-
-[[units.inputs]]
-role = "migration_rules"
+        source = """[[project.migration_rules]]
 path = "rules.md" # Keep range
 start_line = 2
 end_line = 4
 
-[[units.inputs]]
+[[project.references]]
 role = "reference_php"
 path = "old.php"
-shared = true
 
-[[units.inputs]]
+[[project.references]]
 role = "reference_csharp"
 path = "Old.cs"
-shared = true
+
+[[units]]
+id = "メニュー"
+source = "menu.php"
+target = "Menu.cs"
 
 [[units.inputs]]
 role = "target_constraints"
@@ -2130,9 +2139,9 @@ target = "Search.cs"
                 }) as response:
                     return json.load(response)
 
-            migrated = preview(source, {})
-            self.assertEqual([item["path"] for item in migrated["form"]["references"]], ["old.php", "Old.cs"])
-            draft = preview(migrated["content"], {
+            current = preview(source, {})
+            self.assertEqual([item["path"] for item in current["form"]["references"]], ["old.php", "Old.cs"])
+            draft = preview(current["content"], {
                 "migrationRules": [
                     {"index": 0, "role": "migration_rules", "path": "updated.md"},
                     {"role": "migration_rules", "path": "extra.md"},
