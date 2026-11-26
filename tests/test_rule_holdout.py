@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from migration_harness.rules.rule_materials import render_guidelines, write_rule_files
+
 
 spec = importlib.util.spec_from_file_location(
     "holdout", Path(__file__).resolve().parents[1] / "evaluations/rule-optimization/holdout.py",
@@ -18,13 +20,15 @@ class RuleHoldoutTests(unittest.TestCase):
             root = Path(temp) / "positive"
             holdout.prepare(root, "conditional")
             self.assertEqual(holdout.score(root, "conditional")["artifact_outcome"], "unnecessary_hold")
-            outputs = {
-                "required.md": holdout.REQUIRED,
-                "csv.md": "\n".join((holdout.DETAIL, holdout.EXCEPTION, holdout.PRIORITY)),
-                "rehearsal.md": holdout.DECOY,
+            source = holdout.originals("conditional")
+            primary = source["export.md"].splitlines(keepends=True)
+            files = {
+                "required.md": primary[-1],
+                "csv.md": "".join(primary[:-1]),
+                "rehearsal.md": source["export-rehearsal.md"],
             }
-            for name, body in outputs.items():
-                (root / "app" / name).write_bytes((body + "\n").encode())
+            for name, body in files.items():
+                (root / "app" / name).write_bytes(body.encode())
             config = root / "harness.local.toml"
             candidate = holdout.CONFIG.replace(
                 'path = "export.md"', 'path = "required.md"\n[[project.migration_rules]]\n'
@@ -36,10 +40,72 @@ class RuleHoldoutTests(unittest.TestCase):
             self.assertEqual(score["artifact_outcome"], "correct_apply", score)
             self.assertEqual(score["outcome"], "unverified_trial", score)
             self.assertFalse(score["skill_read_verified"])
-            (root / "app" / "csv.md").write_bytes((holdout.DETAIL + "\n").encode())
-            score = holdout.score(root, "conditional")
-            self.assertEqual(score["artifact_outcome"], "incorrect_apply", score)
-            self.assertIn("split its exception", score["failures"][0])
+            detail = root / "app" / "csv.md"
+            unchanged = (root / "app" / "export.md").read_bytes()
+            for name, text, expected in (
+                ("missing repeated line", "".join(primary[:-2]), "missing (1) or extra (0)"),
+                ("extra repeated line", files["csv.md"] + primary[-2], "missing (0) or extra (1)"),
+                ("lost exception", files["csv.md"].replace(holdout.EXCEPTION + "\n", ""), "split its exception"),
+            ):
+                with self.subTest(name=name):
+                    detail.write_bytes(text.encode())
+                    score = holdout.score(root, "conditional")
+                    self.assertEqual(score["artifact_outcome"], "incorrect_apply", score)
+                    self.assertTrue(any(expected in message for message in score["failures"]), score)
+                    self.assertEqual((root / "app" / "export.md").read_bytes(), unchanged)
+
+            detail.write_bytes(files["csv.md"].replace(holdout.EXCEPTION + "\n", "").encode())
+            (root / "app" / "rehearsal.md").write_bytes((files["rehearsal.md"] + holdout.EXCEPTION + "\n").encode())
+            split = holdout.score(root, "conditional")
+            self.assertEqual(split["artifact_outcome"], "incorrect_apply")
+            self.assertEqual(len(split["failures"]), 1, split)
+            self.assertIn("split its exception", split["failures"][0])
+
+            detail.write_bytes(files["csv.md"].encode())
+            (root / "app" / "rehearsal.md").write_bytes(files["rehearsal.md"].encode())
+            config.write_bytes(candidate.replace('usage = "reference"\ndescription = "CSV', 'usage = "required"\ndescription = "CSV').encode())
+            broadened = holdout.score(root, "conditional")
+            self.assertEqual(broadened["artifact_outcome"], "incorrect_apply")
+            self.assertEqual(broadened["failures"], ["unrelated or CSV-only instructions became mandatory"])
+            config.write_bytes(candidate.encode())
+
+            (root / "app" / "export.md").rename(root / "app" / "unavailable-source.md")
+            missing = holdout.score(root, "conditional")
+            self.assertEqual(missing["artifact_outcome"], "incorrect_apply")
+            self.assertIn("original source bytes changed or original is missing", missing["failures"])
+
+    def test_original_scope_is_retained_for_repair_and_respects_an_explicit_exclusion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            required = holdout.REQUIRED + "\n"
+            detail = "\r\n".join((holdout.DETAIL, holdout.EXCEPTION, holdout.PRIORITY)) + "\r\n"
+            decoy = holdout.DECOY + "\n"
+            rules = write_rule_files(directory, [
+                ({"path": "policy.md", "usage": "required"}, required),
+                ({"path": "csv.md", "usage": "reference", "description": "When editing Export.cs"}, detail),
+                ({"path": "csv-rehearsal.md", "usage": "reference", "description": "Only for test summaries"}, decoy),
+            ])
+            mandatory, export, rehearsal = [entry["file"] for entry in rules]
+            manifest = {"rule_files": rules}
+            for stage, targets, selected, excluded, expected in (
+                ("migration", (Path("Example.cs"),), frozenset(), frozenset(), [mandatory]),
+                ("repair", (Path("Export.cs"),), frozenset({export}), frozenset(), [mandatory, export]),
+                ("operator exclusion", (Path("Export.cs"),), frozenset({export}), frozenset({export}), [mandatory]),
+            ):
+                with self.subTest(stage=stage):
+                    supplied = []
+                    text = render_guidelines(directory, manifest, targets=targets, selected=selected,
+                                             excluded=excluded, supplied_rules=supplied)
+                    self.assertEqual([item["file"] for item in supplied], expected)
+                    self.assertIn(required, text)
+                    self.assertEqual(detail in text, stage == "repair")
+                    if stage != "repair":
+                        for line in detail.splitlines():
+                            self.assertNotIn(line, text)
+                    self.assertNotIn(decoy, text)
+
+            for name, body in ((mandatory, required), (export, detail), (rehearsal, decoy)):
+                self.assertEqual((directory / name).read_bytes(), body.encode())
 
     def test_unexecuted_interrupted_or_unrelated_trial_cannot_pass_a_conflict_holdout(self):
         with tempfile.TemporaryDirectory() as temp:
