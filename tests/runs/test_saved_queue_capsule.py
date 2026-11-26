@@ -86,6 +86,7 @@ class SavedDashboardQueueValidationTests(TestCase):
             {**root, "jobs": [{**job, "run_id": 42}]},
             {**root, "jobs": [{**job, "running": 0}]},
             {**root, "jobs": [{**job, "operation_id": "typo"}]},
+            {**root, "jobs": [{**job, "action": "retired-operation"}]},
             {**root, "jobs": [job, {**job, "unit_id": "b", "operation_id": "b" * 32}]},
             {**root, "jobs": [job, {**job, "run_id": _RUN_B, "operation_id": "b" * 32}]},
             {**root, "jobs": [{**job, "operation_id": "a" * 32},

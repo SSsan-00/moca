@@ -173,6 +173,8 @@ class RunManager:
                 raise ValueError("保存済みの実行待ち操作にRun ID、移行単位、または操作名がありません。")
             run_id, unit, action = job["run_id"], job["unit_id"], job["action"]
             validate_run_id(run_id)
+            if action not in _QUEUED_ACTIONS:
+                raise ValueError(f"dashboard-queue.json に未対応の操作があります: {action}")
             if run_id in runs or unit in units:
                 raise ValueError("保存済みの実行待ち一覧でRunまたは移行単位が重複しています。")
             if unit not in allowed_units:
@@ -186,7 +188,7 @@ class RunManager:
             for flag in ("running", "junie_brave", "junie_brave_reconfirm"):
                 if flag in job and type(job[flag]) is not bool:
                     raise ValueError(f"保存済みの実行待ち操作の {flag} が不正です。")
-            if not job.get("running") and action in _QUEUED_ACTIONS - {"run"}:
+            if not job.get("running") and action != "run":
                 _validate_waiting_operation(job)
                 _, _, record, _ = load_saved_run(config, run_id)
                 if record["unit_id"] != unit:
@@ -199,14 +201,11 @@ class RunManager:
         for job in jobs:
             run_id, unit_id = job["run_id"], job["unit_id"]
             interrupted = job.get("running")
-            if (job["action"] not in _QUEUED_ACTIONS or job["action"] == "recover-script") and not interrupted:
-                view = self._queued_view(config, run_id, unit_id)
-                if job["action"] == "recover-script":
-                    _, record = load_dashboard_record(config, run_id)
-                    view = self._record_view(config, record, "")
-                    disk_ids.add(run_id)
-                view.publish({**view.state, "status": view.state["status"] if job["action"] == "recover-script" else "cancelled",
-                              "queued": False, "ready": True,
+            if job["action"] == "recover-script" and not interrupted:
+                _, record = load_dashboard_record(config, run_id)
+                view = self._record_view(config, record, "")
+                disk_ids.add(run_id)
+                view.publish({**view.state, "queued": False, "ready": True,
                               "message": "待機操作を取り消しました。内容を確認してからやり直してください。"})
                 views[run_id] = view
                 continue
