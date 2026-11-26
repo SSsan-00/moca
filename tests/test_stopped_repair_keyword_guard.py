@@ -60,8 +60,11 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
     def assert_rejected(self, name, line=2, spelling="@event"):
         files = self.files()
         pending = self.record()["repair_pending"]
-        result = self.resume()
+        mock, calls = self.mock_commands(*_SUCCESS)
+        with mock:
+            result = workflow.resume_with_junie(self.config, self.run_id)
         self.assertNotEqual(result["status"], "checker_succeeded")
+        self.assertFalse(calls)
         self.assertRegex(result["error"].splitlines()[0], fr"{re.escape(name)}:{line}:.*{re.escape(spelling)}")
         self.assertIn("作業ツリーを選び直す", result["error"])
         self.assertEqual(self.files(), files)
@@ -190,3 +193,12 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
         draft = b"class Original { int oldValue = 1; }\nclass Other { int @class = 1; }\n"
         self.choose_draft({**_AFTER, "Example.cs": draft})
         self.assert_rejected("Example.cs", spelling="@class")
+
+    def test_callback_switch_in_a_stopped_draft_keeps_all_targets_unchanged(self):
+        before = b"class Page { void Use() { Call(() => { { int @event = 1; } },\n() => { { int valid = 2; } }); } }"
+        self.target.write_bytes(before)
+        self.hashes["Example.cs"] = sha256_file(self.target)
+        self.save_record({**self.record(), "target_hashes": self.hashes})
+        after = before.replace(b"@event", b"normal").replace(b"valid = 2", b"@event = 1")
+        self.choose_draft({**_AFTER, "Example.cs": after})
+        self.assert_rejected("Example.cs")
