@@ -158,10 +158,10 @@ class JunieEventTests(unittest.TestCase):
         unrelated.with_name("summary.json").write_bytes(line({"projectDir": str(self.root / "elsewhere")}))
         ours = self.write("ours", task(), usage)
 
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertIsNone(events.path)
         ours.with_name("summary.json").write_bytes(line({"projectDir": str(project)}))
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertEqual(events.path, ours)
         self.assertEqual(events.usage, [18, 4, 5, 3, 1])
 
@@ -180,8 +180,8 @@ class JunieEventTests(unittest.TestCase):
                    response(), response())
         stdout = io.StringIO()
         with redirect_stdout(stdout):
-            self.assertFalse(events.read_new_events())
-            self.assertFalse(events.read_new_events())
+            self.assertIs(events.read_new_events(), False)
+            self.assertIs(events.read_new_events(), False)
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual([entry["message"] for entry in self.messages], [
             "Junieのセッションに更新がありました。", "Junieからファイルの読み取りの報告が届きました。",
@@ -196,7 +196,7 @@ class JunieEventTests(unittest.TestCase):
         events = session_events.SessionEvents("this-launch")
         self.write("other", prompt("different-launch"), task(), response())
         self.write("invalid", {"kind": "UserPromptEvent", "prompt": {"this-launch": True}}, task(), response())
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertIsNone(events.path)
         self.assertIsNone(events.last_event_at)
         self.assertEqual(self.messages, [])
@@ -316,7 +316,7 @@ class JunieEventTests(unittest.TestCase):
                              ]), response(), failure, response())
         self.assertTrue(events.read_new_events())
         self.assertEqual(events.usage, [18, 4, 5, 3, 1])
-        self.assertFalse(events.read_new_events())
+        self.assertIs(events.read_new_events(), False)
         self.assertEqual(events.usage, [36, 8, 10, 6, 2])
         self.assertEqual(events.path, current)
 

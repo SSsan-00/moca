@@ -296,3 +296,4 @@ class SessionEvents:
                 continue
             if self.path is not None:
                 break
+        return False
