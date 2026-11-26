@@ -19,6 +19,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from tests.support.fixtures import SavedRunFixture
+from migration_harness.rules.rule_materials import COMPACT_RULE_GUIDELINES, write_rule_files
 from migration_harness.verification import build_receipt
 from migration_harness import cli, errors, execution, workflow
 from migration_harness.junie import junie_cli, session_events
@@ -754,6 +755,11 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         ranges = manifest["parts"][0]["sources"]
         for number in (2, 3):
             ranges.append({**ranges[0], "start_line": number, "end_line": number})
+        pin, = manifest["php_sources"]
+        snapshot = path.parent / pin["snapshot"]
+        content = snapshot.read_bytes() + b"echo 2;\necho 3;\n"
+        snapshot.write_bytes(content)
+        pin["sha256"] = sha256(content).hexdigest()
         path.write_text(json.dumps(manifest), encoding="utf-8")
         check_passed = ("fixture-checker", 0, b"")
         self.resume(self.build, check_passed)
@@ -1695,13 +1701,12 @@ class CheckerResumeApprovalTests(SavedRunFixture):
 
     def test_failed_rule_evidence_blocks_approved_diagnostics_in_both_paths(self):
         capsule = self.run_path / "capsule"
-        material = capsule / "materials/rule-1.txt"
-        material.parent.mkdir()
-        data = b"Apply the reference behavior.\n"
-        material.write_bytes(data)
+        materials = capsule / "materials"
+        rule, = write_rule_files(materials, [({"path": "rules.md"}, "Apply the reference behavior.\n")])
         manifest_path = capsule / "manifest.json"
         manifest = json.loads(manifest_path.read_bytes())
-        manifest["rule_files"] = [{"file": material.name, "usage": "required", "sha256": sha256(data).hexdigest()}]
+        manifest.update(rule_files=[rule], rule_guidelines_format=COMPACT_RULE_GUIDELINES,
+                        materials={rule["file"]: rule["sha256"], "rules.json": sha256((materials / "rules.json").read_bytes()).hexdigest()})
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         self.config["checker_rule_evidence"] = True
         self.assert_both_statuses(self.diagnostic, "checker_needs_review", code=0, rule_failure=True)

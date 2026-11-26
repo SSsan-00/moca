@@ -63,7 +63,8 @@ class TaskGuidelinesTests(unittest.TestCase):
             for index, body in enumerate(contents, 1):
                 source = capsule / f"{index}.md"
                 source.write_bytes((prefix + body).encode())
-                manifest["parts"].append({"index": index, "path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()})
+                manifest["parts"].append({"index": index, "path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                                          "segment_sha256": hashlib.sha256(body.encode()).hexdigest()})
             (capsule / "boundary.md").write_text("     3 | 'future boundary';\n")
             saved = agent / ".migration-materials"
             migration_materials.stage_source_excerpts(capsule, manifest, agent, through_capsule=1)

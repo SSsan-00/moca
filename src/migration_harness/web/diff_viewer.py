@@ -9,10 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from migration_harness.context.capsules import (
-    input_encoding,
+    assigned_php_sources,
     load_capsule_manifest,
-    migration_php_encodings,
-    pinned_php_sources,
     read_pinned_php,
 )
 from migration_harness.config import target_paths
@@ -67,22 +65,9 @@ def capture_workspace(
         if record.get("target_apply_pending"):
             raise ValueError("移行先の反映が途中です。同じRun IDで再開してから比較してください。")
         capsule_path, manifest = load_capsule_manifest(run_path)
-        encodings = migration_php_encodings(manifest)
-        if not encodings:
+        sources = assigned_php_sources(manifest)
+        if not sources:
             raise ValueError("この実行の移行対象にPHPがありません。")
-        pinned = pinned_php_sources(manifest)
-        sources = []
-        legacy_paths = []
-        if pinned is None:
-            # 保存済みPHPを持たない旧Runでは、manifestのパスと文字コードで現在の入力を読む。
-            project = Path(config["project_root"])
-            legacy_paths = [(_inside_file(project, name), name, encoding) for name, encoding in encodings.items()]
-        else:
-            pins_by_path = {source["path"]: source for source in pinned}
-            for name in encodings:
-                if name not in pins_by_path:
-                    raise ValueError(f"移行対象のPHPがRunに保存されていません: {name}")
-                sources.append(pins_by_path[name])
         targets = [path.as_posix() for path in target_paths(unit)]
         right_paths = {}
         draft_files = []
@@ -91,8 +76,7 @@ def capture_workspace(
         use_draft = include_draft and record.get("status") in {"junie_running", "editor_followup", "repairing"}
         if use_draft and (agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve())):
             raise ValueError("Junieの作業場所を安全に参照できません。")
-        paths = [Path(config["project_root"]) / name for _, name, _ in legacy_paths]
-        paths.extend(worktree / name for name in targets)
+        paths = [worktree / name for name in targets]
         if use_draft:
             paths.extend(agent_root / name for name in targets)
         before = [_file_version(path) for path in paths]
@@ -108,13 +92,7 @@ def capture_workspace(
                 right_paths[name] = _inside_file(worktree, name)
         source_hashes = {}
         left_files = []
-        for path, name, encoding in legacy_paths:
-            encoding = input_encoding(path, encoding)
-            content = path.read_bytes()
-            source_hashes[path] = hashlib.sha256(content).hexdigest()
-            text = content.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
-            left_files.append((Path(name).as_posix(), text))
-        for source in sources:
+        for source in sources.values():
             text = read_pinned_php(capsule_path, source).decode(source["encoding"])
             left_files.append((Path(source["path"]).as_posix(), text.replace("\r\n", "\n").replace("\r", "\n")))
         right_files = []
@@ -129,7 +107,7 @@ def capture_workspace(
                 source_hashes[path] = hashlib.sha256(content).hexdigest()
             if target_hashes is not None:
                 captured_hashes[name] = source_hashes.get(path) or hashlib.sha256(content).hexdigest()
-        # worktreeはロック中に直接編集されない。外部PHPとJunieの下書きだけを再読込する。
+        # worktreeはロック中に直接編集されない。Junieの下書きだけを再読込する。
         contents_changed = any(sha256_file(path) != digest for path, digest in source_hashes.items())
         # 別プロセスによるハーネスのファイル置換や工程変更も検出する。
         after = [_file_version(path) for path in paths]

@@ -7,7 +7,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from tests.support.fixtures import HarnessCase, prepare_fixture
-from migration_harness.context.capsules import load_capsule_manifest, pinned_php_sources
+from migration_harness.context.capsules import load_capsule_manifest, verify_pinned_php
 from migration_harness.runs.run_manager import RunManager
 from migration_harness.runs.run_records import execution_lock
 from migration_harness.web.dashboard import Dashboard
@@ -123,10 +123,11 @@ class CapsuleManifestValidationTests(HarnessCase):
         self.manifest_path = Path(prepared["capsule_path"]) / "manifest.json"
         self.manifest = json.loads(self.manifest_path.read_bytes())
 
-    def test_current_and_798136e_capsule_metadata_are_read_without_upgrading(self):
+    def test_current_capsule_reopens_and_798136e_is_rejected_without_rewriting(self):
         original = self.manifest_path.read_bytes()
-        _, current = load_capsule_manifest(self.run_path)
-        source, = pinned_php_sources(current)
+        capsule, current = load_capsule_manifest(self.run_path)
+        verify_pinned_php(capsule, current)
+        source, = current["php_sources"]
         self.assertEqual(source["sha256"], sha256(b"<?php echo 1;\n").hexdigest())
         self.assertEqual(self.manifest_path.read_bytes(), original)
 
@@ -135,9 +136,8 @@ class CapsuleManifestValidationTests(HarnessCase):
         legacy["parts"] = [{key: part[key] for key in ("index", "path", "chars", "sources")} for part in current["parts"]]
         recorded = json.dumps(legacy, indent=4).encode()
         self.manifest_path.write_bytes(recorded)
-        _, read = load_capsule_manifest(self.run_path)
-        self.assertEqual(read, legacy)
-        self.assertIsNone(pinned_php_sources(read))
+        with self.assertRaisesRegex(ValueError, "missing or invalid sha256"):
+            load_capsule_manifest(self.run_path)
         self.assertEqual(self.manifest_path.read_bytes(), recorded)
 
     def test_partial_and_inconsistent_capsule_manifest_preserves_recorded_bytes(self):
@@ -152,7 +152,13 @@ class CapsuleManifestValidationTests(HarnessCase):
             ("invalid source range", lambda doc: doc["parts"][0].pop("sources")),
             ("invalid character slice", lambda doc: doc["parts"][0]["sources"][0].update(character_slices=[{}])),
             ("invalid sha256", lambda doc: doc["parts"][0].update(sha256="partial hash")),
+            ("invalid segment_sha256", lambda doc: doc["parts"][0].pop("segment_sha256")),
+            ("invalid segment_offset", lambda doc: doc.pop("segment_offset")),
+            ("invalid material versions", lambda doc: doc.pop("materials")),
             ("invalid material versions", lambda doc: doc.update(materials={"x": None})),
+            ("保存済みPHP", lambda doc: doc.pop("php_sources")),
+            ("固定PHPの一覧", lambda doc: doc.update(php_sources=[])),
+            ("固定PHPの文字コード", lambda doc: doc["parts"][0]["sources"][0].update(encoding="cp932")),
             ("invalid rule_files", lambda doc: doc.update(rule_files={})),
             ("保存済みPHP", lambda doc: doc["php_sources"].append(doc["php_sources"][0].copy())),
         ):

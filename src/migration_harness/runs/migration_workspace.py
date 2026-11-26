@@ -142,6 +142,9 @@ def prepare_migration_workspace(config, unit, run_path, result, record, *, resum
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
         raise ValueError("agent workspace path escapes the run directory")
+    capsule, manifest = capsule_files.load_capsule_manifest(run_path)
+    if not resuming:
+        capsule_files.verify_pinned_php(capsule, manifest)
     stage_scripts.run_script_phase(config, "after_prepare", worktree_root, run_path, record, once=True)
     # Junieの作業領域を作成済みのRunでは、初期ファイルを再配置しない。
     if not agent_root.exists():
@@ -164,7 +167,6 @@ def prepare_migration_workspace(config, unit, run_path, result, record, *, resum
     finish_pending_targets(agent_root, worktree_root, relative_targets, record, record_path)
     worktree_targets = tuple(safe_target(worktree_root, path) for path in relative_targets)
     agent_targets = tuple(safe_target(agent_root, path) for path in relative_targets)
-    capsule, manifest = capsule_files.load_capsule_manifest(run_path)
     hashes = {path.as_posix(): target_hash(file) for path, file in zip(relative_targets, worktree_targets, strict=True)}
     if resuming and not followup_only:
         prior_hashes = record.get("target_hashes", {relative_targets[0].as_posix(): record.get("target_sha256")})

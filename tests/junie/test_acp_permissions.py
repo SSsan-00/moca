@@ -8,6 +8,8 @@ from queue import Queue
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from tests.support.fixtures import save_capsule_fixture
+
 from migration_harness.junie import acp_session, junie_cli, migration_session
 from migration_harness.junie.acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
 from migration_harness.config import _execution_settings
@@ -205,8 +207,7 @@ send(id=3,result={"stopReason":"end_turn"})
         context = manifest.parent / "part-0001" / "context.md"
         context.parent.mkdir(parents=True)
         context.write_text("context", encoding="utf-8")
-        manifest.write_text(json.dumps({"parts": [{"index": 1, "path": str(context), "chars": 7,
-                                                   "sources": []}], "materials": self.hashes}), encoding="utf-8")
+        save_capsule_fixture(manifest.parent, "fixture", [(context, [])], materials=self.hashes)
         application = Dashboard()
         application.begin_operation()
         record = {"run_id": self.run_path.name, "status": "ready", "current_capsule": 2}

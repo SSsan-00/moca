@@ -136,7 +136,9 @@ class LargeInputScalingTests(unittest.TestCase):
             data = b"unchanged\n"
             original.write_bytes(data)
             digest = hashlib.sha256(data).hexdigest()
-            manifest = {"parts": [{"path": str(original), "index": 1, "sha256": digest, "segment_sha256": digest}]}
+            manifest = {"segment_offset": 0, "parts": [
+                {"path": str(original), "index": 1, "sha256": digest, "segment_sha256": digest},
+            ]}
             verified = migration_materials.stage_source_excerpts(capsule, manifest, agent)
             relative = Path(".migration-materials/source-0001.md")
             (agent / "guidelines.md").write_text("unchanged", encoding="utf-8")

@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.support.fixtures import stub_syntax_diagnostics
+from tests.support.fixtures import save_capsule_fixture, stub_syntax_diagnostics
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.runs import run_records, stopped_repair
@@ -23,10 +23,9 @@ def stopped_repair_run(config, template, source_tree, phase):
     (run / "agent-workspace").mkdir()
     context = capsule / "context.txt"
     context.write_text("<?php echo 1;", encoding="utf-8")
-    (capsule / "manifest.json").write_text(json.dumps({
-        "parts": [{"index": 1, "path": str(context), "chars": 13,
-                   "sources": [{"path": "example.php", "start_line": 1, "end_line": 1, "encoding": "utf-8"}]}],
-    }), encoding="utf-8")
+    save_capsule_fixture(capsule, template["unit_id"], [(context, [
+        {"path": "example.php", "start_line": 1, "end_line": 1, "encoding": "utf-8"},
+    ])], php={"example.php": ("utf-8", context.read_bytes())})
     targets = target_paths(config["units"][0])
     for target in targets:
         to = worktree / target

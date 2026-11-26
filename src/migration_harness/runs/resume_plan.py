@@ -158,7 +158,7 @@ def plan_migration_resume(
             if not context.is_absolute() or not context.is_relative_to(capsule):
                 raise ValueError("保存された移行区間のパスが無効です。")
             digest = harness_files.sha256_file(safe_target(capsule, context.relative_to(capsule)))
-            if part.get("sha256", digest) != digest:
+            if part["sha256"] != digest:
                 raise ValueError("保存された移行区間の内容が一致しません。")
             hashes.append(digest)
         plan = {
@@ -296,8 +296,9 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
     if not isinstance(resume_attempts, int) or isinstance(resume_attempts, bool) or resume_attempts < 0:
         raise ValueError("run record contains an invalid resume-attempt count")
     capsule_path, manifest = capsule_files.load_capsule_manifest(run_path)
-    if manifest.get("unit_id", unit["id"]) != unit["id"]:
+    if manifest["unit_id"] != unit["id"]:
         raise ValueError("run manifest does not match the recorded migration unit")
+    capsule_files.verify_pinned_php(capsule_path, manifest)
     parts = manifest["parts"]
     context_paths = []
     for part in parts:
@@ -341,7 +342,7 @@ def load_resume_context(config, run_id, run_path, worktree_path, record, unit, s
         "worktree_path": str(worktree_path),
         "context_paths": context_paths,
         "context_path": context_paths[0],
-        "context_chars": manifest.get("total_context_chars", sum(part["chars"] for part in parts)),
+        "context_chars": manifest["total_context_chars"],
         "context_part_chars": [part["chars"] for part in parts],
         "capsule_path": str(capsule_path),
         "capsule_count": len(context_paths),

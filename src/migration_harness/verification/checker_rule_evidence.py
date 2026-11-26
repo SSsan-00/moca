@@ -71,7 +71,7 @@ def checker_rule_context(run_path: Path, worktree: Path, record: dict) -> dict |
     rules = {}
     decisions = record.get("detail_applicability", {})
     overrides = record.get("detail_overrides", {})
-    for rule in manifest.get("rule_files", manifest.get("rule_chunks", [])):
+    for rule in manifest["rule_files"]:
         name = rule["file"]
         decision = overrides.get(name) or decisions.get(name)
         if rule.get("usage", "required") != "required" and (decision or {}).get("applies") is not True:

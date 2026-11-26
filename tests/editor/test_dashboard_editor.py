@@ -908,22 +908,26 @@ target = "Other.cs"
         prepared = prepare_fixture(self.settings, "sample")
         route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
         manifest_path = Path(prepared["capsule_path"]) / "manifest.json"
+        self.assertEqual(self.request(route), {
+            "run_id": prepared["run_id"],
+            "sources": ["source.php"], "source": "source.php", "content": "<?php echo 1;", "error": None,
+        })
+        for name in unrelated:
+            with self.subTest(source=name):
+                with self.assertRaises(HTTPError) as denied:
+                    self.request(route + "&" + urlencode({"source": name}))
+                self.assertEqual(denied.exception.code, 409)
+                denied.exception.close()
         manifest = json.loads(manifest_path.read_bytes())
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy):
-                if legacy:
-                    manifest.pop("php_sources")
-                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-                self.assertEqual(self.request(route), {
-                    "run_id": prepared["run_id"],
-                    "sources": ["source.php"], "source": "source.php", "content": "<?php echo 1;", "error": None,
-                })
-                for name in unrelated:
-                    with self.subTest(source=name):
-                        with self.assertRaises(HTTPError) as denied:
-                            self.request(route + "&" + urlencode({"source": name}))
-                        self.assertEqual(denied.exception.code, 409)
-                        denied.exception.close()
+        manifest.pop("php_sources")
+        rejected = json.dumps(manifest).encode()
+        manifest_path.write_bytes(rejected)
+        with self.assertRaises(HTTPError) as denied:
+            self.request(route)
+        self.assertEqual(denied.exception.code, 409)
+        self.assertIn("php_sources", denied.exception.read().decode("utf-8"))
+        denied.exception.close()
+        self.assertEqual(manifest_path.read_bytes(), rejected)
 
     def test_php_view_rejects_missing_pin_without_reading_the_live_source(self):
         prepared = prepare_fixture(self.settings, "sample")
@@ -935,7 +939,7 @@ target = "Other.cs"
         with self.assertRaises(HTTPError) as missing:
             self.request(route)
         self.assertEqual(missing.exception.code, 409)
-        self.assertIn("移行対象のPHPがRunに保存されていません: source.php", missing.exception.read().decode("utf-8"))
+        self.assertIn("固定PHPの一覧と保存された範囲が一致しません: source.php", missing.exception.read().decode("utf-8"))
         missing.exception.close()
 
     def test_razor_pair_saves_both_targets_at_the_checkpoint(self):

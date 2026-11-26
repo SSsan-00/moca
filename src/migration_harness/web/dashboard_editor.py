@@ -14,10 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from ..config import target_paths, validate_junie_model
 from ..context.capsules import (
-    input_encoding,
+    assigned_php_sources,
     load_capsule_manifest,
-    migration_php_encodings,
-    pinned_php_sources,
     read_pinned_php,
 )
 from ..errors import format_error
@@ -43,7 +41,6 @@ from ..runs.editor_view import editor_version, editor_view_versions, prompt_timi
 from ..runs.run_records import edit_run_record, load_saved_run, validate_run_id
 from ..runs.worktree_targets import save_target_edit, worktree_source_lock
 from . import DASHBOARD_ERRORS
-from .diff_viewer import _inside_file
 
 
 def send_prompts(request, action: dict[str, Any] | None = None) -> None:
@@ -91,31 +88,17 @@ def send_editor_php(request) -> None:
             raise ValueError("表示中の実行が変わりました。")
         run_path, _, _, _ = load_saved_run(config, run_id)
         capsule, manifest = load_capsule_manifest(run_path)
-        pinned = pinned_php_sources(manifest)
-        encodings: dict[str, str] = {}
-        for path, encoding in migration_php_encodings(manifest).items():
-            encodings.setdefault(Path(path).as_posix(), encoding)
-        sources = {Path(entry["path"]).as_posix(): entry for entry in (pinned or [])}
-        if pinned is not None:
-            for name in encodings:
-                if name not in sources:
-                    raise ValueError(f"移行対象のPHPがRunに保存されていません: {name}")
-        names = list(encodings)
+        sources = {Path(name).as_posix(): entry for name, entry in assigned_php_sources(manifest).items()}
+        names = list(sources)
         name = query.get("source", names[:1] or [None])[0]
         if name is not None and name not in names:
             raise ValueError("この実行の移行元 PHP を選んでください。")
         content = ""
         error = None
-        try:
-            if name in sources:
-                entry = sources[name]
-                content = read_pinned_php(capsule, entry).decode(entry["encoding"])
-            elif name is not None:
-                path = _inside_file(Path(config["project_root"]).resolve(), name)
-                content = path.read_text(encoding=input_encoding(path, encodings[name]))
-        except (OSError, ValueError, LookupError) as exc:
-            error = format_error(exc)
-        payload = {"run_id": run_id, "sources": names, "source": name, "content": content, "error": error}
+        if name is not None:
+            entry = sources[name]
+            content = read_pinned_php(capsule, entry).decode(entry["encoding"])
+        payload = {"run_id": run_id, "sources": names, "source": name, "content": content, "error": None}
         request.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     except DASHBOARD_ERRORS as exc:
         request.send_conflict(exc)

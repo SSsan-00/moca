@@ -371,10 +371,15 @@ class RuleMaterialsTests(HarnessCase):
         self.assertEqual(hashlib.sha256(numbered).hexdigest(), records[0]["sha256"])
         self.assertEqual((agent / ".migration-materials" / records[0]["file"]).read_bytes(), numbered)
         before = {key: value for key, value in manifest.items() if key != "rule_guidelines_format"}
+        manifest_path = capsule / "manifest.json"
+        original_manifest = manifest_path.read_bytes()
         for old in (before, {**before, "rule_guidelines_format": "unknown-future-format"}):
-            rendered = rule_materials.render_guidelines(capsule / "materials", old, selected=selected)
-            self.assertIn(numbered.decode(), rendered)
-            self.assertNotIn("lines 1-5 (.migration-materials/rule-0001.txt)", rendered)
+            rejected = json.dumps(old).encode()
+            manifest_path.write_bytes(rejected)
+            with self.assertRaisesRegex(ValueError, "invalid saved rule index or format"):
+                capsule_files.load_capsule_manifest(capsule.parent)
+            self.assertEqual(manifest_path.read_bytes(), rejected)
+        manifest_path.write_bytes(original_manifest)
         migration_materials.stage_migration_materials(capsule, manifest, agent, repair=True, selected=selected)
         self.assertEqual((agent / ".migration-materials/guidelines.md").read_bytes().decode(), inline)
 
@@ -382,12 +387,7 @@ class RuleMaterialsTests(HarnessCase):
         material = self.root / "materials"
         short = "## migration_rules — `rules.md` lines 1-1\n\n```text\n     1 | 最初で最後\n```\n\n"
         entries = rule_materials.write_rule_files(material, [({"path": "rules.md"}, short)])
-        self.assertEqual(
-            rule_materials.render_guidelines(material, {
-                "rule_files": entries, "rule_guidelines_format": rule_materials.COMPACT_RULE_GUIDELINES,
-            }),
-            rule_materials.render_guidelines(material, {"rule_files": entries}),
-        )
+        self.assertIn(short, rule_materials.render_guidelines(material, {"rule_files": entries}))
 
     def test_new_manifest_leaves_unrecognized_rule_frames_intact(self):
         material = self.root / "materials"
@@ -839,7 +839,7 @@ class RuleMaterialsTests(HarnessCase):
             with self.assertRaisesRegex(ValueError, "saved migration material"):
                 migration_materials.stage_migration_materials(capsule, manifest, agent)
 
-    def test_old_chunked_run_joins_pinned_text_without_new_receipts(self):
+    def test_old_chunked_run_is_rejected_without_touching_saved_rule_bytes(self):
         capsule = self.root / "capsule"
         material = capsule / "materials"
         material.mkdir(parents=True)
@@ -853,11 +853,12 @@ class RuleMaterialsTests(HarnessCase):
         manifest = {"materials": {item["file"]: item["sha256"] for item in chunks}, "rule_chunks": chunks}
         agent = self.root / "agent"
         agent.mkdir()
-        migration_materials.stage_migration_materials(capsule, manifest, agent)
-        self.assertIn("".join(contents), (agent / ".migration-materials/guidelines.md").read_bytes().decode())
-        self.assertFalse((agent / "migration-read-rules.py").exists())
+        with self.assertRaisesRegex(ValueError, "rule_files"):
+            migration_materials.stage_migration_materials(capsule, manifest, agent)
+        self.assertEqual([(material / item["file"]).read_bytes().decode() for item in chunks], contents)
+        self.assertFalse(list(agent.iterdir()))
 
-    def test_old_shared_run_and_no_rules(self):
+    def test_old_shared_run_is_rejected_but_current_shared_constraints_are_not_rules(self):
         capsule = self.root / "capsule"
         material = capsule / "materials"
         material.mkdir(parents=True)
@@ -866,7 +867,21 @@ class RuleMaterialsTests(HarnessCase):
         agent = self.root / "agent"
         agent.mkdir()
         manifest = {"materials": {"shared.md": hashlib.sha256(original).hexdigest()}, "parts": []}
-        migration_materials.stage_migration_materials(capsule, manifest, agent)
-        self.assertIn(original, (agent / ".migration-materials/guidelines.md").read_bytes())
+        with self.assertRaisesRegex(ValueError, "rule_files"):
+            migration_materials.stage_migration_materials(capsule, manifest, agent)
+        self.assertEqual((material / "shared.md").read_bytes(), original)
+        self.assertFalse(list(agent.iterdir()))
+        prompt = migration_materials.stage_migration_materials(capsule, {**manifest, "rule_files": []}, agent)
+        staged = agent / ".migration-materials"
+        self.assertIn("shared.md", prompt)
+        self.assertEqual((staged / "shared.md").read_bytes(), original)
+        self.assertFalse((staged / "guidelines.md").exists())
         self.assertEqual(rule_materials.render_guidelines(material, {"rule_files": []}), "")
         self.assertNotIn("--ide-guidelines", junie_cli.build_command(agent, "plain", None))
+
+    def test_current_rule_prompt_keeps_saved_crlf(self):
+        material = self.root / "materials"
+        original = "mandatory text\r\nkeep these line endings\r\n"
+        rules = rule_materials.write_rule_files(material, [({"path": "rule.md"}, original)])
+        guidelines = rule_materials.render_guidelines(material, {"rule_files": rules})
+        self.assertIn(original, guidelines)

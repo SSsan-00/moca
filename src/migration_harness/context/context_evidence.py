@@ -5,7 +5,7 @@ from bisect import bisect_left
 from pathlib import Path
 from typing import Any
 
-from .capsules import is_php_input, load_capsule_manifest, pinned_php_sources, read_pinned_php
+from .capsules import is_php_input, load_capsule_manifest, read_pinned_php, verify_pinned_php
 
 
 _MAX_PAGE = 16_384
@@ -26,9 +26,7 @@ def _catalog(manifest: dict[str, Any], through: int | None) -> list[dict[str, An
     parts = manifest["parts"]
     if through is not None and not 1 <= through <= len(parts):
         raise ValueError("capsule is outside the saved run")
-    pinned_sources = pinned_php_sources(manifest)
-    if pinned_sources is None:
-        raise ValueError("this older run does not contain fixed PHP evidence")
+    pinned_sources = manifest["php_sources"]
     sources: dict[str, list[dict[str, Any]]] = {}
     for part in parts:
         if through is None or part["index"] <= through:
@@ -58,7 +56,8 @@ def _catalog(manifest: dict[str, Any], through: int | None) -> list[dict[str, An
 
 
 def inspect_context(run_path: Path, through: int | None = None) -> dict[str, Any]:
-    _, manifest = load_capsule_manifest(run_path)
+    capsule, manifest = load_capsule_manifest(run_path)
+    verify_pinned_php(capsule, manifest)
     return _inspect_manifest(manifest, through)
 
 
@@ -105,7 +104,7 @@ def find_feature(run_path: Path, name: str, through: int | None = None) -> dict[
         raise ValueError("feature requires a non-empty input symbol or named PHP function")
     capsule, manifest = load_capsule_manifest(run_path)
     result = _inspect_manifest(manifest, through)
-    pinned = {source["path"]: source for source in pinned_php_sources(manifest) or []}
+    pinned = {source["path"]: source for source in _catalog(manifest, through)}
     matches: list[dict[str, Any]] = []
     for source in result["sources"]:
         declarations = [row for row in source["ranges"] if row.get("symbol", "").casefold() == query]

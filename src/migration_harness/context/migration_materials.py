@@ -11,7 +11,7 @@ from . import php_literals
 from .. import files as harness_files
 from ..execution import check_cancelled, report_activity
 from ..files import safe_target
-from ..rules.rule_materials import detail_index, render_guidelines
+from ..rules.rule_materials import detail_index, render_guidelines, saved_rule_entries
 from ..runs.worktree_targets import target_hash
 from .context_evidence import boundary_hints
 
@@ -42,21 +42,20 @@ def stage_source_excerpts(
             raise ValueError("saved verification source is missing or outside the capsule directory")
         destination = safe_target(agent_root, Path(".migration-materials") / f"source-{part['index']:04d}.md")
         existing = target_hash(destination)
-        expected = part.get("sha256")
+        expected = part["sha256"]
         data = verified_context if part["index"] == through_capsule else None
-        reusable = part.get("segment_sha256") and expected and existing == part["segment_sha256"]
+        reusable = existing == part["segment_sha256"]
         if data is None:
             data = None if reusable else source.read_bytes()
-            if expected:
-                actual = harness_files.sha256_file(source) if data is None else hashlib.sha256(data).hexdigest()
-                if actual != expected:
-                    raise ValueError(f"capsule {part['index']}: saved verification source changed")
+            actual = harness_files.sha256_file(source) if data is None else hashlib.sha256(data).hexdigest()
+            if actual != expected:
+                raise ValueError(f"capsule {part['index']}: saved verification source changed")
         if reusable:
             verified[destination.relative_to(agent_root)] = existing
             continue
-        original = data.decode("utf-8")[manifest.get("segment_offset", 0):].encode("utf-8")
+        original = data.decode("utf-8")[manifest["segment_offset"]:].encode("utf-8")
         digest = hashlib.sha256(original).hexdigest()
-        if part.get("segment_sha256", digest) != digest:
+        if part["segment_sha256"] != digest:
             raise ValueError(f"capsule {part['index']}: saved verification excerpt changed")
         if existing != digest:
             destination.write_bytes(original)
@@ -70,7 +69,10 @@ def stage_migration_materials(
     supplied_rules: list[dict] | None = None, excluded: frozenset[str] = frozenset(),
 ) -> str:
     """準備時の資料を照合して、今回のJunieに読む順番を伝える。"""
-    materials = manifest.get("materials", {})
+    materials = manifest.get("materials")
+    if not isinstance(materials, dict):
+        raise ValueError("capsule/manifest.json: missing or invalid material versions; start a new Run")
+    saved_rule_entries(manifest)
     omitted = set(excluded)
     # Noneは選別なし、空集合は「該当する詳細なし」。後者では前回置いた詳細も取り除く。
     if selected is not None:
@@ -112,7 +114,7 @@ def stage_migration_materials(
     if scratch.is_symlink():
         raise ValueError("scratch directory must not be a symbolic link")
     scratch.mkdir(exist_ok=True)
-    if "shared.md" in materials and ("rule_files" in manifest or "rule_chunks" in manifest):
+    if "shared.md" in materials:
         instructions += 'Before editing, read `.migration-materials/shared.md` and apply its constraints. '
     if "references.json" in materials:
         instructions += (
@@ -121,14 +123,6 @@ def stage_migration_materials(
             'relevant lines on both sides in small ranges. Follow their implementation patterns. '
             'Keep the migrated literals and behavior from the actual PHP, including when examples use different data. '
         )
-    if repair and "materials" not in manifest and manifest.get("shared_sources"):
-        source = Path(manifest["parts"][0]["path"]).resolve()
-        if not source.is_relative_to(capsule) or not source.is_file():
-            raise ValueError("saved shared context is missing or outside the capsule directory")
-        destination = safe_target(agent_root, Path(".migration-materials/legacy.md"))
-        destination.parent.mkdir(exist_ok=True)
-        shutil.copyfile(source, destination)
-        instructions += 'Before editing, read the Shared context section in `.migration-materials/legacy.md` and apply its rules and examples. '
     if repair:
         stage_source_excerpts(capsule, manifest, agent_root)
         instructions += (
@@ -252,7 +246,7 @@ def _stage_active_context(capsule, index, source, destination, expected, *, shar
                     raise ValueError(f"capsule {index}: saved context changed or is missing")
                 destination.write_bytes(data)
                 return data
-    if expected and target_hash(source) != expected:
+    if target_hash(source) != expected:
         raise ValueError(f"capsule {index}: saved context changed or is missing")
     shutil.copyfile(source, destination)
     return None
@@ -263,13 +257,13 @@ def stage_migration_capsule(unit, capsule, manifest, agent_root, relative_target
                              resume_first_capsule, expected_capsule_hashes):
     """保存カプセルを照合し、対象範囲と完了記録の指示を準備する。"""
     part = manifest["parts"][index - 1]
-    expected = expected_capsule_hashes[index - 1] if expected_capsule_hashes is not None else part.get("sha256")
+    expected = expected_capsule_hashes[index - 1] if expected_capsule_hashes is not None else part["sha256"]
     multiple = len(manifest["parts"]) > 1
     source = Path(context_path)
     agent_context = safe_target(agent_root, Path(".migration-context.md"))
     verified_context = _stage_active_context(
         capsule, index, source, agent_context, expected,
-        share_verified_bytes=(multiple and bool(expected) and expected == part.get("sha256")
+        share_verified_bytes=(multiple and expected == part["sha256"]
                               and part["index"] == index and source == Path(part["path"])
                               and source.is_absolute() and source.is_relative_to(capsule)),
     )
@@ -282,7 +276,7 @@ def stage_migration_capsule(unit, capsule, manifest, agent_root, relative_target
         source_instruction = (
             "For checking accumulated data, `.migration-materials/source-*.md` contains the exact assigned "
             "excerpts from segment 1 through this segment, in filename order. Use only the assigned source "
-            "headings; exclude any shared examples in legacy capsules. Verify the full accumulated sequence "
+            "headings. Verify the full accumulated sequence "
             "against these originals before completing this segment, preserving values, order, duplicates and "
             "PHP literal decoding. Use direct source and target reads for short, straightforward sequences. "
             "For long or repetitive data, use mechanical extraction and comparison as described below. "
@@ -343,7 +337,7 @@ def stage_migration_capsule(unit, capsule, manifest, agent_root, relative_target
         "Edit only the configured targets, the optional handoff file, the completion record, and temporary files in .migration-scratch/. "
         "Ensure every configured target exists before writing a completion record. "
         f"{TARGET_ENCODING}{CSHARP_IDENTIFIERS}"
-        "Apply all mandatory rules in the Shared context section if present. "
+        "Apply the mandatory rules supplied in the guidelines and the shared constraints when present. "
         f"{material_instructions}{boundary_instruction}{source_instruction}"
         f"{boundary_hints(manifest, index)}"
         f"{resume_instruction}"

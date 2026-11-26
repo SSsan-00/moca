@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import subprocess
@@ -13,12 +14,42 @@ from migration_harness import execution
 from migration_harness.runs import migration_workspace, run_records
 from migration_harness.verification import roslyn_syntax
 from migration_harness.config import load_config
+from migration_harness.context.capsules import is_php_input
 
 
 def prepare_fixture(config, unit_id):
     run_id = str(uuid.uuid4())
     with run_records.execution_lock(config, run_id), run_records.execution_lock(config, "prepare", wait=True):
         return migration_workspace.prepare_run(config, unit_id, run_id)
+
+
+def save_capsule_fixture(capsule, unit_id, parts, *, php=None, materials=None):
+    sources = []
+    for index, (name, (encoding, content)) in enumerate((php or {}).items(), 1):
+        relative = f"php-sources/{index:04d}.php"
+        snapshot = capsule / relative
+        snapshot.parent.mkdir(exist_ok=True)
+        snapshot.write_bytes(content)
+        sources.append({"path": name, "snapshot": relative, "encoding": encoding,
+                        "sha256": hashlib.sha256(content).hexdigest()})
+    normalized = []
+    for index, (context, ranges) in enumerate(parts, 1):
+        content = context.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        normalized.append({"index": index, "path": str(context), "chars": len(content.decode("utf-8")),
+                           "sha256": digest, "segment_sha256": digest, "sources": ranges})
+    assigned = {row["path"] for item in normalized for row in item["sources"] if is_php_input(row)}
+    if assigned != {source["path"] for source in sources}:
+        raise AssertionError("fixture PHP pins must match assigned sources")
+    manifest = {
+        "unit_id": unit_id, "parts": normalized, "php_sources": sources,
+        "max_context_chars": max(1000, *(part["chars"] for part in normalized)),
+        "total_context_chars": sum(part["chars"] for part in normalized), "segment_offset": 0,
+        "shared_sources": [], "reference_sources": [], "materials": materials or {}, "rule_files": [],
+        "syntax_boundaries": {}, "syntax_boundaries_analyzed": False, "split_line_coverage": [],
+    }
+    (capsule / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
 
 
 def stub_syntax_diagnostics():
@@ -113,12 +144,9 @@ class SavedRunFixture(unittest.TestCase):
         capsule.mkdir(parents=True)
         context = capsule / "context.txt"
         context.write_text("example", encoding="utf-8")
-        (capsule / "manifest.json").write_text(json.dumps({
-            "parts": [{
-                "index": 1, "path": str(context), "chars": 7,
-                "sources": [{"path": "example.php", "start_line": 1, "end_line": 1, "encoding": "utf-8"}],
-            }],
-        }), encoding="utf-8")
+        save_capsule_fixture(capsule, "example", [(context, [
+            {"path": "example.php", "start_line": 1, "end_line": 1, "encoding": "utf-8"},
+        ])], php={"example.php": ("utf-8", (project / "example.php").read_bytes())})
         self.record_path = self.run_path / "run.json"
         self.build_log = self.run_path / "build.log"
         self.checker_log = self.run_path / "checker.log"

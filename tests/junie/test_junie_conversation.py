@@ -488,7 +488,10 @@ class JunieConversationTests(SavedRunFixture):
         for index in (2, 3):
             part = capsule / f"context-{index}.txt"
             part.write_text(f"capsule {index}", encoding="utf-8")
-            manifest["parts"].append({"index": index, "path": str(part), "chars": 9, "sources": []})
+            digest = hashlib.sha256(part.read_bytes()).hexdigest()
+            manifest["parts"].append({"index": index, "path": str(part), "chars": 9, "sources": [],
+                                      "sha256": digest, "segment_sha256": digest})
+        manifest["total_context_chars"] = sum(part["chars"] for part in manifest["parts"])
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
@@ -1437,6 +1440,11 @@ class JunieConversationTests(SavedRunFixture):
         capsule.write_bytes((self.run_path / "capsule" / "context.txt").read_bytes())
         manifest = json.loads((self.run_path / "capsule" / "manifest.json").read_bytes())
         manifest["parts"][0]["path"] = str(capsule)
+        manifest["unit_id"] = unit_id
+        for pin in manifest["php_sources"]:
+            snapshot = path / "capsule" / pin["snapshot"]
+            snapshot.parent.mkdir(exist_ok=True)
+            snapshot.write_bytes((self.run_path / "capsule" / pin["snapshot"]).read_bytes())
         (path / "capsule" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         worktree.mkdir()
         (worktree / self.target.name).write_bytes(self.target.read_bytes())
