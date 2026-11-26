@@ -31,10 +31,10 @@ MoCAは既存の保存形式を使い続ける。閲覧時に旧記録を新版�
 Windowsの既存作業環境で、合成データだけを使う。実業務のPHP、生成アプリ、DB、Junieは起動しない。
 
 ```powershell
-python -m unittest discover -s tests -p "test_saved_*.py" -v
-python -m unittest discover -s tests -p "test_target_snapshot_compatibility.py" -v
-python -m unittest discover -s tests -p "test_build_receipt.py" -v
-python -m unittest discover -s tests -p "test_windows_recovery_faults.py" -v
+python -m unittest discover -s tests -t . -p "test_saved_*.py" -v
+python -m unittest discover -s tests -t . -p "test_target_snapshot_compatibility.py" -v
+python -m unittest discover -s tests -t . -p "test_build_receipt.py" -v
+python -m unittest discover -s tests -t . -p "test_windows_recovery_faults.py" -v
 ```
 
 旧形式の形は上記の実履歴から合成したもので、すべての過去のRunや保存失敗から復元できるという保証ではない。通常のRunの記録には今回新たな書式や追加の依存を導入していない。

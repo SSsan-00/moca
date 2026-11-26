@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {beginPhase, cdp, evaluate, finishBrowser, navigate, reportBrowserFailure,
-  startBrowser, wait} from "../../tests/chromium_browser.mjs";
+  startBrowser, wait} from "../../tests/browser/chromium_browser.mjs";
 
 const [, , binary, profile, base, runA, runB] = process.argv;
 const chrome = await startBrowser(binary, profile);

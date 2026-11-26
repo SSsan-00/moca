@@ -27,9 +27,9 @@ php-to-csharp-harness dashboard --config /tmp/harness-parallel-example/harness.t
 
 ## 自動・画面確認
 
-`tests/test_parallel_dashboard.py` は実際のGit worktreeと制御できるJunie代替を使い、上限5件、6件目の待機・自動開始、個別停止・再開、同じRunのCLI二重実行拒否、重複登録の一括拒否、待機取消、終了後の待機復元、Run別のHTTPエディタ・質問・指示、設定保存先の切り替えを検証する。新規・再開の待機順と、再開の取消で保存済みの状態へ戻ることも確認する。
+`tests/runs/test_parallel_dashboard.py` は実際のGit worktreeと制御できるJunie代替を使い、上限5件、6件目の待機・自動開始、個別停止・再開、同じRunのCLI二重実行拒否、重複登録の一括拒否、待機取消、終了後の待機復元、Run別のHTTPエディタ・質問・指示、設定保存先の切り替えを検証する。新規・再開の待機順と、再開の取消で保存済みの状態へ戻ることも確認する。
 
-`tests/test_parallel_demo.py` はNode.jsが利用できる環境でデモのJavaScriptを動かし、5件の上限、新規・再開のFIFO順、待機取消、終了までの自動繰り上げを確認する。
+`tests/browser/test_parallel_demo.py` はNode.jsが利用できる環境でデモのJavaScriptを動かし、5件の上限、新規・再開のFIFO順、待機取消、終了までの自動繰り上げを確認する。
 
 Chromeで1440・768・390px幅の実行一覧・進捗・エディタを確認した。ページ全体の横はみ出しやJavaScript例外はなく、Run A→B→Aの切り替えで未保存コードと未送信指示を保持した。本番用画面の6件一括登録でもJavaScript例外はなかった。
 

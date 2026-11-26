@@ -13,8 +13,8 @@
 Windowsのリポジトリルートで再現できます。
 
 ```powershell
-python -m unittest discover -s tests -p "test_input_properties.py" -v
-python -m unittest discover -s tests -p "test_input_properties.py" -k test_php_capsules -v
+python -m unittest discover -s tests -t . -p "test_input_properties.py" -v
+python -m unittest discover -s tests -t . -p "test_input_properties.py" -k test_php_capsules -v
 ```
 
 失敗の表示にはシードと、文字コード・データの種類・予算などそのケースの条件が出ます。同じPythonで対象テストを再実行すると同じ入力を再生成できます。最小化する場合は該当シードを残し、テスト内の入力生成の行数や反復数を減らしてください。

@@ -20,7 +20,7 @@ from uuid import uuid4
 if sys.platform != "win32":
     raise SystemExit("This evaluation requires native Windows Job Objects.")
 
-from fixtures import HarnessCase, stub_syntax_diagnostics
+from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics
 from migration_harness import execution
 from migration_harness.junie import junie_cli
 from migration_harness.junie.junie_notifications import notification_settings

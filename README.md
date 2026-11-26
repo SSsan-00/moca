@@ -62,7 +62,7 @@ Junieへ渡す情報と作業フォルダはハーネスで絞りますが、別
 
 ```console
 python -m pip install -e .
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 ```
 
 テストは一時ディレクトリにGitリポジトリとRunを作ります。工程制御はJunieやビルドを模擬するテストで、診断は実際の .NET 9 SDK で確認します。ブラウザー回帰にはChromeまたはEdgeとNode.jsを使用しますが、通常の利用にはNode.jsは不要です。GitHub ActionsはpushとPRで、WindowsのPython 3.11・3.13を検証します。WindowsでJunieの起動スモークも実行します。

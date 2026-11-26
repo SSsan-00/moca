@@ -152,7 +152,7 @@ src/migration_harness の直下に CLI・設定・工程制御と共通処理を
 | [editor_queue.py](src/migration_harness/runs/editor_queue.py) | 手修正と追加指示の保存・送信待ち、変更の合流と競合判定。移行先ソースの読み書きは `worktree_targets.py` に集約する。 |
 | [diff_viewer.py](src/migration_harness/web/diff_viewer.py)・[review_anchors.py](src/migration_harness/web/review_anchors.py) | 一貫した比較スナップショットの作成、対応行の提案と検証。 |
 
-回帰テストは `python -m pip install -e .` の後に `python -m unittest discover -s tests -v` で実行します。入力規模、ルール、再開・修正の検証シナリオは [evaluations/](evaluations/) にあります。
+回帰テストは `python -m pip install -e .` の後に `python -m unittest discover -s tests -t . -v` で実行します。入力規模、ルール、再開・修正の検証シナリオは [evaluations/](evaluations/) にあります。
 
 Runの安全条件は [有限状態モデル検査](docs/run-state-models.md) でも確認します。モデルはPython 3.11の標準ライブラリだけで実行でき、製品への追加インストールは不要です。
 保存形式・旧Runの互換条件・記録破損時の復旧は [Runの保存形式と復旧](docs/persisted-run-compatibility.md) を参照。

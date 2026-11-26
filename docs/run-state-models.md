@@ -38,12 +38,12 @@
 
 | 条件ID | 実際の保存・回帰テスト |
 | --- | --- |
-| `RUN-*` | `runs/run_manager.py` の `start_pending()` と `_prepare_saved_jobs()`。[test_parallel_dashboard.py](../tests/test_parallel_dashboard.py) の `test_five_workers_queue_stop_isolation_and_resume`、`test_queue_survives_shutdown_but_started_runs_do_not_restart`、`test_failed_start_save_leaves_job_waiting_across_shutdown`。[test_junie_conversation.py](../tests/test_junie_conversation.py) の `test_stop_fence_survives_restart_from_saved_block`、`test_stop_fence_survives_restart_from_running_job_when_queue_write_also_fails`。 |
-| `VERIFY-*` | [台帳 `migration_ledger()`](../src/migration_harness/runs/migration_ledger.py) と会話の `submit()` / `advance()`。[test_migration_ledger.py](../tests/test_migration_ledger.py) の `test_expected_file_change_deletion_and_legacy_receipt_require_reverification`、`test_completion_requires_verification_record_but_no_worktree_fingerprint`、[test_junie_conversation.py](../tests/test_junie_conversation.py) の `test_queued_predecessor_identity_survives_restart_or_fails_on_cancellation`。 |
-| `APPLY-*` | `runs/worktree_targets.py` の `apply_agent_targets()` と `finish_pending_targets()`。[実ファイルと実Run JSONの対応トレース](../tests/test_run_state_model_traces.py) で2番目の置換時に中断し、再読込後に未反映分だけを採用する場合と、手修正を残して停止する場合を確かめる。 |
-| `HOOK-*` | [stage_scripts.py](../src/migration_harness/runs/stage_scripts.py) の `run_script_phase()` と `script_recovery()`。[test_script_recovery.py](../tests/test_script_recovery.py) の `test_crash_after_success_stops_all_resume_paths_and_requires_current_explicit_retry` と `test_launch_is_not_attempted_if_start_record_cannot_be_written` は、実ファイル・保存済みの試行・プロセス起動回数を照合する。 |
+| `RUN-*` | `runs/run_manager.py` の `start_pending()` と `_prepare_saved_jobs()`。[test_parallel_dashboard.py](../tests/runs/test_parallel_dashboard.py) の `test_five_workers_queue_stop_isolation_and_resume`、`test_queue_survives_shutdown_but_started_runs_do_not_restart`、`test_failed_start_save_leaves_job_waiting_across_shutdown`。[test_junie_conversation.py](../tests/junie/test_junie_conversation.py) の `test_stop_fence_survives_restart_from_saved_block`、`test_stop_fence_survives_restart_from_running_job_when_queue_write_also_fails`。 |
+| `VERIFY-*` | [台帳 `migration_ledger()`](../src/migration_harness/runs/migration_ledger.py) と会話の `submit()` / `advance()`。[test_migration_ledger.py](../tests/runs/test_migration_ledger.py) の `test_expected_file_change_deletion_and_legacy_receipt_require_reverification`、`test_completion_requires_verification_record_but_no_worktree_fingerprint`、[test_junie_conversation.py](../tests/junie/test_junie_conversation.py) の `test_queued_predecessor_identity_survives_restart_or_fails_on_cancellation`。 |
+| `APPLY-*` | `runs/worktree_targets.py` の `apply_agent_targets()` と `finish_pending_targets()`。[実ファイルと実Run JSONの対応トレース](../tests/runs/test_run_state_model_traces.py) で2番目の置換時に中断し、再読込後に未反映分だけを採用する場合と、手修正を残して停止する場合を確かめる。 |
+| `HOOK-*` | [stage_scripts.py](../src/migration_harness/runs/stage_scripts.py) の `run_script_phase()` と `script_recovery()`。[test_script_recovery.py](../tests/runs/test_script_recovery.py) の `test_crash_after_success_stops_all_resume_paths_and_requires_current_explicit_retry` と `test_launch_is_not_attempted_if_start_record_cannot_be_written` は、実ファイル・保存済みの試行・プロセス起動回数を照合する。 |
 
-#304の [実装トレース](../tests/test_run_state_live_traces.py) は、同じ操作列から得た基本モデルの状態と、実際の保存状態を各境界で比較する。
+#304の [実装トレース](../tests/runs/test_run_state_live_traces.py) は、同じ操作列から得た基本モデルの状態と、実際の保存状態を各境界で比較する。
 
 | トレース | 実際に照合する証跡 |
 | --- | --- |
@@ -60,19 +60,19 @@
 標準ライブラリのみでモデル検査9件（2026-11-26のローカルPython 3.13で約0.06秒）:
 
 ```text
-python -m unittest discover -s tests -p test_run_state_models.py -v
+python -m unittest discover -s tests -t . -p test_run_state_models.py -v
 ```
 
 追加モデル6件:
 
 ```text
-python -m unittest discover -s tests -p test_run_state_extended_models.py -v
+python -m unittest discover -s tests -t . -p test_run_state_extended_models.py -v
 ```
 
 Windowsで製品側のトレースも含めて実行する場合、通常のテスト準備後に実行:
 
 ```text
-python -m unittest discover -s tests -p "test_run_state_*.py" -v
+python -m unittest discover -s tests -t . -p "test_run_state_*.py" -v
 ```
 
 Windows CIのPython 3.11 / 3.13それぞれの `remaining` に基本・追加モデルと実装トレース計19件が入り、欠落・スキップ・失敗を成功と扱わない。

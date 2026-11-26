@@ -1,0 +1,255 @@
+import json
+import subprocess
+import sys
+import time
+import unittest
+from pathlib import Path
+from threading import Thread
+from unittest.mock import patch
+
+from tests.support.fixtures import HarnessCase, prepare_fixture
+from migration_harness.runs import run_records
+from migration_harness import workflow
+from migration_harness import execution
+from migration_harness.junie import junie_cli
+from migration_harness.verification import build_cycle
+from migration_harness.web.dashboard import Dashboard
+from migration_harness.execution import ExecutionControl, OperationCancelled, control_scope, run_process
+from migration_harness.runs.timings import freeze_timings, update_timings
+
+
+class TimingTests(unittest.TestCase):
+    def test_repeated_stages_accumulate_without_paused_time(self):
+        record = {"status": "junie_running"}
+        update_timings(record, now=10)
+        record["status"] = "building"
+        update_timings(record, now=30)
+        record["status"] = "interrupted"
+        update_timings(record, now=35)
+        record["status"] = "junie_running"
+        update_timings(record, now=1000)
+        record["status"] = "checker_succeeded"
+        update_timings(record, now=1007)
+        self.assertEqual(record["stage_timings"]["3"]["elapsed_seconds"], 27)
+        self.assertEqual(record["stage_timings"]["4"]["elapsed_seconds"], 5)
+        self.assertIsNone(record["active_stage"])
+        self.assertNotIn("6", record["stage_timings"])
+
+    def test_saved_active_run_freezes_at_last_observed_time(self):
+        record = {"status": "building"}
+        update_timings(record, now=100)
+        update_timings(record, now=120)
+        frozen = freeze_timings(record)
+        self.assertEqual(frozen["4"], {"elapsed_seconds": 20, "started_at": None})
+        self.assertEqual(record["stage_timings"]["4"]["started_at"], 100)
+        self.assertEqual(freeze_timings({"created_at": "2020-01-01"}), {})
+
+
+class ControlTests(unittest.TestCase):
+    def test_phase_and_work_report_survive_heartbeat_but_not_another_stage_or_run(self):
+        view = Dashboard()
+        view.observe({"run_id": "first", "status": "repairing"})
+        view.begin_operation()
+        phase = {"kind": "phase", "at": 10, "message": "修正中", "detail": "自動修正 1/2回目"}
+        report = {"kind": "activity", "at": 12, "message": "ファイルの編集"}
+        view.activity(phase)
+        view.activity(report)
+        view.activity({"kind": "heartbeat", "at": 20, "message": "alive"})
+        view.observe({"run_id": "first", "status": "repairing", "token_usage": [{"input": 10}]})
+        self.assertEqual(view.state["phase_activity"], phase)
+        self.assertEqual(view.state["latest_activity"], report)
+        self.assertEqual(view.state["heartbeat"]["at"], 20)
+        view.observe({"run_id": "first", "status": "building"})
+        self.assertFalse({"phase_activity", "latest_activity", "heartbeat"} & view.state.keys())
+        view.activity(phase)
+        view.observe({"run_id": "second", "status": "building"})
+        self.assertNotIn("phase_activity", view.state)
+        view.activity(phase)
+        view.begin_operation()
+        self.assertNotIn("phase_activity", view.state)
+
+    def test_stop_is_bound_to_operation_even_after_activity_revision_changes(self):
+        view = Dashboard()
+        view.publish({"status": "prepared", "ready": True})
+        self.assertTrue(view.submit({"action": "resume-run", "revision": view.revision}))
+        operation = view.state["operation_id"]
+        revision = view.revision
+        view.activity({"kind": "heartbeat", "message": "alive", "at": 1})
+        self.assertTrue(view.request_stop({"operation_id": operation, "revision": revision}))
+        self.assertTrue(view.control.cancelled.is_set())
+        view.actions.get_nowait()
+        view.ready({}, {"status": "prepared"})
+        self.assertFalse(view.request_stop({"operation_id": operation}))
+        view.begin_operation()
+        self.assertNotIn("activity", view.state)
+        self.assertFalse(view.request_stop({"operation_id": operation}))
+        self.assertFalse(view.control.cancelled.is_set())
+
+    def test_process_output_and_nonzero_exit_are_preserved(self):
+        with control_scope(ExecutionControl(lambda _event: None)):
+            result = run_process([sys.executable, "-c", "print('hello')"], label="test", capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), "hello")
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                run_process([sys.executable, "-c", "import sys; print('reason', file=sys.stderr); sys.exit(7)"],
+                            label="test", capture_output=True, check=True)
+            self.assertEqual(failure.exception.returncode, 7)
+            self.assertIn(b"reason", failure.exception.stderr)
+
+
+class ExecutionIntegrationTests(HarnessCase):
+    def setUp(self):
+        super().setUp()
+        (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
+        self.commit_project()
+        self.settings = self.config()
+
+    def test_migration_and_verification_keep_counting_through_transitions(self):
+        config = {**self.settings, "checker_command": ["checker"]}
+        clock = 100
+        updates = []
+        run_command = execution.run_process
+
+        def observe(record):
+            updates.append((record["status"], record.get("active_stage")))
+
+        def migrate(_command, completion, token, targets, **_kwargs):
+            nonlocal clock
+            targets[0].write_text("class Page {}", encoding="utf-8")
+            completion.write_text(token, encoding="utf-8")
+            clock += 13
+            return 0
+
+        def execute(command, **_kwargs):
+            nonlocal clock
+            if command[0] == "git":
+                return run_command(command, **_kwargs)
+            clock += 7 if command[0] == "dotnet" else 11
+            return subprocess.CompletedProcess(command, 0)
+
+        observer = run_records.run_observer.set(observe)
+        self.addCleanup(run_records.run_observer.reset, observer)
+        with (
+            patch.object(run_records, "update_timings",
+                         side_effect=lambda record, **kwargs: update_timings(record, now=clock, **kwargs)),
+            patch.object(build_cycle, "monotonic", side_effect=lambda: clock),
+            patch.object(junie_cli, "require_interactive_cli"),
+            patch.object(junie_cli, "run_interactive", side_effect=migrate),
+            patch.object(execution, "run_process", side_effect=execute),
+        ):
+            result = workflow.run_with_junie(config, "sample")
+
+        record = json.loads((Path(result["run_path"]) / "run.json").read_bytes())
+        self.assertEqual(record["status"], "checker_succeeded")
+        self.assertIn(("junie_finished", 3), updates)
+        self.assertIn(("junie_finished", 4), updates)
+        self.assertIn(("build_succeeded", 5), updates)
+        self.assertEqual(updates[-1], ("checker_succeeded", None))
+        self.assertEqual([record["stage_timings"][str(i)]["elapsed_seconds"] for i in (3, 4, 5)], [13, 7, 11])
+        self.assertEqual(record["build_attempt_seconds"], [7])
+
+    def test_stop_during_capsule_preparation_does_not_create_worktree(self):
+        control = ExecutionControl(lambda _event: control.cancelled.set())
+        with control_scope(control), self.assertRaises(workflow.RunInterrupted):
+            prepare_fixture(self.settings, "sample")
+        self.assertFalse(Path(self.settings["worktree_root"]).exists())
+        path, = Path(self.settings["run_root"]).glob("*/run.json")
+        record = json.loads(path.read_bytes())
+        self.assertEqual(record["status"], "preparation_interrupted")
+        self.assertIsNone(record["active_stage"])
+
+    def test_stopping_a_real_command_terminates_its_children(self):
+        self._assert_windows_child_stops(launcher_exits=False)
+
+    def test_stop_owns_child_even_after_windows_launcher_exits(self):
+        self._assert_windows_child_stops(launcher_exits=True)
+
+    def _assert_windows_child_stops(self, *, launcher_exits):
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        ready = self.root / "ready"
+        release = self.root / "release"
+        child_code = (
+            "import os, time; from pathlib import Path; "
+            f"Path({str(ready)!r}).write_text(str(os.getpid())); "
+            f"\nwhile not Path({str(release)!r}).exists(): time.sleep(0.02)\n"
+        )
+        launcher = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {child_code!r}])"
+        if not launcher_exits:
+            launcher += f"\nimport time; from pathlib import Path\nwhile not Path({str(release)!r}).exists(): time.sleep(0.02)"
+        command = [sys.executable, "-c", launcher]
+        control = ExecutionControl(lambda _event: None)
+        real_popen = subprocess.Popen
+        child_handle = None
+
+        def start_and_watch(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            control.on_activity = lambda _event: request_stop(process)
+            return process
+
+        def request_stop(process):
+            nonlocal child_handle
+            if launcher_exits:
+                process.wait(timeout=10)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if ready.exists() and (pid := ready.read_text()).isdigit():
+                    child_handle = kernel.OpenProcess(0x00100000, False, int(pid))  # SYNCHRONIZE
+                    break
+                time.sleep(.02)
+            self.assertTrue(child_handle, "child did not start")
+            if not launcher_exits:
+                self.assertIsNone(process.poll(), "launcher exited before cancellation")
+            control.cancelled.set()
+
+        try:
+            with patch.object(subprocess, "Popen", side_effect=start_and_watch), control_scope(control):
+                with self.assertRaises(OperationCancelled):
+                    run_process(command, label="test", capture_output=True)
+            self.assertEqual(kernel.WaitForSingleObject(child_handle, 3000), 0, "child survived cancellation")
+        finally:
+            release.touch()
+            if child_handle:
+                kernel.WaitForSingleObject(child_handle, 5000)
+                kernel.CloseHandle(child_handle)
+
+    def test_stopped_build_can_resume_same_run(self):
+        result = prepare_fixture(self.settings, "sample")
+        run_path = Path(result["run_path"])
+        record_path = run_path / "run.json"
+        record = json.loads(record_path.read_bytes())
+        (Path(result["worktree_path"]) / "Page.cs").write_text("class Page {}", encoding="utf-8")
+        record.update(status="junie_finished", completed_capsules=1)
+        run_records.write_run_record(record_path, record)
+        control = ExecutionControl(lambda _event: None)
+        def stop_running_build(command, **_):
+            self.assertEqual(command[0], "dotnet")
+            control.cancelled.set()
+            raise OperationCancelled()
+
+        with (
+            control_scope(control), self.assertRaises(workflow.RunInterrupted),
+            patch.object(execution, "run_process", side_effect=stop_running_build),
+        ):
+            workflow.resume_with_junie(self.settings, result["run_id"])
+        stopped = json.loads(record_path.read_bytes())
+        self.assertEqual(stopped["status"], "build_failed")
+        self.assertEqual(stopped.get("repair_history", []), [])
+        self.assertEqual(len(stopped["build_attempt_seconds"]), 1)
+        with (
+            patch.object(build_cycle, "monotonic", side_effect=(10, 12)),
+            patch.object(execution, "run_process", return_value=subprocess.CompletedProcess(["dotnet"], 0)),
+        ):
+            resumed = workflow.resume_with_junie(self.settings, result["run_id"])
+        self.assertEqual(resumed["status"], "build_succeeded")
+        self.assertEqual(resumed["run_id"], result["run_id"])
+        saved = json.loads(record_path.read_bytes())
+        self.assertEqual(saved["build_attempt_seconds"], [*stopped["build_attempt_seconds"], 2])

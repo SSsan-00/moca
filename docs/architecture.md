@@ -441,28 +441,28 @@ flowchart TD
 
 Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合を防ぎます。 `run.lock` と `editor.lock` は個々の JSON の更新を保護し、一時ファイルから置換します。工程の observer は `run.lock` 解放後にダッシュボードへ通知します。worktree の編集・反映を直列化するメモリロックは同一プロセスで有効で、別プロセスからの更新とは保存したハッシュで照合します。 [run_records.py](../src/migration_harness/runs/run_records.py) · [editor_queue.py](../src/migration_harness/runs/editor_queue.py) · [worktree_targets.py](../src/migration_harness/runs/worktree_targets.py) · [Run の状態とロック契約](run-state-contracts.md)
 
-実行経路の回帰例は [移行サイクル](../tests/test_migration_cycle.py)、[移行台帳](../tests/test_migration_ledger.py)、[並列 Run](../tests/test_parallel_dashboard.py)、[Junie 会話](../tests/test_junie_conversation.py)、[プロセス停止](../tests/test_junie_process.py) にあります。評価用アプリと結果は [evaluations](../evaluations/) にあります。
+実行経路の回帰例は [移行サイクル](../tests/migration/test_migration_cycle.py)、[移行台帳](../tests/runs/test_migration_ledger.py)、[並列 Run](../tests/runs/test_parallel_dashboard.py)、[Junie 会話](../tests/junie/test_junie_conversation.py)、[プロセス停止](../tests/junie/test_junie_process.py) にあります。評価用アプリと結果は [evaluations](../evaluations/) にあります。
 
 ## 9. Python の依存方向を検査する
 
-[アーキテクチャテスト](../tests/test_architecture.py)は製品コードをインポートせず、`src/migration_harness/` の Python ファイルを標準ライブラリの `ast` で解析します。依存の基本方向は次のとおりです。
+[アーキテクチャテスト](../tests/quality/test_architecture.py)は製品コードをインポートせず、`src/migration_harness/` の Python ファイルを標準ライブラリの `ast` で解析します。依存の基本方向は次のとおりです。
 
 - CLI と Web は利用者との境界です。CLI は Web を起動できますが、Web や内部処理は CLI に依存しません。工程制御・移行／検証・共通処理は Web の画面や HTTP ルーターに依存しません。
 - `workflow.py` は工程の入口です。移行・検証の各モジュールと低位の共通処理から、新たに工程の入口へ依存させません。移行・検証内の依存はパッケージ名だけで一律に制限せず、モジュール間の循環を検査します。低位の共通処理は同層だけを参照します。
-- 下位から上位への既存の接続は、送信元、送り先、参照する名前、インポートの種類が一致するものだけを許可します。Run ワーカーの連携は、Web 起動時の `RunManager` と、ワーカーでジョブを取り出した後の `execute_dashboard_action` の相互参照だけを例外とします。遅延初期化によりモジュールの読込時には相互参照しません。この例外を経由する別の循環は検出対象です。理由と範囲は [architecture_rules.py](../tests/architecture_rules.py) に置き、参照を整理したら使われなくなった例外も削除します。
+- 下位から上位への既存の接続は、送信元、送り先、参照する名前、インポートの種類が一致するものだけを許可します。Run ワーカーの連携は、Web 起動時の `RunManager` と、ワーカーでジョブを取り出した後の `execute_dashboard_action` の相互参照だけを例外とします。遅延初期化によりモジュールの読込時には相互参照しません。この例外を経由する別の循環は検出対象です。理由と範囲は [architecture_rules.py](../tests/quality/architecture_rules.py) に置き、参照を整理したら使われなくなった例外も削除します。
 - 製品から `tests/` への参照は禁止します。追加インストールが必要な実行時依存は承認済みの `tomlkit` のみです。`pyproject.toml` の実行時依存宣言とも照合します。
 
 相対／絶対 import は同じモジュール名に解決し、`from package import name` は実ファイルの有無でサブモジュールとパッケージの属性を区別します。パッケージの再公開は `__init__.py` 内の明示的な import を追います。関数内の遅延 import も検査し、認識できる `typing.TYPE_CHECKING` の本体は循環判定だけから除外します。型のみに使う参照にも依存方向・製品とテストの分離・外部依存の規則は適用します。
 
 静的な検査なので、文字列から名前を作る動的 import、実行時の属性やパッケージ検索パスの変更、明示的な import に現れない親パッケージの初期化副作用は判定しません。型ガードとして認識するのは、トップレベルで `typing`／`TYPE_CHECKING` を取り込んだ名前を単独で条件にする正の分岐です。違反はファイル・行・参照先（循環の場合は経路）で示します。
 
-Windows CI の `remaining` シャード（Python 3.11／3.13）では実コードと陰性対照の成功が必須です。テストが未発見・スキップの場合も失敗します。ローカルで検査だけを再実行するには `python -m unittest discover -s tests -p test_architecture.py -v` を使います。MoCA や業務コード、Junie の起動は不要です。
+Windows CI の `remaining` シャード（Python 3.11／3.13）では実コードと陰性対照の成功が必須です。テストが未発見・スキップの場合も失敗します。ローカルで検査だけを再実行するには `python -m unittest discover -s tests -t . -p test_architecture.py -v` を使います。MoCA や業務コード、Junie の起動は不要です。
 
 ## ダッシュボードの回帰テスト
 
-`python -m unittest discover -s tests -p "test_editor_run_isolation.py"` と `python -m unittest discover -s tests -p "test_settings_browser.py"` でダッシュボードの検証を実行します。実ブラウザーの前に、同じ一時Runの診断HTTPへ未編集C#を渡し、.NET 9の初回ヘルパー準備・型診断の成否と時間を別に記録します。ブラウザー内でも未保存C#・Razorの実診断と表示を検証します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
+`python -m unittest discover -s tests -t . -p "test_editor_run_isolation.py"` と `python -m unittest discover -s tests -t . -p "test_settings_browser.py"` でダッシュボードの検証を実行します。実ブラウザーの前に、同じ一時Runの診断HTTPへ未編集C#を渡し、.NET 9の初回ヘルパー準備・型診断の成否と時間を別に記録します。ブラウザー内でも未保存C#・Razorの実診断と表示を検証します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
 
-保存済み Run が必要なテストでは `tests/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。
+保存済み Run が必要なテストでは `tests/support/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。
 
 CI では Windows の Python 3.11／3.13 で、Node.js 22 とランナーにある Chromium／Chrome／Edge を使います。設定の Chromium テストは DevTools 接続時にブラウザのバージョンを記録します。 `python tests/run_shard.py full --require-ui` でローカルでも同じ必須条件を有効にできます。設定の保存・再読込、エディタの Run 分離、並行 Run デモ、ブラウザーの画面同期・待機診断が成功して初めて必須条件を満たします。通常の unittest 実行では、ローカルの依存不足は理由付きで skip になります。
 
@@ -472,8 +472,8 @@ Windowsでの再現・診断:
 
 ```powershell
 $env:HARNESS_REQUIRE_UI = "1"
-python -m unittest discover -s tests -p "test_settings_browser.py" -v
-python -m unittest discover -s tests -p "test_browser_run.py" -v
+python -m unittest discover -s tests -t . -p "test_settings_browser.py" -v
+python -m unittest discover -s tests -t . -p "test_browser_run.py" -v
 ```
 
 前半（エディター診断）90秒、後半（設定、ルール整理、実行タブ、デモなど）110秒の既存の親期限は別々に適用します。親で打ち切った場合は捕捉済みの標準出力・標準エラーと後始末までの実時間を記録し、テストが起動したプロセスだけ回収します。Chromium本体の終了通知が遅い場合も、親が所有するプロセス用Job内で終了を検証し、確認できなければ失敗とします。ナビゲーションや画面の検証が失敗した場合は、終了できても合格にしません。#263の当初の110秒超過と、後に報告されたルール下書き選択待ちが同じ原因とは断定しません。

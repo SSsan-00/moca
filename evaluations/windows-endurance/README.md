@@ -9,7 +9,7 @@ Windows 11の実機で、同じダッシュボードを保ったまま合成Run�
 依存をインストール済みのハーネスのフォルダで、既存の Windows Python 3.11 または 3.13 とGitを使う。CIの通常回帰からは実行しない。まず短い確認を行い、次に他の性能試験と重ならない時間帯で長時間版を実行する。
 
 ```powershell
-$env:PYTHONPATH = 'src;tests'
+$env:PYTHONPATH = 'src;.'
 $python = '.\.venv\Scripts\python.exe'
 & $python evaluations/windows-endurance/soak.py --seconds 120 --max-cycles 2
 & $python evaluations/windows-endurance/soak.py --seconds 600 --max-cycles 100
