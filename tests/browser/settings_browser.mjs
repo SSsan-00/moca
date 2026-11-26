@@ -6,7 +6,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {createServer} from "node:http";
 import {fileURLToPath} from "node:url";
-import {setTimeout as pause} from "node:timers/promises";
 import {checkRuleSourceEditor} from "./rule_source_browser.mjs";
 import {checkRuleProposalAdoption} from "./rule_proposal_browser.mjs";
 import {beginPhase, cdp, evaluate, eventually, finishBrowser, navigate, reportBrowserFailure,
@@ -598,6 +597,19 @@ try {
   });
   await new Promise(resolve => staticServer.listen(0, "127.0.0.1", resolve));
   const staticOrigin = "http://127.0.0.1:" + staticServer.address().port;
+  await cdp("Page.addScriptToEvaluateOnNewDocument", {source: "(" + function (demoPath) {
+    if (location.pathname !== demoPath) return;
+    const schedule = window.setInterval;
+    window.setInterval = function (callback, delay, ...args) {
+      const source = document.currentScript?.src;
+      if (source && new URL(source).pathname.endsWith("/dashboard_demo.js")) {
+        // Keep the live schedule and let the test exercise this exact callback after deletion.
+        window.tickDemoRuns = () => callback.apply(window, args);
+        window.setInterval = schedule;
+      }
+      return schedule.call(window, callback, delay, ...args);
+    };
+  }.toString() + ")(" + JSON.stringify(nested + "progress-demo.html") + ")"});
   await navigate("Page.navigate", {url: staticOrigin + nested + "progress-demo.html"});
   await wait(ready);
   assert.equal(await evaluate("document.querySelector('.brand').textContent.trim()"), "MoCA");
@@ -1207,8 +1219,11 @@ try {
     assert(originalRunIds.includes(id), "demo Run is present: " + id);
   }
   await removeDemoRun("run-2026-11-14-001");
-  await pause(3100);
+  assert.equal(await evaluate("typeof window.tickDemoRuns"), "function", "capture the live demo run scheduler");
+  await evaluate("window.tickDemoRuns()");
   assert(!(await evaluate(selectedDemo)).includes("run-2026-11-14-001"), "the demo timer must not resurrect a deleted Run");
+  assert.equal(await evaluate(demoRun("run-2026-11-14-001") + ".then(Boolean)"), false,
+    "the deleted Run must stay absent from the demo workspace");
   await openDemoRun("demo-customer");
   await removeDemoRun("demo-customer");
   await openDemoRun("demo-search");
