@@ -60,8 +60,11 @@ class StoppedRepairKeywordGuardTests(SavedRunFixture):
     def assert_rejected(self, name, line=2, spelling="@event"):
         files = self.files()
         pending = self.record()["repair_pending"]
-        result = self.resume()
+        mock, calls = self.mock_commands(*_SUCCESS)
+        with mock:
+            result = workflow.resume_with_junie(self.config, self.run_id)
         self.assertNotEqual(result["status"], "checker_succeeded")
+        self.assertFalse(calls)
         self.assertRegex(result["error"].splitlines()[0], fr"{re.escape(name)}:{line}:.*{re.escape(spelling)}")
         self.assertIn("作業ツリーを選び直す", result["error"])
         self.assertEqual(self.files(), files)

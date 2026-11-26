@@ -322,6 +322,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
         for before, after in (
             ("Call(() => { int @event = 1; }, NoOp);", "Call(NoOp, () => { int @event = 1; });"),
             (f"Call({callback});", f"Other({callback});"),
+            (f"first?.Call({callback});", f"second?.Call({callback});"),
             (f"Call({callback});", f"Call({ordinary}); Call({callback});"),
             (f"Call(first: {callback});", f"Call(second: {callback});"),
         ):
@@ -375,7 +376,7 @@ class CSharpKeywordGuardTests(unittest.TestCase):
                 (worktree / name).write_bytes(before)
                 (agent / name).write_bytes(codecs.BOM_UTF8 + after)
             hashes = {name: sha256_file(worktree / name) for name in versions}
-            record = {"targets": list(versions), "target_hashes": hashes.copy()}
+            record = {"target": "Page.cs", "targets": list(versions), "target_hashes": hashes.copy()}
             with self.assertRaisesRegex(ValueError, fr"Page.cs:{line}:.*@event"):
                 apply_agent_targets(agent, worktree, tuple(map(Path, versions)), hashes, record, root / "run.json")
             self.assertNotIn("target_apply_pending", record)

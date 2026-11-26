@@ -71,9 +71,9 @@ internal static partial class Program
         foreach (var group in callbacks.GroupBy(node => CallbackSite(node, owner)))
         {
             // Repeated indistinguishable calls must keep both their order and their count.
-            var ordinal = 0;
+            int ordinal = 0, count = group.Count();
             foreach (var node in group)
-                cache[node] = ($"callback:{ordinal++}/{group.Count()}:{group.Key}", null);
+                cache[node] = ($"callback:{ordinal++}/{count}:{group.Key}", null);
         }
     }
 
@@ -88,6 +88,7 @@ internal static partial class Program
                 (BaseArgumentListSyntax list, ArgumentSyntax arg) => arg.NameColon is { } name
                     ? "named:" + name.Name.Identifier.ValueText : "position:" + list.Arguments.IndexOf(arg),
                 (InvocationExpressionSyntax call, ArgumentListSyntax) => KeywordHeader(call.Expression),
+                (ConditionalAccessExpressionSyntax access, _) when child == access.WhenNotNull => KeywordHeader(access.Expression),
                 (ObjectCreationExpressionSyntax creation, ArgumentListSyntax) => KeywordHeader(creation.Type),
                 (AssignmentExpressionSyntax assignment, _) when child == assignment.Right => KeywordHeader(assignment.Left),
                 _ => parent.ChildNodes().TakeWhile(sibling => sibling != child).Count().ToString(),
