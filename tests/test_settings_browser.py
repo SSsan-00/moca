@@ -14,6 +14,7 @@ from threading import Thread
 from time import perf_counter
 from unittest.mock import patch
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 from browser_run import print_browser_output, run_browser
 
@@ -271,6 +272,7 @@ max_bytes = 9007199254740993 # preserve this value
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
+                self._prepare_semantic_worker(url, run_id, worktree / "Example.cs")
                 helper = Path(__file__).with_name("settings_browser.mjs")
                 catalog = [
                     {"id": "fixture-luna", "name": "Fixture Luna", "efforts": ["low", "medium"]},
@@ -315,3 +317,21 @@ max_bytes = 9007199254740993 # preserve this value
             self.assertEqual(saved["junie"]["max_input_bytes"], 2000)
             self.assertEqual(saved["diff_viewer"]["html"], "viewer.html")
             self.assertIn("# preserve this value", path.read_text(encoding="utf-8"))
+
+
+    def _prepare_semantic_worker(self, url, run_id, path):
+        # Compile the real SDK helper and prove the server's worker responds before timing UI waits.
+        request = Request(url + "roslyn-diagnostics", data=json.dumps({
+            "run_id": run_id, "target": path.name, "content": path.read_text(encoding="utf-8"),
+            "version": "browser-fixture-bootstrap", "mode": "semantic",
+        }).encode("utf-8"), headers={
+            "Origin": f"http://{urlsplit(url).netloc}", "Content-Type": "application/json", "X-Run-ID": run_id,
+        })
+        started = perf_counter()
+        print_browser_output("[fixture] start cold Roslyn semantic HTTP")
+        with urlopen(request, timeout=30) as response:
+            report = json.load(response)
+        print_browser_output(f"[fixture] cold Roslyn semantic HTTP {perf_counter() - started:.2f}s"
+                             f"; status={report['status']}; reason={report['reason']}")
+        self.assertEqual(report["version"], "browser-fixture-bootstrap")
+        self.assertEqual((report["target"], report["status"], report["findings"]), (path.name, "clear", []))

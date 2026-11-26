@@ -445,7 +445,7 @@ Run 単位の OS ロックは同じ保存先を使う別 CLI との実行競合�
 
 ## ダッシュボードの回帰テスト
 
-`python -m unittest discover -s tests -p "test_editor_run_isolation.py"` と `python -m unittest discover -s tests -p "test_settings_browser.py"` でダッシュボードの検証を実行します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
+`python -m unittest discover -s tests -p "test_editor_run_isolation.py"` と `python -m unittest discover -s tests -p "test_settings_browser.py"` でダッシュボードの検証を実行します。実ブラウザーの前に、同じ一時Runの診断HTTPへ未編集C#を渡し、.NET 9の初回ヘルパー準備・型診断の成否と時間を別に記録します。ブラウザー内でも未保存C#・Razorの実診断と表示を検証します。Node テストは配布する `dashboard.js` と `dashboard_editor.js` を VM で読み込み、Run 切り替え後の HTTP・SSE 応答と編集内容を確認します。設定画面の Chromium テストは本番と共通の `render_dashboard_html()` と HTTP ハンドラーを通り、TOML の保存結果を確認します。
 
 保存済み Run が必要なテストでは `tests/fixtures.py` の `SavedRunFixture` を使います。会話テストでは検証したい順序を Event や RunManager の Condition で待ち、期限は異常検出に使います。背景スレッドの例外を主スレッドで再送出し、ワーカーを保留するテストでは Event の解放と終了待ちを mock の解除前に行います。
 
