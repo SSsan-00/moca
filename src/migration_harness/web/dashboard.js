@@ -1372,6 +1372,7 @@ function renderRecovery(data, force = false) {
       }
       if (info.draft === "repair") next = info.draft_selected ? "復元する版を保存しました。変更がなければそのまま再開できます。更新された場合は、現在の版と比較して選び直してください。"
         : "下書きと手修正版が競合している場合は、復元する版を選んでから再開してください。";
+      if (info.draft_keyword_blocked) next = "復元する版を選び直すか、作業ツリーを手修正してから計画を取り直してください。";
       if (info.conflict) next = "エディタで差分を確認し、競合を解消して保存してください。";
       if (info.needs_process_check) next = "ログと残存プロセスを確認するまで処理を再開しないでください。";
       if (info.unconfirmed_command) {
@@ -1385,7 +1386,7 @@ function renderRecovery(data, force = false) {
       element("#recovery-editor").hidden = !snapshot.worktree_path;
       const draftButton = element("#recovery-draft");
       draftButton.hidden = info.draft !== "repair" || info.needs_process_check;
-      draftButton.textContent = info.draft_selected ? "復元する版を選び直す" : "復元する版を選ぶ";
+      draftButton.textContent = info.draft_selected || info.draft_keyword_blocked ? "復元する版を選び直す" : "復元する版を選ぶ";
       element("#recovery-script").hidden = !info.unknown_script;
     })
     .catch(() => {

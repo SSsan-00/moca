@@ -43,6 +43,7 @@ def recovery_status(config, run_id, *, blocked=False):
             "completed": completed, "total": total,
             "saved_targets": bool(record.get("target_hashes")) or bool(record.get("target_applied")),
             "draft": draft, "draft_selected": isinstance(repair, dict) and "restore_from" in repair,
+            "draft_keyword_blocked": draft == "repair" and record.get("checker_review_reason") == "stopped_draft_keyword",
             "conflict": conflict,
             "pending_edits": len(queue["edits"]),
             "pending_prompts": sum(prompt["status"] != "sent" for prompt in queue["prompts"]),

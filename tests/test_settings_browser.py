@@ -24,7 +24,7 @@ from migration_harness.web import dashboard
 from migration_harness.junie.junie_notifications import RunNotice
 from migration_harness.junie.junie_thoughts import FILENAME as JUNIE_LOG_NAME
 from ui_dependencies import node_executable, require_ui_dependency
-from stopped_repair_browser_fixture import resume_after_external_edit, stopped_repair_run
+from stopped_repair_browser_fixture import resume_after_external_edit, resume_with_blocked_keyword, stopped_repair_run
 
 
 class SettingsBrowserTests(unittest.TestCase):
@@ -216,6 +216,10 @@ max_bytes = 9007199254740993 # preserve this value
                     return
                 elif handler.path == fixture_root + "fixture-stopped-repair-stale":
                     selected = resume_after_external_edit(config, view.state["run_id"])
+                    view.observe(selected)
+                    view.ready(config, selected, message=selected["error"])
+                elif handler.path == fixture_root + "fixture-stopped-repair-keyword":
+                    selected = resume_with_blocked_keyword(config, view.state["run_id"])
                     view.observe(selected)
                     view.ready(config, selected, message=selected["error"])
                 elif handler.path == fixture_root + "fixture-stopped-repair-reset":

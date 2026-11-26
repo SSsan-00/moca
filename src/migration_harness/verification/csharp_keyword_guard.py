@@ -68,14 +68,20 @@ def _new_escapes(before, after, old_matches, new_matches):
 
 
 def reject_new_keyword_escapes(agent_root: Path, worktree: Path, pending: dict) -> None:
+    reject_keyword_changes(
+        pending, before_path=lambda name: safe_target(worktree, Path(name)),
+        after_path=lambda name: safe_target(agent_root, Path(name)),
+    )
+
+
+def reject_keyword_changes(pending, *, before_path, after_path):
     candidates = []
     for name, versions in pending.items():
-        relative = Path(name)
-        if relative.suffix.lower() not in {".cs", ".cshtml"}:
+        if Path(name).suffix.lower() not in {".cs", ".cshtml"}:
             continue
-        after = _read_version(safe_target(agent_root, relative), versions["after"])
+        after = _read_version(after_path(name), versions["after"])
         if any(match[1] in _CSHARP_RESERVED for match in _ESCAPE.finditer(after)):
-            before = _read_version(safe_target(worktree, relative), versions["before"])
+            before = _read_version(before_path(name), versions["before"])
             candidates.append((name, before, after))
     if not candidates:
         return
