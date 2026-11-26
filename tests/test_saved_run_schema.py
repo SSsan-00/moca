@@ -12,6 +12,7 @@ from fixtures import SavedRunFixture
 from migration_harness import execution, workflow
 from migration_harness.config import load_config
 from migration_harness.runs import editor_queue, resume_plan, run_records
+from migration_harness.web.diff_viewer import save_workspace, snapshot_bytes
 
 
 class SavedRunSchemaTests(SavedRunFixture):
@@ -79,6 +80,24 @@ class SavedRunSchemaTests(SavedRunFixture):
             workflow.migration_ledger(self.config, self.run_id)
         self.assertEqual(manifest.read_bytes(), before)
         self.assertEqual(self.record(), record)
+
+
+    def test_comparison_keeps_valid_v1_bytes_and_refuses_a_different_version_or_run(self):
+        snapshot = {"kind": "diff-viewer-workspace", "version": 1, "snapshot": {"runId": self.run_id},
+                    "workspace": {"leftText": "<?php", "rightText": "class Fixture {}"}}
+        good = save_workspace(self.run_path, snapshot)
+        path = self.run_path / "review-snapshots" / f"{good}.json"
+        self.assertEqual(snapshot_bytes(self.config, self.run_id, good), path.read_bytes())
+        for entry in ({**snapshot, "version": 99}, {**snapshot, "version": True},
+                      {**snapshot, "workspace": {"rightText": "class Fixture {}"}},
+                      {**snapshot, "snapshot": {"runId": str(uuid.uuid4())}}):
+            with self.subTest(entry=entry):
+                bad = save_workspace(self.run_path, entry)
+                broken = self.run_path / "review-snapshots" / f"{bad}.json"
+                before = broken.read_bytes()
+                with self.assertRaises(ValueError):
+                    snapshot_bytes(self.config, self.run_id, bad)
+                self.assertEqual(broken.read_bytes(), before)
 
 
 class SavedEditorSchemaTests(unittest.TestCase):
