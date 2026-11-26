@@ -21,6 +21,7 @@ class LedgerReviewTest(HarnessCase):
         (self.project / ".gitignore").write_text("bin/\nobj/\nlocal/\n", encoding="utf-8")
         self.commit_project()
         self.settings = self.config()
+        self.settings["units"][0]["target_context"] = {"roots": []}
         self.settings["units"][0]["inputs"][0]["symbol"] = "label"
         prepared = prepare_fixture(self.settings, "sample")
         self.run_id = prepared["run_id"]

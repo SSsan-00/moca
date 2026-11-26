@@ -222,6 +222,7 @@ class ExecutionIntegrationTests(HarnessCase):
                 kernel.CloseHandle(child_handle)
 
     def test_stopped_build_can_resume_same_run(self):
+        self.settings["units"][0]["target_context"] = {"roots": []}
         result = prepare_fixture(self.settings, "sample")
         run_path = Path(result["run_path"])
         record_path = run_path / "run.json"

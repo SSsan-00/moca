@@ -38,6 +38,7 @@ class CommandPathsTests(HarnessCase):
         })
         self.path.write_text(draft["content"], encoding="utf-8")
         self.settings = load_config(self.path)
+        self.settings["units"][0]["target_context"] = {"roots": []}
 
     def prepare_verification(self):
         result = prepare_fixture(self.settings, "sample")
