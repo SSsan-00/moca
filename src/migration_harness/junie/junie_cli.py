@@ -837,6 +837,30 @@ reference_read_scope: ContextVar[PinnedReferenceReads | None] = ContextVar("refe
 permission_observer: ContextVar[Callable[[str, str], None] | None] = ContextVar("permission_observer", default=None)
 
 
+def acp_needs_lite_selection(session: dict, model: str | None, effort: str | None) -> bool:
+    # Junie 4100.11 can advertise no models until Lite is set on the session.
+    if model != "junie-lite" or effort not in (None, "none"):
+        return False
+    models = session.get("models")
+    if models is not None and (not isinstance(models, dict)
+                               or models.get("availableModels") not in (None, [])
+                               or models.get("currentModelId")):
+        return False
+    options = session.get("configOptions")
+    return options is None or isinstance(options, list) and not any(
+        option.get("category") == "model" or option.get("id") == "model"
+        for option in options if isinstance(option, dict)
+    )
+
+
+def acp_lite_selection_can_continue(message: dict) -> bool:
+    if "error" not in message:
+        return "result" in message and (message["result"] is None or isinstance(message["result"], dict))
+    error = message["error"]
+    # Older ACP servers may select the command-line model without implementing session/set_model.
+    return "result" not in message and isinstance(error, dict) and error.get("code") == -32601
+
+
 def acp_effort_option(session: dict) -> dict | None:
     options = session.get("configOptions")
     if not isinstance(options, list):
@@ -1131,15 +1155,8 @@ class _AcpSession:
             report_activity("追加指示を送信待ちに戻しました。画面に表示されたタイミングで渡します。")
 
     def _select_lite_if_missing(self, session: dict) -> bool:
-        if self._requested_option("--model") != "junie-lite" or self._requested_option("--effort") not in (None, "none"):
+        if not acp_needs_lite_selection(session, self._requested_option("--model"), self._requested_option("--effort")):
             return False
-        models = session.get("models") or {}
-        if models.get("availableModels") or models.get("currentModelId"):
-            return False
-        if any(option.get("category") == "model" or option.get("id") == "model"
-               for option in (session.get("configOptions") or []) if isinstance(option, dict)):
-            return False
-        # Junie 4100.11 can advertise no models until Lite is set on the session.
         self.selecting_lite = True
         self.startup_deadline = time.monotonic() + self._connection_timeout()
         self.request(_ACP_SELECT_LITE_REQUEST, "session/set_model", sessionId=self.session_id, modelId="junie-lite")
@@ -1147,14 +1164,11 @@ class _AcpSession:
 
     def _complete_lite_selection(self, message) -> None:
         self.selecting_lite = False
-        error = message.get("error")
         result = message.get("result")
         if isinstance(result, dict) and "configOptions" in result:
             self._require_brave_option(result)
-        if (not isinstance(error, dict) and "result" in message
-                or isinstance(error, dict) and error.get("code") == -32601):
-            return
-        raise JunieSessionError(self.command, 1, "Junie ACP で指定した Junie Lite を選択できませんでした。")
+        if not acp_lite_selection_can_continue(message):
+            raise JunieSessionError(self.command, 1, "Junie ACP で指定した Junie Lite を選択できませんでした。")
 
     def _requested_option(self, flag: str) -> str | None:
         flags = self.command[:-2]
