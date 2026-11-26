@@ -14,6 +14,26 @@
 
 実際の並列上限5、OSのロック・Job Object、通信・タイミングは実装側のテストで確認する。双方の永続記録を失う障害、手修正と置換のOSレベルでの競合、任意の永続媒体の破損、外部サービス、副作用の絶対的な一度限り実行、活性・公平性はモデルの保証対象外。
 
+## 拡張モデル（#303）
+
+基本モデルに直積を足さず、相互に作用する項目ごとに小さなモデルへ分けた。値域を大きくする代わりに、安全性を変えない識別子を代表値で表し、同一の到達状態を共有する。5モデル合計で1,116状態・4,013遷移。基本モデルとの合計は4,242状態・17,285遷移。上限（モデルごとに最大5,000状態・2秒）は変更していない。新規6テストのローカルの探索と陰性対照はPython 3.13で約0.02秒だった。
+
+| 条件ID | 前提と確認対象 | 到達状態 / 遷移 |
+| --- | --- | ---: |
+| `DISPATCH-*` | 3 Run、2枠、最初の待機列1つ。待機中の取消、稼働中の停止、終了未確認、自分・別Runの完了、2件まとまって完了する境界、再起動を区別する。待機順は保存され、開始済みは再投入しない。実装の同時上限5とプロセス終了はWindows回帰で別に確認する。 | 148 / 531 |
+| `BUILD-*` | 対象2版、ビルド操作2件まで。受付→開始→結果受信→保存を分離し、途中編集、保存一時失敗、別Run・別操作・別版と重複応答を区別する。設定済みチェッカーがある場合の完了判定は次のモデルで扱う。 | 80 / 336 |
+| `CHECK-*` | 同一ビルドで異なるチェック操作2件、ビルド証跡の差替え1回、対象2版。結果が遅れて到着しても、現在のRun・操作・ビルド・対象版に結び付く成功または理由付き承認だけを完了に使う。実行中の同じRunでビルドとチェッカーを同時に開始する前提ではない。 | 222 / 846 |
+| `REFERENCE-*` | ルール・参考資料・対象・保留編集の各版を2種類に固定し、提案を1件まで持つ。新しい版が生じたら旧提案では上書きせず、競合を残して再提案できる。過去版へ戻る操作や障害によるデータ消失は対象外。 | 651 / 2,274 |
+| `LOCK-*` | 2作業者、編集→対象→Runの3種類。待ち先を明示して循環待ちと逆順取得を拒否する。OSの実ロック、他のロック、実時間の公平性や進行保証とは区別する。 | 15 / 26 |
+
+意図的な誤遷移では、例えば次の最短反例を検出する。
+
+- 容量超過: `start 0 → start 1 → start 2`（`DISPATCH-CAPACITY`）。FIFO崩れ、二重開始、別Runの停止、開始済みの再投入、同時完了時の未解放にも陰性対照がある。
+- 旧版ビルドの採用: `accept build → edit → begin → receive success → save build`（`BUILD-STALE-RESULT`）。開始前の結果と保存前の完了も拒否。
+- 同一ビルドでの旧チェッカー応答: `accept check → begin → receive success → save check → accept check → begin → old operation reply`（`CHECK-REJECTED-STATE-CHANGED`）。失敗を成功として保存、または未承認のまま完了する誤遷移も検出。
+- 参照の更新取りこぼし: `update rule → prepare proposal → review proposal → update reference → adopt proposal`（`REFERENCE-STALE-ADOPTION`）。
+- ロック逆順: `request 0:EDITOR → request 1:WORKTREE → request 1:EDITOR`（`LOCK-INVERTED-ORDER`）。逆順取得を許した場合に生じる相互待ちは `LOCK-WAIT-CYCLE` で検出。
+
 ## 実装との照合
 
 | 条件ID | 実際の保存・回帰テスト |
@@ -33,10 +53,16 @@
 python -m unittest discover -s tests -p test_run_state_models.py -v
 ```
 
-Windowsで製品側のトレースも含めて10件実行する場合、通常のテスト準備後に実行:
+追加モデル6件:
 
 ```text
-python -m unittest discover -s tests -p "test_run_state_model*.py" -v
+python -m unittest discover -s tests -p test_run_state_extended_models.py -v
 ```
 
-Windows CIのPython 3.11 / 3.13それぞれの `remaining` に10件すべてが入り、欠落・スキップ・失敗を成功と扱わない。
+Windowsで製品側のトレースも含めて実行する場合、通常のテスト準備後に実行:
+
+```text
+python -m unittest discover -s tests -p "test_run_state_*.py" -v
+```
+
+Windows CIのPython 3.11 / 3.13それぞれの `remaining` に基本・追加モデルと実装トレースが入り、欠落・スキップ・失敗を成功と扱わない。
