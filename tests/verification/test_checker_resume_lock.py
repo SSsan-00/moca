@@ -17,7 +17,12 @@ class CheckerResumeLockTests(SavedRunFixture):
         super().setUp()
         record = self.record()
         self.receipt = saved_build_receipt()
-        record.update(checker_build=self.receipt, verification={})
+        record.update(checker_build=self.receipt, verification={
+            "build_project": self.config["build_project"],
+            "configured_checker_command": self.config["checker_command"],
+            "checker_command": None, "checker_from_cli": False, "scripts": {}, "input_files": {},
+            "target_hashes": {self.target.name: sha256(self.target.read_bytes()).hexdigest()},
+        })
         self.save_record(record)
 
     def test_run_b_save_completes_during_run_a_receipt_scan(self):

@@ -2,8 +2,10 @@
 from pathlib import Path
 
 from ..command_paths import expand_command_paths
+from ..config import is_command
 from ..execution import check_cancelled
 from ..files import safe_target, sha256_file
+from ..saved_state import content_hash
 
 
 _SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".cjs", ".dll", ".exe", ".js", ".mjs", ".pl", ".ps1", ".py", ".rb", ".sh"})
@@ -16,18 +18,40 @@ def verification_scripts(config, checker):
     return {phase: commands for phase in phases if (commands := config.get("scripts", {}).get(phase))}
 
 
+def has_verification_evidence(verification):
+    if not isinstance(verification, dict):
+        return False
+    commands = ("configured_checker_command", "checker_command")
+    if not all(key in verification and (verification[key] is None or is_command(verification[key])) for key in commands):
+        return False
+    if type(verification.get("checker_from_cli")) is not bool or (
+        verification["checker_from_cli"] and (
+            verification.get("toml_checker_scope") != "project" or "toml_checker_command" not in verification
+            or verification["toml_checker_command"] is not None and not is_command(verification["toml_checker_command"])
+        )
+    ):
+        return False
+    return (
+        "build_project" in verification
+        and (verification["build_project"] is None or isinstance(verification["build_project"], str))
+        and isinstance(verification.get("scripts"), dict)
+        and all(isinstance(values := verification.get(key), dict)
+                and all(content_hash(value, missing=True) for value in values.values())
+                for key in ("target_hashes", "input_files"))
+    )
+
+
 def configured_verification_checker(config, verification):
-    saved = verification.get("checker_command")
     configured = config["checker_command"]
     if (
-        verification.get("checker_from_cli")
-        and (saved is not None or "configured_checker_command" in verification)
-        # Earlier checker-only resumes could record the unrelated project default.
-        and (not verification.get("checker_only") or verification.get("toml_checker_scope") in ("unit", "project"))
+        verification.get("checker_from_cli") is True
+        and "configured_checker_command" in verification
+        and verification.get("toml_checker_scope") == "project"
+        and "toml_checker_command" in verification
         and not config.get("checker_from_cli")
-        and configured == verification.get("toml_checker_command")
+        and configured == verification["toml_checker_command"]
     ):
-        return verification.get("configured_checker_command", saved)
+        return verification["configured_checker_command"]
     return configured
 
 

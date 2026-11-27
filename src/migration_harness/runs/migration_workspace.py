@@ -69,8 +69,7 @@ def _create_worktree(
         "completed_capsules": 0,
         "current_capsule": 1,
     })
-    if "targets" in unit:
-        record["targets"] = unit["targets"]
+    record["targets"] = [path.as_posix() for path in harness_config.target_paths(unit)]
     if (log_path := run_path / "before_prepare.log").is_file():
         record["script_logs"] = {"before_prepare": str(log_path)}
     run_records.write_run_record(run_path / "run.json", record)
@@ -142,6 +141,9 @@ def prepare_migration_workspace(config, unit, run_path, result, record, *, resum
     agent_root = run_path / "agent-workspace"
     if agent_root.is_symlink() or not agent_root.resolve().is_relative_to(run_path.resolve()):
         raise ValueError("agent workspace path escapes the run directory")
+    capsule, manifest = capsule_files.load_capsule_manifest(run_path)
+    if not resuming:
+        capsule_files.verify_pinned_php(capsule, manifest)
     stage_scripts.run_script_phase(config, "after_prepare", worktree_root, run_path, record, once=True)
     # Junieの作業領域を作成済みのRunでは、初期ファイルを再配置しない。
     if not agent_root.exists():
@@ -150,9 +152,7 @@ def prepare_migration_workspace(config, unit, run_path, result, record, *, resum
             extra_commands=tuple(unit.get("draft_import_commands", ())),
         )
     record_path = run_path / "run.json"
-    resume_attempts = record.get("resume_attempts", 0)
-    if resuming and (type(resume_attempts) is not int or resume_attempts < 0):
-        raise ValueError("run record contains an invalid resume-attempt count")
+    resume_attempts = record["resume_attempts"]
     if agent_root.exists() and (not agent_root.is_dir() or not resuming and record["status"] != "prepared"):
         raise ValueError("agent workspace is invalid or already exists for this run")
     if not agent_root.exists():
@@ -164,11 +164,11 @@ def prepare_migration_workspace(config, unit, run_path, result, record, *, resum
     finish_pending_targets(agent_root, worktree_root, relative_targets, record, record_path)
     worktree_targets = tuple(safe_target(worktree_root, path) for path in relative_targets)
     agent_targets = tuple(safe_target(agent_root, path) for path in relative_targets)
-    capsule, manifest = capsule_files.load_capsule_manifest(run_path)
     hashes = {path.as_posix(): target_hash(file) for path, file in zip(relative_targets, worktree_targets, strict=True)}
     if resuming and not followup_only:
-        prior_hashes = record.get("target_hashes", {relative_targets[0].as_posix(): record.get("target_sha256")})
-        if hashes != prior_hashes:
+        initialized = ("target_hashes" in record or "target_sha256" in record
+                       or "agent_workspace_path" in record or record["status"] != "prepared")
+        if initialized and hashes != run_records.require_target_hashes(record):
             raise ValueError("worktree targets changed since the last recorded Junie result; inspect and reconcile before resuming")
     if record.get("stopped_migration_save_error"):
         raise ValueError("停止時の下書きを保存できませんでした。Junie 作業領域を確認してください。")
@@ -204,11 +204,8 @@ def prepare_migration_workspace(config, unit, run_path, result, record, *, resum
     record["status"] = (
         "editor_checkpoint" if followup_only or record["status"] in {"editor_checkpoint", "editor_followup"} else "junie_running"
     )
-    record.setdefault("completed_capsules", 0)
-    record.setdefault("current_capsule", record["completed_capsules"] + 1)
     record["target_hashes"] = hashes
-    if not resuming:
-        record["target_sha256"] = hashes[relative_targets[0].as_posix()]
+    if "0" not in record.get("capsule_checkpoints", {}) and record["completed_capsules"] == 0:
         record["target_applied"] = False
         record.setdefault("capsule_checkpoints", {})["0"] = _save_capsule_checkpoint(
             run_path, worktree_root, relative_targets, hashes,

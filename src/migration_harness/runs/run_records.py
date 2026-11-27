@@ -19,8 +19,8 @@ from typing import Any, Literal
 from urllib.request import urlopen
 
 from ..junie.usage import USAGE_FIELDS
-from ..config import find_unit, target_paths
-from ..saved_state import nonempty_text, saved_object, versionless_record
+from ..config import find_unit, target_paths, validate_junie_model
+from ..saved_state import content_hash, nonempty_text, saved_object, versionless_record
 from .timings import update_timings
 
 run_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("run_observer", default=None)
@@ -192,9 +192,52 @@ def read_run_record(path: Path) -> dict[str, Any]:
 
 
 def run_model_options(run_path: Path, record: dict[str, Any], config: dict[str, Any]) -> dict[str, str | None]:
-    saved = read_run_record(run_path / "run.json")
-    return {"model": saved.get("junie_model", record.get("junie_model", config.get("junie_model"))),
-            "effort": saved.get("junie_effort", record.get("junie_effort"))}
+    return saved_run_model_options(read_run_record(run_path / "run.json"))
+
+
+def saved_run_model_options(saved: dict[str, Any]) -> dict[str, str | None]:
+    if "junie_model" not in saved or "junie_effort" not in saved:
+        raise ValueError(_RUN_SETTINGS_MISSING + " (junie_model / junie_effort)")
+    model, effort = validate_junie_model(saved["junie_model"], saved["junie_effort"])
+    return {"model": model, "effort": effort}
+
+
+_RUN_SETTINGS_MISSING = "保存された Run の準備時の設定・進捗を確認できません。元の資料・下書きを確認し、新しい Run に引き継いでください。"
+_TARGETS_MISSING = "保存された Run に移行先一覧 (targets) がありません。元の成果物を確認し、新しい Run に引き継いでください。"
+_TARGET_HASHES_INVALID = "保存された Run の移行先の版 (target_hashes) が不足または不一致です。元の成果物を確認し、新しい Run に引き継いでください。"
+
+
+def require_prepared_run_settings(record: dict[str, Any]) -> None:
+    fields = {"junie_model", "junie_effort", "junie_max_steps", "resume_attempts",
+              "completed_capsules", "current_capsule", "context_capsules", "max_context_chars",
+              "source_boundary_review_required"}
+    if missing := fields - record.keys():
+        raise ValueError(_RUN_SETTINGS_MISSING + " (" + ", ".join(sorted(missing)) + ")")
+    steps = record["junie_max_steps"]
+    if steps is not None and (type(steps) is not int or steps < 1):
+        raise ValueError("run record contains an invalid Junie max-steps value")
+    validate_junie_model(record["junie_model"], record["junie_effort"])
+    if (type(record["source_boundary_review_required"]) is not bool
+            or type(record["max_context_chars"]) is not int or record["max_context_chars"] < 1):
+        raise ValueError("run record is missing valid context preparation settings")
+
+
+def require_recorded_targets(record: dict[str, Any]) -> list[str]:
+    names = record.get("targets")
+    if not isinstance(names, list) or not names or any(not nonempty_text(name) for name in names):
+        raise ValueError(_TARGETS_MISSING)
+    return names
+
+
+def require_target_hashes(record: dict[str, Any]) -> dict[str, str | None]:
+    names = require_recorded_targets(record)
+    versions = record.get("target_hashes")
+    if (not isinstance(versions, dict) or versions.keys() != set(names)
+            or any(not content_hash(digest, missing=True) for digest in versions.values())):
+        missing = set(names) - versions.keys() if isinstance(versions, dict) else set(names)
+        raise ValueError(_TARGET_HASHES_INVALID + (" " + ", ".join(sorted(missing)) if missing else ""))
+    return versions
+
 
 
 def _validate_run_fields(record: dict[str, Any]) -> None:
@@ -252,9 +295,8 @@ def _load_run_identity(
     if not nonempty_text(unit_id):
         raise ValueError("run record is missing its migration unit ID")
     unit = find_unit(config, unit_id)
-    saved_targets = record.get("targets", [record.get("target")])
+    saved_targets = require_recorded_targets(record)
     if (not nonempty_text(record.get("target")) or Path(record["target"]) != Path(unit["target"])
-            or not isinstance(saved_targets, list) or any(not nonempty_text(path) for path in saved_targets)
             or tuple(Path(path) for path in saved_targets) != target_paths(unit)):
         raise ValueError("configured targets differ from those recorded for this run")
     return run_path, record, unit

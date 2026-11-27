@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import uuid
 from contextlib import redirect_stdout
 from http.client import HTTPConnection
 from pathlib import Path
@@ -19,6 +20,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+from tests.support.editor_save_fixtures import pending_editor_edit
 from tests.support.fixtures import HarnessCase, prepare_fixture
 from migration_harness.web import dashboard, dashboard_editor
 from migration_harness.runs import editor_queue, run_records, worktree_targets
@@ -164,6 +166,12 @@ class DashboardEditorTests(HarnessCase):
         self.assertFalse(saved["queued"])
         self.assertIn("// recovered", target.read_text(encoding="utf-8-sig"))
         self.assertEqual(self.request(payload=request)["accepted_save_id"], request["save_id"])
+        without_version = {key: value for key, value in request.items() if key != "base_version"}
+        with self.assertRaises(HTTPError) as changed_intent:
+            self.request(payload=without_version)
+        with changed_intent.exception as error:
+            self.assertEqual(error.code, 409)
+            self.assertIn("同じ保存ID", error.read().decode())
         self.assertEqual(run_records.load_saved_run(self.settings, run_id)[2]["status"], "checker_succeeded")
         self.assertFalse(workflow.migration_ledger(self.settings, run_id)["completion"]["verification_passed"])
         with self.assertRaises(HTTPError) as raised:
@@ -212,7 +220,7 @@ class DashboardEditorTests(HarnessCase):
         return self.request(payload={
             "kind": "save", "run_id": state["run_id"], "target": target,
             "base": state["content"], "content": content, "edit_id": (state["edit"] or {}).get("id"),
-            "resolve": resolve,
+            "resolve": resolve, "save_id": uuid.uuid4().hex,
         })
 
     def finished_run(self):
@@ -780,8 +788,8 @@ class DashboardEditorTests(HarnessCase):
         original = "a" * (7 * 1024 * 1024)
         target.write_text(original, encoding="utf-8")
         with editor_queue.editor_queue(run_path) as queue:
-            queue["edits"]["Page.cs"] = {"id": "draft", "status": "queued", "base": original,
-                                         "content": "b" + original[1:]}
+            pending_editor_edit(queue, "Page.cs", {"id": "draft", "status": "queued", "base": original,
+                                         "content": "b" + original[1:]})
         first = self.request()
         self.assertEqual(len(first["edit"]["base"]), len(original))
         versions = {name: first[name] for name in ("view_version", "content_version", "edit_version", "history_version")}
@@ -908,22 +916,26 @@ target = "Other.cs"
         prepared = prepare_fixture(self.settings, "sample")
         route = "editor-php?" + urlencode({"run_id": prepared["run_id"]})
         manifest_path = Path(prepared["capsule_path"]) / "manifest.json"
+        self.assertEqual(self.request(route), {
+            "run_id": prepared["run_id"],
+            "sources": ["source.php"], "source": "source.php", "content": "<?php echo 1;", "error": None,
+        })
+        for name in unrelated:
+            with self.subTest(source=name):
+                with self.assertRaises(HTTPError) as denied:
+                    self.request(route + "&" + urlencode({"source": name}))
+                self.assertEqual(denied.exception.code, 409)
+                denied.exception.close()
         manifest = json.loads(manifest_path.read_bytes())
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy):
-                if legacy:
-                    manifest.pop("php_sources")
-                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-                self.assertEqual(self.request(route), {
-                    "run_id": prepared["run_id"],
-                    "sources": ["source.php"], "source": "source.php", "content": "<?php echo 1;", "error": None,
-                })
-                for name in unrelated:
-                    with self.subTest(source=name):
-                        with self.assertRaises(HTTPError) as denied:
-                            self.request(route + "&" + urlencode({"source": name}))
-                        self.assertEqual(denied.exception.code, 409)
-                        denied.exception.close()
+        manifest.pop("php_sources")
+        rejected = json.dumps(manifest).encode()
+        manifest_path.write_bytes(rejected)
+        with self.assertRaises(HTTPError) as denied:
+            self.request(route)
+        self.assertEqual(denied.exception.code, 409)
+        self.assertIn("php_sources", denied.exception.read().decode("utf-8"))
+        denied.exception.close()
+        self.assertEqual(manifest_path.read_bytes(), rejected)
 
     def test_php_view_rejects_missing_pin_without_reading_the_live_source(self):
         prepared = prepare_fixture(self.settings, "sample")
@@ -935,7 +947,7 @@ target = "Other.cs"
         with self.assertRaises(HTTPError) as missing:
             self.request(route)
         self.assertEqual(missing.exception.code, 409)
-        self.assertIn("移行対象のPHPがRunに保存されていません: source.php", missing.exception.read().decode("utf-8"))
+        self.assertIn("固定PHPの一覧と保存された範囲が一致しません: source.php", missing.exception.read().decode("utf-8"))
         missing.exception.close()
 
     def test_razor_pair_saves_both_targets_at_the_checkpoint(self):

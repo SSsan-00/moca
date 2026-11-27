@@ -55,30 +55,25 @@ class JunieBraveQueueTests(SavedRunFixture):
     def test_removed_queued_actions_never_start_on_restart(self):
         normal = self.manager.submit({"action": "run", "unit_id": "two"})["run_id"]
         queue = self.saved_queue()
-        waiting = str(uuid.uuid4())
-        queue["jobs"].extend([
-            {"action": "prepare", "run_id": waiting, "unit_id": "one"},
-            {"action": "prepare", "run_id": self.run_id, "unit_id": "example", "running": True},
-        ])
+        self.assertEqual(queue["jobs"][0]["run_id"], normal)
         original_record = self.record_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "利用できません"):
+            self.manager.submit({"action": "prepare", "unit_id": "one"})
         self.manager.close()
-        self.manager.queue_path.write_text(json.dumps(queue), encoding="utf-8")
-
-        with patch.object(dashboard, "execute_dashboard_action", return_value={"status": "fixture_completed"}) as execute:
-            restored = RunManager(self.config, dashboard.Dashboard())
-            self.addCleanup(restored.close)
-            self.assertEqual(list(restored.pending), [normal])
-            self.assertEqual(restored.get(waiting).state["status"], "cancelled")
-            self.assertIn("取り消しました", restored.get(waiting).state["message"])
-            self.assertIn(self.run_id, restored.blocked_conversations)
-            self.assertEqual(self.record_path.read_bytes(), original_record)
-            with self.assertRaisesRegex(ValueError, "利用できません"):
-                restored.submit({"action": "prepare", "unit_id": "one"})
-            restored.limit = 1
-            restored.start_pending()
-            with restored.condition:
-                self.assertTrue(restored.condition.wait_for(lambda: not restored.busy, timeout=5))
-            self.assertEqual([call.args[2]["run_id"] for call in execute.call_args_list], [normal])
+        for removed in (
+            {"action": "prepare", "run_id": str(uuid.uuid4()), "unit_id": "one"},
+            {"action": "prepare", "run_id": self.run_id, "unit_id": "example", "running": True},
+        ):
+            with self.subTest(removed=removed), patch.object(dashboard, "execute_dashboard_action") as execute:
+                removed["operation_id"] = uuid.uuid4().hex
+                records = {**queue, "jobs": [*queue["jobs"], removed]}
+                data = json.dumps(records, indent=2).encode()
+                self.manager.queue_path.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "未対応の操作"):
+                    RunManager(self.config, dashboard.Dashboard())
+                execute.assert_not_called()
+                self.assertEqual(self.manager.queue_path.read_bytes(), data)
+                self.assertEqual(self.record_path.read_bytes(), original_record)
 
     def test_script_retry_waiting_at_restart_requires_confirmation_again(self):
         view = self.manager.get(self.run_id)

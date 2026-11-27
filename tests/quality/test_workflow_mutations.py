@@ -63,13 +63,13 @@ MUTATIONS = {
         "2 != 1",
         stub_roslyn=True,
     ),
-    "legacy-rule-newline": Mutation(
+    "current-rule-newline": Mutation(
         "migration_harness.rules.rule_materials",
-        'required.append(shared.decode("utf-8"))',
-        'required.append(shared.decode("utf-8").replace("\\r\\n", "\\n"))',
-        "tests.rules.test_rule_materials.RuleMaterialsTests.test_old_shared_run_and_no_rules",
-        'self.assertIn(original, (agent / ".migration-materials/guidelines.md").read_bytes())',
-        "b'old mandatory rules",
+        "inline = _inline_rule(entry, body)",
+        'inline = _inline_rule(entry, body.replace("\\r\\n", "\\n"))',
+        "tests.rules.test_rule_materials.RuleMaterialsTests.test_current_rule_prompt_keeps_saved_crlf",
+        "self.assertIn(original, guidelines)",
+        "'mandatory text",
     ),
 }
 

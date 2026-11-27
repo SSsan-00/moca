@@ -24,7 +24,7 @@ class RunStateModelTraceTests(unittest.TestCase):
                     (worktree / relative).write_bytes(originals[relative])
                     (agent / relative).write_bytes(codecs.BOM_UTF8 + drafts[relative])
                 hashes = {relative.as_posix(): target_hash(worktree / relative) for relative in targets}
-                record = {"target": targets[0].as_posix(), "target_hashes": dict(hashes)}
+                record = {"target": targets[0].as_posix(), "targets": list(hashes), "target_hashes": dict(hashes)}
                 record_path = root / "run.json"
 
                 replace_file = Path.replace

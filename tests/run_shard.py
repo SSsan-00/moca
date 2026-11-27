@@ -67,13 +67,13 @@ REQUIRED_WINDOWS_RECOVERY = {
 
 
 REQUIRED_SAVED_STATE = {
-    "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_legacy_single_target_reopens_and_resumes_without_rewriting",
+    "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_current_single_target_reopens_and_legacy_target_shapes_are_preserved_on_rejection",
     "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_malformed_records_fail_closed_before_resume_and_keep_original",
     "tests.runs.test_saved_run_schema.SavedEditorSchemaTests.test_broken_history_or_pending_journal_keeps_both_versions",
     "tests.runs.test_saved_run_schema.SavedRunSchemaTests.test_comparison_keeps_valid_v1_bytes_and_refuses_a_different_version_or_run",
     "tests.runs.test_saved_queue_capsule.SavedDashboardQueueValidationTests.test_corrupt_queue_is_rejected_before_restore_without_writing_or_retaining_lock",
-    "tests.runs.test_saved_queue_capsule.CapsuleManifestValidationTests.test_current_and_798136e_capsule_metadata_are_read_without_upgrading",
-    "tests.runs.test_target_snapshot_compatibility.TargetSnapshotCompatibilityTests.test_legacy_numbered_files_follow_the_manifest_not_reserialized_run_order",
+    "tests.runs.test_saved_queue_capsule.CapsuleManifestValidationTests.test_current_capsule_reopens_and_798136e_is_rejected_without_rewriting",
+    "tests.runs.test_target_snapshot_compatibility.TargetSnapshotCompatibilityTests.test_numbered_files_follow_writer_manifest_not_reserialized_run_order",
     "tests.verification.test_build_receipt.BuildReceiptCompatibilityTests.test_unusable_receipts_never_scan_the_build_project",
 }
 

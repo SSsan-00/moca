@@ -18,7 +18,9 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+from tests.support.editor_save_fixtures import pending_editor_edit
 from tests.support.fixtures import SavedRunFixture
+from migration_harness.rules.rule_materials import COMPACT_RULE_GUIDELINES, write_rule_files
 from migration_harness.verification import build_receipt
 from migration_harness import cli, errors, execution, workflow
 from migration_harness.junie import junie_cli, session_events
@@ -164,9 +166,7 @@ class MigrationFailureRecoveryTests(SavedRunFixture):
         second = self.worktree / "Second.cs"
         second.write_bytes(b"class SecondOriginal {}")
         names = (self.target.name, second.name)
-        self.config["units"][0]["targets"] = list(names)
-        self.save_record({**self.record(), "targets": list(names), "status": "prepared",
-                          "completed_capsules": 0, "current_capsule": 1})
+        self.set_fixture_targets(names, status="prepared", completed_capsules=0, current_capsule=1)
         original = self.target.read_bytes()
         agent = self.run_path / "agent-workspace"
 
@@ -297,8 +297,7 @@ class FollowupDraftRecoveryTests(SavedRunFixture):
         self.second = self.worktree / "Second.cs"
         self.second.write_bytes(b"class SecondOriginal {}\n")
         names = [self.target.name, self.second.name]
-        self.config["units"][0]["targets"] = names
-        self.save_record({**self.record(), "targets": names})
+        self.set_fixture_targets(names)
         self.original = self.target.read_bytes()
         self.second_original = self.second.read_bytes()
         self.agent = self.run_path / "agent-workspace"
@@ -704,9 +703,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.checker_log.write_bytes(
             b"A Example.cs:1 warning: first finding\nB Example.cs:2 warning: second finding\n",
         )
-        record = self.record()
-        record["review_file_hashes"] = {"Example.cs": target_files.review_target_hash(self.worktree, Path("Example.cs"))}
-        self.save_record(record)
+        log = self.checker_log.read_bytes()
+        self.resume(("dotnet", 0, b"ok"), ("fixture-checker", 1, log))
         parse = checker_output.checker_findings
         findings, _ = parse(self.checker_log, self.worktree)
         parsed, release = Event(), Event()
@@ -747,13 +745,17 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         secondary = self.worktree / "View.cshtml"
         secondary.write_text("<p>View</p>", encoding="utf-8")
         targets = [self.target.name, secondary.name]
-        self.config["units"][0]["targets"] = targets
-        self.save_record({**self.record(), "targets": targets})
+        self.set_fixture_targets(targets)
         path = self.run_path / "capsule" / "manifest.json"
         manifest = json.loads(path.read_bytes())
         ranges = manifest["parts"][0]["sources"]
         for number in (2, 3):
             ranges.append({**ranges[0], "start_line": number, "end_line": number})
+        pin, = manifest["php_sources"]
+        snapshot = path.parent / pin["snapshot"]
+        content = snapshot.read_bytes() + b"echo 2;\necho 3;\n"
+        snapshot.write_bytes(content)
+        pin["sha256"] = sha256(content).hexdigest()
         path.write_text(json.dumps(manifest), encoding="utf-8")
         check_passed = ("fixture-checker", 0, b"")
         self.resume(self.build, check_passed)
@@ -927,10 +929,9 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
     def test_stop_preserves_missing_and_partial_repair_targets_and_detects_manual_conflict(self):
         names = ["Example.cs", "Second.cs"]
-        self.config["units"][0]["targets"] = names
         self.config["max_repair_attempts"] = 1
         (self.worktree / names[1]).write_text("class SecondOriginal {}\n", encoding="utf-8")
-        self.save_record({**self.record(), "targets": names})
+        self.set_fixture_targets(names)
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
         partial = b"class Partial {\xff"
@@ -1081,11 +1082,10 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
 
     def test_selected_repair_recovers_before_verifying_changed_diagnostics(self):
         names = ("Example.cs", "Second.cs", "Third.cs")
-        self.config["units"][0]["targets"] = list(names)
         self.config["max_repair_attempts"] = 1
         for name in names[1:]:
             (self.worktree / name).write_bytes(b"class Original {}\n")
-        self.save_record({**self.record(), "targets": list(names)})
+        self.set_fixture_targets(names)
         original_record = self.record()
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
@@ -1184,9 +1184,8 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         second = self.worktree / "Second.cs"
         second.write_bytes(b"class Original {}\n")
         names = (self.target.name, second.name)
-        self.config["units"][0]["targets"] = list(names)
         self.config["max_repair_attempts"] = 1
-        self.save_record({**self.record(), "targets": list(names)})
+        self.set_fixture_targets(names)
         (self.run_path / "agent-workspace").mkdir()
 
         def interrupt(_command, _completion, _token, targets, **kwargs):
@@ -1472,6 +1471,18 @@ class CheckerResumeAndReviewTests(SavedRunFixture):
         self.assertIn("previous checker finding", result["error"])
         self.assertEqual(self.record()["checker_review_reason"], "finding_repeated")
 
+    def test_explicit_checker_repair_stops_at_the_saved_limit_without_changing_record(self):
+        self.config["max_repair_attempts"] = 1
+        self.save_record({**self.record(), "repair_history": [{"findings": [sha256(b"fixture").hexdigest()]}]})
+        before = self.record_path.read_bytes()
+        request = {"id": "repair-at-limit", "intent": "checker_repair", "text": "Check the saved result."}
+        with patch.object(execution, "run_process") as command, patch.object(junie_cli, "run_interactive") as junie:
+            with self.assertRaisesRegex(ValueError, "修正回数が上限"):
+                workflow.resume_with_junie(self.config, self.run_id, verification_request=request)
+            command.assert_not_called()
+            junie.assert_not_called()
+        self.assertEqual(self.record_path.read_bytes(), before)
+
     def test_checker_repair_limit_records_the_review_reason(self):
         self.config["max_repair_attempts"] = 1
         with patch.object(repairs, "_repair_target") as repair, patch.object(junie_cli, "require_interactive_cli"):
@@ -1662,6 +1673,56 @@ class CheckerResumeApprovalTests(SavedRunFixture):
             self.assert_both_statuses(self.diagnostic + extra, "checker_needs_review")
         self.assert_both_statuses(b"", "checker_needs_review")
 
+    def test_legacy_review_hashes_and_incomplete_verification_are_not_approvable(self):
+        current = self.record()
+        finding_id = self.review()["findings"][0][0]
+        for missing in ("review_file_hashes", "input_files", "configured_checker_command", "checker_command"):
+            with self.subTest(missing=missing):
+                record = json.loads(json.dumps(current))
+                if missing == "review_file_hashes":
+                    version = record.pop(missing)[self.target.name]
+                    record.update(review_target_sha256=version, target_sha256=version)
+                else:
+                    del record["verification"][missing]
+                self.save_record(record)
+                before = self.record_path.read_bytes()
+                self.assertFalse(self.review()["findings"][0][2])
+                with self.assertRaisesRegex(ValueError, "再検証してください"):
+                    self.review(finding_id, "not enough evidence")
+                self.assertEqual(self.record_path.read_bytes(), before)
+                if missing != "review_file_hashes":
+                    with self.assertRaisesRegex(ValueError, "ビルドから再実行"):
+                        workflow.plan_checker_resume(self.config, self.run_id)
+                    self.assertEqual(self.record_path.read_bytes(), before)
+        self.save_record(current)
+        self.assertEqual(self.verify(self.diagnostic, only=True)["status"], "checker_accepted")
+
+    def test_accepted_status_needs_a_current_finding_id_and_reason(self):
+        self.assertEqual(self.verify(self.diagnostic)["status"], "checker_accepted")
+        complete = self.record()
+        self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["complete"])
+        for field, value in (("finding_id", sha256(b"obsolete identity").hexdigest()), ("reason", "")):
+            with self.subTest(field=field):
+                record = json.loads(json.dumps(complete))
+                record["checker_reviews"][0][field] = value
+                self.save_record(record)
+                before = self.record_path.read_bytes()
+                self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["complete"])
+                self.assertEqual(self.record_path.read_bytes(), before)
+
+    def test_checker_only_plan_is_stale_when_the_external_checker_input_changes(self):
+        script = self.worktree.parent / "checker.py"
+        script.write_bytes(b"print('original')\n")
+        self.config["checker_command"] = [sys.executable, str(script)]
+        plan = {**workflow.plan_checker_resume(self.config, self.run_id), "id": "planned-checker"}
+        before = self.record_path.read_bytes()
+        script.write_bytes(b"print('revised')\n")
+        with patch.object(execution, "run_process") as command:
+            with self.assertRaisesRegex(ValueError, "チェッカー条件が更新されました"):
+                workflow.resume_with_junie(self.config, self.run_id, verification_request=plan)
+            command.assert_not_called()
+        self.assertEqual(self.record_path.read_bytes(), before)
+
     def test_changed_target_invalidates_the_receipt_and_existing_approval(self):
         plan = {**workflow.plan_checker_resume(self.config, self.run_id), "id": "old-target"}
         self.target.write_text("class Updated {}\n", encoding="utf-8")
@@ -1695,13 +1756,12 @@ class CheckerResumeApprovalTests(SavedRunFixture):
 
     def test_failed_rule_evidence_blocks_approved_diagnostics_in_both_paths(self):
         capsule = self.run_path / "capsule"
-        material = capsule / "materials/rule-1.txt"
-        material.parent.mkdir()
-        data = b"Apply the reference behavior.\n"
-        material.write_bytes(data)
+        materials = capsule / "materials"
+        rule, = write_rule_files(materials, [({"path": "rules.md"}, "Apply the reference behavior.\n")])
         manifest_path = capsule / "manifest.json"
         manifest = json.loads(manifest_path.read_bytes())
-        manifest["rule_files"] = [{"file": material.name, "usage": "required", "sha256": sha256(data).hexdigest()}]
+        manifest.update(rule_files=[rule], rule_guidelines_format=COMPACT_RULE_GUIDELINES,
+                        materials={rule["file"]: rule["sha256"], "rules.json": sha256((materials / "rules.json").read_bytes()).hexdigest()})
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         self.config["checker_rule_evidence"] = True
         self.assert_both_statuses(self.diagnostic, "checker_needs_review", code=0, rule_failure=True)
@@ -1841,9 +1901,9 @@ class SavedDashboardTests(SavedRunFixture):
                     self.assertEqual(data["unconfirmed_command"], changes.get("unconfirmed_command"))
 
             with editor_queue(self.run_path) as queue:
-                queue["edits"][self.target.name] = {
+                pending_editor_edit(queue, self.target.name, {
                     "id": "fixture-edit", "base": "class Original {}", "content": "class Manual {}", "status": "conflict",
-                }
+                })
             self.save_record({**original, "repair_pending": {"draft": {"snapshot": "modern-snapshot"}}})
             with urlopen(f"{url}recovery?run_id={self.run_id}", timeout=3) as response:
                 data = json.load(response)

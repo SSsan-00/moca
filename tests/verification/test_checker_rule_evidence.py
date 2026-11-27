@@ -73,17 +73,18 @@ class CheckerRuleEvidenceTests(unittest.TestCase):
                 patch("migration_harness.verification.checker_rule_evidence.load_capsule_manifest", return_value=(capsule, manifest)),
                 patch("migration_harness.verification.checker_rule_evidence.target_context_snapshot", return_value=reference),
             ):
-                before = checker_rule_context(root, worktree, {"target": target.name})
+                record = {"target": target.name, "targets": [target.name]}
+                before = checker_rule_context(root, worktree, record)
                 target.write_bytes(b"class Updated {}")
-                after = checker_rule_context(root, worktree, {"target": target.name})
+                after = checker_rule_context(root, worktree, record)
                 self.assertNotEqual(before["targets"], after["targets"])
                 self.assertEqual(before["reference_version"], after["reference_version"])
                 (reference / "manifest.json").write_bytes(b"reference two")
-                current = checker_rule_context(root, worktree, {"target": target.name})
+                current = checker_rule_context(root, worktree, record)
                 self.assertNotEqual(after["reference_version"], current["reference_version"])
                 rule_path.write_bytes(b"changed rule without a new snapshot")
                 with self.assertRaises(ValueError):
-                    checker_rule_context(root, worktree, {"target": target.name})
+                    checker_rule_context(root, worktree, record)
 
 
 class CheckerEvidenceVerificationTests(HarnessCase):

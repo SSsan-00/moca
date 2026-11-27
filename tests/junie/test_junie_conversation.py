@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -29,6 +30,7 @@ from migration_harness.junie import junie_conversation
 from migration_harness.junie.junie_conversation import _intent
 from migration_harness.runs.run_manager import RunManager
 from migration_harness.verification import checker_advisory
+from tests.support.editor_save_fixtures import pending_editor_edit
 from tests.support.build_receipt_fixtures import saved_build_receipt
 from tests.support.fixtures import SavedRunFixture
 from tests.verification.test_checker_advisory import LITE_EMPTY_MODELS, LITE_SELECTED, acp_reply
@@ -286,7 +288,7 @@ class JunieConversationTests(SavedRunFixture):
     def save_edit(self, text, target="Example.cs"):
         _, editor = self.request("editor?" + urlencode({"target": target}))
         self.request("editor", {"kind": "save", "run_id": self.run_id, "target": target,
-                                "base": editor["content"], "content": text,
+                                "base": editor["content"], "content": text, "save_id": uuid.uuid4().hex,
                                 "edit_id": editor["edit"]["id"] if editor["edit"] else None})
 
     def test_receipt_precedes_interpretation_and_query_does_not_stop_a_build(self):
@@ -424,9 +426,7 @@ class JunieConversationTests(SavedRunFixture):
         second = self.worktree / "Second.cs"
         second.write_text("class Accepted {}", encoding="utf-8")
         names = [self.target.name, second.name]
-        self.config["units"][0]["targets"] = names
-        self.save_record({**self.record(), "targets": names, "status": "prepared",
-                          "completed_capsules": 0, "current_capsule": 1})
+        self.set_fixture_targets(names, status="prepared", completed_capsules=0, current_capsule=1)
 
         def interrupted(_command, _completion, _token, targets, **_kwargs):
             targets[0].write_bytes(b"partial\xff")
@@ -488,7 +488,10 @@ class JunieConversationTests(SavedRunFixture):
         for index in (2, 3):
             part = capsule / f"context-{index}.txt"
             part.write_text(f"capsule {index}", encoding="utf-8")
-            manifest["parts"].append({"index": index, "path": str(part), "chars": 9, "sources": []})
+            digest = hashlib.sha256(part.read_bytes()).hexdigest()
+            manifest["parts"].append({"index": index, "path": str(part), "chars": 9, "sources": [],
+                                      "sha256": digest, "segment_sha256": digest})
+        manifest["total_context_chars"] = sum(part["chars"] for part in manifest["parts"])
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         agent = self.run_path / "agent-workspace"
         agent.mkdir()
@@ -622,7 +625,8 @@ class JunieConversationTests(SavedRunFixture):
 
             _, editor = self.request("editor")
             _, response = self.request("editor", {"kind": "save", "run_id": self.run_id, "target": self.target.name,
-                                                  "base": editor["content"], "content": edited, "edit_id": None})
+                                                  "base": editor["content"], "content": edited, "edit_id": None,
+                                                  "save_id": uuid.uuid4().hex})
             self.assertFalse(response["queued"])
             with self.assertRaises(HTTPError) as stale:
                 self.start_stage_plan(before_edit)
@@ -715,9 +719,12 @@ class JunieConversationTests(SavedRunFixture):
         inputs, outputs = receipt["inputs"], receipt["artifacts"]
         previous = self.record()
         previous["checker_build"] = receipt
-        previous["verification"] = {"target_hashes": {
-            self.target.name: target_files.review_target_hash(self.worktree, Path(self.target.name)),
-        }}
+        previous["verification"] = {
+            "target_hashes": previous["target_hashes"].copy(), "build_project": self.config["build_project"],
+            "configured_checker_command": self.config["checker_command"], "checker_command": None,
+            "checker_from_cli": False, "scripts": {}, "scripts_passed": True,
+            "input_files": {}, "inputs_changed_during_verification": False,
+        }
         self.save_record(previous)
         commands, calls = self.mock_commands(("checker", 0, b""))
         with (patch.object(build_receipt, "build_inputs", return_value=inputs),
@@ -790,9 +797,9 @@ class JunieConversationTests(SavedRunFixture):
                           "verification": {"target_hashes": {"Example.cs": "previous"}}})
         self.build_log.write_text("error CS1002: missing semicolon\n", encoding="utf-8")
         with editor_queue(self.run_path) as queue:
-            queue["edits"]["Example.cs"] = {
+            pending_editor_edit(queue, "Example.cs", {
                 "id": "draft", "status": "queued", "base": "class Original {}\n", "content": "class Draft {}\n",
-            }
+            })
         original_record = self.record()
         original_target = self.target.read_bytes()
         original_edit = self.request("editor")[1]["edit"]
@@ -1106,17 +1113,26 @@ class JunieConversationTests(SavedRunFixture):
         record.pop("checker_exit_code", None)
         self.save_record(record)
         self.config["checker_command"] = None
-        mocked, _ = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"))
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"))
         with mocked:
             identifier, _ = self.send("ビルドして")
             self.wait_for(identifier, "done")
             self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
             record = self.record()
-            record["verification"].pop("configured_checker_command")
+            current = self.record_path.read_bytes()
+            self.assertIsNone(record["verification"].pop("configured_checker_command"))
             self.save_record(record)
+            incomplete = self.record_path.read_bytes()
             self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
             identifier, _ = self.send("ビルドして")
+            self.assertIn("必要なチェッカー", self.wait_for(identifier, "failed")["message"])
+            self.assertEqual(self.record_path.read_bytes(), incomplete)
+            self.assertEqual(calls, [["dotnet", "build"]])
+
+            self.record_path.write_bytes(current)
+            identifier, _ = self.send("ビルドして")
             self.wait_for(identifier, "done")
+        self.assertEqual(calls, [["dotnet", "build"], ["dotnet", "build"]])
         self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
 
     def test_stop_and_rebuild_uses_saved_edit_once(self):
@@ -1437,7 +1453,13 @@ class JunieConversationTests(SavedRunFixture):
         capsule.write_bytes((self.run_path / "capsule" / "context.txt").read_bytes())
         manifest = json.loads((self.run_path / "capsule" / "manifest.json").read_bytes())
         manifest["parts"][0]["path"] = str(capsule)
+        manifest["unit_id"] = unit_id
+        for pin in manifest["php_sources"]:
+            snapshot = path / "capsule" / pin["snapshot"]
+            snapshot.parent.mkdir(exist_ok=True)
+            snapshot.write_bytes((self.run_path / "capsule" / pin["snapshot"]).read_bytes())
         (path / "capsule" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        shutil.copytree(self.run_path / "capsule" / "target-context", path / "capsule" / "target-context")
         worktree.mkdir()
         (worktree / self.target.name).write_bytes(self.target.read_bytes())
         (path / "run.json").write_text(json.dumps({
@@ -1632,11 +1654,11 @@ class JunieConversationTests(SavedRunFixture):
         sibling, sibling_path, sibling_tree = self.add_saved_run("other")
         names = ["Pages/Example.cshtml", "Pages/Example.cshtml.cs"]
         originals = {names[0]: "@page\n", names[1]: "class Original {}\n"}
-        self.config["units"][0].update(target=names[0], targets=names)
-        self.save_record({**self.record(), "target": names[0], "targets": names})
+        self.config["units"][0]["target"] = names[0]
         (self.worktree / "Pages").mkdir()
         for name, content in originals.items():
             (self.worktree / name).write_text(content, encoding="utf-8")
+        self.set_fixture_targets(names, target=names[0])
 
         sibling_started, release_sibling = Event(), Event()
         building, release_build = Event(), Event()
@@ -2180,9 +2202,9 @@ class JunieConversationTests(SavedRunFixture):
     def test_conflicting_saved_edit_is_preserved_and_does_not_build(self):
         self.target.write_bytes(b"class Changed {}\n")
         with editor_queue(self.run_path) as queue:
-            queue["edits"]["Example.cs"] = {
+            pending_editor_edit(queue, "Example.cs", {
                 "id": "saved", "status": "queued", "base": "class Original {}\n", "content": "class Operator {}\n",
-            }
+            })
         with patch.object(execution, "run_process") as run:
             identifier, _ = self.send("保存した版でビルドして")
             self.assertIn("Example.cs", self.wait_for(identifier, "failed")["message"])

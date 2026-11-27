@@ -30,6 +30,7 @@ from migration_harness.junie.junie_notifications import RunNotice
 from migration_harness.junie.junie_thoughts import FILENAME as JUNIE_LOG_NAME
 from tests.browser.ui_dependencies import node_executable, require_ui_dependency
 from tests.browser.stopped_repair_browser_fixture import resume_after_external_edit, resume_with_blocked_keyword, stopped_repair_run
+from tests.support.fixtures import save_capsule_fixture
 
 
 class SettingsBrowserTests(unittest.TestCase):
@@ -187,11 +188,9 @@ max_bytes = 9007199254740993 # preserve this value
                     context.parent.mkdir()
                     original = (project / "example.php").read_text(encoding="utf-8")
                     context.write_text(original, encoding="utf-8")
-                    (capsule / "manifest.json").write_text(json.dumps({"parts": [{
-                        "index": 1, "path": str(context), "chars": len(original), "sources": [{
-                            "path": "example.php", "role": "php", "encoding": "utf-8", "start_line": 1, "end_line": 1,
-                        }],
-                    }]}), encoding="utf-8")
+                    save_capsule_fixture(capsule, unit["id"], [(context, [{
+                        "path": "example.php", "role": "php", "encoding": "utf-8", "start_line": 1, "end_line": 1,
+                    }])], php={"example.php": ("utf-8", (project / "example.php").read_bytes())})
                     saved["target_hashes"] = target_versions(worktree, unit)
                     saved["capsule_checkpoints"] = {"1": target_snapshots.save_capsule_checkpoint(
                         run, worktree, targets, saved["target_hashes"],

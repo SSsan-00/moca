@@ -14,10 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from ..config import target_paths, validate_junie_model
 from ..context.capsules import (
-    input_encoding,
+    assigned_php_sources,
     load_capsule_manifest,
-    migration_php_encodings,
-    pinned_php_sources,
     read_pinned_php,
 )
 from ..errors import format_error
@@ -38,12 +36,12 @@ from ..runs.editor_queue import (
     record_queued_editor_save,
     replayed_editor_save,
     stage_editor_save,
+    valid_save_id,
 )
 from ..runs.editor_view import editor_version, editor_view_versions, prompt_timing, update_history_delta
 from ..runs.run_records import edit_run_record, load_saved_run, validate_run_id
 from ..runs.worktree_targets import save_target_edit, worktree_source_lock
 from . import DASHBOARD_ERRORS
-from .diff_viewer import _inside_file
 
 
 def send_prompts(request, action: dict[str, Any] | None = None) -> None:
@@ -91,31 +89,17 @@ def send_editor_php(request) -> None:
             raise ValueError("表示中の実行が変わりました。")
         run_path, _, _, _ = load_saved_run(config, run_id)
         capsule, manifest = load_capsule_manifest(run_path)
-        pinned = pinned_php_sources(manifest)
-        encodings: dict[str, str] = {}
-        for path, encoding in migration_php_encodings(manifest).items():
-            encodings.setdefault(Path(path).as_posix(), encoding)
-        sources = {Path(entry["path"]).as_posix(): entry for entry in (pinned or [])}
-        if pinned is not None:
-            for name in encodings:
-                if name not in sources:
-                    raise ValueError(f"移行対象のPHPがRunに保存されていません: {name}")
-        names = list(encodings)
+        sources = {Path(name).as_posix(): entry for name, entry in assigned_php_sources(manifest).items()}
+        names = list(sources)
         name = query.get("source", names[:1] or [None])[0]
         if name is not None and name not in names:
             raise ValueError("この実行の移行元 PHP を選んでください。")
         content = ""
         error = None
-        try:
-            if name in sources:
-                entry = sources[name]
-                content = read_pinned_php(capsule, entry).decode(entry["encoding"])
-            elif name is not None:
-                path = _inside_file(Path(config["project_root"]).resolve(), name)
-                content = path.read_text(encoding=input_encoding(path, encodings[name]))
-        except (OSError, ValueError, LookupError) as exc:
-            error = format_error(exc)
-        payload = {"run_id": run_id, "sources": names, "source": name, "content": content, "error": error}
+        if name is not None:
+            entry = sources[name]
+            content = read_pinned_php(capsule, entry).decode(entry["encoding"])
+        payload = {"run_id": run_id, "sources": names, "source": name, "content": content, "error": None}
         request.send_body(200, "application/json", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     except DASHBOARD_ERRORS as exc:
         request.send_conflict(exc)
@@ -151,7 +135,7 @@ def send_editor(request, action: dict[str, Any] | None = None) -> None:
 class EditorSave:
     base: str
     draft: str
-    save_id: str | None
+    save_id: str
     edit_id: str | None
     resolve: bool
     intent: dict
@@ -161,7 +145,7 @@ class EditorSave:
         base = editor_text(action.get("base"))
         draft = editor_text(action.get("content"))
         save_id = action.get("save_id")
-        if save_id is not None and (not isinstance(save_id, str) or not re.fullmatch(r"[0-9a-f]{32}", save_id)):
+        if not valid_save_id(save_id):
             raise ValueError("保存IDが無効です。エディタを開き直してください。")
         edit_id, resolve = action.get("edit_id"), action.get("resolve", False)
         if type(resolve) is not bool:
@@ -172,7 +156,7 @@ class EditorSave:
         if "base_version" in action:
             base_version = action["base_version"]
             if (not isinstance(base_version, str) or not re.fullmatch(r"[0-9a-f]{64}", base_version)
-                    or not save_id or edit_id is not None or resolve):
+                    or edit_id is not None or resolve):
                 raise ValueError("下書きの元の版を確認できません。")
             intent["base_version"] = base_version
         if "adoption" in action:
@@ -180,7 +164,7 @@ class EditorSave:
                     or any(not isinstance(adoption[key], str) or not re.fullmatch(pattern, adoption[key])
                            for key, pattern in (("save_id", r"[0-9a-f]{32}"), ("edit_id", r"[0-9a-f]{24}"),
                                                 ("version", r"[0-9a-f]{64}")))
-                    or base_version is not None or edit_id is not None or resolve or not save_id):
+                    or base_version is not None or edit_id is not None or resolve):
                 raise ValueError("編集中の下書きの採用版を確認できません。")
             intent["adoption"] = adoption
         return cls(base, draft, save_id, edit_id, resolve, intent)
@@ -190,6 +174,8 @@ def editor_payload(view, config, manager, query, state, run_id, action):
     """取得または版を照合して保存し、キューの更新を完了してから内容を返す。"""
     if action is not None and action.get("run_id") != run_id:
         raise ValueError("表示中の実行が変わりました。")
+    save = (EditorSave.from_action(action.get("target"), action)
+            if action is not None and action.get("kind") == "save" else None)
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     versions = None
     if action is None:
@@ -205,7 +191,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
         targets = tuple(path for path in target_paths(unit) if path.suffix.lower() in EDITOR_TARGET_SUFFIXES)
         names = [path.as_posix() for path in targets]
         name = query.get("target", names[:1] or [None])[0]
-        if action is not None and action.get("kind") == "save":
+        if save is not None:
             name = action.get("target")
             if name not in names:
                 raise ValueError("設定された移行先ファイルを選んでください。")
@@ -228,7 +214,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
         try:
             original, content = editor_target(root, Path(name)) if name else (None, "")
         except (OSError, ValueError) as exc:
-            if action is not None and action.get("kind") == "save":
+            if save is not None:
                 raise
             original, content = None, ""
             read_error = format_error(exc)
@@ -245,8 +231,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
                     record.update(changes)
             elif action.get("kind") == "prompt" and timing:
                 add_prompt(queue, action)
-            elif action.get("kind") == "save" and name:
-                save = EditorSave.from_action(name, action)
+            elif save is not None and name:
                 base_version = save.intent.get("base_version")
                 adoption = save.intent.get("adoption")
                 # キュー、対象ファイル、Runの順序でロックし、保存直前に再照合する。
@@ -258,7 +243,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
                         original, content = editor_target(worktree, Path(name))
                     if adoption is not None:
                         original, content = editor_target(root, Path(name))
-                    replay = (save.save_id is not None or not edit and not from_agent) and replayed_editor_save(
+                    replay = replayed_editor_save(
                         queue, edit, original, content, save.save_id, save.intent,
                     )
                     if not replay:
@@ -301,7 +286,7 @@ def editor_payload(view, config, manager, query, state, run_id, action):
             "exists": original is not None, "read_error": read_error,
             "can_prompt": timing is not None, "prompt_timing": timing,
             "prompts": queue["prompts"], "capsule": record.get("current_capsule"),
-            "junie_model": record.get("junie_model", config.get("junie_model")),
+            "junie_model": record.get("junie_model"),
             "junie_effort": record.get("junie_effort"), "junie_model_revision": record.get("junie_model_revision"),
             "status": phase, "operator_question": record.get("operator_question"),
         }

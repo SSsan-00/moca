@@ -10,7 +10,7 @@ from typing import Any
 from migration_harness.junie import junie_cli
 from migration_harness.web.diff_viewer import capture_workspace, save_workspace
 from migration_harness.execution import check_cancelled, report_activity
-from migration_harness.runs.run_records import junie_usage_recorder, load_saved_run
+from migration_harness.runs.run_records import junie_usage_recorder, load_saved_run, saved_run_model_options
 from migration_harness.workflow import record_migration_candidates
 
 
@@ -127,9 +127,7 @@ def generate_anchors(
             f"{token} as a separate file write. Leave the completion file absent if interrupted."
         )
         _, _, record, _ = load_saved_run(config, run_id)
-        command = junie_cli.build_command(agent, prompt, config["junie_max_steps"],
-                                          model=record.get("junie_model", config.get("junie_model")),
-                                          effort=record.get("junie_effort"))
+        command = junie_cli.build_command(agent, prompt, config["junie_max_steps"], **saved_run_model_options(record))
         junie_cli.run_interactive(
             command, completion, token, (result,), report_usage=junie_usage_recorder(run_path, "anchors"),
             prefer_task=True,

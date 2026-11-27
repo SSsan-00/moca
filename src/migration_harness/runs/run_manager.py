@@ -150,10 +150,10 @@ class RunManager:
         saved = saved_object(text, path.name)
         versionless_record(saved, path.name)
         jobs = saved.get("jobs")
-        cancelled = saved.get("cancelled_conversations", {})
-        blocked = saved.get("blocked_conversations", {})
+        cancelled = saved.get("cancelled_conversations")
+        blocked = saved.get("blocked_conversations")
         if (not isinstance(jobs, list) or not isinstance(cancelled, dict) or not isinstance(blocked, dict)
-                or ("project_root" in saved and not nonempty_text(saved["project_root"]))):
+                or not nonempty_text(saved.get("project_root"))):
             raise ValueError("保存済みの実行待ち一覧の必須項目または型が不正です。")
         if (jobs or cancelled or blocked) and saved.get("project_root") != config.get("project_root"):
             raise ValueError("保存済みの実行待ち一覧とプロジェクトが異なります。保存先を確認してください。")
@@ -173,21 +173,22 @@ class RunManager:
                 raise ValueError("保存済みの実行待ち操作にRun ID、移行単位、または操作名がありません。")
             run_id, unit, action = job["run_id"], job["unit_id"], job["action"]
             validate_run_id(run_id)
+            if action not in _QUEUED_ACTIONS:
+                raise ValueError(f"dashboard-queue.json に未対応の操作があります: {action}")
             if run_id in runs or unit in units:
                 raise ValueError("保存済みの実行待ち一覧でRunまたは移行単位が重複しています。")
             if unit not in allowed_units:
                 raise ValueError(f"unknown migration unit: {unit}")
             runs.add(run_id)
             units.add(unit)
-            if "operation_id" in job:
-                operation = job["operation_id"]
-                if not _saved_operation_id(operation) or operation in operations:
-                    raise ValueError("保存済みの実行待ち操作IDが不正または重複しています。")
-                operations.add(operation)
+            operation = job.get("operation_id")
+            if not _saved_operation_id(operation) or operation in operations:
+                raise ValueError("dashboard-queue.json の操作IDが未設定・不正・重複のいずれかです。元の記録を確認してください。")
+            operations.add(operation)
             for flag in ("running", "junie_brave", "junie_brave_reconfirm"):
                 if flag in job and type(job[flag]) is not bool:
                     raise ValueError(f"保存済みの実行待ち操作の {flag} が不正です。")
-            if not job.get("running") and action in _QUEUED_ACTIONS - {"run"}:
+            if not job.get("running") and action != "run":
                 _validate_waiting_operation(job)
                 _, _, record, _ = load_saved_run(config, run_id)
                 if record["unit_id"] != unit:
@@ -200,14 +201,11 @@ class RunManager:
         for job in jobs:
             run_id, unit_id = job["run_id"], job["unit_id"]
             interrupted = job.get("running")
-            if (job["action"] not in _QUEUED_ACTIONS or job["action"] == "recover-script") and not interrupted:
-                view = self._queued_view(config, run_id, unit_id)
-                if job["action"] == "recover-script":
-                    _, record = load_dashboard_record(config, run_id)
-                    view = self._record_view(config, record, "")
-                    disk_ids.add(run_id)
-                view.publish({**view.state, "status": view.state["status"] if job["action"] == "recover-script" else "cancelled",
-                              "queued": False, "ready": True,
+            if job["action"] == "recover-script" and not interrupted:
+                _, record = load_dashboard_record(config, run_id)
+                view = self._record_view(config, record, "")
+                disk_ids.add(run_id)
+                view.publish({**view.state, "queued": False, "ready": True,
                               "message": "待機操作を取り消しました。内容を確認してからやり直してください。"})
                 views[run_id] = view
                 continue
@@ -241,7 +239,7 @@ class RunManager:
                 view.publish({**view.state, "status": status, "queued": False, "ready": True,
                               "message": "Brave モードの実行待ちは再起動後に引き継ぎません。この画面からもう一度実行してください。"})
             else:
-                waiting[run_id] = self._queued_job(view, job, job.get("operation_id"))
+                waiting[run_id] = self._queued_job(view, job, job["operation_id"])
         return views, disk_ids, waiting
 
     @property
@@ -304,9 +302,9 @@ class RunManager:
         view.ready(config, record, message)
         return view
 
-    def enqueue(self, view, action, *, operation_id=None):
+    def enqueue(self, view, action):
         run_id = view.state["run_id"]
-        self.jobs[run_id] = self._queued_job(view, action, operation_id)
+        self.jobs[run_id] = self._queued_job(view, action, uuid.uuid4().hex)
         self.pending.append(run_id)
 
     @staticmethod
@@ -315,7 +313,7 @@ class RunManager:
                       "operation_id": None, "stop_requested": False,
                       "generating_anchors": action["action"] == "anchors"})
         return {**action, "run_id": view.state["run_id"], "unit_id": view.state["unit_id"],
-                "operation_id": operation_id or uuid.uuid4().hex}
+                "operation_id": operation_id}
 
     def save_enqueued(self):
         try:

@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from io import StringIO
 from itertools import chain
 from typing import Any, Iterator
 
@@ -17,7 +18,7 @@ from ..execution import check_cancelled, report_activity
 from ..files import safe_target, sha256_file
 from ..saved_state import content_hash, nonempty_text, saved_object, versionless_record
 from .php_boundaries import PhpFunction, function_boundaries
-from ..rules.rule_materials import COMPACT_RULE_GUIDELINES, write_rule_files
+from ..rules.rule_materials import COMPACT_RULE_GUIDELINES, saved_rule_entries, write_rule_files
 from ..rules.rule_search import prepare_rule_hint
 
 
@@ -25,14 +26,13 @@ def is_php_input(source: dict[str, Any]) -> bool:
     return source.get("role") in {"php", "reference_php"} or Path(source["path"]).suffix.lower() == ".php"
 
 
-def migration_php_encodings(manifest: dict[str, Any]) -> dict[str, str]:
-    # 固定済みPHPの一覧には、共通資料として登録した参考PHPも含まれる。
-    encodings: dict[str, str] = {}
-    for part in manifest["parts"]:
-        for source in part["sources"]:
-            if is_php_input(source):
-                encodings.setdefault(source["path"], source["encoding"])
-    return encodings
+def assigned_php_sources(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    names = dict.fromkeys(
+        row["path"] for part in manifest["parts"] for row in part["sources"] if is_php_input(row)
+    )
+    pins = {source["path"]: source for source in manifest["php_sources"]}
+    ranges = _pinned_php_ranges(manifest)
+    return {name: {**pins[name], "ranges": ranges[name]} for name in names}
 
 
 def _text_fingerprint(path: Path, encoding: str) -> bytes | None:
@@ -679,54 +679,127 @@ def _validate_capsule_manifest(manifest: dict[str, Any]) -> None:
         if not _capsule_integer(part.get("chars")):
             raise ValueError("run manifest contains an invalid capsule character count")
         for digest in ("sha256", "segment_sha256"):
-            if digest in part and not content_hash(part[digest]):
-                raise ValueError(f"run manifest contains an invalid {digest}")
+            if not content_hash(part.get(digest)):
+                raise ValueError(f"capsule/manifest.json: capsule {index} has missing or invalid {digest}")
+        if "boundary_sha256" in part and not content_hash(part["boundary_sha256"]):
+            raise ValueError(f"capsule/manifest.json: capsule {index} has invalid boundary_sha256")
         _validate_source_ranges(part.get("sources"))
 
-    if "unit_id" in manifest and not nonempty_text(manifest["unit_id"]):
-        raise ValueError("run manifest contains an invalid migration unit ID")
-    if "total_context_chars" in manifest and (
-        not _capsule_integer(manifest["total_context_chars"])
-        or manifest["total_context_chars"] != sum(part["chars"] for part in parts)
+    if not nonempty_text(manifest.get("unit_id")):
+        raise ValueError("capsule/manifest.json: missing or invalid migration unit ID")
+    if not _capsule_integer(manifest.get("total_context_chars")) or (
+        manifest["total_context_chars"] != sum(part["chars"] for part in parts)
     ):
-        raise ValueError("run manifest has an inconsistent total character count")
-    for key in ("max_context_chars", "segment_offset"):
-        if key in manifest and not _capsule_integer(manifest[key]):
-            raise ValueError(f"run manifest contains an invalid {key}")
-    if "materials" in manifest and (
-        not isinstance(manifest["materials"], dict)
-        or any(not nonempty_text(name) or not content_hash(digest) for name, digest in manifest["materials"].items())
+        raise ValueError("capsule/manifest.json: inconsistent total character count")
+    if not _capsule_integer(manifest.get("max_context_chars"), minimum=1):
+        raise ValueError("capsule/manifest.json: invalid max_context_chars")
+    if not _capsule_integer(manifest.get("segment_offset")) or any(
+        not manifest["segment_offset"] <= part["chars"] <= manifest["max_context_chars"] for part in parts
     ):
-        raise ValueError("run manifest contains invalid material versions")
-    for key, kind in (("rule_files", list), ("rule_chunks", list), ("rule_read_order", list),
-                      ("split_line_coverage", list), ("syntax_boundaries", dict)):
-        if key in manifest and not isinstance(manifest[key], kind):
-            raise ValueError(f"run manifest contains an invalid {key}")
-    _validate_source_ranges(manifest.get("shared_sources", []))
-    _validate_source_ranges(manifest.get("reference_sources", []), encoding_required=False)
-    pinned_php_sources(manifest)
+        raise ValueError("capsule/manifest.json: invalid segment_offset or capsule character count")
+    materials = manifest.get("materials")
+    if not isinstance(materials, dict) or any(
+        not nonempty_text(name) or not content_hash(digest) for name, digest in materials.items()
+    ):
+        raise ValueError("capsule/manifest.json: missing or invalid material versions")
+    rules = saved_rule_entries(manifest)
+    expected_rule_files = {}
+    for index, entry in enumerate(rules, 1):
+        name = f"rule-{index:04d}.txt"
+        if (not isinstance(entry, dict) or entry.get("file") != name
+                or not nonempty_text(entry.get("path")) or not content_hash(entry.get("sha256"))
+                or entry.get("usage") not in ("required", "reference")
+                or not isinstance(entry.get("description"), str)
+                or entry["usage"] == "reference" and not nonempty_text(entry["description"])):
+            raise ValueError(f"capsule/manifest.json: missing or invalid saved rule {name}")
+        expected_rule_files[name] = entry["sha256"]
+    if {name: digest for name, digest in materials.items() if re.fullmatch(r"rule-\d+\.txt", name)} != expected_rule_files:
+        raise ValueError("capsule/manifest.json: saved rule versions do not match materials")
+    if rules and (manifest.get("rule_guidelines_format") != COMPACT_RULE_GUIDELINES or "rules.json" not in materials):
+        raise ValueError("capsule/manifest.json: missing or invalid saved rule index or format")
+    if not rules and ("rules.json" in materials or "rule_guidelines_format" in manifest):
+        raise ValueError("capsule/manifest.json: unexpected saved rule index or format")
+    for key, kind in (("split_line_coverage", list), ("syntax_boundaries", dict), ("syntax_boundaries_analyzed", bool)):
+        if not isinstance(manifest.get(key), kind):
+            raise ValueError(f"capsule/manifest.json: missing or invalid {key}")
+    if "rule_read_order" in manifest and not isinstance(manifest["rule_read_order"], list):
+        raise ValueError("capsule/manifest.json: invalid rule_read_order")
+    _validate_source_ranges(manifest.get("shared_sources"))
+    _validate_source_ranges(manifest.get("reference_sources"), encoding_required=False)
+
+    pins = _pinned_php_sources(manifest)
+    ranges = _pinned_php_ranges(manifest)
+    if pins.keys() != ranges.keys():
+        name = next(iter(ranges.keys() - pins.keys() or pins.keys() - ranges.keys()))
+        raise ValueError(f"固定PHPの一覧と保存された範囲が一致しません: {name}")
+    for name, rows in ranges.items():
+        if any(row.get("encoding", pins[name]["encoding"]) != pins[name]["encoding"] for row in rows):
+            raise ValueError(f"固定PHPの文字コードと保存された範囲が一致しません: {name}")
 
 
-def pinned_php_sources(manifest: dict[str, Any]) -> list[dict[str, str]] | None:
-    # A missing key is the supported pre-pinning format, not an empty set of current evidence.
-    if "php_sources" not in manifest:
-        return None
-    sources = manifest["php_sources"]
+def _pinned_php_sources(manifest: dict[str, Any]) -> dict[str, dict[str, str]]:
+    sources = manifest.get("php_sources")
     if not isinstance(sources, list):
-        raise ValueError("保存済みPHPのmanifestが無効です。")
-    paths, files = set(), set()
-    for source in sources:
+        raise ValueError("capsule/manifest.json: 保存済みPHPのphp_sourcesがないか無効です。")
+    pins = {}
+    for index, source in enumerate(sources, 1):
         if (not isinstance(source, dict)
                 or not all(nonempty_text(source.get(key)) for key in ("path", "snapshot", "encoding"))
                 or not content_hash(source.get("sha256"))
-                or source["path"] in paths or source["snapshot"] in files):
-            raise ValueError("保存済みPHPのmanifestが無効です。")
-        paths.add(source["path"])
-        files.add(source["snapshot"])
-    return sources
+                or source["path"] in pins or source["snapshot"] != f"php-sources/{index:04d}.php"):
+            raise ValueError(f"capsule/manifest.json: 保存済みPHPの項目{index}が無効です。")
+        pins[source["path"]] = source
+    return pins
 
 
-def read_pinned_php(capsule_path: Path, source: dict[str, str]) -> bytes:
+def _pinned_php_ranges(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    ranges: dict[str, list[dict[str, Any]]] = {}
+    for rows in chain((part["sources"] for part in manifest["parts"]),
+                      (manifest["shared_sources"], manifest["reference_sources"])):
+        for row in rows:
+            if is_php_input(row):
+                ranges.setdefault(row["path"], []).append(row)
+    return ranges
+
+
+def verify_pinned_php(capsule_path: Path, manifest: dict[str, Any]) -> None:
+    ranges = _pinned_php_ranges(manifest)
+    for pin in manifest["php_sources"]:
+        check_cancelled()
+        read_pinned_php(capsule_path, {**pin, "ranges": ranges[pin["path"]]})
+
+
+def _validate_pinned_ranges(source: dict[str, Any], content: bytes) -> None:
+    ranges = source["ranges"]
+    if not ranges:
+        return
+    last = max(row["end_line"] for row in ranges)
+    sliced_widths: dict[int, int] = {}
+    for row in ranges:
+        for span in row.get("character_slices", ()):
+            line = span["line"]
+            sliced_widths[line] = max(sliced_widths.get(line, 0), span["context_end_column"])
+    try:
+        text = content.decode(source["encoding"])
+    except (LookupError, UnicodeError) as exc:
+        raise ValueError(f"固定PHPの文字コードが無効です: {source['path']}") from exc
+    lines = text.count("\r") + text.count("\n") - text.count("\r\n") + bool(text and not text.endswith(("\r", "\n")))
+    if lines < last:
+        raise ValueError(f"固定PHPの保存範囲がファイルの行数を超えています: {source['path']}:{last}")
+    if not sliced_widths:
+        return
+    last_slice = max(sliced_widths)
+    with StringIO(text, newline="") as stream:
+        for number, line in enumerate(stream, 1):
+            if number % 256 == 0:
+                check_cancelled()
+            if (width := sliced_widths.get(number)) and width > len(line.rstrip("\r\n")):
+                raise ValueError(f"固定PHPの保存範囲が行の長さを超えています: {source['path']}:{number}")
+            if number == last_slice:
+                break
+
+
+def read_pinned_php(capsule_path: Path, source: dict[str, Any]) -> bytes:
     """固定済みPHPの保存先を検証し、manifestと一致する内容だけを返す。"""
     relative = Path(source["snapshot"])
     if relative.anchor or ".." in relative.parts:
@@ -737,4 +810,6 @@ def read_pinned_php(capsule_path: Path, source: dict[str, str]) -> bytes:
     content = path.read_bytes()
     if hashlib.sha256(content).hexdigest() != source["sha256"]:
         raise ValueError(f"保存済みPHPのハッシュが一致しません: {source['path']}")
+    if "ranges" in source:
+        _validate_pinned_ranges(source, content)
     return content

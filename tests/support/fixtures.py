@@ -1,5 +1,7 @@
+import hashlib
 import io
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -13,12 +15,58 @@ from migration_harness import execution
 from migration_harness.runs import migration_workspace, run_records
 from migration_harness.verification import roslyn_syntax
 from migration_harness.config import load_config
+from migration_harness.context.capsules import is_php_input
+from migration_harness.files import sha256_file
 
 
 def prepare_fixture(config, unit_id):
     run_id = str(uuid.uuid4())
     with run_records.execution_lock(config, run_id), run_records.execution_lock(config, "prepare", wait=True):
         return migration_workspace.prepare_run(config, unit_id, run_id)
+
+
+def complete_fixture_migration(record_path, record, unit):
+    """検証から始める試験でも、実移行の終了時と同じ採用版と固定資料を作る。"""
+    from migration_harness.config import target_paths
+    from migration_harness.context.source_context import stage_target_context
+    from migration_harness.runs.worktree_targets import target_versions
+
+    worktree = Path(record["worktree_path"])
+    run = record_path.parent
+    stage_target_context(worktree, target_paths(unit), run / "capsule", run / "agent-workspace",
+                         policy=unit.get("target_context"))
+    record.update(status="junie_finished", completed_capsules=record["context_capsules"],
+                  target_context_initialized=True, target_hashes=target_versions(worktree, unit))
+    run_records.write_run_record(record_path, record)
+
+
+def save_capsule_fixture(capsule, unit_id, parts, *, php=None, materials=None):
+    sources = []
+    for index, (name, (encoding, content)) in enumerate((php or {}).items(), 1):
+        relative = f"php-sources/{index:04d}.php"
+        snapshot = capsule / relative
+        snapshot.parent.mkdir(exist_ok=True)
+        snapshot.write_bytes(content)
+        sources.append({"path": name, "snapshot": relative, "encoding": encoding,
+                        "sha256": hashlib.sha256(content).hexdigest()})
+    normalized = []
+    for index, (context, ranges) in enumerate(parts, 1):
+        content = context.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        normalized.append({"index": index, "path": str(context), "chars": len(content.decode("utf-8")),
+                           "sha256": digest, "segment_sha256": digest, "sources": ranges})
+    assigned = {row["path"] for item in normalized for row in item["sources"] if is_php_input(row)}
+    if assigned != {source["path"] for source in sources}:
+        raise AssertionError("fixture PHP pins must match assigned sources")
+    manifest = {
+        "unit_id": unit_id, "parts": normalized, "php_sources": sources,
+        "max_context_chars": max(1000, *(part["chars"] for part in normalized)),
+        "total_context_chars": sum(part["chars"] for part in normalized), "segment_offset": 0,
+        "shared_sources": [], "reference_sources": [], "materials": materials or {}, "rule_files": [],
+        "syntax_boundaries": {}, "syntax_boundaries_analyzed": False, "split_line_coverage": [],
+    }
+    (capsule / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
 
 
 def stub_syntax_diagnostics():
@@ -113,25 +161,44 @@ class SavedRunFixture(unittest.TestCase):
         capsule.mkdir(parents=True)
         context = capsule / "context.txt"
         context.write_text("example", encoding="utf-8")
-        (capsule / "manifest.json").write_text(json.dumps({
-            "parts": [{
-                "index": 1, "path": str(context), "chars": 7,
-                "sources": [{"path": "example.php", "start_line": 1, "end_line": 1, "encoding": "utf-8"}],
-            }],
-        }), encoding="utf-8")
+        save_capsule_fixture(capsule, "example", [(context, [
+            {"path": "example.php", "start_line": 1, "end_line": 1, "encoding": "utf-8"},
+        ])], php={"example.php": ("utf-8", (project / "example.php").read_bytes())})
         self.record_path = self.run_path / "run.json"
+        self.set_saved_target_context([self.target.name])
         self.build_log = self.run_path / "build.log"
         self.checker_log = self.run_path / "checker.log"
         self.build_log.write_bytes(b"old successful build\n")
         self.checker_log.write_bytes(b"PREVIOUS Example.cs:1 warning: previous finding\n")
         self.save_record({
             "run_id": self.run_id, "unit_id": "example", "target": self.target.name,
+            "targets": [self.target.name], "target_hashes": {self.target.name: sha256_file(self.target)},
             "project_root": str(project), "worktree_path": str(self.worktree),
             "status": "checker_needs_review", "completed_capsules": 1, "context_capsules": 1,
+            "current_capsule": 1, "resume_attempts": 0,
+            "junie_max_steps": None, "junie_model": None, "junie_effort": None,
             "max_context_chars": 1000, "source_boundary_review_required": False,
             "build_exit_code": 0, "build_log_path": str(self.build_log),
             "checker_exit_code": 1, "checker_log_path": str(self.checker_log),
         })
+
+    def remove_fixture_target_context(self):
+        shutil.rmtree(self.run_path / "capsule" / "target-context")
+
+    def set_fixture_targets(self, targets, **changes):
+        targets = list(targets)
+        self.config["units"][0]["targets"] = targets
+        self.set_saved_target_context(targets)
+        hashes = {name: sha256_file(path) if (path := self.worktree / name).is_file() else None for name in targets}
+        self.save_record({**self.record(), "targets": targets, "target_hashes": hashes, **changes})
+
+    def set_saved_target_context(self, targets):
+        snapshot = self.run_path / "capsule" / "target-context"
+        snapshot.mkdir(parents=True, exist_ok=True)
+        (snapshot / "manifest.json").write_text(json.dumps({
+            "targets": sorted(targets), "policy": {"roots": []}, "roots": [], "files": [],
+            "directories": [], "bytes": 0,
+        }), encoding="utf-8")
 
     def save_record(self, record):
         self.record_path.write_text(json.dumps(record), encoding="utf-8")

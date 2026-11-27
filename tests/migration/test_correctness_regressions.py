@@ -80,6 +80,12 @@ class CheckerProvenanceTests(SavedRunFixture):
             stale["verification"]["toml_checker_command"] = global_default
             self.save_record(stale)
             self.assertFalse(workflow.migration_ledger(regular, self.run_id)["completion"]["verification_passed"])
+            before = self.record_path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "ビルドから再実行"):
+                workflow.plan_checker_resume(regular, self.run_id)
+            self.assertEqual(self.record_path.read_bytes(), before)
+            build = workflow.plan_build_resume(regular, self.run_id)
+            workflow.resume_with_junie(regular, self.run_id, verification_request={**build, "id": "rebuild"})
             plan = workflow.plan_checker_resume(regular, self.run_id)
             workflow.resume_with_junie(regular, self.run_id, verification_request={**plan, "id": "ordinary"})
             self.assertFalse(self.record()["verification"]["checker_from_cli"])

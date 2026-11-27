@@ -14,8 +14,9 @@ from weakref import WeakValueDictionary
 
 from ..config import target_paths
 from ..files import has_symlink_component, safe_target, sha256_file
+from ..saved_state import content_hash
 from ..verification.csharp_keyword_guard import reject_new_keyword_escapes
-from .run_records import write_run_record
+from .run_records import require_recorded_targets, require_target_hashes, write_run_record
 
 EDIT_BYTES = 8 * 1024 * 1024
 
@@ -167,8 +168,12 @@ def finish_pending_targets(
     if agent_root.is_symlink() or not agent_root.is_dir():
         raise ValueError("saved Junie workspace is missing or unsafe")
     relative = {path.as_posix(): path for path in targets}
-    if not isinstance(pending, dict) or pending.keys() - relative.keys():
-        raise ValueError("saved target application contains a path outside the configured targets")
+    hashes = require_target_hashes(record)
+    if (not isinstance(pending, dict) or pending.keys() - (relative.keys() & hashes.keys())
+            or any(not isinstance(version, dict) or version.keys() != {"before", "after"}
+                   or not content_hash(version["before"], missing=True) or not content_hash(version["after"])
+                   for version in pending.values())):
+        raise ValueError("saved target application contains a path outside the configured targets or an invalid version")
     with worktree_source_lock(worktree):
         remaining = []
         for name, version in pending.items():
@@ -193,11 +198,7 @@ def finish_pending_targets(
                 temporary.replace(destination)
             finally:
                 temporary.unlink(missing_ok=True)
-        hashes = record.setdefault("target_hashes", {})
         hashes.update((name, version["after"]) for name, version in pending.items())
-        primary = Path(record["target"]).as_posix()
-        if primary in hashes:
-            record["target_sha256"] = hashes[primary]
         record["target_applied"] = True
         del record["target_apply_pending"]
         write_run_record(record_path, record)
@@ -209,6 +210,9 @@ def apply_agent_targets(
 ) -> None:
     """外部編集を検出し、複数ファイルを反映する前に復旧用の記録を残す。"""
     with worktree_source_lock(worktree):
+        if {path.as_posix() for path in targets} - before.keys():
+            raise ValueError("saved target application is missing a target version")
+        require_target_hashes(record)
         for name, digest in before.items():
             if target_hash(safe_target(worktree, Path(name))) != digest:
                 raise ValueError(f"worktree target changed during Junie execution: {name}")
@@ -230,7 +234,7 @@ def apply_agent_targets(
 
 
 def recorded_target_hashes(cwd, record):
-    return {path: review_target_hash(cwd, Path(path)) for path in record.get("targets", [record["target"]])}
+    return {path: review_target_hash(cwd, Path(path)) for path in require_recorded_targets(record)}
 
 
 def target_versions(worktree, unit):

@@ -8,19 +8,17 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from tests.support.fixtures import SavedRunFixture
+from tests.support.fixtures import HarnessCase, SavedRunFixture, prepare_fixture
 from migration_harness import execution, workflow
 from migration_harness.config import load_config
+from migration_harness.junie import junie_cli
 from migration_harness.runs import editor_queue, resume_plan, run_records
 from migration_harness.web.diff_viewer import save_workspace, snapshot_bytes
 
 
 class SavedRunSchemaTests(SavedRunFixture):
-    def test_legacy_single_target_reopens_and_resumes_without_rewriting(self):
+    def test_current_single_target_reopens_and_legacy_target_shapes_are_preserved_on_rejection(self):
         record = self.record()
-        for field in ("targets", "verification", "junie_model_revision"):
-            record.pop(field, None)
-        self.save_record(record)
         before = self.record_path.read_bytes()
         run_path, saved = run_records.load_dashboard_record(self.config, self.run_id)
         self.assertEqual(run_path, self.run_path)
@@ -34,6 +32,68 @@ class SavedRunSchemaTests(SavedRunFixture):
         result = workflow.migration_ledger(self.config, self.run_id)
         self.assertEqual(result["completion"], {"complete": False, "verification_passed": False, "total": 1})
         self.assertEqual(self.record_path.read_bytes(), before)
+
+        for remove, added, diagnostic in (
+            ("targets", {}, "targets"),
+            ("target_hashes", {"target_sha256": sha256(self.target.read_bytes()).hexdigest()}, "target_hashes"),
+            ("junie_max_steps", {}, "junie_max_steps"),
+            ("junie_model", {}, "junie_model"),
+            ("current_capsule", {}, "current_capsule"),
+        ):
+            with self.subTest(field=remove):
+                original = self.target.read_bytes()
+                old = {key: value for key, value in record.items() if key != remove} | added
+                self.save_record(old)
+                old_bytes = self.record_path.read_bytes()
+                with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+                    with self.assertRaisesRegex(ValueError, diagnostic):
+                        workflow.resume_with_junie(self.config, self.run_id)
+                self.assertEqual(self.record_path.read_bytes(), old_bytes)
+                self.assertEqual(self.target.read_bytes(), original)
+
+    def test_used_reference_snapshot_is_not_recreated_for_a_saved_run(self):
+        snapshot = self.run_path / "capsule" / "target-context"
+        saved_bytes = self.record_path.read_bytes()
+        target_bytes = self.target.read_bytes()
+        (snapshot / "manifest.json").unlink()
+        snapshot.rmdir()
+        with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+            with self.assertRaisesRegex(ValueError, "固定した参考資料"):
+                workflow.resume_with_junie(self.config, self.run_id)
+        self.assertEqual(self.record_path.read_bytes(), saved_bytes)
+        self.assertEqual(self.target.read_bytes(), target_bytes)
+        self.assertFalse(snapshot.exists())
+
+    def test_missing_reference_revision_pointer_does_not_reuse_the_first_capture(self):
+        self.save_record({
+            **self.record(), "completed_capsules": 0, "status": "interrupted",
+            "reference_refresh_history": [
+                {"previous": "target-context", "snapshot": "target-context-" + "a" * 32},
+            ],
+        })
+        record_bytes = self.record_path.read_bytes()
+        manifest = self.run_path / "capsule" / "target-context" / "manifest.json"
+        first_bytes = manifest.read_bytes()
+        with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+            with self.assertRaisesRegex(ValueError, "固定した参考資料"):
+                workflow.resume_with_junie(self.config, self.run_id)
+        self.assertEqual(self.record_path.read_bytes(), record_bytes)
+        self.assertEqual(manifest.read_bytes(), first_bytes)
+
+    def test_saved_reference_capture_without_original_policy_cannot_resume(self):
+        manifest_path = self.run_path / "capsule" / "target-context" / "manifest.json"
+        saved = json.loads(manifest_path.read_bytes())
+        record_bytes = self.record_path.read_bytes()
+        for field in ("policy", "roots"):
+            with self.subTest(field=field):
+                old = {key: value for key, value in saved.items() if key != field}
+                manifest_path.write_text(json.dumps(old), encoding="utf-8")
+                before = manifest_path.read_bytes()
+                with patch.object(execution, "run_process", side_effect=AssertionError("unexpected new process")):
+                    with self.assertRaisesRegex(ValueError, "元の設定・起点・版"):
+                        workflow.resume_with_junie(self.config, self.run_id)
+                self.assertEqual(manifest_path.read_bytes(), before)
+                self.assertEqual(self.record_path.read_bytes(), record_bytes)
 
     def test_malformed_records_fail_closed_before_resume_and_keep_original(self):
         record = self.record()
@@ -100,6 +160,46 @@ class SavedRunSchemaTests(SavedRunFixture):
                 self.assertEqual(broken.read_bytes(), before)
 
 
+class PreparedRunCanonicalTargetsTests(HarnessCase):
+    def test_current_prepare_then_resume_pins_first_references_and_stores_only_target_map(self):
+        (self.project / "source.php").write_text("<?php echo 1;\n", encoding="utf-8")
+        self.commit_project()
+        settings = ('target = "Page.cs"', 'targets = ["Page.cshtml.cs", "Page.cshtml"]')
+        for target in settings:
+            with self.subTest(target=target):
+                config = self.config(target)
+                names = config["units"][0]["targets"]
+                prepared = prepare_fixture(config, "sample")
+                run = Path(prepared["run_path"])
+                record_path = run / "run.json"
+                record = json.loads(record_path.read_bytes())
+                self.assertEqual(record["targets"], names)
+                self.assertNotIn("target_hashes", record)
+                self.assertIsNone(record["junie_max_steps"])
+                self.assertFalse((run / "capsule" / "target-context").exists())
+
+                def migrate(command, completion, token, targets, **kwargs):
+                    self.assertEqual([path.name for path in targets], names)
+                    for path in targets:
+                        path.write_text("<p>fixture</p>\n" if path.suffix == ".cshtml" else "class Fixture {}\n",
+                                        encoding="utf-8")
+                    completion.write_text(token, encoding="utf-8")
+                    return 0
+
+                with patch.object(junie_cli, "require_interactive_cli"), patch.object(
+                    junie_cli, "run_interactive", side_effect=migrate,
+                ) as launch, patch.object(workflow, "_verify_worktree", return_value={"status": "build_succeeded"}):
+                    self.assertEqual(workflow.resume_with_junie(config, prepared["run_id"])["status"], "build_succeeded")
+                launch.assert_called_once()
+                record = json.loads(record_path.read_bytes())
+                self.assertTrue(record["target_context_initialized"])
+                worktree = Path(record["worktree_path"])
+                self.assertEqual(record["target_hashes"], {
+                    name: sha256((worktree / name).read_bytes()).hexdigest() for name in names
+                })
+                self.assertNotIn("target_sha256", record)
+
+
 class SavedEditorSchemaTests(unittest.TestCase):
     def setUp(self):
         folder = self.enterContext(TemporaryDirectory())
@@ -113,22 +213,55 @@ class SavedEditorSchemaTests(unittest.TestCase):
         self.target.write_bytes(b"new\n")
         self.history = self.run / "editor.json"
 
-    def test_legacy_save_receipt_and_missing_history_remain_compatible(self):
+    def test_missing_history_is_new_but_legacy_receipts_cannot_be_replayed(self):
         with editor_queue.editor_queue(self.run) as history:
             self.assertEqual(history, {"edits": {}, "prompts": []})
         self.assertFalse(self.history.exists())
-        digest = lambda text: sha256(text.encode("utf-8")).hexdigest()
-        identifier = "old-request"
-        receipt = {"target": self.name, "base": digest("old\n"), "draft": digest("new\n"), "after": digest("new\n")}
-        self.history.write_text(json.dumps({"edits": {}, "prompts": [], "immediate_save_requests": {identifier: receipt}}),
-                                encoding="utf-8")
-        before = self.history.read_bytes()
-        with editor_queue.editor_queue(self.run) as history:
-            intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
-            self.assertTrue(editor_queue.replayed_editor_save(
-                history, None, self.target.read_bytes(), "new\n", identifier, intent,
-            ))
-        self.assertEqual(self.history.read_bytes(), before)
+        intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
+        receipt = {key: intent[key] for key in ("target", "base", "draft")}
+        receipt["after"] = sha256(self.target.read_bytes()).hexdigest()
+        for field, identifier in (("immediate_save_requests", "a" * 32), ("immediate_saves", self.name)):
+            with self.subTest(field=field):
+                data = json.dumps({"edits": {}, "prompts": [], field: {identifier: receipt}}).encode()
+                self.history.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "旧形式"), editor_queue.editor_queue(self.run):
+                    self.fail("legacy-only receipt was made visible")
+                self.assertEqual(self.history.read_bytes(), data)
+                self.assertEqual(self.target.read_bytes(), b"new\n")
+
+    def test_mixed_journal_uses_only_current_receipt_and_keeps_old_fields_as_recorded(self):
+        current_id, old_id = "2" * 32, "1" * 32
+        original = {"edits": {}, "prompts": []}
+        intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
+        digest = sha256(self.target.read_bytes()).hexdigest()
+        legacy = {"immediate_save_requests": {old_id: {"target": self.name, "base": intent["base"],
+                                                        "draft": intent["draft"], "after": digest}}}
+        modern = {"save_requests": {current_id: {**intent, "after": digest}},
+                  "latest_save_requests": {self.name: current_id}}
+        before = json.dumps(original).encode()
+        self.history.write_bytes(before)
+        journal = self.run / editor_queue.EDITOR_SAVE_PENDING
+        record = {"target": self.name, "before": None, "after": digest, "history_before": sha256(before).hexdigest()}
+        for evidence in ({}, legacy, {**modern, "latest_save_requests": {}}, {**modern, "save_requests": {
+                current_id: {**intent, "after": sha256(b"later").hexdigest()}}}):
+            data = json.dumps({**record, "history_after": {**original, **evidence}}).encode()
+            journal.write_bytes(data)
+            with self.subTest(evidence=evidence), self.assertRaises(ValueError), editor_queue.editor_queue(
+                    self.run, recover=(self.worktree, (Path(self.name),))):
+                self.fail("journal not supported by the current receipt must not recover")
+            self.assertEqual(journal.read_bytes(), data)
+            self.assertEqual(self.history.read_bytes(), before)
+            self.assertEqual(self.target.read_bytes(), b"new\n")
+        mixed = {**original, **legacy, **modern}
+        journal.write_text(json.dumps({**record, "history_after": mixed}), encoding="utf-8")
+        with editor_queue.editor_queue(self.run, recover=(self.worktree, (Path(self.name),))) as recovered:
+            self.assertEqual(recovered, mixed)
+            args = recovered, None, self.target.read_bytes(), "new\n"
+            self.assertTrue(editor_queue.replayed_editor_save(*args, current_id, intent))
+            with self.assertRaisesRegex(ValueError, "旧形式"):
+                editor_queue.replayed_editor_save(*args, old_id, intent)
+        self.assertEqual(json.loads(self.history.read_bytes()), mixed)
+        self.assertFalse(journal.exists())
 
     def test_broken_history_or_pending_journal_keeps_both_versions(self):
         valid = {"edits": {}, "prompts": []}
@@ -169,6 +302,10 @@ class SavedEditorSchemaTests(unittest.TestCase):
         journal = self.run / editor_queue.EDITOR_SAVE_PENDING
         old = b'{"edits": {}, "prompts": []}'
         persisted = {"edits": {}, "prompts": [{"id": "saved", "text": "Keep the edit.", "status": "queued"}]}
+        identifier = "c" * 32
+        intent = editor_queue.editor_save_intent(self.name, "old\n", "new\n", None, False)
+        persisted.update(save_requests={identifier: {**intent, "after": sha256(self.target.read_bytes()).hexdigest()}},
+                         latest_save_requests={self.name: identifier})
         journal.write_text(json.dumps({
             "target": self.name, "before": sha256(b"old\n").hexdigest(),
             "after": sha256(self.target.read_bytes()).hexdigest(),

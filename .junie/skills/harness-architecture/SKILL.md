@@ -24,7 +24,7 @@ description: PHP→C# Migration Harness のフォルダ構成、設定の意味�
 | 設定を検証（新規Runを作らない） | `web/dashboard.py` の `send_dry_run` → `runs/dry_run.plan_dry_run` |
 | PHP の文字コード、分割と固定、ルール、参照ファイル | `workflow._prepare_run` → `context/capsules.prepare_context`、`rules/rule_materials.py`、`workflow._review_detail_applicability`、`context/source_context.stage_target_context` |
 | Junie の資料・起動・停止、手修正、移行先の反映 | `workflow._run_prepared_with_junie`、`junie/junie_cli.run_interactive` と `_run_session`、`execution.py`、`runs/editor_queue.py`、`runs/worktree_targets.apply_agent_targets` と `finish_pending_targets` |
-| Run の失敗・再開、ビルドやチェッカー、修正回数 | `runs/run_records.load_saved_run`、`workflow._resume_with_junie` と `_run_verification`、`verification/checker_output.py`、該当 Run の `run.json` と工程ログ |
+| Run の失敗・再開、ビルドやチェッカー、修正回数 | `runs/run_records.load_saved_run`、`workflow._resume_with_junie` と `_run_verification`、`verification/checker_output.py`、該当 Run の `run.json` と工程ログ、[保存物ごとの有効条件と手動引継ぎ](../../../docs/persisted-run-compatibility.md) |
 | 画面の実行枠、会話、イベント、同時操作 | `web/dashboard.py`、`web/dashboard*.js`、`runs/run_manager.RunManager`、`junie/junie_conversation.JunieConversations`、[Run の状態とロック契約](../../../docs/run-state-contracts.md) |
 | 比較、アンカー、レビュー、移行完了の条件 | `web/diff_viewer.py`、`web/review_anchors.generate_anchors`、`workflow.record_migration_candidates`（提案の記録）と `workflow.migration_ledger`（現在の版との照合・表示） |
 

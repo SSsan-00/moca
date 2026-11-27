@@ -11,6 +11,7 @@ from typing import Any
 from . import config as harness_config
 from .config import find_unit
 from .context.migration_materials import stage_migration_capsule
+from .context.source_context import require_pinned_target_context
 from .errors import RunInterrupted, RunScriptError, format_error
 from .junie import junie_cli
 from .runs import editor_queue as editor_queue_store, reference_refresh, resume_plan, run_records
@@ -147,11 +148,18 @@ def _resume_with_junie(
 ) -> dict[str, Any]:
     """Runとカプセルを照合し、移行またはビルドから再開する。"""
     run_path, worktree_path, record, unit = run_records.load_saved_run(config, run_id)
+    reference_refresh.validate_saved_reference_adoption(record, harness_config.target_paths(unit))
     block_unknown_script(record)
     if record.get("migration_stop_unconfirmed"):
         raise ValueError("前回の Junie と子プロセスの終了を確認できませんでした。"
                          "残存プロセスを終了し、保存版と作業領域を比較して必要な編集を新しい Run に引き継いでください。")
+    resume_plan.require_confirmed_repair_history(record)
     require_selected_repair_lineage(record.get("repair_pending", {}))
+    run_records.require_prepared_run_settings(record)
+    if ("target_hashes" in record or "target_sha256" in record or "agent_workspace_path" in record
+            or record["completed_capsules"] or record.get("target_apply_pending")):
+        run_records.require_target_hashes(record)
+    require_pinned_target_context(run_path / "capsule", record)
     if editor_save_pending(run_path):
         with editor_queue_store.editor_queue(run_path, recover=(worktree_path, harness_config.target_paths(unit))):
             pass
@@ -170,18 +178,6 @@ def _resume_with_junie(
         if status in CHECKER_RESUME_STATUSES:
             raise ValueError("resuming the checker requires a successful build and a checker command")
         raise ValueError(f"run is not resumable from status {status!r}")
-    history = record.get("repair_history", [])
-    if (
-        record.get("error") == "repair interrupted; inspect Junie's workspace"
-        and "repair_pending" not in record and history
-        and "junie_exit_code" not in history[-1]
-        and not record.get("target_apply_pending")
-    ):
-        # 旧版はJunieを起動した時点で試行を履歴に追加していた。
-        history.pop()
-        record.pop("error", None)
-        run_records.write_run_record(run_path / "run.json", record)
-
     result, migration_complete, waiting_at_final_checkpoint, script_retry = resume_plan.load_resume_context(
         config, run_id, run_path, worktree_path, record, unit, status,
     )
@@ -236,7 +232,7 @@ def _resume_with_junie(
         if verification_request["intent"] == "checker_repair":
             if status not in {"checker_needs_review", "checker_failed"}:
                 raise ValueError("チェッカー指摘が更新されました。最新の結果を確認してください。")
-            if len(history) >= config["max_repair_attempts"]:
+            if len(record.get("repair_history", [])) >= config["max_repair_attempts"]:
                 raise ValueError("この Run の修正回数が上限に達しました。残った指摘はエディタで修正してください。")
         verification_request["build_targets"] = apply_verification_edits(run_path, worktree_path, unit, verification_request)
         if stage in {"build", BUILD_THROUGH_STAGE}:

@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
+from tests.support.editor_save_fixtures import pending_editor_edit
 from migration_harness.junie import acp_session, junie_cli
 from migration_harness.web.dashboard import Dashboard
 from migration_harness.runs.editor_queue import LivePrompts, add_prompt, editor_queue
@@ -259,9 +260,9 @@ class JunieSteeringTests(unittest.TestCase):
             with editor_queue(root) as queue:
                 add_prompt(queue, {"text": "保存した編集を維持してください。"})
                 queue["prompts"][0]["status"] = "steering"
-                queue["edits"]["Page.cs"] = {
+                pending_editor_edit(queue, "Page.cs", {
                     "id": "manual-edit", "base": "class Original {}\n", "content": "class Manual {}\n", "status": "queued",
-                }
+                })
             prompts = LivePrompts(root)
             prompts.recover()
             self.assertEqual(prompts.take(), ([], ""))

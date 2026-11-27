@@ -11,6 +11,7 @@ from typing import Any
 from . import build_receipt, checker_output, grounded_evidence, repairs
 from .. import execution
 from ..command_paths import expand_command_paths
+from ..config import target_paths
 from ..errors import CheckerRepairBlocked, RunInterrupted, format_error
 from ..execution import ConfiguredProcessIncomplete, check_cancelled, print_progress, report_activity
 from ..files import safe_target
@@ -19,7 +20,7 @@ from ..junie.migration_session import advisory_model_options
 from ..runs import editor_queue as editor_queue_store, run_records
 from ..runs.run_records import edit_run_record, execution_lock, validate_run_id
 from ..runs.stage_scripts import UNCONFIRMED_COMMAND_GUIDANCE
-from ..runs.worktree_targets import review_target_hash, worktree_source_lock
+from ..runs.worktree_targets import review_target_hash, target_versions, worktree_source_lock
 from .checker_advisory import checker_advisory, matching_evidence
 from .checker_output import (
     CHECKER_SUCCESS_MESSAGE, CheckerFinding, accepted_findings, checker_response_status,
@@ -27,7 +28,10 @@ from .checker_output import (
 )
 from .checker_rule_evidence import rule_checker_exchange
 from .diagnostic_log import review_log
-from .verification_files import checker_provenance, verification_files
+from .verification_files import (
+    checker_provenance, configured_verification_checker, has_verification_evidence, verification_files,
+    verification_scripts,
+)
 
 
 def checker_repair_reason(error: BaseException) -> str:
@@ -218,7 +222,6 @@ def checker_repair_inputs(run_path, remaining, targets, use_raw_output):
     if not reported_paths.issubset(targets):
         raise CheckerRepairBlocked("outside_targets", "checker reported a finding outside the configured migration targets")
     fingerprints = {finding.finding_id for finding in remaining}
-    legacy_fingerprints = {finding.repair_fingerprint for finding in remaining}
     if use_raw_output:
         # 未知の形式を含む場合は、抽出できた指摘だけでなく元の出力全体を判断材料にする。
         with log.open("rb") as stream:
@@ -233,14 +236,13 @@ def checker_repair_inputs(run_path, remaining, targets, use_raw_output):
             raise CheckerRepairBlocked("output_unreadable", "unrecognized checker output has no readable diagnostic; inspect checker.log")
         # 混在形式は全文で再発を判定し、減った指摘の一部が残るだけでは止めない。
         fingerprints = {hashlib.sha256(" ".join(diagnostic.split()).encode("utf-8")).hexdigest()}
-        legacy_fingerprints = set()
         repair_targets = targets
     else:
         if sum(len(finding.diagnostic) + 1 for finding in remaining) > 8_000:
             raise CheckerRepairBlocked("output_too_large", "checker findings contain too much text for automatic repair")
         diagnostic = "\n".join(finding.diagnostic for finding in remaining)
         repair_targets = tuple(path for path in targets if path in reported_paths)
-    return log, repair_targets, diagnostic, fingerprints, legacy_fingerprints
+    return log, repair_targets, diagnostic, fingerprints
 
 
 def grounded_repair_inputs(config, run_path, worktree, targets, hashes, advisory, evidence, record):
@@ -300,15 +302,36 @@ def _review_checker(
     if log_path.is_symlink() or not log_path.is_file():
         raise ValueError("checker log must be a regular file inside the run directory")
     findings, unrecognized = checker_output.checker_findings(log_path, worktree)
-    # 旧版のRunは最後に反映した移行先のハッシュで照合する。
-    recorded_hashes = record.get("review_file_hashes", {
-        Path(unit["target"]).as_posix(): record.get("review_target_sha256", record.get("target_sha256")),
-    })
-    hashes = {
-        path: recorded_hashes.get(path)
-        for path in {finding.path for finding in findings}
-        if review_target_hash(worktree, Path(path)) == recorded_hashes.get(path)
-    }
+    recorded_hashes = record.get("review_file_hashes") if finding_id is not None or record.get("checker_reviews") else {}
+    verification = record.get("verification")
+    if not recorded_hashes or not has_verification_evidence(verification):
+        if finding_id is not None:
+            raise ValueError("チェッカー指摘の対象版または検証証跡がありません。再検証してください。")
+        recorded_hashes = {}
+    if recorded_hashes:
+        command = configured_verification_checker(config, verification)
+        scripts = verification_scripts(config, command)
+        versions = verification["target_hashes"]
+        if (
+            not command or verification["configured_checker_command"] != command or verification["checker_command"] != command
+            or verification["build_project"] != config["build_project"] or verification["scripts"] != scripts
+            or verification.get("scripts_passed") is not True
+            or verification.get("inputs_changed_during_verification") is not False
+            or versions.keys() != {path.as_posix() for path in target_paths(unit)}
+            or None in verification["input_files"].values()
+            or verification["input_files"] != verification_files(config, worktree, unit["target"], command, scripts)
+        ):
+            if finding_id is not None:
+                raise ValueError("the reviewed file changed or was missing, or verification conditions changed; "
+                                 "resume to get current findings")
+            recorded_hashes = {}
+    hashes = {}
+    if recorded_hashes:
+        for path in {finding.path for finding in findings}:
+            digest = recorded_hashes.get(path)
+            if (digest and (path not in versions or versions[path] == digest)
+                    and review_target_hash(worktree, Path(path)) == digest):
+                hashes[path] = digest
     accepted = accepted_findings(record, findings, hashes)
     if finding_id is not None:
         matches = [finding for finding in findings if finding_id in (finding.finding_id, finding.finding_id[:12])]
@@ -350,13 +373,16 @@ def resume_checker(config, unit, result, record, plan, request_id):
             raise ValueError("計画後に編集または指示が更新されました。")
         if build_receipt.check_build_receipt(config, worktree, record) != plan["build_receipt"]:
             raise ValueError("確認後にビルドの保存版が更新されました。チェッカーの再開計画を確認し直してください。")
+        verification = record.get("verification")
+        if (not has_verification_evidence(verification) or target_versions(worktree, unit) != plan["targets"]
+                or verification["target_hashes"] != plan["targets"]
+                or verification_files(config, worktree, unit["target"], command, {}) != plan["input_files"]):
+            raise ValueError("確認後に対象版またはチェッカーの検証入力が更新されました。再開計画を確認し直してください。")
         record.setdefault("resume_operations", []).append({
             **plan, "id": request_id, "accepted_at": datetime.now(timezone.utc).isoformat(),
         })
-        verification = record["verification"]
         verification.update(configured_checker_command=command, checker_command=command, checker_only=True,
-                            scripts={}, scripts_passed=False,
-                            input_files=verification_files(config, worktree, unit["target"], command, {}))
+                            scripts={}, scripts_passed=False, input_files=plan["input_files"])
         verification.pop("toml_checker_command", None)
         verification.pop("toml_checker_scope", None)
         verification.update(checker_provenance(config))

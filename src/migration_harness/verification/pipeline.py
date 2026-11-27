@@ -415,6 +415,11 @@ def run_verification(
             if remaining is None:
                 return checked
             if not remaining and not use_raw_output:
+                verification = record["verification"]
+                if (verification["inputs_changed_during_verification"] or None in verification["input_files"].values()
+                        or any(digest is None or review_target_hash(worktree, Path(name)) != digest
+                               for name, digest in hashes.items())):
+                    return checked
                 require_repair_targets(record, ())
                 record["status"] = "checker_accepted"
                 finish_repair_attempt(record)
@@ -452,13 +457,12 @@ def run_verification(
                     if not repair_targets or any(Path(finding.path) not in repair_targets for finding in remaining):
                         return checked
                     log = safe_target(run_path, Path("checker.log"))
-                    legacy_fingerprints = set()
                     grounded = True
             if not grounded:
-                log, repair_targets, diagnostic, fingerprints, legacy_fingerprints = checker_repair_inputs(
+                log, repair_targets, diagnostic, fingerprints = checker_repair_inputs(
                     run_path, remaining, targets, use_raw_output,
                 )
-            if repair_stalled(fingerprints, history, kind="checker", legacy=legacy_fingerprints, raw=use_raw_output):
+            if repair_stalled(fingerprints, history, kind="checker", raw=use_raw_output):
                 raise CheckerRepairBlocked("finding_repeated", "a previous checker finding is still present")
             junie_cli.require_interactive_cli()
             attempt = len(history) + 1

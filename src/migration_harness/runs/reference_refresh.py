@@ -22,6 +22,7 @@ from ..files import has_completion_record, safe_target
 from ..junie import junie_cli, migration_session
 from ..junie.migration_session import task_guidelines, unlisted_workspace_files
 from ..rules import detail_selection
+from ..saved_state import content_hash, saved_object
 from .editor_queue import (
     editor_target, editor_text, finish_applied_editor_edit, merge_edit, record_operator_edit,
 )
@@ -30,7 +31,7 @@ from .resume_plan import previously_required_checker
 from .run_records import run_model_options
 from .target_snapshots import (
     save_capsule_checkpoint as _save_capsule_checkpoint, save_target_snapshot as _save_target_snapshot,
-    verified_snapshot_files as _verified_target_snapshot,
+    validate_snapshot_metadata, verified_snapshot_files as _verified_target_snapshot,
 )
 from .worktree_targets import finish_pending_targets, target_hash, target_newline, worktree_source_lock
 
@@ -93,7 +94,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     proposal = Path(mkdtemp(prefix="reference-refresh-", dir=run_path))
     pinned = target_context_snapshot(capsule)
     saved = target_context_snapshot(capsule, pending["previous"])
-    stage_target_context(worktree, targets, capsule, proposal)
+    stage_target_context(worktree, targets, capsule, proposal, require_existing=True)
     previous_root = proposal / ".migration-materials" / "previous-references"
     _, old_inventory = target_context_inventory(saved)
     for name in pending["changes"]:
@@ -109,7 +110,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
     changes.parent.mkdir(parents=True, exist_ok=True)
     changes.write_text(json.dumps(pending["changes"], ensure_ascii=False, indent=2), encoding="utf-8")
     selected = detail_selection.review_detail_applicability(
-        run_path, capsule, manifest, targets, record, record.get("junie_max_steps", config["junie_max_steps"]),
+        run_path, capsule, manifest, targets, record, record["junie_max_steps"],
         config=config, pinned_context=proposal,
     )
     material = stage_migration_materials(
@@ -145,7 +146,7 @@ def _propose_reference_refresh(config, run_path, capsule, manifest, worktree, ta
         f"`{token}` to `{completion.name}`. Leave it absent if you did not finish."
     )
     args = junie_cli.build_command(
-        proposal, prompt + inline, record.get("junie_max_steps", config["junie_max_steps"]), guidelines=guidelines,
+        proposal, prompt + inline, record["junie_max_steps"], guidelines=guidelines,
         **run_model_options(run_path, record, config),
     )
     allowed = {*targets, Path(completion.name)}
@@ -351,8 +352,7 @@ def _stage_reference_proposal(run_path, worktree, targets, proposal, baseline, b
 def _check_reference_adoption_basis(worktree, targets, capsule, pending, *, require_current):
     active = target_context_snapshot(capsule, pending["snapshot"])
     _, captured = target_context_inventory(active)
-    conflict = pending.get("conflict", {})
-    expected = pending["adoption"].get("reference_hashes", conflict.get("reference_hashes", captured))
+    expected = pending["adoption"]["reference_hashes"]
     if (captured != expected or any(target_hash(safe_target(active, Path("files") / name)) != digest
                                     for name, digest in captured.items())):
         raise ValueError("反映に使った参考資料の保存版が一致しません。" + _REFERENCE_RESOLUTION_GUIDANCE)
@@ -361,24 +361,64 @@ def _check_reference_adoption_basis(worktree, targets, capsule, pending, *, requ
                          + _REFERENCE_RESOLUTION_GUIDANCE)
 
 
+def validate_saved_reference_adoption(record, targets):
+    pending = record.get("reference_refresh")
+    if pending is None:
+        return
+    label = "run.json の参考資料の反映記録"
+    if not isinstance(pending, dict):
+        raise ValueError(f"{label} が壊れています。")
+    if "adoption" not in pending:
+        return
+    adoption = pending["adoption"]
+    if not isinstance(adoption, dict):
+        raise ValueError(f"{label} が壊れています。")
+    names = {path.as_posix() for path in targets}
+    for field in ("before", "after", "draft"):
+        values = adoption.get(field)
+        if (not isinstance(values, dict) or values.keys() != names
+                or not all(content_hash(value, missing=field != "after") for value in values.values())):
+            raise ValueError(f"{label} の {field} で対象版を確認できません。")
+    output = adoption.get("output")
+    if not isinstance(output, str) or Path(output).name != output or not output.startswith("reference-output-"):
+        raise ValueError(f"{label} の output を特定できません。")
+    for field in ("generated", "backup"):
+        try:
+            snapshot = validate_snapshot_metadata(adoption.get(field))
+        except ValueError as error:
+            raise ValueError(f"{label} の {field} で保存版を確認できません。") from error
+        if snapshot["base"] != adoption["before"] or snapshot["targets"].keys() != names:
+            raise ValueError(f"{label} の {field} が対象版と一致しません。")
+    refs, edits = adoption.get("reference_hashes"), adoption.get("editor_edits")
+    if not isinstance(refs, dict) or not all(content_hash(value) for value in refs.values()):
+        raise ValueError(f"{label} の reference_hashes が不正です。")
+    if (not isinstance(edits, dict) or not edits.keys() <= names
+            or not all(content_hash(value) for value in edits.values())):
+        raise ValueError(f"{label} の editor_edits が不正です。")
+    if bool(edits) != ("operator_edits_sha256" in adoption) or (
+            edits and not content_hash(adoption["operator_edits_sha256"])):
+        raise ValueError(f"{label} の operator_edits_sha256 で手修正履歴を確認できません。")
+
+
 def _reference_operator_history(run_path, adoption):
-    if "operator_edits_sha256" not in adoption:
-        return None
     data = safe_target(run_path, Path(adoption["output"]) / "operator-edits.json").read_bytes()
     if hashlib.sha256(data).hexdigest() != adoption["operator_edits_sha256"]:
         raise ValueError("参考資料の反映に使った手修正の履歴が一致しません。")
-    return json.loads(data)
+    history = saved_object(data.decode("utf-8"), "operator-edits.json")
+    if history.keys() - adoption["editor_edits"].keys() or any(
+        not isinstance(diffs, list) or not all(isinstance(diff, str) for diff in diffs)
+        for diffs in history.values()
+    ):
+        raise ValueError("operator-edits.json の手修正履歴が反映記録と一致しません。")
+    return history
 
 
 def _finish_reference_editor_edits(queue, adoption, edit_versions, history):
-    if history is not None:
-        for name, diffs in history.items():
-            queue.setdefault("operator_edits", {}).setdefault(name, []).extend(diffs)
+    for name, diffs in history.items():
+        queue.setdefault("operator_edits", {}).setdefault(name, []).extend(diffs)
     for name, version in adoption["editor_edits"].items():
         if edit_versions.get(name) == version:
-            edit = finish_applied_editor_edit(queue, name, adoption["after"][name])
-            if history is None:
-                record_operator_edit(queue, name, edit["base"], edit["content"])
+            finish_applied_editor_edit(queue, name, adoption["after"][name])
     queue["last_reference_adoption"] = adoption["output"]
 
 
@@ -387,8 +427,8 @@ def _complete_reference_adoption(run_path, worktree, canonical, targets, capsule
     before, after = adoption["before"], adoption["after"]
     journal = record.get("target_apply_pending", {})
     conflict = pending.get("conflict", {})
-    planned_draft = adoption.get("draft") or conflict.get("draft") or before
-    adopted_edits = adoption.get("editor_edits", {})
+    planned_draft = adoption["draft"]
+    adopted_edits = adoption["editor_edits"]
     record_path = run_path / "run.json"
     with editor_queue_store.editor_queue(run_path) as queue, worktree_source_lock(worktree):
         current = _reference_target_versions(worktree, targets)
@@ -547,7 +587,7 @@ def refresh_target_context_on_resume(config, unit, run_path, worktree, record, *
                 raise ValueError(f"削除された参考資料の作業コピーが変更されています: {name}")
             path.chmod(0o600)
             path.unlink()
-    stage_target_context(worktree, targets, capsule, canonical)
+    stage_target_context(worktree, targets, capsule, canonical, require_existing=True)
     record.setdefault("reference_refresh_history", []).append(record.pop("reference_refresh"))
     record.pop("error", None)
     report_activity(f"更新された参考資料 {len(pending['changes'])} 件を反映しました。")

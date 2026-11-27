@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ def _read_queue(path: Path) -> str:
         raise ValueError(f"{path.name} の文字コードが無効です。元の記録は変更していません。") from error
 
 
+_SAVE_ID = re.compile(r"[0-9a-f]{32}")
 _EDITOR_PROMPT_STATES = ("queued", "sending", "sent", "steering", "applying")
 
 
@@ -68,35 +70,42 @@ def _validate_editor_history(value: dict[str, Any]) -> None:
                 or prompt.get("status") not in _EDITOR_PROMPT_STATES):
             raise ValueError(_HISTORY_RECOVERY + " 保存した指示が壊れています。")
         prompt_ids.add(prompt["id"])
-    for field in ("immediate_saves", "immediate_save_requests", "save_requests", "latest_save_requests", "operator_edits"):
+    receipts = value.get("save_requests", {})
+    latest = value.get("latest_save_requests", {})
+    legacy = ("immediate_saves", "immediate_save_requests")
+    for field in (*legacy, "save_requests", "latest_save_requests", "operator_edits"):
         if field in value and not isinstance(value[field], dict):
             raise ValueError(_HISTORY_RECOVERY + f" {field} の保存形式が一致しません。")
-    for field in ("immediate_saves", "immediate_save_requests", "save_requests"):
-        for receipt in value.get(field, {}).values():
-            if not _valid_save_receipt(receipt, field):
-                raise ValueError(_HISTORY_RECOVERY + " 保存の受付記録が壊れています。")
+    if any(field in value for field in legacy) and not receipts:
+        raise ValueError(_HISTORY_RECOVERY + " editor.json に旧形式の保存受付しかありません。元のファイルを控えてください。")
+    for identifier, receipt in receipts.items():
+        if not valid_save_id(identifier) or not _valid_save_receipt(receipt) or receipt["target"] not in latest:
+            raise ValueError(_HISTORY_RECOVERY + " 保存の受付記録が壊れています。")
     if any(not isinstance(diffs, list) or any(not isinstance(diff, str) for diff in diffs)
            for diffs in value.get("operator_edits", {}).values()):
         raise ValueError(_HISTORY_RECOVERY + " 編集の差分履歴が壊れています。")
-    receipts = value.get("save_requests", {})
-    for target, identifier in value.get("latest_save_requests", {}).items():
-        if not nonempty_text(identifier) or receipts.get(identifier, {}).get("target") != target:
-            raise ValueError(_HISTORY_RECOVERY + " 保存の受付番号が一致しません。")
+    if any(not isinstance(identifier, str) or receipts.get(identifier, {}).get("target") != target
+           for target, identifier in latest.items()):
+        raise ValueError(_HISTORY_RECOVERY + " 保存の受付番号が一致しません。")
+    for target, edit in edits.items():
+        identifier = edit.get("save_id")
+        if (not isinstance(identifier, str) or latest.get(target) != identifier
+                or receipts[identifier].get("queued_edit") != edit["id"]):
+            raise ValueError(_HISTORY_RECOVERY + " 保留編集の保存IDと受付記録が一致しません。")
 
 
-def _valid_save_receipt(receipt: Any, field: str) -> bool:
-    if not isinstance(receipt, dict) or not all(content_hash(receipt.get(key)) for key in ("base", "draft")):
-        return False
-    if field != "immediate_saves" and not nonempty_text(receipt.get("target")):
-        return False
-    if "after" in receipt and not content_hash(receipt["after"]):
-        return False
-    if field == "save_requests":
-        return ("edit_id" in receipt and (receipt["edit_id"] is None or nonempty_text(receipt["edit_id"]))
-                and type(receipt.get("resolve")) is bool and
-                ("queued_edit" not in receipt or nonempty_text(receipt["queued_edit"]))
-                and ("after" in receipt or "queued_edit" in receipt))
-    return "after" in receipt
+def valid_save_id(value):
+    return isinstance(value, str) and _SAVE_ID.fullmatch(value) is not None
+
+
+def _valid_save_receipt(receipt):
+    return (isinstance(receipt, dict) and nonempty_text(receipt.get("target"))
+            and content_hash(receipt.get("base")) and content_hash(receipt.get("draft"))
+            and "edit_id" in receipt and (receipt["edit_id"] is None or nonempty_text(receipt["edit_id"]))
+            and type(receipt.get("resolve")) is bool
+            and ("queued_edit" not in receipt or nonempty_text(receipt["queued_edit"]))
+            and ("after" not in receipt or content_hash(receipt["after"]))
+            and ("after" in receipt or "queued_edit" in receipt))
 
 
 def _digest(data: bytes | None) -> str | None:
@@ -117,21 +126,13 @@ def editor_save_intent(name, base, draft, edit_id, resolve):
 
 
 def _record_save_request(queue, save_id, intent, **result):
-    latest = queue.setdefault("latest_save_requests", {})
-    if save_id is None:
-        latest.pop(intent["target"], None)
-    else:
-        latest[intent["target"]] = save_id
-        queue.setdefault("save_requests", {})[save_id] = {**intent, **result}
+    queue.setdefault("latest_save_requests", {})[intent["target"]] = save_id
+    queue.setdefault("save_requests", {})[save_id] = {**intent, **result}
 
 
 def stage_editor_save(run_path, queue, original, draft, save_id, intent):
     before = _digest(original)
     after = _digest(target_edit_bytes(original or b"", draft))
-    if save_id is None:
-        queue.setdefault("immediate_saves", {})[intent["target"]] = {
-            "base": intent["base"], "draft": intent["draft"], "after": after,
-        }
     _record_save_request(queue, save_id, intent, after=after)
     if before != after:
         _stage_editor_recovery(run_path, {"target": intent["target"], "before": before, "after": after,
@@ -206,16 +207,13 @@ def _recover_editor_adoption(path, before, worktree, targets, record):
 
 
 def record_queued_editor_save(queue, edit, save_id, intent):
-    if save_id is not None:
-        edit["save_id"] = save_id
+    edit["save_id"] = save_id
     _record_save_request(queue, save_id, intent, queued_edit=edit["id"])
 
 
 def finish_applied_editor_edit(queue, name, applied_version):
     edit = queue["edits"].pop(name)
-    receipt = queue.get("save_requests", {}).get(edit.get("save_id"))
-    if receipt and receipt["target"] == name and receipt.get("queued_edit") == edit["id"]:
-        receipt["after"] = applied_version
+    queue["save_requests"][edit["save_id"]]["after"] = applied_version
     return edit
 
 
@@ -242,19 +240,13 @@ def check_editor_adoption(queue, name, original, base_digest, adoption):
 
 
 def replayed_editor_save(queue, edit, original, content, save_id, intent):
-    if save_id is None:
-        receipt = queue.get("immediate_saves", {}).get(intent["target"])
-        if receipt is None or any(receipt[key] != intent[key] for key in ("base", "draft")):
-            return False
-    else:
-        receipt = queue.get("save_requests", {}).get(save_id)
-        if receipt is None:
-            old = queue.get("immediate_save_requests", {}).get(save_id)
-            if old is None:
-                return False
-            receipt = {**old, "edit_id": None, "resolve": False}
-        if receipt.get("adoption") != intent.get("adoption") or any(receipt.get(key) != value for key, value in intent.items()):
-            raise ValueError("同じ保存IDが別の編集に使われています。エディタを開き直してください。")
+    receipt = queue.get("save_requests", {}).get(save_id)
+    if receipt is None:
+        if save_id in queue.get("immediate_save_requests", {}):
+            raise ValueError(_HISTORY_RECOVERY + " 旧形式の保存IDは再送できません。")
+        return False
+    if {key: value for key, value in receipt.items() if key not in {"after", "queued_edit"}} != intent:
+        raise ValueError("同じ保存IDが別の編集に使われています。エディタを開き直してください。")
     if "queued_edit" in receipt:
         if edit is not None and edit["id"] == receipt["queued_edit"]:
             return True
@@ -288,10 +280,13 @@ def _recover_editor_save(run_path, path, before, worktree, targets):
             raise ValueError("invalid editor save recovery")
         _validate_editor_history(after)
         previous, updated, history_before = record["before"], record["after"], record["history_before"]
-        if not content_hash(previous, missing=True) or not content_hash(updated):
+        latest = after.get("latest_save_requests", {}).get(name)
+        receipt = after.get("save_requests", {}).get(latest, {})
+        if (not content_hash(previous, missing=True) or not content_hash(updated)
+                or "queued_edit" in receipt or receipt.get("after") != updated):
             raise ValueError("invalid editor recovery target version")
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(_HISTORY_RECOVERY + " 保存時の復旧記録を読み取れません。") from exc
+        raise ValueError(_HISTORY_RECOVERY + " editor-save.pending.json の保存受付または復旧記録が一致しません。") from exc
     if name not in {target.as_posix() for target in targets if target.suffix.lower() in EDITOR_TARGET_SUFFIXES}:
         raise ValueError(_HISTORY_RECOVERY + " 保存先が現在の移行先と一致しません。")
     with worktree_source_lock(worktree):

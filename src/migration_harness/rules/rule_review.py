@@ -20,7 +20,7 @@ def _review_state(config, run_id):
     """固定資料と現在の移行先を照合し、判断を保存するための版を返す。"""
     run_path, worktree, record, unit = load_saved_run(config, run_id)
     capsule, manifest = load_capsule_manifest(run_path)
-    rules = manifest.get("rule_files", manifest.get("rule_chunks", []))
+    rules = manifest["rule_files"]
     decisions = record.get("detail_applicability", {})
     overrides = record.get("detail_overrides", {})
     evidence = record.get("detail_review_evidence", {})

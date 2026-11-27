@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
 from migration_harness.context import capsules
-from migration_harness.context.context_evidence import find_feature, read_context
+from migration_harness.context.context_evidence import find_feature, inspect_context, read_context
 from migration_harness import workflow
 from migration_harness import execution
 from migration_harness.context import migration_materials
@@ -639,35 +639,45 @@ class CapsulePreparationTests(HarnessCase):
         with self.assertRaisesRegex(ValueError, "php-sources/0001.php"):
             capture_workspace(config, result["run_id"])
 
-    # 固定版を持たないRunの比較と、保存済みカプセルからの再開を検証する。
-    def test_legacy_manifest_reads_live_php_and_resumes_saved_context(self):
+    def test_incomplete_or_changed_capsule_is_rejected_before_resume_compare_and_context(self):
         self.php.write_bytes('<?php\necho "日本語";\n'.encode("euc-jp"))
-        config, result, manifest = self.prepare(PHP)
-        manifest.pop("php_sources")
-        manifest.pop("shared_sources")
-        manifest_path = Path(result["capsule_path"]) / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        expected_context = Path(result["context_path"]).read_bytes()
+        config, result, clean = self.prepare(PHP)
+        run_path = Path(result["run_path"])
+        capsule = Path(result["capsule_path"])
+        manifest_path = capsule / "manifest.json"
+        pin = capsule / clean["php_sources"][0]["snapshot"]
+        original = pin.read_bytes()
+        context = Path(result["context_path"])
+        before_context = context.read_bytes()
+        record = run_path / "run.json"
+        before_record = record.read_bytes()
         self.php.write_bytes('<?php\necho "変更";\n'.encode("euc-jp"))
-        config["units"][0]["inputs"][0]["encoding"] = "utf-8"
-        _, snapshot = capture_workspace(config, result["run_id"])
-        self.assertEqual(snapshot["workspace"]["leftText"], '<?php\necho "変更";\n')
-        self.php.unlink()
-        with self.assertRaisesRegex(ValueError, "Source.php"):
-            capture_workspace(config, result["run_id"])
-
-        def junie(command, completion, token, targets, *, report_usage=None, prefer_task=False, prompts=None):
-            target, = targets
-            self.assertEqual((target.parent / ".migration-context.md").read_bytes(), expected_context)
-            return 0
-
-        with (
-            patch.object(junie_cli, "require_interactive_cli"),
-            patch.object(junie_cli, "run_interactive", side_effect=junie) as invocation,
+        live = self.php.read_bytes()
+        for reason, damage in (
+            ("php_sources", lambda document: document.pop("php_sources")),
+            ("sha256", lambda document: document["parts"][0].pop("sha256")),
+            ("保存範囲", lambda document: document["parts"][0]["sources"][0].update(end_line=200)),
+            ("ハッシュが一致", lambda document: pin.write_bytes(b"changed")),
+            ("見つかりません", lambda document: pin.unlink()),
         ):
-            resumed = workflow.resume_with_junie(config, result["run_id"])
-        invocation.assert_called_once()
-        self.assertEqual(resumed["status"], "interrupted")
+            with self.subTest(reason=reason):
+                pin.write_bytes(original)
+                document = json.loads(json.dumps(clean))
+                damage(document)
+                damaged = json.dumps(document).encode()
+                manifest_path.write_bytes(damaged)
+                with patch.object(junie_cli, "run_interactive") as invocation:
+                    with self.assertRaisesRegex(ValueError, reason):
+                        workflow.resume_with_junie(config, result["run_id"])
+                    invocation.assert_not_called()
+                with self.assertRaisesRegex(ValueError, reason):
+                    capture_workspace(config, result["run_id"])
+                with self.assertRaisesRegex(ValueError, reason):
+                    inspect_context(run_path)
+                self.assertEqual(manifest_path.read_bytes(), damaged)
+                self.assertEqual(record.read_bytes(), before_record)
+                self.assertEqual(context.read_bytes(), before_context)
+                self.assertEqual(self.php.read_bytes(), live)
 
     # Windowsの既定のテキスト出力で旧処理のCRLF重複を再現する。
     def test_legacy_windows_writer_doubles_crlf(self):

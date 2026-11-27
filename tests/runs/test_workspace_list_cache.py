@@ -29,7 +29,7 @@ class WorkspaceListCacheTests(TestCase):
         self.path.parent.mkdir()
         self.record = {
             "run_id": self.run_id, "project_root": self.config["project_root"],
-            "unit_id": "one", "target": "One.cs", "status": "prepared", "created_at": "01",
+            "unit_id": "one", "target": "One.cs", "targets": ["One.cs"], "status": "prepared", "created_at": "01",
             "worktree_path": str(self.root / "trees" / self.run_id),
             "detail_applicability": {"doc": {"applies": True, "reason": "reason"}},
         }

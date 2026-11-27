@@ -16,7 +16,7 @@ from ..context.capsules import load_capsule_manifest
 from ..files import safe_target
 from ..context.source_context import target_context_snapshot
 from ..runs.worktree_targets import target_hash
-from .verification_files import configured_verification_checker, verification_files, verification_scripts
+from .verification_files import configured_verification_checker, has_verification_evidence, verification_files, verification_scripts
 
 
 MAX_RECEIPT_BYTES = 256 * 1024
@@ -41,7 +41,7 @@ def current_checker_rule_results(config, run_path, worktree, record, target):
     evidence = record.get("checker_rule_evidence")
     verification = record.get("verification")
     if not (
-        config.get("checker_rule_evidence") and isinstance(evidence, dict) and isinstance(verification, dict)
+        config.get("checker_rule_evidence") and isinstance(evidence, dict) and has_verification_evidence(verification)
         and record.get("checker_exit_code") == 0 and verification.get("scripts_passed") is True
         and verification.get("inputs_changed_during_verification") is False
     ):
@@ -71,7 +71,7 @@ def checker_rule_context(run_path: Path, worktree: Path, record: dict) -> dict |
     rules = {}
     decisions = record.get("detail_applicability", {})
     overrides = record.get("detail_overrides", {})
-    for rule in manifest.get("rule_files", manifest.get("rule_chunks", [])):
+    for rule in manifest["rule_files"]:
         name = rule["file"]
         decision = overrides.get(name) or decisions.get(name)
         if rule.get("usage", "required") != "required" and (decision or {}).get("applies") is not True:
@@ -86,7 +86,7 @@ def checker_rule_context(run_path: Path, worktree: Path, record: dict) -> dict |
             rules[name] = {"sha256": rule["sha256"], "saved_file_lines": lines, "decision": decision}
     if not rules:
         return None
-    names = record.get("targets") or [record["target"]]
+    names = record["targets"]
     targets = {name: target_hash(safe_target(worktree, Path(name))) for name in names}
     if not all(targets.values()):
         return None

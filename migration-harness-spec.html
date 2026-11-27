@@ -361,8 +361,8 @@ flowchart TB
     </div>
     <div class="callout amber">
       <h3>チェッカーから再開する・指摘を承認する</h3>
-      <p>「チェッカーから」ではビルドの入力・成果物を照合します。停止した自動修正の下書きは「進捗 → 復旧の確認」で比較して選び直せます。<a href="https://github.com/SSsan-00/moca/blob/main/docs/windows-user-guide.md#再開方法を選ぶ">再開方法と保存条件</a>を参照してください。</p>
-      <p>「進捗」の確認ダイアログで、チェッカーの指摘を理由付きで「問題なしとして記録」できます。同じRunを再開し、承認済みの指摘だけが残ればチェッカーの条件を満たします。解釈できないログは人が確認します。</p>
+      <p>「チェッカーから」ではビルドの入力・成果物を照合します。停止した自動修正の下書きは「進捗 → 復旧の確認」で比較して選び直せます。<a href="https://github.com/SSsan-00/moca/blob/main/docs/windows-user-guide.md#再開方法を選ぶ">再開方法と保存条件</a>と<a href="https://github.com/SSsan-00/moca/blob/main/docs/persisted-run-compatibility.md">再開できない記録の引継ぎ方</a>を参照してください。</p>
+      <p>「進捗」の確認ダイアログで、チェッカーの指摘を理由付きで「問題なしとして記録」できます。同じRun・対象版・検証条件で、現在の指摘IDに対する承認だけを使います。証跡が足りない場合は「ビルドから」再検証します。解釈できないログは人が確認します。</p>
     </div>
   </section>
 

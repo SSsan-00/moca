@@ -49,10 +49,17 @@ def _target_mentions(targets: tuple[Path, ...]) -> re.Pattern[str] | None:
     return re.compile("|".join(mentions)) if mentions else None
 
 
+def saved_rule_entries(manifest: dict) -> list[dict]:
+    entries = manifest.get("rule_files")
+    if "rule_chunks" in manifest or not isinstance(entries, list):
+        raise ValueError("capsule/manifest.json: missing or invalid rule_files; inspect the saved rules and start a new Run")
+    return entries
+
+
 def detail_index(manifest: dict) -> list[dict]:
     return [
         {"file": entry["file"], "source": entry["path"], "when_to_read": entry["description"]}
-        for entry in manifest.get("rule_files", ()) if entry.get("usage") == "reference"
+        for entry in saved_rule_entries(manifest) if entry.get("usage") == "reference"
     ]
 
 
@@ -162,16 +169,11 @@ def render_guidelines(
     directory: Path, manifest: dict, *, targets: tuple[Path, ...] = (), selected: frozenset[str] | None = None,
     supplied_rules: list[dict] | None = None, excluded: frozenset[str] = frozenset(),
 ) -> str:
-    """照合済みの保存資料だけを使う。旧Runの断片も順に結合し省略しない。"""
     required, matched, details = [], [], []
     mentions = _target_mentions(targets)
-    compact = manifest.get("rule_guidelines_format") == COMPACT_RULE_GUIDELINES
-    if "rule_files" in manifest:
-        entries = json.loads((directory / "rules.json").read_text(encoding="utf-8")) if manifest["rule_files"] else []
-        if entries != manifest["rule_files"]:
-            raise ValueError("saved rule index differs from manifest; restore the original run materials")
-    else:
-        entries = manifest.get("rule_chunks", [])
+    entries = saved_rule_entries(manifest)
+    if entries and json.loads((directory / "rules.json").read_text(encoding="utf-8")) != entries:
+        raise ValueError("saved rule index differs from manifest; restore the original run materials")
     for entry in entries:
         name = entry["file"]
         if not re.fullmatch(r"rule-\d+\.txt", name):
@@ -199,20 +201,12 @@ def render_guidelines(
                 continue
         else:
             raise ValueError(f"invalid saved rule usage or description: {name}")
-        inline = _inline_rule(entry, body) if compact else body
+        inline = _inline_rule(entry, body)
         destination.append(inline)
         if supplied_rules is not None:
             supplied_rules.append({"file": name, "path": entry.get("path", name), "usage": usage,
                                    "bytes": len(inline.encode("utf-8")) if inline is not body else len(content),
                                    "characters": len(inline)})
-    # 断片方式より前のRunのshared.mdには必須ルールが混在するため全文を渡す。
-    legacy_shared = "rule_files" not in manifest and "rule_chunks" not in manifest and "shared.md" in manifest.get("materials", {})
-    if legacy_shared:
-        shared = (directory / "shared.md").read_bytes()
-        required.append(shared.decode("utf-8"))
-        if supplied_rules is not None:
-            supplied_rules.append({"file": "shared.md", "path": "shared.md", "usage": "required",
-                                   "bytes": len(shared), "characters": len(required[-1])})
     if not required and not matched and not details:
         return ""
     return (

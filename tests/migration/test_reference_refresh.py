@@ -1,6 +1,7 @@
 import codecs
 import io
 import json
+import uuid
 import unittest
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
@@ -48,7 +49,10 @@ class ReferenceRefreshTests(unittest.TestCase):
             policy={"roots": [], "folders": ["refs"]},
         )
         before = {self.target.as_posix(): target_hash(self.worktree / self.target)}
-        self.record = {"target": self.target.as_posix(), "status": "interrupted", "completed_capsules": 1,
+        self.record = {"target": self.target.as_posix(), "targets": list(before),
+                       "status": "interrupted", "completed_capsules": 1, "current_capsule": 1, "context_capsules": 1,
+                       "junie_max_steps": None, "junie_model": None, "junie_effort": None, "resume_attempts": 0,
+                       "max_context_chars": 1000, "source_boundary_review_required": False,
                        "target_hashes": before.copy(), "build_exit_code": 0, "checker_exit_code": 0,
                        "capsule_checkpoints": {"1": target_snapshots.save_capsule_checkpoint(
                            self.run, self.worktree, self.targets, before)}}
@@ -291,7 +295,7 @@ class ReferenceRefreshTests(unittest.TestCase):
                                 encoding="utf-8-sig")
             completion.write_text(token, encoding="utf-8")
 
-        with patch.object(capsule_files, "load_capsule_manifest", return_value=(self.capsule, {"parts": [], "rule_files": []})), \
+        with patch.object(capsule_files, "load_capsule_manifest", return_value=(self.capsule, {"parts": [], "rule_files": [], "materials": {}, "segment_offset": 0})), \
              patch.object(junie_cli, "build_command", return_value=[]), \
              patch.object(migration_session, "run_budgeted_junie", side_effect=run_model) as model:
             reference_refresh.refresh_target_context_on_resume({"junie_max_steps": 10}, {}, self.run, self.worktree, self.record,
@@ -341,6 +345,7 @@ class RecordedEditsResumeTests(SavedRunFixture):
         reference = self.worktree / "refs" / "Library.cs"
         reference.parent.mkdir()
         reference.write_text("reference A", encoding="utf-8")
+        self.remove_fixture_target_context()
         source_context.stage_target_context(self.worktree, (target,), capsule, agent,
                                             policy={"roots": [], "folders": ["refs"]})
         with editor_queue_store.editor_queue(self.run_path) as queue:
@@ -417,6 +422,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.reference = self.worktree / "refs" / "Library.cs"
         self.reference.parent.mkdir()
         self.reference.write_text("reference A", encoding="utf-8")
+        self.remove_fixture_target_context()
         source_context.stage_target_context(self.worktree, self.targets, self.capsule, self.agent,
                                            policy={"roots": [], "folders": ["refs"]})
         self.base = "start\nreference A\n1\n2\n3\n4\nold label\nend\n"
@@ -436,7 +442,10 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             manifest = json.loads(manifest_path.read_bytes())
             second = self.capsule / "second.txt"
             second.write_bytes(b"second capsule")
-            manifest["parts"].append({"index": 2, "path": str(second), "chars": 14, "sources": []})
+            digest = target_hash(second)
+            manifest["parts"].append({"index": 2, "path": str(second), "chars": 14, "sources": [],
+                                      "sha256": digest, "segment_sha256": digest})
+            manifest["total_context_chars"] += 14
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             record.update(status="interrupted", current_capsule=2, context_capsules=2)
         (self.worktree / self.targets[0]).write_bytes(self.human.encode("utf-8-sig"))
@@ -494,7 +503,8 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         _, before = editor()
         status, after = editor({"kind": "save", "run_id": self.run_id, "target": target,
                                 "base": before["content"], "content": content,
-                                "edit_id": (before.get("edit") or {}).get("id"), "resolve": resolve, "save_id": save_id})
+                                "edit_id": (before.get("edit") or {}).get("id"), "resolve": resolve,
+                                "save_id": save_id or uuid.uuid4().hex})
         self.assertEqual(status, 200)
         self.assertEqual(after["save_timing"], "resume")
         self.assertTrue(after["queued"])
@@ -641,8 +651,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
         self.assertEqual(self.target.read_text(encoding="utf-8-sig"), before_first)
         return planned
 
-    def check_resuming_interrupted_adoption(self, *, resave=False, fail_second=False, canonical_failure=False,
-                                            legacy=False):
+    def check_resuming_interrupted_adoption(self, *, resave=False, fail_second=False, canonical_failure=False):
         observed = {}
 
         def migrate(command, completion, token, targets, **kwargs):
@@ -670,10 +679,6 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             self.assertNotIn("accepted_save_id", interrupted)
             first_edit = interrupted["edit"]["id"]
             expected = planned
-            if legacy:
-                record = self.record()
-                record["reference_refresh"]["adoption"].pop("operator_edits_sha256")
-                self.save_record(record)
             if resave:
                 self.assertEqual(self.open_editor()()[1]["content"], planned)
                 expected = planned.replace("\n2\n", "\nsecond human edit\n")
@@ -698,9 +703,8 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             else:
                 self.assertEqual(queue["save_requests"][first_save]["after"], target_hash(self.target))
             changes = queue["operator_edits"]["Example.cs"]
-            self.assertEqual(len(changes), 2 if resave and not legacy else 1)
-            if not legacy:
-                self.assertIn("+first human edit", changes[0])
+            self.assertEqual(len(changes), 2 if resave else 1)
+            self.assertIn("+first human edit", changes[0])
             if resave:
                 self.assertIn("+second human edit", changes[-1])
             if fail_second:
@@ -735,8 +739,26 @@ class ReferenceConflictEditorTests(SavedRunFixture):
     def test_partially_written_agent_targets_keep_superseding_http_save(self):
         self.check_resuming_interrupted_adoption(resave=True, fail_second=True, canonical_failure=True)
 
-    def test_already_interrupted_adoption_without_new_history_receipt_can_resume(self):
-        self.check_resuming_interrupted_adoption(resave=True, legacy=True)
+    def test_interrupted_adoption_requires_its_saved_proof_before_resume(self):
+        with patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose):
+            self.interrupted_adoption(save_id="1" * 32)
+        self.save_editor("Example.cs", self.open_editor()()[1]["content"] + "// later edit\n", save_id="2" * 32)
+        original = self.record()
+        adoption = original["reference_refresh"]["adoption"]
+        queue_path = self.run_path / "editor.json"
+        agent_target = self.agent / "Example.cs"
+        paths = (queue_path, self.target, agent_target, self.run_path / adoption["output"] / "operator-edits.json")
+        before = [path.read_bytes() for path in paths]
+        for field in ("draft", "output", "backup", "generated", "reference_hashes", "editor_edits", "operator_edits_sha256"):
+            with self.subTest(field=field):
+                invalid = {key: value for key, value in adoption.items() if key != field}
+                self.save_record({**original, "reference_refresh": {**original["reference_refresh"], "adoption": invalid}})
+                saved = self.record_path.read_bytes()
+                with patch.object(junie_cli, "run_interactive") as launch, self.assertRaisesRegex(ValueError, field):
+                    self.resume_fixture()
+                launch.assert_not_called()
+                self.assertEqual(self.record_path.read_bytes(), saved)
+                self.assertEqual([path.read_bytes() for path in paths], before)
 
     def test_completed_run_queues_the_first_save_while_reference_adoption_is_pending(self):
         with (patch.object(reference_refresh, "_propose_reference_refresh", side_effect=self.propose) as model,
@@ -769,7 +791,8 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             _, before = editor()
             overlapping = self.base.replace("reference A", "different choice").replace("old label", "first human edit")
             status, saved = editor({"kind": "save", "run_id": self.run_id, "target": "Example.cs",
-                                    "base": self.base, "content": overlapping, "edit_id": before["edit"]["id"]})
+                                    "base": self.base, "content": overlapping, "edit_id": before["edit"]["id"],
+                                    "save_id": uuid.uuid4().hex})
             self.assertEqual(status, 200)
             self.assertTrue(saved["queued"])
             self.assertEqual(self.resume_fixture()["status"], "editor_checkpoint")
@@ -1134,7 +1157,7 @@ class ReferenceConflictEditorTests(SavedRunFixture):
             editor = self.open_editor()
             _, before = editor()
             action = {"kind": "save", "run_id": self.run_id, "target": "Example.cs",
-                      "base": before["content"], "content": self.resolved, "edit_id": None}
+                      "base": before["content"], "content": self.resolved, "edit_id": None, "save_id": uuid.uuid4().hex}
             with self.assertRaises(HTTPError) as wrong_run:
                 editor({**action, "run_id": "00000000-0000-0000-0000-000000000000"})
             wrong_run.exception.close()

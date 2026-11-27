@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
+from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture, complete_fixture_migration
 from migration_harness.runs import migration_ledger, run_records
 from migration_harness import workflow
 from migration_harness.web.diff_viewer import capture_workspace, save_workspace
@@ -21,6 +21,7 @@ class LedgerReviewTest(HarnessCase):
         (self.project / ".gitignore").write_text("bin/\nobj/\nlocal/\n", encoding="utf-8")
         self.commit_project()
         self.settings = self.config()
+        self.settings["units"][0]["target_context"] = {"roots": []}
         self.settings["units"][0]["inputs"][0]["symbol"] = "label"
         prepared = prepare_fixture(self.settings, "sample")
         self.run_id = prepared["run_id"]
@@ -47,8 +48,7 @@ class LedgerReviewTest(HarnessCase):
 
     def prepare_for_verification(self):
         record = json.loads(self.record_path.read_bytes())
-        record.update(status="junie_finished", completed_capsules=1)
-        run_records.write_run_record(self.record_path, record)
+        complete_fixture_migration(self.record_path, record, self.settings["units"][0])
 
     def verify(self, exit_code=0):
         run_process = subprocess.run
@@ -252,7 +252,7 @@ class LedgerReviewTest(HarnessCase):
         record = json.loads(record_path.read_text(encoding="utf-8"))
         del record["verification"]["input_files"]
         record_path.write_text(json.dumps(record), encoding="utf-8")
-        self.assertEqual(self.completion()["verification_input_status"], "legacy")
+        self.assertEqual(self.completion()["verification_input_status"], "missing")
         self.verify()
         self.assertTrue(self.completion()["verification_passed"])
 
@@ -281,6 +281,19 @@ class LedgerReviewTest(HarnessCase):
         del record["verification"]
         run_records.write_run_record(self.record_path, record)
         self.assertFalse(self.completion()["verification_passed"])
+        self.verify()
+        self.assertTrue(self.completion()["complete"])
+
+    def test_empty_input_evidence_must_be_saved_explicitly(self):
+        self.prepare_for_verification()
+        self.verify()
+        record = json.loads(self.record_path.read_bytes())
+        self.assertEqual(record["verification"].pop("input_files"), {})
+        run_records.write_run_record(self.record_path, record)
+        before = self.record_path.read_bytes()
+        self.assertFalse(self.completion()["verification_passed"])
+        self.assertEqual(self.completion()["verification_input_status"], "missing")
+        self.assertEqual(self.record_path.read_bytes(), before)
         self.verify()
         self.assertTrue(self.completion()["complete"])
 

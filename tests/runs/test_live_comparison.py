@@ -120,6 +120,39 @@ class LiveComparisonTests(HarnessCase):
                         review_anchors.generate_anchors(config, result["run_id"])
                 self.assertFalse((Path(result["run_path"]) / "review-snapshots").exists())
 
+    def test_anchor_launch_uses_the_saved_model_or_refuses_missing_options(self):
+        (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
+        (self.project / "Page.cs").write_text("class Original {}", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config.update(diff_viewer_html="viewer.html", junie_model="sonnet", junie_effort="high")
+        result = prepare_fixture(config, "sample")
+        run_id = result["run_id"]
+        run_path, worktree, record, _ = run_records.load_saved_run(config, run_id)
+        record_path = run_path / "run.json"
+        config.update(junie_model="opus", junie_effort="low")
+
+        for model, effort in (("sonnet", "high"), ("opus", "low"), (None, None)):
+            with self.subTest(model=model, effort=effort):
+                run_records.write_run_record(record_path, {**record, "junie_model": model, "junie_effort": effort})
+                with patch.object(junie_cli, "build_command", side_effect=ValueError("synthetic launch boundary")) as launch:
+                    with self.assertRaisesRegex(ValueError, "synthetic launch boundary"):
+                        review_anchors.generate_anchors(config, run_id)
+                self.assertEqual(launch.call_args.kwargs, {"model": model, "effort": effort})
+
+        target_bytes = (worktree / "Page.cs").read_bytes()
+        for field in ("junie_model", "junie_effort"):
+            with self.subTest(missing=field):
+                run_records.write_run_record(record_path, {key: value for key, value in record.items() if key != field})
+                before = record_path.read_bytes()
+                with patch.object(junie_cli, "build_command") as launch:
+                    with self.assertRaisesRegex(ValueError, field):
+                        review_anchors.generate_anchors(config, run_id)
+                launch.assert_not_called()
+                self.assertEqual(record_path.read_bytes(), before)
+                self.assertEqual((worktree / "Page.cs").read_bytes(), target_bytes)
+                self.assertFalse((run_path / "review-snapshots").exists())
+
     def test_capture_rejects_target_appearing_during_read(self):
         (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
         self.commit_project()
@@ -208,44 +241,52 @@ class LiveComparisonTests(HarnessCase):
         (agent / "Page.cs").write_bytes(b"class Original {}")
         read_bytes, file_version = Path.read_bytes, diff_viewer._file_version
 
-        for source_kind in ("draft", "legacy_php"):
-            with self.subTest(source_kind=source_kind):
-                record["status"] = "junie_running" if source_kind == "draft" else "prepared"
-                run_records.write_run_record(run_path / "run.json", record)
-                trigger = (agent if source_kind == "draft" else worktree) / "Page.cs"
-                changed = trigger
-                replacement = b"class Replaced {}"
-                if source_kind == "legacy_php":
-                    manifest_path = run_path / "capsule" / "manifest.json"
-                    manifest = json.loads(manifest_path.read_bytes())
-                    manifest.pop("php_sources")
-                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-                    changed = self.project / "source.php"
-                    replacement = b"<?php echo 43;\r\n"
-                before = changed.stat()
-                original_version = file_version(changed)
-                edits = []
+        record["status"] = "junie_running"
+        run_records.write_run_record(run_path / "run.json", record)
+        changed = agent / "Page.cs"
+        before = changed.stat()
+        original_version = file_version(changed)
+        edits = []
 
-                def windows_version(path):
-                    version = file_version(path)
-                    # Windowsのctimeは作成日時なので、内容を書き換えても変わらない。
-                    return (*version[:-1], before.st_ctime_ns) if path == changed and version else version
+        def windows_version(path):
+            version = file_version(path)
+            # Windowsのctimeは作成日時なので、内容を書き換えても変わらない。
+            return (*version[:-1], before.st_ctime_ns) if path == changed and version else version
 
-                def edit_after_read(path):
-                    content = read_bytes(path)
-                    if path == trigger:
-                        changed.write_bytes(replacement)
-                        os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
-                        self.assertEqual(windows_version(changed), original_version)
-                        edits.append(changed)
-                    return content
+        def edit_after_read(path):
+            content = read_bytes(path)
+            if path == changed:
+                changed.write_bytes(b"class Replaced {}")
+                os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
+                self.assertEqual(windows_version(changed), original_version)
+                edits.append(changed)
+            return content
 
-                with (
-                    patch.object(diff_viewer, "_file_version", side_effect=windows_version),
-                    patch.object(Path, "read_bytes", edit_after_read),
-                ):
-                    # 通常比較でも、ハッシュの返却を要求せずに内容の整合性を検証する。
-                    with self.assertRaisesRegex(ValueError, "取得中にソースが変更"):
-                        create_snapshot(config, result["run_id"])
-                self.assertEqual(edits, [changed])
-                self.assertFalse((run_path / "review-snapshots").exists())
+        with (
+            patch.object(diff_viewer, "_file_version", side_effect=windows_version),
+            patch.object(Path, "read_bytes", edit_after_read),
+        ):
+            with self.assertRaisesRegex(ValueError, "取得中にソースが変更"):
+                create_snapshot(config, result["run_id"])
+        self.assertEqual(edits, [changed])
+        self.assertFalse((run_path / "review-snapshots").exists())
+
+    def test_legacy_manifest_never_loads_live_php_or_creates_a_snapshot(self):
+        source = self.project / "source.php"
+        source.write_bytes(b"<?php echo 42;\r\n")
+        (self.project / "Page.cs").write_bytes(b"class Original {}")
+        self.commit_project()
+        config = self.config()
+        result = prepare_fixture(config, "sample")
+        run_path = Path(result["run_path"])
+        manifest_path = Path(result["capsule_path"]) / "manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest.pop("php_sources")
+        original = json.dumps(manifest).encode()
+        manifest_path.write_bytes(original)
+        source.write_bytes(b"<?php echo 'changed';\n")
+        with self.assertRaisesRegex(ValueError, "php_sources"):
+            create_snapshot(config, result["run_id"])
+        self.assertEqual(manifest_path.read_bytes(), original)
+        self.assertEqual(source.read_bytes(), b"<?php echo 'changed';\n")
+        self.assertFalse((run_path / "review-snapshots").exists())

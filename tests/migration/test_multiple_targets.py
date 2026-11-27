@@ -304,7 +304,15 @@ class MultipleTargetsTest(HarnessCase):
         self.resume(self.edit_with_junie(complete=False))
         record = self.record()
         hashes = record["target_hashes"]
-        record.update(status="checker_needs_review", checker_exit_code=1, review_file_hashes=hashes)
+        command = self.settings["checker_command"] = ["fixture-checker"]
+        record.update(
+            status="checker_needs_review", checker_exit_code=1, review_file_hashes=hashes,
+            verification={
+                "target_hashes": hashes, "build_project": self.settings["build_project"],
+                "configured_checker_command": command, "checker_command": command, "checker_from_cli": False,
+                "scripts": {}, "scripts_passed": True, "input_files": {}, "inputs_changed_during_verification": False,
+            },
+        )
         run_records.write_run_record(self.record_path, record)
         (self.run_path / "checker.log").write_text(
             "".join(f"RZ1 {name}:1 warning: sample\n" for name in self.targets), encoding="utf-8",
