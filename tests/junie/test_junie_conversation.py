@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -718,9 +719,12 @@ class JunieConversationTests(SavedRunFixture):
         inputs, outputs = receipt["inputs"], receipt["artifacts"]
         previous = self.record()
         previous["checker_build"] = receipt
-        previous["verification"] = {"target_hashes": {
-            self.target.name: target_files.review_target_hash(self.worktree, Path(self.target.name)),
-        }}
+        previous["verification"] = {
+            "target_hashes": previous["target_hashes"].copy(), "build_project": self.config["build_project"],
+            "configured_checker_command": self.config["checker_command"], "checker_command": None,
+            "checker_from_cli": False, "scripts": {}, "scripts_passed": True,
+            "input_files": {}, "inputs_changed_during_verification": False,
+        }
         self.save_record(previous)
         commands, calls = self.mock_commands(("checker", 0, b""))
         with (patch.object(build_receipt, "build_inputs", return_value=inputs),
@@ -1109,17 +1113,26 @@ class JunieConversationTests(SavedRunFixture):
         record.pop("checker_exit_code", None)
         self.save_record(record)
         self.config["checker_command"] = None
-        mocked, _ = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"))
+        mocked, calls = self.mock_commands(("dotnet", 0, b"ok\n"), ("dotnet", 0, b"ok\n"))
         with mocked:
             identifier, _ = self.send("ビルドして")
             self.wait_for(identifier, "done")
             self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
             record = self.record()
-            record["verification"].pop("configured_checker_command")
+            current = self.record_path.read_bytes()
+            self.assertIsNone(record["verification"].pop("configured_checker_command"))
             self.save_record(record)
+            incomplete = self.record_path.read_bytes()
             self.assertFalse(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
             identifier, _ = self.send("ビルドして")
+            self.assertIn("必要なチェッカー", self.wait_for(identifier, "failed")["message"])
+            self.assertEqual(self.record_path.read_bytes(), incomplete)
+            self.assertEqual(calls, [["dotnet", "build"]])
+
+            self.record_path.write_bytes(current)
+            identifier, _ = self.send("ビルドして")
             self.wait_for(identifier, "done")
+        self.assertEqual(calls, [["dotnet", "build"], ["dotnet", "build"]])
         self.assertTrue(workflow.migration_ledger(self.config, self.run_id)["completion"]["verification_passed"])
 
     def test_stop_and_rebuild_uses_saved_edit_once(self):
@@ -1446,6 +1459,7 @@ class JunieConversationTests(SavedRunFixture):
             snapshot.parent.mkdir(exist_ok=True)
             snapshot.write_bytes((self.run_path / "capsule" / pin["snapshot"]).read_bytes())
         (path / "capsule" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        shutil.copytree(self.run_path / "capsule" / "target-context", path / "capsule" / "target-context")
         worktree.mkdir()
         (worktree / self.target.name).write_bytes(self.target.read_bytes())
         (path / "run.json").write_text(json.dumps({
@@ -1640,11 +1654,11 @@ class JunieConversationTests(SavedRunFixture):
         sibling, sibling_path, sibling_tree = self.add_saved_run("other")
         names = ["Pages/Example.cshtml", "Pages/Example.cshtml.cs"]
         originals = {names[0]: "@page\n", names[1]: "class Original {}\n"}
-        self.config["units"][0].update(target=names[0], targets=names)
-        self.save_record({**self.record(), "target": names[0], "targets": names})
+        self.config["units"][0]["target"] = names[0]
         (self.worktree / "Pages").mkdir()
         for name, content in originals.items():
             (self.worktree / name).write_text(content, encoding="utf-8")
+        self.set_fixture_targets(names, target=names[0])
 
         sibling_started, release_sibling = Event(), Event()
         building, release_build = Event(), Event()
