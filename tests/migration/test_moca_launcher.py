@@ -86,6 +86,31 @@ class MoCALauncherTests(unittest.TestCase):
         self.assertEqual(terminal_brand._accent_index(classic, 0x07), 14)
         self.assertEqual(terminal_brand._accent_index(classic, 0xF0), 4)
 
+    @unittest.skipUnless(os.name == "nt", "Windows console modes")
+    def test_image_output_restores_console_mode_even_if_the_stream_disconnects(self):
+        from ctypes import POINTER, cast
+        from ctypes.wintypes import DWORD
+        from migration_harness import terminal_image
+
+        def get_mode(handle, result):
+            cast(result, POINTER(DWORD))[0] = 3
+            return True
+
+        kernel = Mock(GetConsoleMode=get_mode)
+        screen = Mock(cursor=(0, 0), attributes=7)
+        args = ((kernel, 11, screen), (204, 204, 204), (12, 12, 12), (226, 164, 124))
+        with patch.object(terminal_image, "_supports_sixel", return_value=True):
+            output = io.StringIO()
+            self.assertTrue(terminal_image.write_terminal_image(output, *args))
+            self.assertTrue(output.getvalue().startswith('\x1bP0;1q"1;1;520;84'))
+            self.assertTrue(output.getvalue().endswith("-\x1b\\\n"))
+            broken = Mock()
+            broken.write.side_effect = OSError("console disconnected")
+            with self.assertRaises(OSError):
+                terminal_image.write_terminal_image(broken, *args)
+        self.assertEqual([call.args for call in kernel.SetConsoleMode.call_args_list],
+                         [(11, 7), (11, 3), (11, 7), (11, 3)])
+
     def test_redirection_of_any_stream_suppresses_the_banner(self):
         for stream in ("stdin", "stdout", "stderr"):
             with self.subTest(stream=stream):

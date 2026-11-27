@@ -1,14 +1,14 @@
 from os import environ, get_terminal_size
 
 
-# ダッシュボードと同じ矢印。端末用の細い字形を半マスで描き、中央列の o だけを着色する。
+# ダッシュボードと同じ矢印。
 _BRAND = (
-    ("                       ▄▄        ██▄     ▄██ ", "       ", "   ▄█▀▀█▄      ▄█▄"),
-    ("         ▄██▄          ███▄      ██ █   █ ██ ", "  ▄▄▄  ", " ▄█▀    ▀▀    ▄█ █▄"),
-    ("       ▄██████▄       ▄█████▄    ██  █ █  ██ ", "▄█▀▀▀█▄", " ██          ▄█   █▄"),
-    ("     ▄██▀  ▀▀██▄    █████████▀   ██   █   ██ ", "█     █", " ██          █▀   ▀█"),
-    ("   ▄██▀       ▀█████▀  ███▀      ██       ██ ", "█▄   ▄█", " ▀█▄    ▄▄  ██▀▀▀▀▀██"),
-    ("  ▀▀▀           █▀▀    ▀         ██       ██ ", " ▀███▀ ", "   ▀█▄▄█▀  ██       ██"),
+    ("                      ▂▁         ██▄   ▄██ ", "        ", "   ▃▆▇▆▃      ▄█▄"),
+    ("       ▂▅▆▆▃          ██▆▃       ███▄ ▄███ ", "  ▃▅▅▃  ", " ▃█▀   ▀▆    ▄█ █▄"),
+    ("    ▁▃▆█████▇▄      ▂▅████▇▅▂    ██▀███▀██ ", "▂█▀▔▀█▂ ", "▐█▌         ▄█   █▄"),
+    ("  ▄▅███▀▔  ▀██▆▂▁▃▅██▀█████▀▔    ██ ▀█▀ ██ ", "█▌   ▐█ ", "▐█▌         █▀   ▀█"),
+    (" ▇██▀▔      ▔▀████▀▔  ██▀▔       ██  ▀  ██ ", "▐█▃ ▃█▌ ", " ▀█▃   ▂▅  ██▀▀▀▀▀██"),
+    (" ▔▔           ▔▀▔                ██     ██ ", " ▔▀▇▀▔  ", "   ▀▇▆▇▀  ██       ██"),
 )
 _ASCII = (
     ("    /\\      |\\", "", ""),
@@ -31,25 +31,31 @@ def _layout(columns, encoding):
     return ()
 
 
+def _rgb(color):
+    return tuple((color >> channel) & 255 for channel in (0, 8, 16))
+
+
+def _luminance(channels):
+    values = (value / 255 for value in channels)
+    return sum(weight * (value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4)
+               for weight, value in zip((.2126, .7152, .0722), values))
+
+
+def _mocha(background_luminance):
+    return (226, 164, 124) if background_luminance < .18 else (135, 77, 49)
+
+
 def _accent_index(table, attributes):
-    def rgb(color):
-        return tuple((color >> channel) & 255 for channel in (0, 8, 16))
-
-    def luminance(channels):
-        values = (value / 255 for value in channels)
-        return sum(weight * (value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4)
-                   for weight, value in zip((.2126, .7152, .0722), values))
-
     if attributes & 0x4000:  # Inverse video makes those foreground bits the displayed background.
         return None
-    bg = luminance(rgb(table[(attributes >> 4) & 15]))
-    target = (226, 164, 124) if bg < .18 else (135, 77, 49)
+    bg = _luminance(_rgb(table[(attributes >> 4) & 15]))
+    target = _mocha(bg)
     candidates = []
     for index, color in enumerate(table):
-        r, g, b = channels = rgb(color)
+        r, g, b = channels = _rgb(color)
         if color == table[attributes & 15] or r < g or g + 35 < b or r - b < 24:
             continue
-        ink = luminance(channels)
+        ink = _luminance(channels)
         if (max(bg, ink) + .05) / (min(bg, ink) + .05) >= 3:
             candidates.append((sum((actual - desired) ** 2 for actual, desired in zip(channels, target)), index))
     return min(candidates)[1] if candidates else None
@@ -121,6 +127,14 @@ def write_banner(stream):
         console = None if environ.get("NO_COLOR") else _console_state(stream)
     except (OSError, ValueError):
         console = None
+    if rows is _BRAND and console is not None:
+        from migration_harness.terminal_image import write_terminal_image
+
+        screen = console[2]
+        foreground = _rgb(screen.palette[screen.attributes & 15])
+        background = _rgb(screen.palette[(screen.attributes >> 4) & 15])
+        if write_terminal_image(stream, console, foreground, background, _mocha(_luminance(background))):
+            return
     print("\n".join("".join(row) for row in rows), file=stream, flush=True)
     if console is not None:
         _color_wordmark(console, rows)
