@@ -35,7 +35,10 @@ class ParallelDashboardTests(HarnessCase):
         self.commit_project()
         self.settings = self.config()
         unit = self.settings["units"][0]
-        self.settings["units"] = [{**copy.deepcopy(unit), "id": f"unit-{i}", "target": f"Page{i}.cs"} for i in range(7)]
+        self.settings["units"] = [
+            {**copy.deepcopy(unit), "id": f"unit-{i}", "target": name, "targets": [name]}
+            for i, name in enumerate(f"Page{index}.cs" for index in range(7))
+        ]
         self.started = [Event() for _ in range(7)]
         self.release = [Event() for _ in range(7)]
         self.guard = Lock()
