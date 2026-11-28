@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..execution import check_cancelled, report_activity
 from ..files import has_completion_record, has_symlink_component, safe_target
+from .acp_model import ModelChange, ModelMismatch, ModelSelectionError, RequestedModel, config_option
 from .acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
 from .junie_launch import JunieAcpModelUnavailable, JunieSessionError
 
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
 ACP_TIMEOUT = 30
 ACP_STARTUP_TIMEOUT = 90
-ACP_SELECT_LITE_REQUEST = -1
+ACP_SELECT_MODEL_REQUEST = -1
 ACP_SET_EFFORT_REQUEST = -2
 ACP_RETRY_EFFORT_REQUEST = -3
 
@@ -51,42 +52,20 @@ class _SteeringRequest:
     new_turn: bool = False
 
 
-def acp_needs_lite_selection(session: dict, model: str | None, effort: str | None) -> bool:
-    # Junie 4100.11 can advertise no models until Lite is set on the session.
-    if model != "junie-lite" or effort not in (None, "none"):
-        return False
-    models = session.get("models")
-    if models is not None and (not isinstance(models, dict)
-                               or models.get("availableModels") not in (None, [])
-                               or models.get("currentModelId")):
-        return False
-    options = session.get("configOptions")
-    return options is None or isinstance(options, list) and not any(
-        option.get("category") == "model" or option.get("id") == "model"
-        for option in options if isinstance(option, dict)
-    )
-
-
-def acp_lite_selection_can_continue(message: dict) -> bool:
-    if "error" not in message:
-        return "result" in message and (message["result"] is None or isinstance(message["result"], dict))
-    error = message["error"]
-    # Older ACP servers may select the command-line model without implementing session/set_model.
-    return "result" not in message and isinstance(error, dict) and error.get("code") == -32601
-
-
 def acp_effort_option(session: dict) -> dict | None:
-    options = session.get("configOptions")
-    if not isinstance(options, list):
-        return None
-    return next((option for option in options if isinstance(option, dict)
-                 and (option.get("category") == "thought_level" or option.get("id") == "thought_level")), None)
+    return config_option(session, "thought_level", ("thought_level", "effort"))
 
 
 def acp_confirms_effort(option: dict | None, effort: str, model: str | None = None) -> bool:
     if option is not None:
         return option.get("currentValue") == effort
     return effort == "none" and model == "junie-lite"
+
+
+def require_reported_selection(info: dict, model: RequestedModel, effort: str | None) -> None:
+    model.check(info)
+    if effort and (option := acp_effort_option(info)) and option.get("currentValue") != effort:
+        raise ModelSelectionError(f"Junie ACP の推論レベルが指定した {effort} と一致しません。")
 
 
 def acp_confirms_brave(session: dict) -> bool:
@@ -125,6 +104,7 @@ class AcpSession:
     """ダッシュボード実行をACPの標準入出力につなぐ。"""
 
     require_brave = False
+    agent_version = None
 
     def _connection_timeout(self) -> float:
         return ACP_STARTUP_TIMEOUT
@@ -148,7 +128,7 @@ class AcpSession:
         self.tool_calls: dict[str, dict] = {}
         self.pending: tuple[int | str, Future[str]] | None = None
         self.startup_deadline = time.monotonic() + self._connection_timeout()
-        self.selecting_lite = False
+        self.model_change: ModelChange | None = None
         self.pending_effort: tuple[str, str, int] | None = None
         self.session_ready = False
         self.require_brave = require_brave
@@ -370,22 +350,6 @@ class AcpSession:
             del self.steering_requests[request_id]
             report_activity("追加指示を送信待ちに戻しました。画面に表示されたタイミングで渡します。")
 
-    def _select_lite_if_missing(self, session: dict) -> bool:
-        if not acp_needs_lite_selection(session, self._requested_option("--model"), self._requested_option("--effort")):
-            return False
-        self.selecting_lite = True
-        self.startup_deadline = time.monotonic() + self._connection_timeout()
-        self.request(ACP_SELECT_LITE_REQUEST, "session/set_model", sessionId=self.session_id, modelId="junie-lite")
-        return True
-
-    def _complete_lite_selection(self, message) -> None:
-        self.selecting_lite = False
-        result = message.get("result")
-        if isinstance(result, dict) and "configOptions" in result:
-            self._require_brave_option(result)
-        if not acp_lite_selection_can_continue(message):
-            raise JunieSessionError(self.command, 1, "Junie ACP で指定した Junie Lite を選択できませんでした。")
-
     def _requested_option(self, flag: str) -> str | None:
         flags = self.command[:-2]
         return flags[flags.index(flag) + 1] if flag in flags else None
@@ -425,11 +389,13 @@ class AcpSession:
 
     def _complete_effort_configuration(self, message: dict) -> None:
         assert self.pending_effort is not None
-        _, effort, _ = self.pending_effort
+        config_id, effort, _ = self.pending_effort
         result = message.get("result")
         option = acp_effort_option(result) if isinstance(result, dict) else None
         error = message.get("error")
-        if "error" in message or not acp_confirms_effort(option, effort):
+        if isinstance(result, dict):
+            self.requested_model.check(result)
+        if "error" in message or not acp_confirms_effort(option, effort) or option.get("id") != config_id:
             self._retry_effort_configuration(error if isinstance(error, dict) else None)
             return
         self._require_brave_option(result)
@@ -467,6 +433,7 @@ class AcpSession:
         result = message.get("result", {})
         if request_id == 1 and result.get("protocolVersion") == 1:
             # バージョン番号では推測せず、接続先が宣言する対応能力で切り替える。
+            self.agent_version = (result.get("agentInfo") or {}).get("version")
             metadata = result.get("_meta")
             steering = metadata.get("steering") if isinstance(metadata, dict) else None
             self.steering_supported = isinstance(steering, dict) and steering.get("supported") is True
@@ -474,7 +441,16 @@ class AcpSession:
         elif request_id == 2 and result.get("sessionId"):
             self._require_brave_option(result)
             self.session_id = result["sessionId"]
-            if not self._select_lite_if_missing(result):
+            self.requested_model = RequestedModel(self._requested_option("--model"), self.agent_version)
+            try:
+                self.model_change = self.requested_model.change_for(result, self._requested_option("--effort"))
+            except ModelMismatch as exc:
+                raise JunieAcpModelUnavailable(self.command, 1, str(exc)) from exc
+            if self.model_change:
+                self.startup_deadline = time.monotonic() + self._connection_timeout()
+                self.request(ACP_SELECT_MODEL_REQUEST, self.model_change.method, sessionId=self.session_id,
+                             **self.model_change.params)
+            else:
                 self._configure_effort(result)
         elif request_id == 3:
             reason = result.get("stopReason")
@@ -490,6 +466,13 @@ class AcpSession:
 
     def _receive_message(self, message) -> bool:
         """ACP応答を振り分け、プロンプトの終了を返す。"""
+        try:
+            return self._dispatch_message(message)
+        except ModelSelectionError as exc:
+            self.session_ready = False
+            raise JunieSessionError(self.command, 1, str(exc)) from exc
+
+    def _dispatch_message(self, message) -> bool:
         request_id = message.get("id")
         method = message.get("method")
         params = message.get("params", {})
@@ -509,6 +492,11 @@ class AcpSession:
             kind = update.get("sessionUpdate")
             if kind == "config_option_update":
                 self._require_brave_option(update)
+                if self.model_change:
+                    self.model_change.session.update(update)
+                else:
+                    require_reported_selection(update, self.requested_model,
+                                               self._requested_option("--effort") if self.session_ready else None)
             elif kind in ("tool_call", "tool_call_update") and "toolCallId" in update:
                 self.flush_progress()
                 self.tool_calls.setdefault(update["toolCallId"], {}).update(update)
@@ -518,9 +506,11 @@ class AcpSession:
                     room = 2000 - len(self.progress_text)
                     if room > 0:
                         self.progress_text += content["text"][:room]
-        elif not method and request_id == ACP_SELECT_LITE_REQUEST and self.selecting_lite:
-            self._complete_lite_selection(message)
-            self._configure_effort(message.get("result") or {})
+        elif not method and request_id == ACP_SELECT_MODEL_REQUEST and self.model_change:
+            change, self.model_change = self.model_change, None
+            info = change.confirmed(message)
+            self._require_brave_option(info)
+            self._configure_effort(info)
         elif not method and self.pending_effort is not None and request_id == self.pending_effort[2]:
             self._complete_effort_configuration(message)
         elif not method and request_id in (1, 2, 3):

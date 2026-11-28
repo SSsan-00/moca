@@ -596,6 +596,25 @@ class ParallelDashboardTests(HarnessCase):
         self.release[0].set()
         self.wait_until(lambda: not restored.busy)
 
+    def test_waiting_new_runs_keep_the_submitted_model_and_default_across_restart(self):
+        self.manager.limit = 0
+        expected = [("first", "high"), (None, None)]
+        ids = []
+        for index, (model, effort) in enumerate(expected):
+            self.settings.update(junie_model=model, junie_effort=effort)
+            ids.append(self.manager.submit({"action": "run", "unit_id": f"unit-{index}"})["run_id"])
+        self.manager.close()
+        self.settings.update(junie_model="later", junie_effort="low")
+        restored = RunManager(self.settings, dashboard.Dashboard())
+        self.addCleanup(restored.close)
+        def selected(view, config, action):
+            return config["junie_model"], config["junie_effort"]
+
+        with patch.object(dashboard, "execute_dashboard_action", side_effect=selected):
+            restored.start_pending()
+            self.wait_until(lambda: not restored.busy)
+        self.assertEqual([restored.results[run_id] for run_id in ids], expected)
+
     def test_queue_save_retry_does_not_carry_over_to_new_storage(self):
         self.manager.limit = 0
         run_id = self.manager.submit({"action": "run", "unit_id": "unit-0"})["run_id"]

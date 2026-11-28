@@ -259,7 +259,7 @@ def run_interactive(
                     raise
                 if not _confirm_dashboard_launch(
                     dashboard, "Junie を非対話モードで再試行",
-                    "ACP で利用できるモデルがありません。同じ作業フォルダーと指示で再試行できます。\n"
+                    f"{exc.details}\n同じ作業フォルダー、指示、モデル・推論設定で再試行できます。\n"
                     "非対話モードでは、Junie の操作ごとの許可確認はダッシュボードに表示されません。\n\n"
                     f"{completion_path.parent.resolve()}",
                     "headless", "今回のみ非対話モードで再試行",

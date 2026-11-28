@@ -22,6 +22,7 @@ from .run_records import (
     execution_lock,
     load_dashboard_record,
     load_saved_run,
+    saved_run_model_options,
     validate_dashboard_worktree,
     validate_run_id,
 )
@@ -175,6 +176,10 @@ class RunManager:
             validate_run_id(run_id)
             if action not in _QUEUED_ACTIONS:
                 raise ValueError(f"dashboard-queue.json に未対応の操作があります: {action}")
+            if "junie_model" in job or "junie_effort" in job:
+                if action != "run":
+                    raise ValueError("準備済みのRunのモデルは実行記録から取得します。")
+                saved_run_model_options(job)
             if run_id in runs or unit in units:
                 raise ValueError("保存済みの実行待ち一覧でRunまたは移行単位が重複しています。")
             if unit not in allowed_units:
@@ -408,7 +413,9 @@ class RunManager:
                 for unit in units:
                     run_id = str(uuid.uuid4())
                     view = self.new_view(run_id, unit)
-                    self.enqueue(view, {"action": kind, **({"junie_brave": True} if brave else {})})
+                    self.enqueue(view, {"action": kind, "junie_model": self.config.get("junie_model"),
+                                        "junie_effort": self.config.get("junie_effort"),
+                                        **({"junie_brave": True} if brave else {})})
                     ids.append(run_id)
             else:
                 view = self.get(action.get("run_id")) if action.get("run_id") else selected or self.default
@@ -455,6 +462,8 @@ class RunManager:
                 run_id = self.pending[0]
                 job = self.jobs[run_id]
                 job["config"] = copy.deepcopy(self.config)
+                if job["action"] == "run" and "junie_model" in job:
+                    job["config"].update(junie_model=job["junie_model"], junie_effort=job["junie_effort"])
                 job["running"] = True
                 try:
                     self.persist()

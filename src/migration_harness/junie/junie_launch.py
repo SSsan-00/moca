@@ -50,6 +50,10 @@ class JunieSessionError(OSError):
 class JunieAcpModelUnavailable(JunieSessionError):
     """ACPがモデル不足のためプロンプトを処理する前に拒否した。"""
 
+    def __init__(self, command: list[str], exit_code: int, details: str) -> None:
+        self.details = details
+        super().__init__(command, exit_code, details)
+
 
 def _resolve_executable(name: str) -> str:
     executable = shutil.which(name)

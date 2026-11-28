@@ -14,6 +14,7 @@ from time import monotonic
 from typing import Any
 
 from ..junie import acp_session, junie_cli
+from ..junie.acp_model import RequestedModel
 from ..execution import check_cancelled
 from ..files import safe_target
 from .checker_output import decode_checker_output
@@ -134,8 +135,11 @@ def _exchange(
     reply_bytes = 0
     session = None
     stage = 1
-    selecting_lite = False
+    requested_model = None
+    model_change = None
     effort_request = None
+    retry_at = None
+    retried_effort = False
     config_id = None
 
     def request(method: str, *, message_id: int | None = None, **params: Any) -> None:
@@ -150,8 +154,14 @@ def _exchange(
         request("session/prompt", sessionId=session, prompt=[{"type": "text", "text": prompt}])
 
     def configure_effort(message_id: int) -> None:
-        nonlocal effort_request
+        nonlocal effort_request, retry_at, retried_effort
         effort_request = message_id
+        retried_effort = message_id == acp_session.ACP_RETRY_EFFORT_REQUEST
+        if retried_effort:
+            retry_at = None
+        else:
+            now = monotonic()
+            retry_at = now + min(acp_session.ACP_TIMEOUT, (deadline - now) / 2)
         request("session/set_config_option", message_id=message_id,
                 sessionId=session, configId=config_id, value=effort)
 
@@ -170,12 +180,17 @@ def _exchange(
     try:
         while True:
             check_cancelled()
-            remaining = deadline - monotonic()
+            now = monotonic()
+            remaining = deadline - now
             if remaining <= 0:
-                if selecting_lite:
+                if model_change:
                     raise AdvisoryTimeout("model_selection")
                 raise AdvisoryTimeout("effort_confirmation" if effort_request is not None else
                                       ("initialization", "session_setup", "model_response")[stage - 1])
+            if retry_at is not None and now >= retry_at:
+                configure_effort(acp_session.ACP_RETRY_EFFORT_REQUEST)
+            if retry_at is not None:
+                remaining = min(remaining, retry_at - now)
             try:
                 raw = updates.get(timeout=min(remaining, 0.2))
             except Empty:
@@ -201,7 +216,13 @@ def _exchange(
                 kind = update.get("sessionUpdate")
                 if acp_session.acp_confirms_brave(update):
                     raise ValueError("Junie advisory cannot use Brave mode")
-                if kind in {"available_commands_update", "config_option_update", "session_info_update"}:
+                if kind == "config_option_update":
+                    if model_change:
+                        model_change.session.update(update)
+                    else:
+                        acp_session.require_reported_selection(update, requested_model, effort if stage == 3 else None)
+                    continue
+                if kind in {"available_commands_update", "session_info_update"}:
                     continue
                 if stage == 3 and kind in {"agent_thought_chunk", "usage_update"}:
                     continue
@@ -218,15 +239,16 @@ def _exchange(
                     reply.append(part)
                 continue
             result = message.get("result")
-            if selecting_lite:
-                if type(message.get("id")) is not int or message["id"] != acp_session.ACP_SELECT_LITE_REQUEST:
+            if retried_effort and message.get("id") == acp_session.ACP_SET_EFFORT_REQUEST:
+                continue
+            if model_change:
+                if type(message.get("id")) is not int or message["id"] != acp_session.ACP_SELECT_MODEL_REQUEST:
                     raise ValueError("Unexpected Junie advisory model selection reply")
                 if isinstance(result, dict) and acp_session.acp_confirms_brave(result):
                     raise ValueError("Junie advisory cannot use Brave mode")
-                if not acp_session.acp_lite_selection_can_continue(message):
-                    raise ValueError("Junie advisory could not select the requested Junie Lite model")
-                selecting_lite = False
-                configure_session(result or {})
+                info = model_change.confirmed(message)
+                model_change = None
+                configure_session(info)
                 continue
             if effort_request is not None:
                 if type(message.get("id")) is not int or message["id"] != effort_request:
@@ -234,8 +256,12 @@ def _exchange(
                 if isinstance(result, dict) and acp_session.acp_confirms_brave(result):
                     raise ValueError("Junie advisory cannot use Brave mode")
                 option = acp_session.acp_effort_option(result) if isinstance(result, dict) else None
-                if "error" not in message and acp_session.acp_confirms_effort(option, effort):
+                if isinstance(result, dict):
+                    requested_model.check(result)
+                if ("error" not in message and acp_session.acp_confirms_effort(option, effort)
+                        and option.get("id") == config_id):
                     effort_request = None
+                    retry_at = None
                     begin_prompt()
                     continue
                 error = message.get("error")
@@ -248,16 +274,17 @@ def _exchange(
             if type(message.get("id")) is not int or message["id"] != stage or "error" in message or not isinstance(result, dict):
                 raise ValueError("Junie advisory rejected or returned an invalid response")
             if stage == 1 and result.get("protocolVersion") == 1:
+                requested_model = RequestedModel(model, (result.get("agentInfo") or {}).get("version"))
                 stage = 2
                 request("session/new", cwd=str(project), mcpServers=[])
             elif stage == 2 and isinstance(result.get("sessionId"), str) and result["sessionId"]:
                 if acp_session.acp_confirms_brave(result):
                     raise ValueError("Junie advisory cannot use Brave mode")
                 session = result["sessionId"]
-                if acp_session.acp_needs_lite_selection(result, model, effort):
-                    selecting_lite = True
-                    request("session/set_model", message_id=acp_session.ACP_SELECT_LITE_REQUEST,
-                            sessionId=session, modelId=model)
+                model_change = requested_model.change_for(result, effort)
+                if model_change:
+                    request(model_change.method, message_id=acp_session.ACP_SELECT_MODEL_REQUEST,
+                            sessionId=session, **model_change.params)
                 else:
                     configure_session(result)
             elif stage == 3 and result.get("stopReason") == "end_turn":

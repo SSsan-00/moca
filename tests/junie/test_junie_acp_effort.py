@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from queue import Queue
@@ -9,13 +10,10 @@ from migration_harness.rules.rule_chat import RuleChat
 
 def make_session(kind, model="gpt-6-luna", effort="medium"):
     session = kind.__new__(kind)
-    session.command = junie_cli.build_command(Path.cwd(), "synthetic prompt", None, model=model, effort=effort)
+    command = junie_cli.build_command(Path.cwd(), "synthetic prompt", None, model=model, effort=effort)
+    with patch.object(acp_session, "Thread"):
+        acp_session.AcpSession.__init__(session, Mock(), command, Path.cwd(), Mock(), Path("done"), "token", None)
     session.request = Mock()
-    session.session_id = None
-    session.session_ready = False
-    session.selecting_lite = False
-    session.pending_effort = None
-    session.steering_waiting = None
     session.turn_id = None
     session.next_turn = 10
     return session
@@ -33,6 +31,111 @@ def respond_new(session, options):
 
 
 class JunieAcpEffortTests(unittest.TestCase):
+    def test_alias_accepts_only_the_verified_release_and_model(self):
+        for version, current, matches in (
+            ("26.11.2 (4100.11)", "v1:11:byok:openai:gpt-6.1-sol", True),
+            ("26.11.2 (4100.11)", "v1:11:byok:openai:gpt-6.1-terra", False),
+            ("26.11.2 (4100.11)", "v1:3:byok:openai:gpt-6.1-sol", False),
+            ("unknown", "gpt-6.1-sol", False),
+            ("unknown", "gpt", True),
+        ):
+            with self.subTest(version=version, current=current):
+                session = make_session(RuleChat, model="gpt")
+                session._receive_message({"id": 1, "result": {"protocolVersion": 1, "agentInfo": {"version": version}}})
+                new = {"id": 2, "result": {"sessionId": "session", "configOptions": [
+                    {"category": "model", "id": "model", "currentValue": current}, *config("medium"),
+                ]}}
+                if matches:
+                    session._receive_message(new)
+                    self.assertTrue(session.session_ready)
+                else:
+                    with self.assertRaises(junie_cli.JunieSessionError):
+                        session._receive_message(new)
+                    self.assertFalse(session.session_ready)
+                self.assertEqual(session.request.call_count, 1)
+
+    def test_ambiguous_provider_and_unconfirmed_model_change_stop_before_prompt(self):
+        values = ["v1:1:a:target", "v1:1:b:target"]
+        for offered in (values, values[:1]):
+            with self.subTest(offered=offered):
+                session = make_session(acp_session.AcpSession, model="target", effort=None)
+                selector = {"id": "model", "currentValue": "other", "options": [{"value": v} for v in offered]}
+                with self.assertRaises(junie_cli.JunieSessionError):
+                    session._receive_message({"id": 2, "result": {"sessionId": "session", "configOptions": [selector]}})
+                    request_id, method = session.request.call_args.args
+                    self.assertEqual(method, "session/set_config_option")
+                    session._receive_message({"id": request_id, "result": {"configOptions": [selector]}})
+                self.assertEqual(session.request.call_count, int(len(offered) == 1))
+                self.assertFalse(session.session_ready)
+
+    def test_selects_advertised_model_before_using_its_effort_selector(self):
+        target = "v1:11:byok:openai:gpt-6-luna"
+        selector = {"id": "provider_model", "category": "model", "currentValue": "other",
+                    "options": [{"group": "byok", "options": [{"value": target, "name": "Luna"}]}]}
+        for kind in (acp_session.AcpSession, RuleChat):
+            with self.subTest(kind=kind):
+                session = make_session(kind)
+                session._receive_message({"id": 2, "result": {"sessionId": "session",
+                                          "configOptions": [selector, *config("medium")]}})
+                request_id, method = session.request.call_args.args
+                self.assertEqual(method, "session/set_config_option")
+                self.assertEqual(session.request.call_args.kwargs, {
+                    "sessionId": "session", "configId": "provider_model", "value": target,
+                })
+                self.assertFalse(session.session_ready)
+                session._receive_message({"id": request_id, "result": {"configOptions": [
+                    dict(selector, currentValue=target), *config("low", config_id="new_effort"),
+                ]}})
+                effort_id, method = session.request.call_args.args
+                self.assertEqual((method, session.request.call_args.kwargs["configId"]),
+                                 ("session/set_config_option", "new_effort"))
+                self.assertFalse(session.session_ready)
+                session._receive_message({"id": effort_id, "result": {"configOptions": [
+                    dict(selector, currentValue=target), *config("medium", config_id="new_effort"),
+                ]}})
+                self.assertTrue(session.session_ready)
+
+    def test_reported_other_model_cannot_be_used_with_the_requested_effort(self):
+        for metadata in (
+            {"models": {"currentModelId": "other"}},
+            {"configOptions": [{"id": "model", "currentValue": "v1:3:abc:custom:gpt-6-luna"}]},
+        ):
+            session = make_session(RuleChat, effort=None)
+            with self.subTest(metadata=metadata), self.assertRaisesRegex(junie_cli.JunieSessionError, "gpt-6-luna"):
+                session._receive_message({"id": 2, "result": {"sessionId": "session", **metadata}})
+            self.assertFalse(session.session_ready)
+            session.request.assert_not_called()
+
+    def test_effort_confirmation_cannot_change_the_model_or_ack_another_selector(self):
+        for reply in (
+            [{"id": "model", "currentValue": "other"}, *config("medium")],
+            config("medium", config_id="another_selector"),
+        ):
+            with self.subTest(reply=reply):
+                session = make_session(acp_session.AcpSession)
+                respond_new(session, config("low"))
+                for attempt in range(2):
+                    request_id = session.request.call_args.args[0]
+                    try:
+                        session._receive_message({"id": request_id, "result": {"configOptions": reply}})
+                    except junie_cli.JunieSessionError:
+                        break
+                    self.assertFalse(session.session_ready)
+                else:
+                    self.fail("An unconfirmed selection must stop")
+                self.assertFalse(session.session_ready)
+
+    def test_ready_chat_stops_if_acp_reports_a_model_or_effort_switch(self):
+        for option in ({"id": "model", "currentValue": "other"}, *config("low")):
+            session = make_session(RuleChat)
+            respond_new(session, config("medium"))
+            update = {"method": "session/update", "params": {"sessionId": "session",
+                      "update": {"sessionUpdate": "config_option_update", "configOptions": [option]}}}
+            session.messages.put(json.dumps(update).encode())
+            with self.subTest(option=option), self.assertRaises(junie_cli.JunieSessionError):
+                session.begin("next turn")
+            session.request.assert_not_called()
+
     def test_slow_provider_startup_has_its_own_bounded_deadline(self):
         clock = Mock(return_value=100.0)
         with patch.object(acp_session.time, "monotonic", clock), patch.object(acp_session, "Thread"):
@@ -166,7 +269,8 @@ class JunieAcpEffortTests(unittest.TestCase):
             with self.subTest(effort=effort):
                 session = make_session(acp_session.AcpSession, model="junie-lite", effort=effort)
                 if passed:
-                    respond_new(session, [])
+                    session._receive_message({"id": 2, "result": {"sessionId": "session",
+                        "configOptions": [{"id": "model", "currentValue": "junie-lite"}]}})
                     self.assertTrue(session.session_ready)
                     self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
                 else:

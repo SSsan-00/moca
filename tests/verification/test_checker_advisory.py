@@ -51,6 +51,11 @@ if selection_frames is not None:
 if mode == 'brave':
     assert not sys.stdin.read()
     sys.exit()
+if mode == 'effort-late':
+    for request_id in (-2, -3):
+        assert receive('session/set_config_option', request_id) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
+    send(id=-2, result={'configOptions': [option('low')]})
+    send(id=-3, result={'configOptions': [option('high')]})
 if mode in ('effort-apply', 'effort-retry', 'effort-unconfirmed', 'effort-tool'):
     assert receive('session/set_config_option', -2) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
     if mode == 'effort-tool':
@@ -144,7 +149,6 @@ class CheckerAdvisoryTests(unittest.TestCase):
                 {"id": "thought_level", "currentValue": "high"},
             ]}),
             ("junie-lite", "none", {"models": {"availableModels": [{"modelId": "other"}]}}),
-            ("junie-lite", "none", {"models": {"availableModels": [], "currentModelId": "other"}}),
             ("junie-lite", None, {"configOptions": [{"id": "model"}]}),
             ("junie-lite", "none", {"configOptions": [{"id": "selection", "category": "model"}]}),
         ):
@@ -153,13 +157,28 @@ class CheckerAdvisoryTests(unittest.TestCase):
             ):
                 self.assertEqual(advisory.run_text_advisory("sample", model=model, effort=effort, timeout=5), "answer")
 
+    def test_conflicting_model_never_receives_consultation_text(self):
+        cases = (
+            ({"models": {"currentModelId": "other"}}, None),
+            (LITE_EMPTY_MODELS, [{"id": -1, "result": {"configOptions": [
+                {"id": "model", "currentValue": "other"},
+            ]}}]),
+        )
+        with TemporaryDirectory() as folder:
+            prompt = Path(folder) / "sent.json"
+            for setup in cases:
+                with self.subTest(setup=setup), acp_reply("answer", model_setup=setup, prompt_path=prompt):
+                    with self.assertRaisesRegex(ValueError, "junie-lite"):
+                        advisory.run_text_advisory("selected editor text", model="junie-lite", effort="none", timeout=5)
+                    self.assertFalse(prompt.exists())
+
     def test_model_selection_rejects_invalid_replies_tools_or_brave_and_allows_legacy_server(self):
         brave = [{"id": "brave_mode", "type": "boolean", "currentValue": True}]
         for frame, expected in (
             ({"id": -1, "result": None}, None),
             ({"id": -1, "error": {"code": -32601}}, None),
-            ({"id": -1, "error": {"code": -32602}}, "could not select"),
-            ({"id": -1, "result": {}, "error": "broken"}, "could not select"),
+            ({"id": -1, "error": {"code": -32602}}, "選択できませんでした"),
+            ({"id": -1, "result": {}, "error": "broken"}, "選択できませんでした"),
             ({"id": -2, "result": {}}, "Unexpected Junie advisory model selection reply"),
             ({"id": -1, "result": {"configOptions": brave}}, "cannot use Brave mode"),
             ({"id": 8, "method": "session/request_permission", "params": {"sessionId": "1"}},
@@ -415,14 +434,16 @@ class CheckerAdvisoryTests(unittest.TestCase):
                         self.assertEqual(result["verdict"], "unclear")
 
     def test_advisory_applies_and_confirms_explicit_effort_in_a_real_pipe(self):
-        for mode in ("effort-current", "effort-apply", "effort-retry", "effort-unconfirmed", "effort-missing", "effort-tool"):
+        for mode in ("effort-current", "effort-apply", "effort-retry", "effort-late",
+                     "effort-unconfirmed", "effort-missing", "effort-tool"):
             with self.subTest(mode=mode):
                 def launch(command, *, owned, cwd, **streams):
                     self.assertEqual(command[-5:], ["--model", "fixture-model", "--effort", "high", "--acp=true"])
                     return junie_cli.JunieProcess([sys.executable, "-c", FAKE_ACP, mode], cwd=cwd, **streams)
 
-                with patch.object(junie_cli, "_launch_process", side_effect=launch):
-                    if mode in ("effort-current", "effort-apply", "effort-retry"):
+                with (patch.object(junie_cli, "_launch_process", side_effect=launch),
+                      patch.object(advisory.acp_session, "ACP_TIMEOUT", .2)):
+                    if mode in ("effort-current", "effort-apply", "effort-retry", "effort-late"):
                         reply = advisory.run_text_advisory("sample only", model="fixture-model", effort="high", timeout=5)
                         self.assertEqual(advisory.parse_advisory(reply, 1)["verdict"], "informational")
                     else:

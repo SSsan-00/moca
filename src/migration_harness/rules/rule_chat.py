@@ -50,6 +50,10 @@ class RuleChat(AcpSession):
     def begin(self, prompt):
         if not self.session_ready or self.turn_id is not None:
             raise RuntimeError("Junieの新しい入力を受け付けられません。")
+        while not self.messages.empty():
+            self.advance()
+            if self.pending:
+                raise ValueError("Junieの操作確認が届いたため、次の指示を送信できませんでした。")
         self.prompt_finished = False
         self.response = []
         self.size = 0
