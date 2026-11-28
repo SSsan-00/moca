@@ -77,7 +77,7 @@ class InputProperties(unittest.TestCase):
             self.assertEqual(status, "named functions, lexical boundaries only")
 
         run = Path(self.enterContext(tempfile.TemporaryDirectory(dir=self.root)))
-        unit = {"id": "sample", "target": "Target.cs", "inputs": [
+        unit = {"id": "sample", "target": "Target.cs", "targets": ["Target.cs"], "inputs": [
             {"path": source.name, "role": "php", "encoding": requested, "start_line": 3, "end_line": 8, "shared": False},
         ]}
         capsules.prepare_context({"project_root": str(self.root), "max_context_chars": budget}, unit, run)

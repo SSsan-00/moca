@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.support.fixtures import HarnessCase, stub_syntax_diagnostics, prepare_fixture
+from migration_harness.config import target_paths
 from migration_harness.junie import acp_session, junie_cli
 from migration_harness.runs import run_records
 from migration_harness.runs.editor_queue import add_prompt, editor_queue
@@ -27,7 +28,10 @@ class RazorTargetConfigTest(HarnessCase):
             with self.subTest(config=config), self.assertRaises(ValueError) as invalid:
                 self.config(config)
             self.assertIn(missing, str(invalid.exception))
-        self.assertEqual(self.config('target = "Common.cs"')["units"][0]["target"], "Common.cs")
+        single = self.config('target = "Common.cs"')["units"][0]
+        self.assertEqual(single["target"], "Common.cs")
+        self.assertEqual(target_paths(single), (Path("Common.cs"),))
+        self.assertEqual(single["targets"], ["Common.cs"])
         self.assertEqual(
             self.config('targets = ["Pages/Menu.cshtml", "Pages/Menu.cshtml.cs"]')["units"][0]["targets"],
             ["Pages/Menu.cshtml", "Pages/Menu.cshtml.cs"],

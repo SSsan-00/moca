@@ -20,7 +20,7 @@ class WorkspaceListCacheTests(TestCase):
             "project_root": str(self.root / "project"),
             "run_root": str(self.root / "runs"),
             "worktree_root": str(self.root / "trees"),
-            "units": [{"id": "one", "source": "source.php", "target": "One.cs"}],
+            "units": [{"id": "one", "source": "source.php", "target": "One.cs", "targets": ["One.cs"]}],
         }
         self.manager = RunManager(self.config, Dashboard())
         self.addCleanup(self.manager.close)
@@ -93,7 +93,7 @@ class WorkspaceListCacheTests(TestCase):
 
     def test_same_root_configuration_revalidates_targets(self):
         self.assertEqual(len(self.manager.workspace()["runs"]), 1)
-        self.config["units"] = [{"id": "one", "source": "source.php", "target": "Other.cs"}]
+        self.config["units"] = [{"id": "one", "source": "source.php", "target": "Other.cs", "targets": ["Other.cs"]}]
         self.assertEqual(self.manager.workspace()["runs"], [])
 
     def test_resume_actions_follow_saved_gates_without_progress_change(self):

@@ -26,7 +26,7 @@ class SavedDashboardQueueValidationTests(TestCase):
             "project_root": str(root / "project"),
             "worktree_root": str(root / "trees"),
             "run_root": str(root / "runs"),
-            "units": [{"id": "a", "target": "Page.cs"}, {"id": "b", "target": "Other.cs"}],
+            "units": [{"id": "a", "target": "Page.cs", "targets": ["Page.cs"]}, {"id": "b", "target": "Other.cs", "targets": ["Other.cs"]}],
         }
         self.queue = Path(self.config["run_root"]) / "dashboard-queue.json"
         self.queue.parent.mkdir()

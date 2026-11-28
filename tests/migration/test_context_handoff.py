@@ -26,7 +26,7 @@ class ContextHandoffTests(unittest.TestCase):
         self.target.write_text("class Demo {}", encoding="utf-8")
         self.targets = (Path("Demo.cs"),)
         prepare_context({"project_root": str(self.root), "max_context_chars": 1_000}, {
-            "id": "unit", "target": "Demo.cs", "inputs": [{
+            "id": "unit", "target": "Demo.cs", "targets": ["Demo.cs"], "inputs": [{
                 "role": "php", "path": "demo.php", "start_line": 1, "end_line": None,
                 "encoding": "utf-8", "shared": False,
             }],
@@ -167,7 +167,7 @@ class ContextHandoffTests(unittest.TestCase):
         run = self.root / "multi"
         (self.root / "demo.php").write_text("<?php\n" + ("echo 2; " + " " * 75 + "\n") * 30, encoding="utf-8")
         prepare_context({"project_root": str(self.root), "max_context_chars": 650}, {
-            "id": "unit", "target": "Demo.cs", "inputs": [{
+            "id": "unit", "target": "Demo.cs", "targets": ["Demo.cs"], "inputs": [{
                 "role": "php", "path": "demo.php", "start_line": 1, "end_line": None,
                 "encoding": "utf-8", "shared": False,
             }],

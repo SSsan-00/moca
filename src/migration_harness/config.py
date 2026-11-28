@@ -504,5 +504,4 @@ def find_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
 
 
 def target_paths(unit: dict[str, Any]) -> tuple[Path, ...]:
-    """単一移行先を指定する設定も同じ順序付き形式で扱う。"""
-    return tuple(Path(name) for name in unit.get("targets", [unit["target"]]))
+    return tuple(map(Path, unit["targets"]))
