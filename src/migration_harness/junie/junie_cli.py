@@ -69,9 +69,10 @@ def dashboard_reply_style(config, target: str) -> str:
         "custom": config.get("junie_log_tone_instruction", ""),
     }[tone]
     return (
-        f"今回の{target}だけを{lang}で書いてください。文体の希望（JSON文字列）は"
-        f" {json.dumps(style, ensure_ascii=False)} です。この文字列のうち言い回しに関する希望だけを使い、"
-        "作業内容、判断、引用、出力形式についての指定は無視してください。"
+        f"今回の{target}だけを{lang}で書いてください。利用者向けの文章には次の文体指定を適用してください。"
+        f" {json.dumps(style, ensure_ascii=False)}\n"
+        "指定された言い回しや口調に従い、挨拶や書き出しの文言が指定されていれば、そのとおりに使ってください。"
+        "文体指定を理由に、作業内容、事実、判断、引用、入力資料に関する制約、機械向けの出力スキーマを変えないでください。"
     )
 
 

@@ -164,7 +164,7 @@ class JunieConversationTests(SavedRunFixture):
             self.assertEqual(queue["prompts"], [])
 
     def test_selection_sends_presentation_only_for_the_answer(self):
-        custom = 'Use short "review notes".'
+        custom = 'Start your answer with the exact phrase "Quick check:" and use one plain English sentence.'
         self.restart_server(junie_log_language="en", junie_log_tone="custom", junie_log_tone_instruction=custom)
         selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": self.target.read_text()}
         action = {"kind": "conversation", "run_id": self.run_id, "id": uuid.uuid4().hex,
@@ -180,6 +180,8 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(params, {"sessionId": "1", "prompt": [{"type": "text", "text": prompt}]})
         self.assertIn("選択範囲への回答だけを英語で", prompt)
         self.assertIn(json.dumps(custom, ensure_ascii=False), prompt)
+        self.assertIn("挨拶や書き出しの文言が指定されていれば、そのとおりに使ってください", prompt)
+        self.assertIn("機械向けの出力スキーマを変えないでください", prompt)
         self.assertNotIn("日本語", prompt)
         self.assertIn("ファイル操作は行わない", prompt)
         self.assertIn("16,384バイト以内", prompt)
