@@ -32,6 +32,9 @@ class RazorTargetConfigTest(HarnessCase):
         self.assertEqual(single["target"], "Common.cs")
         self.assertEqual(target_paths(single), (Path("Common.cs"),))
         self.assertEqual(single["targets"], ["Common.cs"])
+        del single["targets"]
+        with self.assertRaises(KeyError):
+            target_paths(single)
         self.assertEqual(
             self.config('targets = ["Pages/Menu.cshtml", "Pages/Menu.cshtml.cs"]')["units"][0]["targets"],
             ["Pages/Menu.cshtml", "Pages/Menu.cshtml.cs"],
