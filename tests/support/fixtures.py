@@ -149,7 +149,7 @@ class SavedRunFixture(unittest.TestCase):
             "run_root": str(self.run_path.parent),
             "worktree_root": str(self.worktree.parent),
             "project_root": str(project),
-            "units": [{"id": "example", "target": self.target.name}],
+            "units": [{"id": "example", "target": self.target.name, "targets": [self.target.name]}],
             "build_project": None,
             "checker_command": ["fixture-checker"],
             "max_repair_attempts": 0,

@@ -18,7 +18,7 @@ class GroundedEvidenceTests(unittest.TestCase):
         self.php = self.worktree / "source.php"
         self.php.write_bytes(b"<?php\r\nfunction total() { return 42; }\r\n// outside assignment\r\n")
         prepare_context({"project_root": str(self.worktree), "max_context_chars": 1000}, {
-            "id": "sample", "target": "Sample.cs", "inputs": [{
+            "id": "sample", "target": "Sample.cs", "targets": ["Sample.cs"], "inputs": [{
                 "role": "php", "path": "source.php", "start_line": 1, "end_line": 2,
                 "encoding": "utf-8", "shared": False,
             }],

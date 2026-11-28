@@ -32,7 +32,7 @@ class LargeInputScalingTests(unittest.TestCase):
                 run = root / name
                 result = capsules.prepare_context(
                     {"project_root": root, "max_context_chars": 1600},
-                    {"id": "scale", "target": "T.cs", "inputs": [
+                    {"id": "scale", "target": "T.cs", "targets": ["T.cs"], "inputs": [
                         {"path": source.name, "role": "php", "start_line": 1, "end_line": 701,
                          "encoding": "utf-8-sig"},
                     ]},

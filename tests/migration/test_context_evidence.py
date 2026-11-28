@@ -20,7 +20,7 @@ class ContextEvidenceTests(unittest.TestCase):
 
     def prepare(self, source, limit=850, encoding="auto", start=1, end=None, symbol=None, references=()):
         self.source.write_bytes(source)
-        unit = {"id": "demo", "source": "sample.php", "target": "Sample.cs", "inputs": [{
+        unit = {"id": "demo", "source": "sample.php", "target": "Sample.cs", "targets": ["Sample.cs"], "inputs": [{
             "role": "php", "path": "sample.php", "start_line": start, "end_line": end,
             "encoding": encoding, "shared": False,
             **({"symbol": symbol} if symbol is not None else {}),

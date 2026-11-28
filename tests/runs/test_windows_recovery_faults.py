@@ -189,7 +189,7 @@ def queue_worker(root, cut):
     project = root / "project"
     project.mkdir(exist_ok=True)
     config = {"project_root": str(project), "run_root": str(root / "runs"), "worktree_root": str(root / "trees"),
-              "units": [{"id": unit, "target": unit + ".cs"} for unit in ("a", "b")]}
+              "units": [{"id": unit, "target": unit + ".cs", "targets": [unit + ".cs"]} for unit in ("a", "b")]}
     view = dashboard.Dashboard()
     view.publish({"status": "idle", "ready": True})
     name = root / "launched.json"

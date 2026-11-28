@@ -10,6 +10,8 @@
       color-scheme: light;
       --ink: #172033;
       --mocha: #874d31;
+      --wordmark-start: color-mix(in srgb, var(--mocha) 50%, var(--ink));
+      --wordmark-end: color-mix(in srgb, var(--mocha) 93%, var(--paper));
       --muted: #566276;
       --soft: #77849a;
       --line: #dbe3ed;
@@ -40,6 +42,8 @@
       color-scheme: dark;
       --ink: #e7edf6;
       --mocha: #e2a47c;
+      --wordmark-start: color-mix(in srgb, var(--mocha) 76%, var(--canvas));
+      --wordmark-end: color-mix(in srgb, var(--mocha) 50%, var(--ink));
       --muted: #aab7ca;
       --soft: #7f8ea4;
       --line: #2d3a4d;
@@ -82,10 +86,19 @@
     .topline { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 0; }
     .top-actions { display: flex; align-items: center; gap: 18px; }
     #junie-confirmation-pending[hidden], #junie-confirmation [hidden] { display: none; }
-    .brand { display: inline-flex; flex: none; align-items: center; gap: 10px; color: var(--ink); font: 600 34px/1 "Bahnschrift", "Avenir Next", "Segoe UI", sans-serif; letter-spacing: -.03em; text-decoration: none; }
-    .brand-mark { display: block; width: 1.8em; height: auto; fill: currentColor; }
+    .brand { display: inline-flex; flex: none; align-items: center; color: var(--ink); font: 500 34px/1 "Segoe UI Variable", "Segoe UI", ui-rounded, "Avenir Next", system-ui, sans-serif; letter-spacing: -.02em; text-decoration: none; }
     .brand-accent { color: var(--mocha); }
     .brand:hover { color: var(--blue); }
+    @media (forced-colors: none) {
+      @supports (background-clip: text) and (color: color-mix(in srgb, black, white)) {
+        .brand:not(:hover) > span {
+          background-image: linear-gradient(to right, var(--wordmark-start), var(--wordmark-end));
+          background-clip: text;
+          color: transparent;
+        }
+        .brand-accent { color: color-mix(in srgb, var(--amber) 60%, var(--mocha)); }
+      }
+    }
     .top-links { display: flex; gap: 18px; font-size: 13px; }
     .top-links a { text-decoration: none; }
     .workspace-tabs { position: relative; display: flex; flex: 1; min-width: 0; gap: 12px; overflow: clip; overflow-clip-margin: 3px; border-bottom: 2px solid var(--line); }
@@ -867,7 +880,7 @@
       .side .panel:nth-child(3) { grid-column: 2; grid-row: 2; }
     }
     @media (max-width: 560px) {
-      .brand { gap: 8px; font-size: 26px; }
+      .brand { font-size: 26px; }
       .workspace-tabs { gap: 4px; }
       .workspace-tabs button { padding-inline: 9px; }
       .token-panel { padding: 14px; gap: 14px; }
@@ -950,9 +963,6 @@
 <main class="shell">
   <nav class="topline" aria-label="ページ">
     <a class="brand" href="./migration-harness-spec.html" title="Migration Orchestrator &amp; Coding Assistant" aria-label="MoCA">
-      <svg class="brand-mark" viewBox="0 0 80 28" aria-hidden="true" focusable="false">
-        <path d="M1.7 20.1 20.7 5.5C24 3 28 3.3 30.8 6.5L40.8 17.7C42.1 19.2 44.1 19.5 45.9 18.4L60.5 9.6V2.2C60.5 .9 61.9 .3 63 .9L78.9 12.6C79.9 13.3 79.9 14.7 78.9 15.4L63 25.1C61.9 25.8 60.5 25.1 60.5 23.8V16.8L45.1 26.4C41.9 28.3 38.6 27.7 36.1 24.8L26.9 14.3C25.6 12.8 23.7 12.7 22.1 13.8L6.5 26C4.7 27.6 2.2 27.4 .9 25.7C-.4 24 .1 21.4 1.7 20.1Z"/>
-      </svg>
       <span>M<span class="brand-accent">o</span>CA</span>
     </a>
     <div class="workspace-tabs" role="tablist" aria-label="ハーネス操作">

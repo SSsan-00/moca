@@ -1491,7 +1491,7 @@ class JunieConversationTests(SavedRunFixture):
         (path / "run.json").write_text(json.dumps({
             **self.record(), "run_id": run_id, "unit_id": unit_id, "worktree_path": str(worktree),
         }), encoding="utf-8")
-        self.config["units"].append({"id": unit_id, "target": self.target.name})
+        self.config["units"].append({"id": unit_id, "target": self.target.name, "targets": [self.target.name]})
         return run_id, path, worktree
 
     def test_conditional_checker_binds_to_build_waiting_for_a_real_worker_slot(self):

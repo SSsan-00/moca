@@ -51,7 +51,7 @@ def write_terminal_image(stream, console, foreground, background, accent):
         return False
     try:
         # Move past the last six pixel rows before returning to text at the next line.
-        stream.write('\x1bP0;1q"1;1;520;84' + "".join(colors) + raster + "-\x1b\\\n")
+        stream.write('\x1bP0;1q"1;1;296;84' + "".join(colors) + raster + "-\x1b\\\n")
         stream.flush()
     finally:
         if mode.value != vt_mode:
