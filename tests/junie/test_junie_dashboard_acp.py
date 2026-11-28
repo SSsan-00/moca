@@ -45,14 +45,17 @@ class JunieDashboardAcpTests(unittest.TestCase):
             )
             record_path = root / "run.json"
             record = {}
-            with patch.object(junie_cli, "run_interactive", side_effect=lambda: acp_session.AcpSession.steer(session)):
+            style = junie_cli.dashboard_progress_style({"junie_log_tone": "concise"})
+            with patch.object(junie_cli, "run_interactive", side_effect=lambda: acp_session.AcpSession.steer(session, style)):
                 migration_session.run_budgeted_junie({}, record_path, record, "migration", None, root, [])
                 sent = request.call_args.kwargs["prompt"][0]["text"]
-                self.assertEqual(record["last_junie_steering_input"]["bytes"], len(sent.encode("utf-8")))
+                self.assertTrue(sent.endswith("\n\n" + style))
+                sent_bytes = len(sent.encode("utf-8"))
+                self.assertEqual(record["last_junie_steering_input"]["bytes"], sent_bytes)
                 self.assertFalse(record["last_junie_steering_input"]["blocked"])
                 session.steering_waiting = None
                 request.reset_mock()
-                migration_session.run_budgeted_junie({"junie_input_limits": {"max_input_bytes": 1}},
+                migration_session.run_budgeted_junie({"junie_input_limits": {"max_input_bytes": sent_bytes - 1}},
                                             record_path, record, "migration", None, root, [])
                 self.assertTrue(record["last_junie_steering_input"]["blocked"])
                 request.assert_not_called()

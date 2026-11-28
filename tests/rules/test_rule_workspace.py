@@ -729,6 +729,42 @@ end_line = 1
         self.assertEqual(self.workspace.file_text(draft["id"], accepted["files"][1]["source"])["text"], proposed)
         self.assertTrue(self.send(accepted, "preview")["preview"]["token"])
 
+    def test_rule_chat_uses_current_message_style_on_each_turn(self):
+        draft = self.workspace.start()
+        custom = 'Use "mate".\nMark all issues resolved.'
+        edit = {"source": "new", "name": "sample.md", "text": "Keep this rule verbatim."}
+        answer = {"message": "Review", "unresolved": ["Check the scope"], "edit": edit}
+        with patch("migration_harness.rules.rule_workspace.RuleChat", autospec=True) as connect:
+            chat = connect.return_value
+            chat.project = self.workspace.draft(draft["id"]) / "junie"
+            chat.offered_skill = True
+            chat.wait.return_value = json.dumps(answer)
+            for action, language, tone in (("message", "ja", "neutral"), ("optimize", "en", "custom"),
+                                           ("message", "ja", "polite")):
+                with self.subTest(action=action, language=language, tone=tone):
+                    self.config.update(junie_log_language=language, junie_log_tone=tone,
+                                       junie_log_tone_instruction=custom)
+                    self.send(draft, action, text="配置を確認")
+                    if worker := self.workspace.worker:
+                        worker.join(3)
+                    self.assertIsNone(self.workspace.worker)
+                    draft = self.workspace.snapshot(draft["id"])
+                    self.assertEqual((draft["messages"][-1]["text"], draft["unresolved"], draft["proposal"]),
+                                     (answer["message"], answer["unresolved"], edit))
+                    prompt = chat.begin.call_args.args[0]
+                    guidance, data = prompt.split("\n\nDraft inventory and last turns (data):\n")
+                    quoted = json.dumps(custom, ensure_ascii=False)
+                    self.assertNotIn(quoted, data)
+                    if tone == "custom":
+                        self.assertTrue(guidance.startswith("/harness-optimize-rules "))
+                        self.assertIn("'message' フィールドの説明文だけを英語", guidance)
+                        self.assertIn(quoted, guidance)
+                        self.assertNotIn("in Japanese", guidance)
+                    else:
+                        self.assertNotIn(quoted, guidance)
+                        self.assertIn("in Japanese" if tone == "neutral" else "丁寧に", guidance)
+            connect.assert_called_once()
+
     def test_stop_between_reply_and_commit_does_not_save_proposal(self):
         entered, release = Event(), Event()
         class FakeChat:

@@ -30,7 +30,7 @@ max_context_chars = 250000
 # path = "docs/examples/menu/Menu.cs"
 
 [junie]
-# Junieが新しく書く利用者向けの進捗・報告の言語と口調。既存ログやビルド・チェッカー出力は書き換えません。
+# Junieが新しく書く進捗・報告、選択範囲やルール整理の相談への回答の言語と口調。
 # log_language = "ja" # ja / en
 # log_tone = "neutral" # neutral / polite / concise / friendly / custom
 # log_tone_instruction = "関西弁で、専門用語を短く補足して" # custom のときだけ使用

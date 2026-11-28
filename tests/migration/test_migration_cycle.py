@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import unittest
+import uuid
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -17,7 +18,56 @@ from migration_harness.runs import (
     migration_capsules, operator_feedback, run_records, stage_scripts, worktree_targets as target_files,
 )
 from migration_harness.verification import checker_output, grounded_evidence, repairs, script_handoff
-from tests.support.fixtures import HarnessCase, SavedRunFixture, prepare_fixture
+from migration_harness.web.dashboard import Dashboard, execute_dashboard_action
+from tests.support.fixtures import HarnessCase, SavedRunFixture, prepare_fixture, stub_syntax_diagnostics
+
+
+class DashboardMigrationStyleTests(HarnessCase):
+    def test_run_resume_and_build_repair_use_the_current_presentation_setting(self):
+        (self.project / "source.php").write_text("<?php echo 42;\n", encoding="utf-8")
+        self.commit_project()
+        config = self.config()
+        config.update(max_repair_attempts=1, junie_log_tone="custom", junie_log_tone_instruction="Use short greetings.")
+        view = Dashboard()
+        run_id = str(uuid.uuid4())
+        record_path = Path(config["run_root"]) / run_id / "run.json"
+        launches = []
+
+        def launch(command, completion, token, targets, **kwargs):
+            record = json.loads(record_path.read_bytes())
+            phase = record["last_junie_input"]["phase"]
+            launches.append((phase, command[-1]))
+            target, = targets
+            target.write_text("class Fixed {}\n" if phase == "build_repair" else "class Page {}\n", encoding="utf-8")
+            if len(launches) > 1:
+                completion.write_text(token, encoding="ascii")
+            return 0
+
+        def process(command, *, label, cancellable=True, **kwargs):
+            if command[0] == "git":
+                return subprocess.run(command, **kwargs)
+            self.assertEqual(command, ["dotnet", "build"])
+            target = Path(kwargs["cwd"]) / "Page.cs"
+            failed = "class Fixed" not in target.read_text(encoding="utf-8-sig")
+            if failed:
+                kwargs["stdout"].write(f"{target}(1,1): error CS1002: ; expected\n".encode())
+            return subprocess.CompletedProcess(command, int(failed))
+
+        with (patch.object(junie_cli, "require_interactive_cli"), patch.object(junie_cli, "_run_session", side_effect=launch),
+              patch.object(execution, "run_process", side_effect=process), stub_syntax_diagnostics()):
+            view.begin_operation()
+            execute_dashboard_action(view, config, {"action": "run", "run_id": run_id, "unit_id": "sample"})
+            self.assertEqual(view.state["status"], "interrupted", view.state.get("message"))
+            config.update(junie_log_language="en", junie_log_tone_instruction="Use formal greetings.")
+            view.begin_operation()
+            execute_dashboard_action(view, config, {"action": "resume-run", "run_id": run_id})
+        self.assertEqual(view.state["status"], "build_succeeded", view.state.get("message"))
+        self.assertEqual([phase for phase, _ in launches], ["migration", "migration", "build_repair"])
+        self.assertIn("Use short greetings.", launches[0][1])
+        for _, prompt in launches[1:]:
+            self.assertNotIn("Use short greetings.", prompt)
+            self.assertIn("Use formal greetings.", prompt)
+            self.assertIn("英語", prompt)
 
 
 class TaskGuidelinesTests(unittest.TestCase):
