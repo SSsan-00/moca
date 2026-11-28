@@ -36,14 +36,27 @@ mode = sys.argv[1]
 option = lambda value: {'category': 'thought_level', 'id': 'reasoning', 'currentValue': value}
 session = {'sessionId': '1'}
 selection_frames = None
+if mode == 'model-change':
+    selected = 'v1:4:test:fixture-model'
+    model_option = {'id': 'model', 'category': 'model', 'currentValue': 'other',
+                    'options': [{'group': 'fixture', 'options': [{'value': selected}]}]}
+    session['configOptions'] = [model_option, option('high')]
 if mode == 'text' and len(sys.argv) > 6:
     metadata, selection_frames = json.loads(sys.argv[6])
     session.update(metadata)
-if mode.startswith('effort-') and mode != 'effort-missing':
-    session['configOptions'] = [option('high' if mode == 'effort-current' else 'low')]
+if mode.startswith('effort-'):
+    session['models'] = {'currentModelId': sys.argv[3] if len(sys.argv) > 3 else 'fixture-model'}
+    if mode != 'effort-missing':
+        session['configOptions'] = [option('high' if mode == 'effort-current' else 'low')]
 if mode == 'brave':
     session['configOptions'] = [{'id': 'brave_mode', 'type': 'boolean', 'currentValue': True}]
 send(id=2, result=session)
+if mode == 'model-change':
+    assert receive('session/set_config_option', -1) == {'sessionId': '1', 'configId': 'model', 'value': selected}
+    model_option['currentValue'] = selected
+    send(id=-1, result={'configOptions': [model_option, option('low')]})
+    assert receive('session/set_config_option', -2) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
+    send(id=-2, result={'configOptions': [model_option, option('high')]})
 if selection_frames is not None:
     assert receive('session/set_model', -1) == {'sessionId': '1', 'modelId': 'junie-lite'}
     for frame in selection_frames:
@@ -51,6 +64,11 @@ if selection_frames is not None:
 if mode == 'brave':
     assert not sys.stdin.read()
     sys.exit()
+if mode == 'effort-late':
+    for request_id in (-2, -3):
+        assert receive('session/set_config_option', request_id) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
+    send(id=-2, result={'configOptions': [option('low')]})
+    send(id=-3, result={'configOptions': [option('high')]})
 if mode in ('effort-apply', 'effort-retry', 'effort-unconfirmed', 'effort-tool'):
     assert receive('session/set_config_option', -2) == {'sessionId': '1', 'configId': 'reasoning', 'value': 'high'}
     if mode == 'effort-tool':
@@ -139,27 +157,49 @@ class CheckerAdvisoryTests(unittest.TestCase):
     def test_lite_fallback_does_not_override_models_or_a_different_effort(self):
         for model, effort, session in (
             (None, None, LITE_EMPTY_MODELS),
+            (None, None, {"configOptions": [
+                {"id": "effort-a", "category": "thought_level", "currentValue": "low"},
+                {"id": "effort-b", "category": "thought_level", "currentValue": "high"},
+            ]}),
             ("other", None, LITE_EMPTY_MODELS),
             ("junie-lite", "high", {**LITE_EMPTY_MODELS, "configOptions": [
                 {"id": "thought_level", "currentValue": "high"},
             ]}),
             ("junie-lite", "none", {"models": {"availableModels": [{"modelId": "other"}]}}),
-            ("junie-lite", "none", {"models": {"availableModels": [], "currentModelId": "other"}}),
             ("junie-lite", None, {"configOptions": [{"id": "model"}]}),
             ("junie-lite", "none", {"configOptions": [{"id": "selection", "category": "model"}]}),
         ):
             with self.subTest(model=model, effort=effort, session=session), acp_reply(
                 "answer", model_setup=(session, None),
             ):
-                self.assertEqual(advisory.run_text_advisory("sample", model=model, effort=effort, timeout=5), "answer")
+                if model is None:
+                    self.assertEqual(advisory.run_text_advisory("sample", timeout=5), "answer")
+                else:
+                    with self.assertRaisesRegex(ValueError, model):
+                        advisory.run_text_advisory("sample", model=model, effort=effort, timeout=5)
 
-    def test_model_selection_rejects_invalid_replies_tools_or_brave_and_allows_legacy_server(self):
+    def test_conflicting_model_never_receives_consultation_text(self):
+        cases = (
+            ({"models": {"currentModelId": "other"}}, None),
+            (LITE_EMPTY_MODELS, [{"id": -1, "result": {"configOptions": [
+                {"id": "model", "currentValue": "other"},
+            ]}}]),
+        )
+        with TemporaryDirectory() as folder:
+            prompt = Path(folder) / "sent.json"
+            for setup in cases:
+                with self.subTest(setup=setup), acp_reply("answer", model_setup=setup, prompt_path=prompt):
+                    with self.assertRaisesRegex(ValueError, "junie-lite"):
+                        advisory.run_text_advisory("selected editor text", model="junie-lite", effort="none", timeout=5)
+                    self.assertFalse(prompt.exists())
+
+    def test_model_selection_requires_acknowledgment_and_rejects_tools_or_brave(self):
         brave = [{"id": "brave_mode", "type": "boolean", "currentValue": True}]
         for frame, expected in (
             ({"id": -1, "result": None}, None),
-            ({"id": -1, "error": {"code": -32601}}, None),
-            ({"id": -1, "error": {"code": -32602}}, "could not select"),
-            ({"id": -1, "result": {}, "error": "broken"}, "could not select"),
+            ({"id": -1, "error": {"code": -32601}}, "選択できませんでした"),
+            ({"id": -1, "error": {"code": -32602}}, "選択できませんでした"),
+            ({"id": -1, "result": {}, "error": "broken"}, "選択できませんでした"),
             ({"id": -2, "result": {}}, "Unexpected Junie advisory model selection reply"),
             ({"id": -1, "result": {"configOptions": brave}}, "cannot use Brave mode"),
             ({"id": 8, "method": "session/request_permission", "params": {"sessionId": "1"}},
@@ -204,21 +244,23 @@ class CheckerAdvisoryTests(unittest.TestCase):
                 with self.subTest(current=current, saved=saved):
                     config["junie_effort"] = current
                     (run / "run.json").write_text(json.dumps(saved), encoding="utf-8")
-                    commands = []
                     prompt_received = run / "prompt-received"
                     prompt_received.unlink(missing_ok=True)
 
                     def launch(command, *, owned, cwd, **streams):
-                        commands.append(command[3:-1])
+                        self.assertEqual(command, ["junie", "--project", str(cwd), "--acp=true"])
                         return junie_cli.JunieProcess(
-                            [sys.executable, "-c", FAKE_ACP, "effort-missing", str(prompt_received)], cwd=cwd, **streams,
+                            [sys.executable, "-c", FAKE_ACP, "effort-missing", str(prompt_received), model],
+                            cwd=cwd, **streams,
                         )
 
-                    with patch.object(junie_cli, "_launch_process", side_effect=launch):
+                    with (patch.object(junie_cli, "_launch_process", side_effect=launch),
+                          patch.object(advisory, "_exchange", wraps=advisory._exchange) as exchange):
                         checked = checker_cycle.review_free_checker_output(
                             config, {"run_path": str(run)}, {"checker_exit_code": 0, **saved},
                         )["checker_advisory"]
-                    self.assertEqual(commands, [["--model", model] + (["--effort", effort] if effort else [])])
+                    self.assertEqual((exchange.call_args.kwargs["model"], exchange.call_args.kwargs["effort"]),
+                                     (model, effort))
                     self.assertEqual(effort is None, prompt_received.exists())
                     if effort:
                         self.assertEqual(("unavailable", "AdvisoryEffortUnavailable"),
@@ -415,28 +457,29 @@ class CheckerAdvisoryTests(unittest.TestCase):
                         self.assertEqual(result["verdict"], "unclear")
 
     def test_advisory_applies_and_confirms_explicit_effort_in_a_real_pipe(self):
-        for mode in ("effort-current", "effort-apply", "effort-retry", "effort-unconfirmed", "effort-missing", "effort-tool"):
+        for mode in ("model-change", "effort-current", "effort-apply", "effort-retry", "effort-late",
+                     "effort-unconfirmed", "effort-missing", "effort-tool"):
             with self.subTest(mode=mode):
                 def launch(command, *, owned, cwd, **streams):
-                    self.assertEqual(command[-5:], ["--model", "fixture-model", "--effort", "high", "--acp=true"])
+                    self.assertEqual(command, ["junie", "--project", str(cwd), "--acp=true"])
                     return junie_cli.JunieProcess([sys.executable, "-c", FAKE_ACP, mode], cwd=cwd, **streams)
 
-                with patch.object(junie_cli, "_launch_process", side_effect=launch):
-                    if mode in ("effort-current", "effort-apply", "effort-retry"):
+                with (patch.object(junie_cli, "_launch_process", side_effect=launch),
+                      patch.object(advisory.acp_session, "ACP_TIMEOUT", .2)):
+                    if mode in ("model-change", "effort-current", "effort-apply", "effort-retry", "effort-late"):
                         reply = advisory.run_text_advisory("sample only", model="fixture-model", effort="high", timeout=5)
                         self.assertEqual(advisory.parse_advisory(reply, 1)["verdict"], "informational")
                     else:
                         with self.assertRaises(ValueError):
                             advisory.run_text_advisory("sample only", model="fixture-model", effort="high", timeout=5)
 
-    def test_acp_launcher_receives_model_and_effort_without_prompt_or_brave(self):
+    def test_advisory_selects_model_and_effort_over_acp_without_startup_flags(self):
         launched = []
 
         def launch(command, *, owned, cwd, **streams):
             self.assertTrue(owned)
-            self.assertEqual(command, ["junie", "--project", str(cwd),
-                                       "--model", "fixture-model", "--effort", "high", "--acp=true"])
-            process = subprocess.Popen([sys.executable, "-c", FAKE_ACP, "effort-current"], cwd=cwd, **streams)
+            self.assertEqual(command, ["junie", "--project", str(cwd), "--acp=true"])
+            process = subprocess.Popen([sys.executable, "-c", FAKE_ACP, "model-change"], cwd=cwd, **streams)
             launched.append(process)
             return process
 

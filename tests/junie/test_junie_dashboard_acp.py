@@ -70,14 +70,14 @@ class JunieDashboardAcpTests(unittest.TestCase):
                 effort = "none" if "result" in outcome else None
                 session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model="junie-lite", effort=effort)
                 session.request = Mock()
-                session.selecting_lite = False
+                session.model_change = None
                 session.steering_waiting = None
                 session._advance_prompt(2, {"result": {"sessionId": "test", "configOptions": [{"id": "mode"}]}})
                 request_id, method = session.request.call_args.args
                 self.assertEqual(method, "session/set_model")
                 self.assertEqual(session.request.call_args.kwargs, {"sessionId": "test", "modelId": "junie-lite"})
-                self.assertTrue(session.selecting_lite)
-                if outcome.get("error", {}).get("code") == -32602:
+                self.assertTrue(session.model_change)
+                if "error" in outcome:
                     with self.assertRaises(junie_cli.JunieSessionError):
                         session._receive_message({"id": request_id, **outcome})
                     self.assertEqual(session.request.call_count, 1)
@@ -85,31 +85,33 @@ class JunieDashboardAcpTests(unittest.TestCase):
                     session._receive_message({"id": request_id, **outcome})
                     self.assertEqual(session.request.call_count, 2)
                     self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
-                self.assertFalse(session.selecting_lite)
+                self.assertFalse(session.model_change)
 
-    def test_model_workaround_does_not_override_catalog_default_other_models_or_effort(self):
+    def test_missing_model_metadata_only_allows_the_unspecified_default(self):
         from unittest.mock import Mock
 
-        catalog = {
-            "models": {"availableModels": [{"modelId": "junie-lite"}]},
-        }
-        for model, effort, metadata in (
-            (None, None, {}),
-            ("sonnet", None, {}),
-            ("junie-lite", None, catalog),
-            ("junie-lite", None, {"configOptions": [{"id": "selector", "category": "model"}]}),
+        for model, metadata in (
+            (None, {}),
+            ("sonnet", {}),
+            ("sonnet", {"configOptions": [{"id": "thought_level", "currentValue": "high"}]}),
+            ("junie-lite", {"configOptions": [{"id": "selector", "category": "model"}]}),
         ):
-            with self.subTest(model=model, effort=effort, metadata=metadata):
+            with self.subTest(model=model, metadata=metadata):
                 session = acp_session.AcpSession.__new__(acp_session.AcpSession)
-                session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model=model, effort=effort)
+                session.command = junie_cli.build_command(Path.cwd(), "prompt", None, model=model)
                 session.request = Mock()
-                session._advance_prompt(2, {"result": {"sessionId": "test", **metadata}})
-                self.assertEqual(session.request.call_count, 1)
-                self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
+                response = {"result": {"sessionId": "test", **metadata}}
+                if model:
+                    with self.assertRaisesRegex(junie_cli.JunieAcpModelUnavailable, model):
+                        session._advance_prompt(2, response)
+                    session.request.assert_not_called()
+                else:
+                    session._advance_prompt(2, response)
+                    self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
 
     def test_missing_acp_model_retries_with_headless_junie_only_after_confirmation(self):
-        for approve in (False, True):
-            with self.subTest(approve=approve), tempfile.TemporaryDirectory() as temporary:
+        for approve, mismatch in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(approve=approve, mismatch=mismatch), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 completion = root / "done"
                 command = junie_cli.build_command(root, "repair prompt", 7, guidelines=root / "rules.md", model="sonnet", effort="high")
@@ -123,11 +125,11 @@ class JunieDashboardAcpTests(unittest.TestCase):
                 expected_style = dashboard.control.junie_progress_style or junie_cli.DASHBOARD_PROGRESS_INSTRUCTION
                 acp_agent = textwrap.dedent("""
                     import json, sys
+                    options = [{"id": "thought_level", "currentValue": "high"},
+                               {"id": "model", "currentValue": sys.argv[2]}]
                     for request_id, method, result in (
                         (1, "initialize", {"protocolVersion": 1}),
-                        (2, "session/new", {"sessionId": "repair", "configOptions": [
-                            {"id": "thought_level", "currentValue": "high"},
-                        ]}),
+                        (2, "session/new", {"sessionId": "repair", "configOptions": options}),
                     ):
                         assert json.loads(sys.stdin.readline())["method"] == method
                         print(json.dumps(dict(jsonrpc="2.0", id=request_id, result=result)), flush=True)
@@ -149,7 +151,8 @@ class JunieDashboardAcpTests(unittest.TestCase):
                         return launch([sys.executable, "-c", "print('  --task=<text>  Task description')"], **streams)
                     commands.append(argv)
                     if argv[-1] == "--acp=true":
-                        return launch([sys.executable, "-u", "-c", acp_agent, expected_style], **streams)
+                        return launch([sys.executable, "-u", "-c", acp_agent, expected_style,
+                                       "other" if mismatch else "sonnet"], **streams)
                     write_token = f"from pathlib import Path; Path({str(completion)!r}).write_text('token')"
                     return launch([sys.executable, "-c", write_token], **streams)
 
@@ -169,9 +172,13 @@ class JunieDashboardAcpTests(unittest.TestCase):
                             self.assertTrue(dashboard.condition.wait_for(lambda: dashboard.state.get("junie_request"), timeout=8))
                             request = dashboard.state["junie_request"]
                         self.assertEqual(request["title"], "Junie を非対話モードで再試行")
+                        if mismatch:
+                            self.assertIn("指定 sonnet、応答 other", request["detail"])
                         self.assertEqual(len(commands), 1)
-                        self.assertEqual(commands[0][commands[0].index("--model") + 1], "sonnet")
-                        self.assertEqual(commands[0][commands[0].index("--effort") + 1], "high")
+                        self.assertEqual(commands[0], [
+                            "junie", "--project", str(root), "--ide-guidelines", str(root / "rules.md"),
+                            "--max-steps", "7", "--acp=true",
+                        ])
                         self.assertTrue(dashboard.answer_junie({
                             "operation_id": operation_id, "request_id": request["id"],
                             "option_id": "headless" if approve else "stop",
