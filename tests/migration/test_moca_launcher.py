@@ -40,7 +40,7 @@ class MoCALauncherTests(unittest.TestCase):
 
     def test_banner_fits_or_uses_a_readable_fallback_without_escape_codes(self):
         for encoding, columns, height, literal in (
-            ("utf-8", 80, 6, None), ("cp1252", 80, 3, "MoCA"), ("utf-8", 36, 3, "MoCA"),
+            ("utf-8", 80, 6, None), ("cp1252", 80, 1, "MoCA"), ("utf-8", 36, 1, "MoCA"),
             ("utf-8", 8, 1, "MoCA"), ("utf-8", 4, 0, None),
         ):
             with self.subTest(encoding=encoding, columns=columns):
@@ -61,10 +61,9 @@ class MoCALauncherTests(unittest.TestCase):
                 self.assertTrue(all(len(line) < columns for line in lines))
                 self.assertNotIn("\033", "".join(lines))
                 if literal:
-                    self.assertEqual("".join(lines).count(literal), 1)
+                    self.assertEqual(lines, [literal])
                 elif height == 6:
-                    self.assertIn("████", lines[3])
-                    self.assertGreater(len(lines[3]), 65)
+                    self.assertEqual(lines[3], "██ ▀█▀ ██ █▌   ▐█ ▐█▌         █▀   ▀█")
 
     def test_palette_matches_console_background_and_keeps_contrast(self):
         def color(r, g, b):
@@ -102,7 +101,7 @@ class MoCALauncherTests(unittest.TestCase):
         with patch.object(terminal_image, "_supports_sixel", return_value=True):
             output = io.StringIO()
             self.assertTrue(terminal_image.write_terminal_image(output, *args))
-            self.assertTrue(output.getvalue().startswith('\x1bP0;1q"1;1;520;84'))
+            self.assertTrue(output.getvalue().startswith('\x1bP0;1q"1;1;296;84'))
             self.assertTrue(output.getvalue().endswith("-\x1b\\\n"))
             broken = Mock()
             broken.write.side_effect = OSError("console disconnected")
