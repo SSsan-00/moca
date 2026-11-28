@@ -122,6 +122,19 @@ description = "When producing text output"
 
 
 class ModelCliTests(unittest.TestCase):
+    def test_acp_launch_leaves_model_and_effort_in_the_logical_command_only(self):
+        command = junie_cli.build_command(Path("project"), "prompt --effort", 7, guidelines=Path("rules.md"),
+                                          model="gpt-6.1-sol", effort="medium")
+        original = command.copy()
+        invocation = junie_cli.acp_command(command)
+        self.assertEqual(command, original)
+        self.assertEqual(invocation, ["junie", "--project", "project", "--ide-guidelines", "rules.md",
+                                      "--max-steps", "7", "--acp=true"])
+        with patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}, clear=True):
+            _, _, environment = junie_launch._windows_batch_command([r"C:\Junie\junie.cmd", *invocation[1:]])
+        self.assertNotIn("JUNIE_MODEL", environment)
+        self.assertNotIn("JUNIE_EFFORT", environment)
+
     def test_model_survives_headless_and_windows_launch(self):
         command = junie_cli.build_command(Path("project"), "task", 7, model="sonnet", effort="high")
         self.assertEqual(command[-6:], ["--model", "sonnet", "--effort", "high", "--prompt", "task"])

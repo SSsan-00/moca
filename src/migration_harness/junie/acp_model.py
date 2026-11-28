@@ -31,6 +31,10 @@ def config_option(session: dict, category: str, ids: tuple[str, ...]) -> dict | 
     return matches[0] if matches else None
 
 
+def acp_effort_option(session: dict) -> dict | None:
+    return config_option(session, "thought_level", ("thought_level", "effort"))
+
+
 def _setting_id(value: str) -> str:
     if value.startswith("v1:"):
         # GroupedModelConfigValue prefixes the provider's UTF-16 length. Both IDs may contain colons.
@@ -70,13 +74,15 @@ class RequestedModel:
         return (self.agent_version in ("26.11.1 (4020.10)", "26.11.2 (4100.11)")
                 and setting == _JUNIE_ALIASES.get(self.model))
 
-    def check(self, info: dict) -> None:
+    def check(self, info: dict, *, require_current: bool = False) -> None:
         if not self.model:
             return
         option = config_option(info, "model", ("model",))
         current = option.get("currentValue") if option else None
         legacy = info.get("models")
         legacy_id = legacy.get("currentModelId") if isinstance(legacy, dict) else None
+        if require_current and current is None and not legacy_id:
+            raise self.mismatch("未確認")
         if current is not None and not self.matches(current):
             raise self.mismatch(current)
         if legacy_id and not self.matches(legacy_id):
@@ -90,31 +96,42 @@ class RequestedModel:
     def change_for(self, session: dict, effort: str | None) -> ModelChange | None:
         if not self.model:
             return None
-        option = config_option(session, "model", ("model",))
         try:
-            self.check(session)
-            if option and option.get("options") and option.get("currentValue") is None:
-                raise self.mismatch("未確認")
+            self.check(session, require_current=True)
+            return None
         except ModelMismatch:
-            if not option or not isinstance(option.get("id"), str) or not option["id"]:
-                raise
-            matches = {value for value in _choices(option) if self.matches(value)}
-            if len(matches) != 1:
-                raise
-            return ModelChange(self, "session/set_config_option", {"configId": option["id"], "value": matches.pop()}, session)
+            option = config_option(session, "model", ("model",))
+            if option is not None:
+                matches = {value for value in _choices(option) if self.matches(value)}
+                if len(matches) != 1 or not isinstance(option.get("id"), str) or not option["id"]:
+                    raise
+                params = {"configId": option["id"], "value": matches.pop()}
+                return ModelChange(self, "session/set_config_option", params, session)
 
-        # Junie 4100.11 can advertise no models until Lite is set on the session.
-        if self.model != "junie-lite" or effort not in (None, "none") or option is not None:
-            return None
-        models = session.get("models")
-        if models is not None and (not isinstance(models, dict)
-                                   or models.get("availableModels") not in (None, [])
-                                   or models.get("currentModelId")):
-            return None
-        options = session.get("configOptions")
-        if options is None or isinstance(options, list):
-            return ModelChange(self, "session/set_model", {"modelId": self.model}, session)
-        return None
+            models = session.get("models")
+            if models is not None and not isinstance(models, dict):
+                raise
+            catalog = (models or {}).get("availableModels")
+            if isinstance(catalog, list) and catalog:
+                matches = {item["modelId"] for item in catalog
+                           if isinstance(item, dict) and self.matches(item.get("modelId"))}
+                if len(matches) != 1:
+                    raise
+                model_id = matches.pop()
+                # A legacy setter may acknowledge with {}. The previous model and its effort predate the switch.
+                pending = {key: value for key, value in session.items() if key != "models"}
+                if effort and (selector := acp_effort_option(session)):
+                    pending["configOptions"] = [dict(opt, currentValue=None) if opt is selector else opt
+                                                for opt in session["configOptions"]]
+            elif (self.model == "junie-lite" and effort in (None, "none")
+                  and catalog in (None, []) and not (models or {}).get("currentModelId")
+                  and (session.get("configOptions") is None or isinstance(session["configOptions"], list))):
+                # Junie 4100.11 can advertise no models until Lite is set on the session.
+                model_id = self.model
+                pending = session
+            else:
+                raise
+            return ModelChange(self, "session/set_model", {"modelId": model_id}, pending)
 
 
 @dataclass
@@ -126,12 +143,8 @@ class ModelChange:
 
     def confirmed(self, message: dict) -> dict:
         result = message.get("result")
-        error = message.get("error")
         if self.method == "session/set_model":
-            # Older servers use the CLI selection and do not implement the explicit Lite workaround.
-            unsupported = isinstance(error, dict) and error.get("code") == -32601 and "result" not in message
-            if not unsupported and ("error" in message or "result" not in message
-                                    or result is not None and not isinstance(result, dict)):
+            if "error" in message or "result" not in message or (result is not None and not isinstance(result, dict)):
                 raise ModelSelectionError(f"Junie ACP でモデル {self.requested.model} を選択できませんでした。")
             info = {**self.session, **(result or {})}
         else:

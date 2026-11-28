@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..execution import check_cancelled, report_activity
 from ..files import has_completion_record, has_symlink_component, safe_target
-from .acp_model import ModelChange, ModelMismatch, ModelSelectionError, RequestedModel, config_option
+from .acp_model import ModelChange, ModelMismatch, ModelSelectionError, RequestedModel, acp_effort_option
 from .acp_permissions import PinnedReferenceReads, ReadRefused, metrics_kind
 from .junie_launch import JunieAcpModelUnavailable, JunieSessionError
 
@@ -50,10 +50,6 @@ class _SteeringRequest:
     token: str
     accepted: bool = False
     new_turn: bool = False
-
-
-def acp_effort_option(session: dict) -> dict | None:
-    return config_option(session, "thought_level", ("thought_level", "effort"))
 
 
 def acp_confirms_effort(option: dict | None, effort: str, model: str | None = None) -> bool:

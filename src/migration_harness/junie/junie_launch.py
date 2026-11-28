@@ -123,7 +123,15 @@ def _task_command(command: list[str]) -> list[str]:
 
 
 def acp_command(command: list[str]) -> list[str]:
-    return [part for part in command[:-2] if part != "--brave"] + ["--acp=true"]
+    # Junie 26.11.2 on Windows loses its provider if model or effort is set at ACP process startup.
+    invocation = [command[0]]
+    arguments = iter(command[1:-2])
+    for argument in arguments:
+        if argument in ("--model", "--effort"):
+            next(arguments)
+        elif argument != "--brave":
+            invocation.append(argument)
+    return [*invocation, "--acp=true"]
 
 
 def _windows_batch_command(command: list[str]) -> tuple[str, str, dict[str, str]]:

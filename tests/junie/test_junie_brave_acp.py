@@ -27,7 +27,8 @@ class JunieBraveAcpTests(unittest.TestCase):
         return session
 
     def announce(self, session, options):
-        session._receive_message({"id": 2, "result": {"sessionId": "fixture", "configOptions": options}})
+        session._receive_message({"id": 2, "result": {"sessionId": "fixture", "configOptions": options,
+                                                       "models": {"currentModelId": "gpt-6-luna"}}})
 
     def test_native_confirmation_does_not_send_a_setter_or_an_approval(self):
         for option in (BRAVE_ON, {"id": "brave_mode", "type": "boolean", "currentValue": True}):

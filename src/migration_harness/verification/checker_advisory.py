@@ -167,14 +167,17 @@ def _exchange(
 
     def configure_session(info: dict) -> None:
         nonlocal config_id
-        option = acp_session.acp_effort_option(info)
-        if effort is None or acp_session.acp_confirms_effort(option, effort, model):
+        if effort is None:
             begin_prompt()
-        else:
-            config_id = option.get("id") if option is not None else None
-            if not isinstance(config_id, str) or not config_id:
-                raise AdvisoryEffortUnavailable("Junie advisory does not expose the requested effort")
-            configure_effort(acp_session.ACP_SET_EFFORT_REQUEST)
+            return
+        option = acp_session.acp_effort_option(info)
+        if acp_session.acp_confirms_effort(option, effort, model):
+            begin_prompt()
+            return
+        config_id = option.get("id") if option is not None else None
+        if not isinstance(config_id, str) or not config_id:
+            raise AdvisoryEffortUnavailable("Junie advisory does not expose the requested effort")
+        configure_effort(acp_session.ACP_SET_EFFORT_REQUEST)
 
     request("initialize", protocolVersion=1, clientCapabilities={})
     try:

@@ -106,6 +106,33 @@ class JunieAcpEffortTests(unittest.TestCase):
             self.assertFalse(session.session_ready)
             session.request.assert_not_called()
 
+    def test_legacy_catalog_switches_model_then_confirms_effort_before_prompt(self):
+        target = "v1:4:test:target"
+        session = make_session(acp_session.AcpSession, model="target")
+        session._receive_message({"id": 2, "result": {
+            "sessionId": "session", "configOptions": config("medium"),
+            "models": {"currentModelId": "other", "availableModels": [{"modelId": target}]},
+        }})
+        session.request.assert_called_once_with(acp_session.ACP_SELECT_MODEL_REQUEST, "session/set_model",
+                                                sessionId="session", modelId=target)
+        session._receive_message({"id": acp_session.ACP_SELECT_MODEL_REQUEST, "result": {}})
+        session.request.assert_called_with(acp_session.ACP_SET_EFFORT_REQUEST, "session/set_config_option",
+                                           sessionId="session", configId="reasoning", value="medium")
+        self.assertFalse(session.session_ready)
+        session._receive_message({"id": acp_session.ACP_SET_EFFORT_REQUEST,
+                                  "result": {"configOptions": config("medium")}})
+        self.assertEqual(session.request.call_args.args, (3, "session/prompt"))
+
+    def test_legacy_catalog_cannot_silently_select_another_provider(self):
+        for ids in (["other"], ["v1:1:a:target", "v1:1:b:target"]):
+            session = make_session(RuleChat, model="target", effort=None)
+            with self.subTest(ids=ids), self.assertRaisesRegex(junie_cli.JunieAcpModelUnavailable, "target"):
+                session._receive_message({"id": 2, "result": {
+                    "sessionId": "session", "models": {"availableModels": [{"modelId": item} for item in ids]},
+                }})
+            session.request.assert_not_called()
+            self.assertFalse(session.session_ready)
+
     def test_effort_confirmation_cannot_change_the_model_or_ack_another_selector(self):
         for reply in (
             [{"id": "model", "currentValue": "other"}, *config("medium")],
