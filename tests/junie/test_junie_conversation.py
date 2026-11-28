@@ -153,6 +153,7 @@ class JunieConversationTests(SavedRunFixture):
                 self.request("editor", {**payload, "selection": {**selection, "text": "changed\nline"}})
             review.assert_called_once()
         prompt, = review.call_args.args
+        self.assertIn("日本語で回答", prompt)
         self.assertIn("ファイル操作は行わない", prompt)
         self.assertIn("16,384バイト以内", prompt)
         self.assertEqual(json.loads(prompt.splitlines()[-1]), selection)
@@ -161,6 +162,29 @@ class JunieConversationTests(SavedRunFixture):
         self.assertEqual(self.record_path.read_bytes(), run_before)
         with editor_queue(self.run_path) as queue:
             self.assertEqual(queue["prompts"], [])
+
+    def test_selection_sends_presentation_only_for_the_answer(self):
+        custom = 'Use short "review notes".'
+        self.restart_server(junie_log_language="en", junie_log_tone="custom", junie_log_tone_instruction=custom)
+        selection = {"path": self.target.name, "start_line": 1, "end_line": 1, "text": self.target.read_text()}
+        action = {"kind": "conversation", "run_id": self.run_id, "id": uuid.uuid4().hex,
+                  "text": "ビルドだけ", "selection": selection}
+        captured = self.run_path / "advisory-prompt.json"
+        with acp_reply("This class has no members.", prompt_path=captured):
+            self.assertEqual(self.request("editor", action)[0], 202)
+            entry = self.wait_for(action["id"], "done")
+        self.assertEqual((entry["intent"], entry["message"], entry["selection"]),
+                         ("selection_review", "This class has no members.", selection))
+        params = json.loads(captured.read_text(encoding="utf-8"))
+        prompt = params["prompt"][0]["text"]
+        self.assertEqual(params, {"sessionId": "1", "prompt": [{"type": "text", "text": prompt}]})
+        self.assertIn("選択範囲への回答だけを英語で", prompt)
+        self.assertIn(json.dumps(custom, ensure_ascii=False), prompt)
+        self.assertNotIn("日本語", prompt)
+        self.assertIn("ファイル操作は行わない", prompt)
+        self.assertIn("16,384バイト以内", prompt)
+        self.assertIn(action["text"], prompt)
+        self.assertEqual(json.loads(prompt.splitlines()[-1]), selection)
 
     def test_selection_uses_saved_lite_model_when_acp_catalog_is_empty(self):
         original = self.target.read_bytes()

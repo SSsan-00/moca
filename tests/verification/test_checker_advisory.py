@@ -66,7 +66,10 @@ if sys.argv[1] == 'auth-notice':
     update("available_commands_update", availableCommands=[])
     update("config_option_update", configOptions=[])
     update("session_info_update", title="Checker advisory")
-assert receive('session/prompt', 3)['prompt'][0]['type'] == 'text'
+params = receive('session/prompt', 3)
+assert params['prompt'][0]['type'] == 'text'
+if mode == 'text' and len(sys.argv) > 7:
+    Path(sys.argv[7]).write_text(json.dumps(params), encoding='utf-8')
 if sys.argv[1] == 'tool':
     update('tool_call', kind='execute')
 elif sys.argv[1] == 'auth-request':
@@ -102,12 +105,14 @@ LITE_EMPTY_MODELS = {"models": {"availableModels": []}}
 LITE_SELECTED = [{"id": -1, "result": {}}]
 
 
-def acp_reply(text, stop_reason="end_turn", *, chunks=2, metadata=False, model_setup=None):
+def acp_reply(text, stop_reason="end_turn", *, chunks=2, metadata=False, model_setup=None, prompt_path=None):
     def launch(command, *, owned, cwd, **streams):
         command = [sys.executable, "-c", FAKE_ACP, "text", text, stop_reason, str(chunks),
                    "mixed" if metadata else "plain"]
-        if model_setup is not None:
-            command.append(json.dumps(model_setup))
+        if model_setup is not None or prompt_path is not None:
+            command.append(json.dumps(model_setup or ({}, None)))
+        if prompt_path is not None:
+            command.append(str(prompt_path))
         return junie_cli.JunieProcess(command, cwd=cwd, **streams)
     return patch.object(junie_cli, "_launch_process", side_effect=launch)
 

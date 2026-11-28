@@ -209,7 +209,7 @@ class AcpSession:
                 **params: Any) -> None:
         self.send(id=request_id, method=method, params=params, after_flush=after_flush)
 
-    def steer(self) -> None:
+    def steer(self, progress_style: str | None = None) -> None:
         if (self.prompts is None or not self.steering_supported or self.session_id is None
                 or self.pending or self.steering_waiting is not None or self.prompt_finished
                 or has_completion_record(self.completion_path, self.token)):
@@ -232,6 +232,8 @@ class AcpSession:
             f"After all work is complete, write exactly {self.token} to `{self.completion_path.name}` "
             "as the final file action, even if that file already exists."
         )
+        if progress_style:
+            instruction += "\n\n" + progress_style
         try:
             observer = steering_input_observer.get()
             accepted = observer is None or observer(instruction)

@@ -36,6 +36,11 @@ class JunieSteeringTests(unittest.TestCase):
                 dashboard = Dashboard()
                 dashboard.begin_operation()
                 dashboard.control.trusted_junie_workspaces.add(str(root))
+                custom = scenario in {"injected", "new_turn"}
+                settings = {"junie_log_language": "en", "junie_log_tone": "custom",
+                            "junie_log_tone_instruction": 'Use "brief" greetings.\nOne sentence.'} if custom else {}
+                style = junie_cli.dashboard_progress_style(settings)
+                dashboard.control.junie_progress_style = style
                 received = []
 
                 def activity(entry):
@@ -63,7 +68,9 @@ class JunieSteeringTests(unittest.TestCase):
                     send(id=1, result={"protocolVersion": 1, "_meta": {"steering": {"supported": supported}}})
                     assert read()["method"] == "session/new"
                     send(id=2, result={"sessionId": "migration"})
-                    assert read()["method"] == "session/prompt"
+                    initial = read()
+                    assert initial["method"] == "session/prompt"
+                    assert initial["params"]["prompt"][0]["text"] == "original assignment\\n\\n" + style
                     if scenario in {"unsupported", "invalid_capability"}:
                         Path("complete.txt").write_text("token")
                         send(id=3, result={"stopReason": "end_turn"})
@@ -74,6 +81,7 @@ class JunieSteeringTests(unittest.TestCase):
                         assert request["method"] == "_session/steering"
                         assert request["params"]["sessionId"] == "migration"
                         text = request["params"]["prompt"][0]["text"]
+                        assert text.endswith("\\n\\n" + style) == custom
                         assert ("日付" if index == 0 else "時刻") in text
                         Path("received.txt").write_text(str(index + 1))
                         match = re.search(r"write exactly ([a-f0-9]+) to `([^`]+)`", text)
@@ -127,7 +135,8 @@ class JunieSteeringTests(unittest.TestCase):
                 launch = junie_cli._launch_process
 
                 def launch_agent(command, **streams):
-                    script = f"import os; os.chdir({str(root)!r})\nscenario = {scenario!r}\n" + agent
+                    script = (f"import os; os.chdir({str(root)!r})\nscenario = {scenario!r}\n"
+                              f"style = {style!r}\ncustom = {custom!r}\n" + agent)
                     return launch([sys.executable, "-u", "-c", script], **streams)
 
                 with (

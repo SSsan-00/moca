@@ -18,7 +18,7 @@ from ..runs.run_records import load_saved_run, run_model_options, validate_run_i
 from ..runs.worktree_targets import target_versions, review_target_hash
 from ..verification.diagnostic_log import review_log
 from ..verification.checker_advisory import AdvisoryReplyTooLarge, AdvisoryTransportLimit, run_text_advisory
-from .junie_cli import JunieStopError
+from .junie_cli import JunieStopError, dashboard_reply_style
 
 SELECTION_REPLY_LIMIT = 16 * 1024
 PENDING = {"received", "clarification", "waiting", "running", "steering"}
@@ -699,10 +699,11 @@ class JunieConversations:
         return True
 
 
-def selection_review_prompt(entry):
-    request = ("次の選択範囲について日本語で相談に応じてください。ファイルの変更を頼まれた場合も修正案だけを示し、"
+def selection_review_prompt(entry, config):
+    style = dashboard_reply_style(config, "選択範囲への回答") or "日本語で回答してください。"
+    request = ("次の選択範囲について相談に応じてください。ファイルの変更を頼まれた場合も修正案だけを示し、"
                "ツールやファイル操作は行わないでください。"
-               f"回答は要点を優先し、UTF-8で{SELECTION_REPLY_LIMIT:,}バイト以内にまとめてください。")
+               f"回答は要点を優先し、UTF-8で{SELECTION_REPLY_LIMIT:,}バイト以内にまとめてください。\n{style}")
     comment = entry["text"]
     return (request + (f"\n\nユーザーのコメント：\n{comment}" if comment
                        else "\n\n選択したコードの内容を説明してください。")
@@ -739,7 +740,7 @@ def run_instruction(config, run_id, identifier):
         return resume_with_junie(config, run_id, verification_request=instruction)
     try:
         reply = run_text_advisory(
-            selection_review_prompt(instruction), reply_limit=SELECTION_REPLY_LIMIT,
+            selection_review_prompt(instruction, config), reply_limit=SELECTION_REPLY_LIMIT,
             **run_model_options(run_path, record, config),
         ).strip()
         if not reply:
